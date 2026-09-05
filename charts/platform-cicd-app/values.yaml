@@ -110,7 +110,7 @@ idpServiceCatalog:
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
 # public, working) - override if you've built and published your own copy.
-toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-05-testkube-cli
+toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-05-chain-slug
 
 # The single shared namespace Testkube CE installs into on this cluster - see
 # templates/testkube/rbac-and-secret.yaml's own header for why this Application

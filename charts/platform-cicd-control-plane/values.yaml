@@ -7,7 +7,7 @@
 # own toolboxImage - kept in sync deliberately, not duplicated by accident. Defaults to
 # this repo's own published image (real, public, working) - override if you've built
 # and published your own copy.
-toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-05-testkube-cli
+toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-05-chain-slug
 
 # The single shared namespace Testkube CE installs into on this cluster (see
 # gitops-cluster-dev/50-platform-cicd/testkube/application.yaml's own header for why

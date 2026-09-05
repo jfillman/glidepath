@@ -21,7 +21,7 @@ rbac:
 # rename. Every Task uses imagePullPolicy: IfNotPresent, so re-pushing :latest wouldn't
 # actually reach already-cached nodes - a real staleness class this platform has hit
 # before. Bump this tag (not just the image content) whenever schema.json changes.
-toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-05-testkube-cli
+toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-05-chain-slug
 
 # Cluster-agnostic namespace derivation: which namespace Tekton Chains runs in -
 # matters here because verify-image-provenance.yaml/verify-sast-attestation.yaml
