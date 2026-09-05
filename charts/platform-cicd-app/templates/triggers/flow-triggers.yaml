@@ -117,19 +117,23 @@ spec:
     - { name: stage-name, value: {{ $stageName | quote }} }
     {{/* $(body.context.id) (Tekton runtime substitution, not Helm) gives each firing a
     unique name so a redelivered CDEvent no-ops, and repeated stage names don't collide.
-    TEMPORARILY REVERTED to plain context.id, without chain_slug: cdevents.sh lives
-    inside the pinned platform-cicd-toolbox image (see values.yaml's toolboxImage),
-    not this chart - the chain_slug field it now emits into customData.platform hasn't
-    reached a published/pinned image yet. Since a TriggerBinding's $(body...) JSONPath
-    hard-errors on a missing field (not an empty value - same failure mode as the
-    "outcome" bug above), requiring chain_slug here before the image ships it broke
-    EVERY chained transition platform-wide (confirmed live 2026-09-05: EventListener
-    logs showed "chain_slug is not found" on flow-ci-1-test for checkout-api, and
-    other apps' -cicd Applications had already synced the same template). Re-add
-    $(body.customData.platform.chain_slug) here (see git history) only after a new
-    toolbox image containing the updated cdevents.sh is built, pushed, and
-    values.yaml's toolboxImage is repinned to it and synced FIRST. */}}
-    - { name: pipeline-run-name, value: {{ printf "%s-%d-%s-$(body.context.id)" $flowName $index $stageName | quote }} }
+    $(body.customData.platform.chain_slug) is a two-word deterministic stand-in for
+    chain-id (see cdevents.sh's chain_id_to_slug) - same chain-id always yields the same
+    words, so every PipelineRun in one flow chain shows the same pair, making them easy
+    to spot as belonging together without needing the full chain-id.
+
+    NOTE: chain_slug is emitted by cdevents.sh, which lives inside the pinned
+    platform-cicd-toolbox image (values.yaml's toolboxImage), not this chart. A
+    TriggerBinding's $(body...) JSONPath hard-errors on a missing field (not an empty
+    value - same failure mode as the "outcome" bug above), so requiring chain_slug here
+    ever again before a published image actually emits it would break EVERY chained
+    transition platform-wide - confirmed live 2026-09-05 (EventListener logs: "chain_slug
+    is not found" on flow-ci-1-test), reverted in 942667f, and only re-added here after
+    the send-cdevent Task's shared image was rebuilt, pushed, repinned in all three
+    values.yaml files (760edc3), and confirmed synced. Never let this line ship in the
+    same deploy as a cdevents.sh change that alters what customData.platform carries -
+    the image must land first, verified, in its own deploy. */}}
+    - { name: pipeline-run-name, value: {{ printf "%s-%d-%s-$(body.customData.platform.chain_slug)-$(body.context.id)" $flowName $index $stageName | quote }} }
     - { name: env, value: {{ $step.env | default "dev" | quote }} }
     - { name: test-name, value: {{ $effectiveTestName | quote }} }
     {{/* $step.cluster if set, else resolved from upperEnvironments - see _helpers.tpl's
