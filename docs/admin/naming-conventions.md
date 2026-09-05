@@ -161,6 +161,21 @@ the broker's pattern (`<flowName>-<index>-<stageName>-`) even though the trailin
 segment comes from a different mechanism and can't share `chainSlug` with the rest of
 the flow's PipelineRuns.
 
+**Deferred idea, not implemented**: build's `metadata.name` itself can never carry
+`chainSlug` (Kubernetes object names are immutable, and chain-id doesn't exist until
+after the name is already assigned - see above), but build's PipelineRun *object* could
+still be labeled with its flow's `chainSlug` after the fact, since labels (unlike names)
+can be patched post-creation. `start-flow-root-span` mints chain-id and would need one
+more step to compute `chain_slug` (reusing `cdevents.sh`'s `chain_id_to_slug`) and
+`kubectl label pipelinerun $(context.pipelineRun.name) platform.io/chain-slug=<slug>
+--overwrite` against itself - Tekton exposes `$(context.pipelineRun.name)` inside a
+step for exactly this. Would need confirming `pipeline-runner`'s ServiceAccount can
+`patch` PipelineRuns in its own namespace first. This would let `kubectl get pipelinerun
+-l platform.io/chain-slug=<slug>` pull back build alongside test/deploy/release even
+though build's name string alone never will. Raised and consciously left undone
+2026-09-05 - worth reconsidering if build's isolation from the rest of its flow becomes
+an actual pain point (e.g. in dashboards or triage), not just a naming curiosity.
+
 ## GitHub Check / status context names
 
 Short, no trailing dash, matching the concept the file represents (`sast`, `provenance`,
