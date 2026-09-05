@@ -116,8 +116,12 @@ spec:
     - { name: flow-name, value: {{ $flowName | quote }} }
     - { name: stage-name, value: {{ $stageName | quote }} }
     {{/* $(body.context.id) (Tekton runtime substitution, not Helm) gives each firing a
-    unique name so a redelivered CDEvent no-ops, and repeated stage names don't collide. */}}
-    - { name: pipeline-run-name, value: {{ printf "%s-%d-%s-$(body.context.id)" $flowName $index $stageName | quote }} }
+    unique name so a redelivered CDEvent no-ops, and repeated stage names don't collide.
+    $(body.customData.platform.chain_slug) is a two-word deterministic stand-in for
+    chain-id (see cdevents.sh's chain_id_to_slug) - same chain-id always yields the same
+    words, so every PipelineRun in one flow chain shows the same pair, making them easy
+    to spot as belonging together without needing the full chain-id. */}}
+    - { name: pipeline-run-name, value: {{ printf "%s-%d-%s-$(body.customData.platform.chain_slug)-$(body.context.id)" $flowName $index $stageName | quote }} }
     - { name: env, value: {{ $step.env | default "dev" | quote }} }
     - { name: test-name, value: {{ $effectiveTestName | quote }} }
     {{/* $step.cluster if set, else resolved from upperEnvironments - see _helpers.tpl's

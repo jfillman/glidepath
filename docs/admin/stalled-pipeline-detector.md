@@ -11,8 +11,9 @@ downstream to notice a PR sat unbuilt) - this closes that gap with an automated 
 The architecture plan originally bundled this with "CDEvents idempotency/dedup." Live
 code inspection found the dedup half was already built during Phase 1:
 `charts/platform-cicd-app/templates/triggers/*.yaml` names every triggered
-PipelineRun deterministically (`test-$(body.context.id)`, etc.), and that `id` is itself
-`sha256(emitting-PipelineRun-name:event-type)[:20]`, computed in
+PipelineRun deterministically (`ci-1-test-brave-otter-a1b2c3d4`, etc. - see
+docs/admin/naming-conventions.md), and the trailing `context.id` segment is itself
+`sha256(emitting-PipelineRun-name:event-type)[:8]`, computed in
 `catalog/lib/cdevents.sh`'s `cdevent_send()`. At-least-once redelivery of the same
 CDEvent therefore either creates the PipelineRun once or hits a harmless
 `AlreadyExists`. This detector covers the opposite failure: a stage finishing and
