@@ -108,6 +108,12 @@
           "enum": ["deployment", "rollout"],
           "default": "deployment",
           "description": "deployment = native k8s Deployment rollout; rollout = Argo Rollouts (canary/blue-green). Schema-validated and reserved for future use, but rollout has NO effect yet - every deploy is a plain Deployment `set image` regardless of this value. Kept in the schema now, same as pipelines[].steps[].cluster, so today's cicd.yaml files don't need a breaking change once Argo Rollouts support lands."
+        },
+        "promotionOrder": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Optional, full ordered list of every env (lower AND upper) a release should pass through, e.g. [dev, test, rel, staging, pre-prod, prod]. Not enforced by platform-cicd's own automation - no Task or Trigger reads this today, and it does not need to equal what any single pipeline's own deploy/release steps cover. It exists as an explicit, authoritative declaration of the full intended promotion sequence for consumers that need it (Backstage's Glidepath plugin: it otherwise has to infer env order by finding whichever pipeline has the most deploy/release steps, which silently breaks once a pipeline legitimately covers only part of the sequence - e.g. build/test/deploy-to-dev only, leaving every later stage to a manual promotion path). Every entry should name an env declared in this app's own lowerEnvironments or upperEnvironments; a consumer encountering an unrecognized entry should treat the whole list as unusable and fall back to its own inference rather than trust a partial/stale list. Not cross-validated against lowerEnvironments/upperEnvironments by validate-cicd-config today."
         }
       }
     },

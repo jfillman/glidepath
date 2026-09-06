@@ -381,6 +381,7 @@ deploy:
                                  # Argo Rollouts support and has NO effect yet -
                                  # every deploy is a plain Deployment `set image`
                                  # regardless of this value today.
+  promotionOrder: []            # default; optional, see below
 ```
 
 `lowerEnvironments`/`upperEnvironments` aren't the thing that decides where a flow
@@ -397,6 +398,34 @@ a plain string, naming a different physical cluster that env's ArgoCD Applicatio
 actually lives on (resolved against the control-plane chart's own cluster registry) -
 see [multi-cluster.md](../admin/multi-cluster.md) for the full mechanism, including how the
 release PR delivery and ArgoCD feedback path differ for a cluster-mapped env.
+
+### `promotionOrder` - declaring the full release sequence explicitly
+
+No `pipelines:` flow has to cover every env this app declares. A perfectly normal setup
+is a single automated flow that only takes a build as far as `dev`, leaving every later
+env - another lower env like `test`/`rel`, and every upper env - to a manual promotion
+(e.g. Backstage's Glidepath "Promote" button) rather than more pipeline automation.
+
+That's a problem for anything trying to infer "what order do this app's envs promote
+in?" from `pipelines:` alone: a flow's own step list only reflects what's automated, not
+the app's full intended sequence. `promotionOrder` is the fix - declare the whole
+sequence once, explicitly:
+
+```yaml
+deploy:
+  lowerEnvironments: [dev, test, rel]
+  upperEnvironments: [staging, pre-prod, prod]
+  promotionOrder: [dev, test, rel, staging, pre-prod, prod]
+```
+
+This is metadata only - platform-cicd's own Tasks/Triggers don't read it, and it isn't
+required to match any single pipeline's step coverage. It exists for external consumers
+(today: Glidepath) that need to know the real full promotion path, including the parts
+that only ever happen through a manual promotion rather than pipeline automation. Every
+entry should be a name already declared in `lowerEnvironments`/`upperEnvironments` above;
+leave it empty (the default) for an app where every env really is covered by pipeline
+automation - a consumer with no `promotionOrder` to go on falls back to inferring order
+from `pipelines:` the same way it always has.
 
 ## Multi-stage pipeline flows
 
