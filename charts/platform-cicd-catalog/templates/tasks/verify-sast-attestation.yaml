@@ -70,9 +70,12 @@ spec:
 
         kubectl get configmap fulcio-root-ca -n platform-catalog \
           -o jsonpath='{.data.cert\.pem}' > "${workdir}/fulcio-root.pem"
+        kubectl get configmap rekor-public-key -n platform-catalog \
+          -o jsonpath='{.data.rekor\.pub}' > "${workdir}/rekor.pub"
         cosign trusted-root create \
           --fulcio="url=http://fulcio-server.fulcio-system.svc,certificate-chain=${workdir}/fulcio-root.pem" \
-          --no-default-ctfe --no-default-rekor --no-default-tsa \
+          --rekor="url=http://rekor-server.rekor-system.svc,public-key=${workdir}/rekor.pub,start-time=2020-01-01T00:00:00Z" \
+          --no-default-ctfe --no-default-tsa \
           --out "${workdir}/trusted-root.json"
 
         # Manual type-filter-then-verify-blob-attestation, not a single `cosign
@@ -143,7 +146,7 @@ spec:
             --bundle "${bundle_file}" \
             --digest "${digest#sha256:}" \
             --digestAlg sha256 \
-            --insecure-ignore-tlog=true \
+            --insecure-ignore-tlog=false \
             --insecure-ignore-sct=true \
             --trusted-root "${workdir}/trusted-root.json" \
             --certificate-identity-regexp "${identity_regexp}" \

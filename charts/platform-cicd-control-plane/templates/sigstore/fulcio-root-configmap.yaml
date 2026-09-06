@@ -9,20 +9,12 @@
 # Consumed by verify-image-provenance.yaml as the --ca-roots trust anchor for cosign
 # verify/verify-attestation (docs/provenance-policy.md).
 #
-# Templated from .Values.fulcio.rootCert - the public half of whatever fulcio-secret was
-# generated with. Genuinely cluster-specific: each cluster gets its own independently
-# generated root CA (docs/image-signing.md), never copied from another cluster.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: fulcio-root-ca
-  labels:
-    {{- include "platform-cicd-control-plane.labels" . | nindent 4 }}
-    platform.io/subcomponent: "sigstore"
-  namespace: platform-catalog
-data:
-  cert.pem: |
-    {{- required "fulcio.rootCert must be set - see hack/generate-cluster-values.sh (docs/admin/installation.md)" .Values.fulcio.rootCert | trim | nindent 4 }}
+# The ConfigMap object itself is created directly by hooks/fulcio-bootstrap-job.yaml,
+# not templated here - it's populated with the public half of whatever root that Job
+# generated (or found already present), which doesn't exist as a Helm value at all
+# (ADR-0006's "Update": the private key/cert pair are minted inside the cluster, never
+# passed through a values file). Only the RBAC below - genuinely static, unrelated to
+# which cluster's root it happens to guard - stays chart-templated.
 ---
 # Broad but narrowly-scoped by resourceName: this ConfigMap holds genuinely public data,
 # so granting read to every ServiceAccount cluster-wide (rather than enumerating each

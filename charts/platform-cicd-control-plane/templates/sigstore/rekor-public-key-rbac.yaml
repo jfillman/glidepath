@@ -1,0 +1,46 @@
+# platform/sigstore/rekor-public-key-configmap.yaml
+#
+# Rekor's tlog public key, exposed the same way fulcio-root-configmap.yaml exposes
+# Fulcio's root cert - genuinely public data (also discoverable live from Rekor's own
+# /api/v1/log/publicKey), safe to read broadly.
+#
+# Consumed by generate-sbom.yaml/verify-image-provenance.yaml/verify-sast-attestation.yaml
+# as the --rekor= public-key input to `cosign trusted-root create`/`signing-config create`,
+# replacing --no-default-rekor now that Rekor is actually deployed (docs/provenance-policy.md).
+#
+# The ConfigMap object itself is created directly by hooks/rekor-pubkey-sync-job.yaml,
+# not templated here - same reasoning as fulcio-root-ca: Rekor's key only exists after
+# a real rekor-server has booted (a separate ArgoCD Application,
+# gitops-cluster-*/50-platform-cicd/rekor/), so it can't be a Helm value fixed at
+# customize-cluster.sh time. That Job retries until rekor-server answers rather than
+# depending on any cross-Application sync ordering, which ArgoCD doesn't otherwise
+# guarantee between two independent Applications. Only the RBAC below stays
+# chart-templated.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: allow-rekor-public-key-read
+  labels:
+    {{- include "platform-cicd-control-plane.labels" . | nindent 4 }}
+    platform.io/subcomponent: "sigstore"
+  namespace: platform-catalog
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["rekor-public-key"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: allow-rekor-public-key-read
+  labels:
+    {{- include "platform-cicd-control-plane.labels" . | nindent 4 }}
+    platform.io/subcomponent: "sigstore"
+  namespace: platform-catalog
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: allow-rekor-public-key-read }
+subjects:
+  - kind: Group
+    name: system:serviceaccounts
+    apiGroup: rbac.authorization.k8s.io

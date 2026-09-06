@@ -80,19 +80,13 @@ tenantsRepoUrl: ""
 # set here.
 tenantOnboardingApplicationSetName: ""
 
-# Genuinely cluster-specific Fulcio material - see templates/sigstore/fulcio-config.yaml
-# and templates/sigstore/fulcio-root-configmap.yaml for what consumes each key and why.
-# No default: both are `required` in the templates that consume them, so a fresh
-# install with no override fails fast and loud instead of silently deploying a broken
-# (empty) trust root. Generate real values with hack/generate-cluster-values.sh - see
-# docs/admin/installation.md - never hand-typed, never copied from another cluster.
-fulcio:
-  # This cluster's own kube-root-ca.crt "ca.crt" content - lets Fulcio trust a
-  # `type: kubernetes` OIDC token by trusting THIS cluster's own API server TLS cert.
-  issuerCACert: ""
-  # Public half of whatever fulcio-secret's key.pem was generated with
-  # (docs/admin/image-signing.md's one-time openssl bootstrap) - this cluster's own root.
-  rootCert: ""
+# Fulcio's root key/cert material is no longer a Helm value at all (ADR-0006's
+# "Update") - hooks/fulcio-bootstrap-job.yaml generates it inside the cluster on first
+# sync (idempotent, skips if fulcio-secret already exists) and writes
+# fulcio-root-ca/fulcio-config directly, rather than a human running
+# hack/generate-cluster-values.sh and pasting cert material into this file. That script
+# still exists as a documented manual override path for deliberately rotating a root
+# (FORCE=1) - see its own header and docs/admin/adr/0006-cluster-agnostic-bootstrap.md.
 
 # Overlay onto Tekton Chains' own `chains-config` ConfigMap (installed empty by default -
 # confirmed live, nothing to clobber) - applied via `kubectl patch --type merge` by
@@ -122,10 +116,15 @@ fulcio:
 # TaskRun using it failed signing otherwise. We only ever consume PIPELINE-level
 # provenance, so disabling this removes a whole buggy, unused path.
 #
-# transparency.enabled: "false" is load-bearing, not a placeholder - Chains' own default
-# transparency.url is the PUBLIC rekor.sigstore.dev; leaving this unset would mean this
-# Fulcio-only setup (Rekor/Trillian/MySQL deliberately deferred) silently attempts to
-# upload every signature to the public transparency log. See docs/admin/image-signing.md.
+# transparency.enabled: "true" / transparency.url point at this cluster's own
+# self-hosted rekor-server (docs/admin/provenance-policy.md) - Rekor was deployed
+# 2026-09-05 after being deferred since Phase 3 item 2. Deliberately still NOT the
+# Chains default (the PUBLIC rekor.sigstore.dev) - this platform's images/attestations
+# have no business in the public transparency log. This closes a real, previously-open
+# gap: without a Rekor entry, verify-image-provenance.yaml/verify-sast-attestation.yaml
+# had no timestamp anchor to prove Fulcio's short-lived (10-minute) leaf cert was valid
+# AT SIGNING TIME, so cosign correctly rejected it as expired by release-PR time on
+# every real release (docs/admin/release-guardrails.md's "known open issue").
 chains:
   configPatch:
     signers.x509.fulcio.enabled: "true"
@@ -136,7 +135,8 @@ chains:
     artifacts.taskrun.storage: ""
     artifacts.pipelinerun.storage: "oci"
     artifacts.oci.storage: "oci"
-    transparency.enabled: "false"
+    transparency.enabled: "true"
+    transparency.url: "http://rekor-server.rekor-system.svc"
 
 # Phase 3 item 7 / Infisical migration: External Secrets Operator is platform
 # infrastructure, not just a bootstrap-time install - every chart in this platform

@@ -1,0 +1,277 @@
+# platform/hooks/fulcio-bootstrap-job.yaml
+#
+# Replaces the manual `hack/generate-cluster-values.sh` + `kubectl create secret` step
+# (ADR-0006's "Update", docs/admin/adr/0006-cluster-agnostic-bootstrap.md) with an
+# ArgoCD/Helm pre-install hook Job that ports that script's exact recipe to run inside
+# the cluster itself. This is a completion of ADR-0006's actual constraint, not a
+# reversal of it: the private key still never leaves this Job's own pod (generated,
+# used to create Secrets, then the pod is torn down - never written to a repo, never
+# passed to a human's terminal). Only the *mechanism* changes, from "an operator runs a
+# script from their laptop" to "the cluster bootstraps its own signing root on first
+# sync" - what gitops-cluster-template needs to be genuinely buildable end to end.
+#
+# Idempotent by design, same as the script it replaces: exits immediately if
+# fulcio-secret already exists, rather than minting a second root and invalidating
+# every image already signed under the current one. There is no FORCE=1 equivalent
+# here on purpose - deliberately rotating a cluster's root is rare and consequential
+# enough to stay a manual, explicit action (hack/generate-cluster-values.sh FORCE=1),
+# not something a routine `helm upgrade`/ArgoCD sync could trigger by accident.
+#
+# Runs pre-install/pre-upgrade (not post-, unlike chains-config-patch-job.yaml's
+# adjacent pattern): fulcio-deployment.yaml's pod needs fulcio-secret/
+# fulcio-server-config to exist before it can start cleanly, so this must land before
+# the main template set, not after. Uses the shared toolboxImage (Alpine 3.20 +
+# openssl + kubectl - confirmed it carries both, chains-config-patch-job.yaml already
+# relies on the same image for kubectl alone).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fulcio-bootstrap
+  labels:
+    {{- include "platform-cicd-control-plane.labels" . | nindent 4 }}
+    platform.io/subcomponent: "hooks"
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+---
+# Namespace creation isn't scopable by resourceNames (the object doesn't exist yet at
+# create time) - a narrow, bounded exception, same reasoning `generate-cluster-values.sh`
+# itself already accepted for this exact call.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fulcio-bootstrap
+  labels:
+    {{- include "platform-cicd-control-plane.labels" . | nindent 4 }}
+    platform.io/subcomponent: "hooks"
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fulcio-bootstrap
+  labels:
+    {{- include "platform-cicd-control-plane.labels" . | nindent 4 }}
+    platform.io/subcomponent: "hooks"
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: fulcio-bootstrap }
+subjects:
+  - kind: ServiceAccount
+    name: fulcio-bootstrap
+    namespace: {{ .Release.Namespace }}
+---
+# Read-only access to this cluster's own API server root CA - fulcio-config's
+# ca-cert field (see fulcio-config.yaml's own header for why it's needed).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fulcio-bootstrap
+  labels:
+    {{- include "platform-cicd-control-plane.labels" . | nindent 4 }}
+    platform.io/subcomponent: "hooks"
+  namespace: default
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["kube-root-ca.crt"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fulcio-bootstrap
+  labels:
+    {{- include "platform-cicd-control-plane.labels" . | nindent 4 }}
+    platform.io/subcomponent: "hooks"
+  namespace: default
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: fulcio-bootstrap }
+subjects:
+  - kind: ServiceAccount
+    name: fulcio-bootstrap
+    namespace: {{ .Release.Namespace }}
+---
+# Create/read fulcio-secret, fulcio-server-config, fulcio-config in fulcio-system.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fulcio-bootstrap
+  labels:
+    {{- include "platform-cicd-control-plane.labels" . | nindent 4 }}
+    platform.io/subcomponent: "hooks"
+  namespace: fulcio-system
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fulcio-bootstrap
+  labels:
+    {{- include "platform-cicd-control-plane.labels" . | nindent 4 }}
+    platform.io/subcomponent: "hooks"
+  namespace: fulcio-system
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: fulcio-bootstrap }
+subjects:
+  - kind: ServiceAccount
+    name: fulcio-bootstrap
+    namespace: {{ .Release.Namespace }}
+---
+# Create/read fulcio-root-ca - lives in platform-catalog (platform-cicd-catalog's own
+# Application namespace, not this chart's), same cross-Application target
+# fulcio-root-configmap.yaml's RBAC already reaches into today.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fulcio-bootstrap
+  labels:
+    {{- include "platform-cicd-control-plane.labels" . | nindent 4 }}
+    platform.io/subcomponent: "hooks"
+  namespace: platform-catalog
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["fulcio-root-ca"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fulcio-bootstrap
+  labels:
+    {{- include "platform-cicd-control-plane.labels" . | nindent 4 }}
+    platform.io/subcomponent: "hooks"
+  namespace: platform-catalog
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: fulcio-bootstrap }
+subjects:
+  - kind: ServiceAccount
+    name: fulcio-bootstrap
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fulcio-bootstrap
+  labels:
+    {{- include "platform-cicd-control-plane.labels" . | nindent 4 }}
+    platform.io/subcomponent: "hooks"
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      serviceAccountName: fulcio-bootstrap
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: {{ .Values.toolboxImage }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              if kubectl get secret fulcio-secret -n fulcio-system >/dev/null 2>&1; then
+                echo "fulcio-secret already exists - skipping (idempotent no-op)."
+                echo "To rotate the root deliberately, use hack/generate-cluster-values.sh FORCE=1 instead."
+                exit 0
+              fi
+
+              echo "==> creating fulcio-system namespace"
+              kubectl create namespace fulcio-system --dry-run=client -o yaml | kubectl apply -f -
+
+              echo "==> reading this cluster's own API server root CA (kube-root-ca.crt)"
+              ISSUER_CA_CERT="$(kubectl get configmap kube-root-ca.crt -n default -o jsonpath='{.data.ca\.crt}')"
+              if [[ -z "${ISSUER_CA_CERT}" ]]; then
+                echo "error: could not read kube-root-ca.crt/ca.crt from default namespace." >&2
+                exit 1
+              fi
+
+              echo "==> generating a fresh, independent Fulcio root CA for {{ .Values.clusterName }}"
+              PASSPHRASE="$(openssl rand -base64 32)"
+              openssl req -x509 -newkey ed25519 -sha256 \
+                -keyout /tmp/key.pem -out /tmp/cert.pem \
+                -subj "/CN={{ .Values.clusterName }}-fulcio-root" -days 36500 \
+                -passout "pass:${PASSPHRASE}"
+
+              echo "==> creating fulcio-secret + fulcio-server-config"
+              kubectl create secret generic fulcio-secret -n fulcio-system \
+                --from-file=/tmp/cert.pem --from-file=/tmp/key.pem \
+                --dry-run=client -o yaml | kubectl apply -f -
+
+              cat > /tmp/server.yaml <<SERVERCONFIG
+              ca: fileca
+              fileca-cert: /etc/fulcio-secret/cert.pem
+              fileca-key: /etc/fulcio-secret/key.pem
+              fileca-key-passwd: "${PASSPHRASE}"
+              ct-log-url: ""
+              port: "5555"
+              grpc-port: "5554"
+              metrics-port: "2112"
+              SERVERCONFIG
+              kubectl create secret generic fulcio-server-config -n fulcio-system \
+                --from-file=/tmp/server.yaml \
+                --dry-run=client -o yaml | kubectl apply -f -
+
+              echo "==> creating fulcio-root-ca (platform-catalog) + fulcio-config (fulcio-system)"
+              kubectl create configmap fulcio-root-ca -n platform-catalog \
+                --from-file=cert.pem=/tmp/cert.pem \
+                --dry-run=client -o yaml | kubectl apply -f -
+
+              {
+                echo "oidc-issuers:"
+                echo "  https://kubernetes.default.svc.cluster.local:"
+                echo "    issuer-url: \"https://kubernetes.default.svc.cluster.local\""
+                echo "    client-id: \"sigstore\""
+                echo "    type: \"kubernetes\""
+                echo "    ca-cert: |"
+                echo "${ISSUER_CA_CERT}" | sed 's/^/      /'
+              } > /tmp/config.yaml
+              kubectl create configmap fulcio-config -n fulcio-system \
+                --from-file=config.yaml=/tmp/config.yaml \
+                --dry-run=client -o yaml | kubectl apply -f -
+
+              echo "fulcio bootstrap complete"

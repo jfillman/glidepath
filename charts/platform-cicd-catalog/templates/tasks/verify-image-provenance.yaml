@@ -13,8 +13,14 @@
 # on the already-verified payload - same 3-stage design `ec validate image` itself documents,
 # just split across tools. See docs/provenance-policy.md for more.
 #
-# --insecure-ignore-tlog/--insecure-ignore-sct on cosign calls: no Rekor/CT log is deployed
-# (self-hosting Rekor destabilized the cluster during earlier attempts; deliberately deferred).
+# --insecure-ignore-sct stays on cosign calls: no CT log is deployed for Fulcio (a
+# genuinely separate mechanism from Rekor's artifact tlog, out of scope here). Rekor
+# itself is now real (docs/admin/provenance-policy.md) - --insecure-ignore-tlog is gone,
+# replaced with real tlog verification against our self-hosted rekor-server. This is the
+# actual fix for the Fulcio short-lived-cert-expiry gate failure (docs/admin/
+# release-guardrails.md's "known open issue"): cosign uses the Rekor entry's own
+# integrated timestamp to prove the signing cert was valid AT SIGNING TIME, instead of
+# checking cert validity against current (release-PR) time.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -127,13 +133,21 @@ spec:
         kubectl get configmap fulcio-root-ca -n platform-catalog \
           -o jsonpath='{.data.cert\.pem}' > "${workdir}/fulcio-root.pem"
 
+        # Public half of Rekor's tlog signing key - same pattern, separate ConfigMap.
+        kubectl get configmap rekor-public-key -n platform-catalog \
+          -o jsonpath='{.data.rekor\.pub}' > "${workdir}/rekor.pub"
+
         # --trusted-root (a local JSON doc) replaces the older --ca-roots (bare PEM): once
         # generate-sbom.yaml started signing via cosign 3.x's newer bundle format, cosign
         # requires --trusted-root unconditionally, even to verify this unrelated attestation.
         # Built the same way generate-sbom.yaml builds it, from the same fulcio-root-ca source.
+        # start-time is fixed to an arbitrary date well before this cluster's own Rekor
+        # existed - same "always valid" convention as Fulcio's root, not a real service
+        # start time (this Rekor has no historical entries to bound against anyway).
         cosign trusted-root create \
           --fulcio="url=http://fulcio-server.fulcio-system.svc,certificate-chain=${workdir}/fulcio-root.pem" \
-          --no-default-ctfe --no-default-rekor --no-default-tsa \
+          --rekor="url=http://rekor-server.rekor-system.svc,public-key=${workdir}/rekor.pub,start-time=2020-01-01T00:00:00Z" \
+          --no-default-ctfe --no-default-tsa \
           --out "${workdir}/trusted-root.json"
 
         identity_regexp="^https://kubernetes\.io/namespaces/{{ .Values.tektonChainsNamespace }}/serviceaccounts/.*$"
@@ -221,7 +235,7 @@ spec:
             --bundle "${bundle_file}" \
             --digest "${digest#sha256:}" \
             --digestAlg sha256 \
-            --insecure-ignore-tlog=true \
+            --insecure-ignore-tlog=false \
             --insecure-ignore-sct=true \
             --trusted-root "${workdir}/trusted-root.json" \
             --certificate-identity-regexp "${identity_regexp}" \

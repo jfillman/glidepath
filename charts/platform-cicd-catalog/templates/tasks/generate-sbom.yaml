@@ -7,8 +7,10 @@
 #
 # Signs as pipeline-runner's own Kubernetes identity (not tekton-chains-controller's),
 # against the same self-hosted Fulcio - `type: kubernetes` issuer trusts any in-cluster
-# projected SA token, see docs/image-signing.md. No Rekor upload, matching this
-# platform's transparency.enabled=false choice for Chains' own signing.
+# projected SA token, see docs/image-signing.md. Uploads to this cluster's self-hosted
+# Rekor too (docs/admin/provenance-policy.md), matching Chains' own transparency.enabled
+# choice - kept consistent rather than leaving SBOM attestations as the one type with no
+# timestamp anchor.
 #
 # cosign 3.x's `attest` has no --fulcio-url/--rekor-url/--oidc-issuer flags - it needs a
 # "signing-config" + "trusted-root" document instead, generated at runtime below via
@@ -118,16 +120,27 @@ spec:
 
         kubectl get configmap fulcio-root-ca -n platform-catalog \
           -o jsonpath='{.data.cert\.pem}' > /tmp/fulcio-root.pem
+        kubectl get configmap rekor-public-key -n platform-catalog \
+          -o jsonpath='{.data.rekor\.pub}' > /tmp/rekor.pub
 
+        # --rekor= registers this cluster's self-hosted Rekor (docs/admin/
+        # provenance-policy.md) so cosign attest actually uploads to it -
+        # --no-default-rekor alone (the old, deferred-Rekor state) means no tlog
+        # target at all, not "upload skipped safely": with a real rekor now deployed,
+        # SBOM attestations should be logged the same as provenance/sast ones, or
+        # they'd be the one attestation type left without a timestamp anchor.
         cosign signing-config create \
           --fulcio="url=http://fulcio-server.fulcio-system.svc,api-version=1,start-time=2020-01-01T00:00:00Z,operator=platform-cicd" \
           --oidc-provider="url=https://kubernetes.default.svc.cluster.local,api-version=1,start-time=2020-01-01T00:00:00Z,operator=platform-cicd" \
-          --no-default-rekor --no-default-tsa \
+          --rekor="url=http://rekor-server.rekor-system.svc,api-version=1,start-time=2020-01-01T00:00:00Z,operator=platform-cicd" \
+          --rekor-config="ANY" \
+          --no-default-tsa \
           --out /tmp/signing-config.json
 
         cosign trusted-root create \
           --fulcio="url=http://fulcio-server.fulcio-system.svc,certificate-chain=/tmp/fulcio-root.pem" \
-          --no-default-ctfe --no-default-rekor --no-default-tsa \
+          --rekor="url=http://rekor-server.rekor-system.svc,public-key=/tmp/rekor.pub,start-time=2020-01-01T00:00:00Z" \
+          --no-default-ctfe --no-default-tsa \
           --out /tmp/trusted-root.json
 
         cosign_attest() {

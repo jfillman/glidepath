@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # hack/generate-cluster-values.sh <context> <cluster-name> <output-dir>
 #
+# MANUAL OVERRIDE PATH ONLY as of 2026-09-05 (ADR-0006's "Update",
+# docs/admin/adr/0006-cluster-agnostic-bootstrap.md) - a fresh cluster no longer needs
+# this run by hand. charts/platform-cicd-control-plane/templates/hooks/
+# fulcio-bootstrap-job.yaml now ports this exact recipe into an ArgoCD pre-install hook
+# Job that generates the same root CA live, inside the cluster, on first sync -
+# idempotent, same refuse-to-clobber-an-existing-root guard as this script. Use this
+# script directly only to deliberately ROTATE an existing cluster's root
+# (FORCE=1) - the bootstrap Job never does that on its own.
+#
 # Cluster-agnostic values generation: replaces hand-typing a per-cluster values file
 # (openssl run by hand, kube-root-ca.crt copy-pasted, YAML assembled manually) with a
 # single script run. Produces <output-dir>/values-<context>.yaml, meant to land next
@@ -8,7 +17,9 @@
 #   ./hack/generate-cluster-values.sh kind-dev kind-dev \
 #     ../gitops-cluster-dev/50-platform-cicd/platform-cicd-control-plane
 # platform-cicd carries no cluster-specific state this way, staying installable
-# standalone on any cluster.
+# standalone on any cluster. Note this OVERWRITES values-<context>.yaml's clusterName/
+# fulcio fields specifically (see step 4 below) - preserve any other keys already in
+# that file by hand, same caution as always.
 #
 # Only genuinely irreducible per-cluster material goes through this script: the
 # cluster's own API server root CA (read live, can't be derived) and a freshly,
