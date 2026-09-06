@@ -176,6 +176,26 @@ though build's name string alone never will. Raised and consciously left undone
 2026-09-05 - worth reconsidering if build's isolation from the rest of its flow becomes
 an actual pain point (e.g. in dashboards or triage), not just a naming curiosity.
 
+**Deferred idea, not implemented**: the gitops-repo governance checks (`sast`,
+`image-scan`, `sbom`, etc. - see "PipelineRun naming" below) have no `chainSlug`
+correlation to their release either, and unlike build there's no existing chain-id
+channel into them at all - they're triggered by PaC straight off a GitHub PR event on
+the gitops repo, not through the CDEvents broker. Two paths considered and rejected for
+now:
+1. Bake a `platform.io/chain-slug` label into the static `.tekton/pull-request-*.yaml`
+   check files when `open-release-pr.yaml` opens the release PR - rejected because that
+   Task deliberately makes "exactly ONE commit per release PR" touching only the
+   manifest (a prior incident, 2026-08-31, found that widening the diff re-ran every
+   governance gate a second time); rewriting the check files every release reintroduces
+   that same class of unwanted churn.
+2. Have `open-release-pr.yaml` attach the chain-slug as a GitHub label on the PR itself
+   (no repo file touched), and have each governance-check Task read it via GitHub API
+   and self-label its own PipelineRun. Workable, but touches ~9 separate catalog Tasks
+   (`sast-scan`, `image-scan`, `generate-sbom`, and the rest) for a naming-correlation
+   nicety - out of proportion to the ask right now. Raised and consciously left undone
+   2026-09-05, same day as the build-labeling idea above - reconsider both together if
+   cross-flow triage pain actually shows up.
+
 ## GitHub Check / status context names
 
 Short, no trailing dash, matching the concept the file represents (`sast`, `provenance`,
