@@ -32,5 +32,11 @@ materially heavier pattern, out of scope until there's real evidence it's needed
 - Inter-stage chaining (build → test → deploy → release) is *not* a git event, so PaC
   doesn't cover it - see ADR-0002 for how that's handled instead.
 - The fixed-DAG-with-toggles model is simpler to reason about and debug than an
-  arbitrary graph, at the cost of not supporting pipeline shapes outside the four
-  stages (build/test/deploy/release) without a platform change.
+  arbitrary graph, at the cost of not supporting pipeline shapes outside the platform's
+  own stage catalog without a platform change - four stages (build/test/deploy/release)
+  at the time this ADR was written, joined by a fifth (`gitops-image-bump`, for
+  hand-deployed singletons whose manifests don't live in a per-app gitops repo) on
+  2026-08-28. Named `flows` (`cicd.yaml`'s `flows:` field) let a tenant compose an
+  ordered sequence/subset of this catalog per trigger - still no branching or arbitrary
+  graph shape, so this remains the toggle/parameterize model, not the graph compiler
+  ruled out above.
