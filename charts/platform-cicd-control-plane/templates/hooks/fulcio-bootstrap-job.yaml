@@ -53,7 +53,12 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "create"]
+    # patch is required, not just get/create: fulcio-system may already exist (e.g.
+    # this Job re-running on a cluster it's already bootstrapped), and `kubectl apply`
+    # against an existing object issues a patch, not a second create - confirmed live
+    # ("cannot patch resource... in the namespace fulcio-system", the empty-string
+    # namespace a cluster-scoped resource always reports).
+    verbs: ["get", "create", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
