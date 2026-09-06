@@ -223,12 +223,18 @@ spec:
           exit 1
         fi
 
-        # Same task-name field verify-image-provenance.yaml already matches git-clone
-        # against - the underlying Task CRD name (Tekton's "tekton.dev/task" label),
-        # which for sast-scan is identical to its pipelineTask instance name in
-        # build.yaml (no ambiguity the way git-clone's hub-resolved name could have had).
+        # Matches on `.name` (the stable pipeline-task name from build.yaml), NOT
+        # `.invocation.environment.labels["tekton.dev/task"]` (the underlying Task CRD
+        # name) - confirmed live 2026-09-06 that Chains does not reliably attach that
+        # label to every task's provenance record (clone-repo-authenticated's TaskRun had
+        # none at all, in the same PipelineRun where sast-scan's did). Relying on it here
+        # was a real fail-open risk: a missing label would make a genuinely failed
+        # sast-scan register as "not-configured" and get treated as a pass, same as a
+        # deliberately-skipped one. `.name` is Chains' own always-present field for each
+        # buildConfig.tasks[] entry - see verify-image-provenance.yaml's identical fix for
+        # the live incident that found this.
         outcome="$(jq -sr '[.[] | .predicate.buildConfig.tasks[]?
-          | select(.invocation.environment.labels["tekton.dev/task"] == "sast-scan")
+          | select(.name == "sast-scan")
           | .results[] | select(.name == "outcome") | .value][0] // "not-configured"' \
           "${provenance_files[@]}")"
 

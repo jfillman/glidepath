@@ -344,18 +344,23 @@ spec:
         # own results rather than round-tripped through materials, since this is the source
         # of truth. Revision must be the full commit SHA, not a symbolic ref.
         #
-        # Matches either "git-clone" (the hub Task) or "clone-repo-authenticated" (the
-        # GitHub-App-token-broker Task, catalog/tasks/clone-repo-authenticated.yaml) - which
-        # underlying Task CRD actually backs build.yaml's `clone-repo` pipeline task has
-        # changed before (2026-08-23, after a real InvalidWorkspaceBindings outage) and
-        # silently broke this exact match, since `tekton.dev/task` records the Task CRD
-        # name, not the stable pipeline-task name "clone-repo". Both Tasks emit identically
-        # named url/commit results, so either match works the same way.
+        # Matches on `.name` (the stable pipeline-task name "clone-repo" from build.yaml),
+        # NOT `.invocation.environment.labels["tekton.dev/task"]` (the underlying Task CRD
+        # name) - confirmed live 2026-09-06 that Chains does NOT reliably attach that label
+        # to every task's provenance record (clone-repo-authenticated's own TaskRun had no
+        # "tekton.dev/task" label at all, while every other task in the same PipelineRun
+        # did), which silently zeroed out image.source and failed Conforma's
+        # slsa_source_correlated rule. `.name` is Chains' own top-level field for each
+        # buildConfig.tasks[] entry, always present, and is the one name that's genuinely
+        # stable across catalog Task CRD renames (this exact label-based match already
+        # broke once before, 2026-08-23, when the CRD backing this same pipeline task was
+        # renamed) - a strictly better anchor than the CRD name for a lookup we don't need
+        # Conforma's rule shape for.
         source_git_url="$(jq -r '[.attestations[].statement.predicate.buildConfig.tasks[]
-          | select(.invocation.environment.labels["tekton.dev/task"] == "git-clone" or .invocation.environment.labels["tekton.dev/task"] == "clone-repo-authenticated")
+          | select(.name == "clone-repo")
           | .results[] | select(.name == "url") | .value][0] // empty' "${wrapped_provenance_file}")"
         source_git_commit="$(jq -r '[.attestations[].statement.predicate.buildConfig.tasks[]
-          | select(.invocation.environment.labels["tekton.dev/task"] == "git-clone" or .invocation.environment.labels["tekton.dev/task"] == "clone-repo-authenticated")
+          | select(.name == "clone-repo")
           | .results[] | select(.name == "commit") | .value][0] // empty' "${wrapped_provenance_file}")"
         if [[ -n "${source_git_url}" && -n "${source_git_commit}" ]]; then
           jq --arg url "${source_git_url}" --arg rev "${source_git_commit}" \
