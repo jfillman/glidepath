@@ -7,13 +7,16 @@
 #
 # Signs as pipeline-runner's own Kubernetes identity (not tekton-chains-controller's),
 # against the same self-hosted Fulcio - `type: kubernetes` issuer trusts any in-cluster
-# projected SA token, see docs/image-signing.md. No Rekor upload - tried matching
-# Chains' own transparency.enabled=true 2026-09-05, reverted the same day when it broke
-# real builds (cosign attest's own internal post-upload check fails against this
-# self-hosted Rekor, a separate unexplained bug from the one fixed in
-# verify-image-provenance.yaml/verify-sast-attestation.yaml - see that reversion's own
-# comment below for detail). SBOM attestations are the one type with no tlog anchor
-# again, same as before Rekor existed.
+# projected SA token, see docs/image-signing.md. Real Rekor upload, same as Chains'
+# own transparency.enabled=true - reverted once, 2026-09-05, when cosign attest's own
+# internal post-upload check failed against this self-hosted Rekor ("0 < 1 verified
+# log entries") even though the entry genuinely got created. Root-caused and re-enabled
+# 2026-09-06: the actual cause was a stale rekor-public-key ConfigMap (removed in
+# verify-image-provenance.yaml/verify-sast-attestation.yaml's own fix that same day) -
+# cosign's internal check was verifying the fresh entry's signature against the WRONG
+# cached key. Confirmed live via a throwaway attest against this exact image once the
+# key was fetched fresh instead: same command, same cluster, exit 0. Fetches
+# rekor.pub live below for the same reason those two Tasks do.
 #
 # cosign 3.x's `attest` has no --fulcio-url/--rekor-url/--oidc-issuer flags - it needs a
 # "signing-config" + "trusted-root" document instead, generated at runtime below via
@@ -123,28 +126,24 @@ spec:
 
         kubectl get configmap fulcio-root-ca -n platform-catalog \
           -o jsonpath='{.data.cert\.pem}' > /tmp/fulcio-root.pem
-        # --no-default-rekor (not --rekor=) here, deliberately - reverted 2026-09-05
-        # after real live builds started failing: cosign attest's OWN internal
-        # post-upload self-check ("creating bundle: signing bundle: error signing
-        # bundle: failed to verify log inclusion: not enough verified log entries from
-        # transparency log: 0 < 1") fails against this self-hosted Rekor even though the
-        # entry genuinely gets created - a different, still-unexplained bug from the
-        # verify-side gap fixed in verify-image-provenance.yaml/verify-sast-
-        # attestation.yaml (this is cosign's own attest-time bundle construction, not a
-        # hand-rolled verify-time bundle missing a tlog entry). SBOM attestations go
-        # back to unlogged (same as before Rekor existed) until this is understood -
-        # not the one blocking gap that mattered (sast/provenance's cert-expiry fix
-        # doesn't depend on this), and a broken real build is worse than a
-        # temporarily-unlogged SBOM attestation.
+        # Fetched live, not from a cached ConfigMap - see verify-image-provenance.yaml's
+        # identical fix for the live incident that made this necessary (a stale cached
+        # key was the real cause of this Task's own past "0 < 1" failure, see the header
+        # comment above).
+        curl -fsSL --max-time 10 http://rekor-server.rekor-system.svc/api/v1/log/publicKey > /tmp/rekor.pub
+
         cosign signing-config create \
           --fulcio="url=http://fulcio-server.fulcio-system.svc,api-version=1,start-time=2020-01-01T00:00:00Z,operator=platform-cicd" \
           --oidc-provider="url=https://kubernetes.default.svc.cluster.local,api-version=1,start-time=2020-01-01T00:00:00Z,operator=platform-cicd" \
-          --no-default-rekor --no-default-tsa \
+          --rekor="url=http://rekor-server.rekor-system.svc,api-version=1,start-time=2020-01-01T00:00:00Z,operator=platform-cicd" \
+          --rekor-config="ANY" \
+          --no-default-tsa \
           --out /tmp/signing-config.json
 
         cosign trusted-root create \
           --fulcio="url=http://fulcio-server.fulcio-system.svc,certificate-chain=/tmp/fulcio-root.pem" \
-          --no-default-ctfe --no-default-rekor --no-default-tsa \
+          --rekor="url=http://rekor-server.rekor-system.svc,public-key=/tmp/rekor.pub,start-time=2020-01-01T00:00:00Z" \
+          --no-default-ctfe --no-default-tsa \
           --out /tmp/trusted-root.json
 
         cosign_attest() {
