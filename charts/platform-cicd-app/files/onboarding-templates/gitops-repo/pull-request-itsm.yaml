@@ -11,7 +11,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: itsm
+  generateName: itsm-
   labels:
     platform.io/app: "<APP_NAME>"
   annotations:

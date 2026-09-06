@@ -20,7 +20,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: image-promotion
+  generateName: image-promotion-
   labels:
     platform.io/app: "<APP_NAME>"
   annotations:

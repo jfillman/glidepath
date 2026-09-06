@@ -19,7 +19,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: provenance
+  generateName: provenance-
   labels:
     platform.io/app: "<APP_NAME>"
   annotations:

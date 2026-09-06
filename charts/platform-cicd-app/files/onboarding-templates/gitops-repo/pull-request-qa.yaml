@@ -14,7 +14,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: qa
+  generateName: qa-
   labels:
     platform.io/app: "<APP_NAME>"
   annotations:

@@ -15,7 +15,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: image-scan
+  generateName: image-scan-
   labels:
     platform.io/app: "<APP_NAME>"
   annotations:

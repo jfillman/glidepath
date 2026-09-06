@@ -10,7 +10,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: sbom
+  generateName: sbom-
   labels:
     platform.io/app: "<APP_NAME>"
   annotations:
