@@ -131,14 +131,57 @@ spec:
           printf '%s' "${payload_b64}" > "${att_dir}/payload-${i}.txt"
           printf '%s' "${sig_b64}" > "${att_dir}/sig-${i}.txt"
           printf '%s' "${payload_type}" > "${att_dir}/ptype-${i}.txt"
+
+          # Real tlog entry lookup - required now that --insecure-ignore-tlog=false below
+          # actually checks it. See verify-image-provenance.yaml's identical block for the
+          # full live incident writeup: Chains' OCI-stored legacy-format attestation never
+          # embeds the Rekor inclusion proof, and Rekor's own search index is keyed by
+          # sha256 of the raw DSSE payload bytes (confirmed live via redis-cli), not the
+          # cert/pubkey/image-digest.
+          payload_hash="$(echo "${payload_b64}" | base64 -d | sha256sum | awk '{print $1}')"
+          rekor_uuid="$(curl -fsSL --max-time 10 -X POST -H "Content-Type: application/json" \
+            -d "{\"hash\": \"sha256:${payload_hash}\"}" \
+            http://rekor-server.rekor-system.svc/api/v1/index/retrieve | jq -r '.[0] // empty')"
+          if [[ -z "${rekor_uuid}" ]]; then
+            echo "FAIL: no Rekor tlog entry found for attestation payload hash ${payload_hash} - was it signed before Rekor was deployed, or before transparency.enabled was set?" >&2
+            exit 1
+          fi
+          rekor_entry="$(curl -fsSL --max-time 10 "http://rekor-server.rekor-system.svc/api/v1/log/entries/${rekor_uuid}" | jq ".[\"${rekor_uuid}\"]")"
+          rekor_body_b64="$(jq -r '.body' <<<"${rekor_entry}")"
+          # -j (not -r): the checkpoint string already ends in its own real newline, and
+          # Rekor's "signed note" format is newline-exact - -r would add a second one and
+          # break parsing (confirmed live: "unmarshalling signed note: malformed note").
+          jq -j '.verification.inclusionProof.checkpoint' <<<"${rekor_entry}" > "${att_dir}/checkpoint-${i}.txt"
+          hashes_json="$(jq -r '.verification.inclusionProof.hashes[]' <<<"${rekor_entry}" | while read -r h; do echo "${h}" | xxd -r -p | base64 -w0; echo; done | jq -R . | jq -s .)"
+          jq -n \
+            --arg logIndex "$(jq -r '.logIndex' <<<"${rekor_entry}")" \
+            --arg logId "$(jq -r '.logID' <<<"${rekor_entry}" | xxd -r -p | base64 -w0)" \
+            --arg kind "$(echo "${rekor_body_b64}" | base64 -d | jq -r '.kind')" \
+            --arg version "$(echo "${rekor_body_b64}" | base64 -d | jq -r '.apiVersion')" \
+            --arg integratedTime "$(jq -r '.integratedTime' <<<"${rekor_entry}")" \
+            --arg sigEntryTs "$(jq -r '.verification.signedEntryTimestamp' <<<"${rekor_entry}")" \
+            --arg inclLogIndex "$(jq -r '.verification.inclusionProof.logIndex' <<<"${rekor_entry}")" \
+            --arg inclRootHash "$(jq -r '.verification.inclusionProof.rootHash' <<<"${rekor_entry}" | xxd -r -p | base64 -w0)" \
+            --arg inclTreeSize "$(jq -r '.verification.inclusionProof.treeSize' <<<"${rekor_entry}")" \
+            --argjson hashes "${hashes_json}" \
+            --rawfile checkpoint "${att_dir}/checkpoint-${i}.txt" \
+            --arg body "${rekor_body_b64}" \
+            '{logIndex: $logIndex, logId: {keyId: $logId}, kindVersion: {kind: $kind, version: $version},
+              integratedTime: $integratedTime, inclusionPromise: {signedEntryTimestamp: $sigEntryTs},
+              inclusionProof: {logIndex: $inclLogIndex, rootHash: $inclRootHash, treeSize: $inclTreeSize,
+                hashes: $hashes, checkpoint: {envelope: $checkpoint}},
+              canonicalizedBody: $body}' \
+            > "${att_dir}/tlog-${i}.json"
+
           bundle_file="${att_dir}/bundle-${i}.json"
           jq -n \
             --rawfile cert "${att_dir}/cert-${i}.txt" \
             --rawfile payload "${att_dir}/payload-${i}.txt" \
             --rawfile payloadType "${att_dir}/ptype-${i}.txt" \
             --rawfile sig "${att_dir}/sig-${i}.txt" \
+            --slurpfile tlogEntries "${att_dir}/tlog-${i}.json" \
             '{mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
-              verificationMaterial: {certificate: {rawBytes: $cert}},
+              verificationMaterial: {certificate: {rawBytes: $cert}, tlogEntries: $tlogEntries},
               dsseEnvelope: {payload: $payload, payloadType: $payloadType, signatures: [{sig: $sig}]}}' \
             > "${bundle_file}"
 
