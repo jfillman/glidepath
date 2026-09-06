@@ -150,9 +150,20 @@ protection means every future release PR is permanently unmergeable (a required 
 that will never run again). Neither mismatch is caught automatically - update both
 together.
 
-## Known open issue: `sast` fails closed on essentially every real release
+## RESOLVED 2026-09-05: `sast` no longer fails closed - Rekor is live
 
-**Found live 2026-08-23, not yet fixed - a platform decision, not a quick patch.** Two
+Rekor was deployed for real (`docs/admin/provenance-policy.md`), Tekton Chains now
+uploads to it, and `verify-image-provenance.yaml`/`verify-sast-attestation.yaml` do real
+tlog verification (`--insecure-ignore-tlog=false`) instead of checking the cert against
+wall-clock now. Live-verified through a real release PR: both gates' cosign checks now
+print `Verified OK` using the Rekor entry's own `integratedTime`, independent of how long
+release-time re-verification takes. The rest of this section is left as written for
+historical accuracy - the structural problem it describes is real, it's just fixed now
+via the first option listed under "not fixed here" below.
+
+## Historical: `sast` failed closed on essentially every real release
+
+**Found live 2026-08-23. Two
 gates failed in the same test run for what first looked like the same reason; live
 evidence showed they're actually two different problems (see the `provenance` fix
 just above for the other one - a slow-but-legitimate `ec validate` policy evaluation
