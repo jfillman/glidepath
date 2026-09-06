@@ -26,7 +26,7 @@ conforming to policy. `provenance` ends up with two independent, real gates, nei
 `ruleData` too - structurally "concatenated" per the original request - even though no
 current base-policy rule reads it, ready for a future rule to consume.
 
-## Rekor: deferred, not built - a real, honest incident writeup
+## Rekor: deployed 2026-09-05, after four earlier failed attempts - a real, honest incident writeup
 
 The original design for this sub-item was to finish the deferred Rekor+Trillian+MySQL
 stack (`sigstore/helm-charts`' `rekor` chart, which pulls in Trillian as a dependency,
@@ -72,6 +72,33 @@ on this platform (gitsign's own commit signatures, sub-item 1, verify against
 chain has no transparency log to check against. Rekor is not abandoned, just out of scope
 for this pass; `platform/sigstore/rekor-helm-values.yaml` is left in the repo as a
 ready-to-retry reference rather than deleted.
+
+**2026-09-05: deployed for real, fifth attempt, on kiac-dev (Apple `container` runtime,
+not podman/kind).** Both of the above root causes turned out to be podman-specific: the
+cgroup PID limit doesn't exist on kiac's per-VM node isolation, and the "I/O storm" is
+now understood to almost certainly have been qemu-user binfmt emulation overhead, not a
+real capacity limit - the chart's pinned MySQL image and its netcat init-container image
+are genuinely single-arch (amd64-only, confirmed live via `docker manifest inspect`
+returning a single manifest, not a multi-arch index), and MySQL's disk-heavy first-boot
+schema init is exactly the workload emulation overhead turns into an apparent storm.
+Fixed by swapping both for real multi-arch equivalents (`docker.io/library/mysql:8.0`,
+`docker.io/library/busybox` for the netcat wait-loop) - `createdb` (a separate,
+already-multi-arch sigstore job) applies Trillian's schema itself over a plain
+`mysql_uri`, so the old image was never anything more than a stock MySQL server with the
+right env vars, a drop-in replacement rather than a re-architecture. Two more real bugs
+found in the process: the stock `mysql:8.0` image's probe command
+(`/etc/init.d/mysql status`, a Debian/sysvinit path baked into the old amd64-only image)
+doesn't exist on it - RPM-based, no `/etc/init.d` at all - swapped for a plain TCP check
+on 3306; and the chart's own random-password helper (`trillian.randomSecret`) has a
+namespace-lookup bug (checks `.Release.Namespace` but the Secret actually lives in
+`forceNamespace`'s `trillian-system`) that silently regenerates MySQL's password on
+every single `helm upgrade`, fixed by pinning explicit credentials instead of relying on
+the chart's own generator. CPU/memory stayed flat (6-10%/37%) through the entire
+install, confirming the historical "storm" really was these bugs, not real resource
+contention. Deployed declaratively (`gitops-cluster-dev/50-platform-cicd/rekor/`, the
+real upstream chart via ArgoCD) - see docs/admin/adr/0006-cluster-agnostic-bootstrap.md's
+"Update" for why no manual `helm install` was needed even for the very first bring-up on
+a fresh cluster shape.
 
 ## Design: cosign + `ec validate input`, not `ec validate image`
 
@@ -504,6 +531,19 @@ now genuinely runs minutes after signing (test+deploy+release all run first), no
 seconds, and Fulcio's leaf certs expire in exactly 10 minutes - `sast` (a different
 Task, same underlying problem) was caught failing closed on a real release PR for
 precisely this reason. Revisit this paragraph once that's resolved.
+
+**2026-09-05 update: resolved - Rekor is deployed, closing this gap for real.** See
+the "Rekor" section above for the full history; short version, this platform now has a
+self-hosted Rekor+Trillian+MySQL instance, Tekton Chains uploads to it
+(`transparency.enabled: "true"`), and `verify-image-provenance.yaml`/
+`verify-sast-attestation.yaml` do real tlog verification (`--insecure-ignore-tlog=false`)
+instead of the flag that made this whole section necessary. cosign now uses the Rekor
+entry's own `integratedTime` to prove the cert was valid at signing time, independent of
+how long release-time re-verification takes. Live-verified end to end via a standalone
+sign/verify round trip against the real cluster (not just unit-level): a real Fulcio
+cert, a real Rekor entry (`logIndex: 1`, this cluster's first), fetched back
+independently from `rekor-server`'s own API, and `cosign verify-blob
+--insecure-ignore-tlog=false` returning `Verified OK` against it.
 
 ## A real, unrelated incident hit mid-testing: the cluster's disk filled to 100%
 

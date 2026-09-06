@@ -43,31 +43,35 @@ cluster's own existing ServiceAccount token mechanism (which every pod already g
 free) *is* the identity source. Red Hat's `spire-controller-manager` (or similar) solves
 a related but different problem and isn't needed here.
 
-## What's deployed, and what's deliberately deferred
+## What's deployed, and what's deliberately still deferred
 
-**Deployed**: Fulcio only (`fulcio-system` namespace) - a plain `Deployment`/`Service`,
+**Deployed**: Fulcio (`fulcio-system` namespace) - a plain `Deployment`/`Service`,
 not Knative (`sigstore-scaffolding`'s own "getting started" install path deploys Fulcio
 behind Kourier ingress for *external* test clients authenticating like a human/CI job -
 not this platform's case, since every caller here is in-cluster and reaches Fulcio via
-plain Service DNS).
+plain Service DNS). **2026-09-05: Fulcio's secret bootstrap is now an ArgoCD pre-install
+hook Job** (`hooks/fulcio-bootstrap-job.yaml`), not a script an operator runs by hand -
+see `docs/admin/adr/0006-cluster-agnostic-bootstrap.md`'s "Update".
 
-**Deferred to a later sub-item**: Rekor, CTLog, TSA, TUF, Trillian+MySQL - none are
-required for signing to work (confirmed even Fulcio's own CI test signs with `cosign sign
-... --upload=false`, skipping Rekor entirely), and Trillian+MySQL specifically is the
-heaviest, statefulest part of the full stack. Two independent reasons drove this: (1)
-technically unnecessary for signing itself, and (2) the cluster was genuinely
-memory-constrained at the time (podman VM at 382Mi free of ~13GB, bumped to 20GB before
-this work started). Rekor becomes a natural next sub-item once Conforma/`ec` provenance
-validation wants to check transparency-log inclusion - it was, and it stayed deferred
-after four real, cluster-destabilizing deploy attempts; see `docs/provenance-policy.md`
-for the full incident writeup and the decision to proceed with `ec`/`cosign`'s own
-Rekor-skipping flags instead.
+**Also deployed as of 2026-09-05**: Rekor + Trillian + MySQL (`rekor-system`/
+`trillian-system`), after four earlier attempts destabilized the cluster under the old
+podman/kind stack - see `docs/provenance-policy.md`'s full incident writeup for what
+those root causes turned out to actually be (largely podman-emulation artifacts, not
+real capacity limits) and the real bugs found bringing it up for real on kiac's
+arm64-native runtime. Tekton Chains now uploads to it
+(`transparency.enabled: "true"`), and verification uses real tlog checking
+(`--insecure-ignore-tlog=false`) instead of the flags described below.
 
-**Practical consequence of no CT log/Rekor**: certs have no embedded SCT, and
-attestations aren't logged anywhere public. Verifying them requires
-`--insecure-ignore-sct` and `--insecure-ignore-tlog` on `cosign` (see Verification
-below) - an accepted, explicit tradeoff for this phase, same "testing/dev, not
-production" framing `sigstore-scaffolding`'s own docs use to justify self-hosting at all.
+**Still deferred**: CTLog, TSA, TUF. None are required for signing to work (confirmed
+even Fulcio's own CI test signs with `cosign sign ... --upload=false`), and none of the
+gaps they'd close are currently blocking anything real on this platform - the cert-expiry
+problem CTLog/TSA would also have addressed is now solved by Rekor's own tlog timestamp
+instead (see `docs/provenance-policy.md`'s "Fulcio certs are short-lived" section).
+
+**Practical consequence of no CT log**: certs have no embedded SCT.
+`--insecure-ignore-sct` is still needed on `cosign` calls (see Verification below) - a
+genuinely separate mechanism from Rekor's artifact tlog, and standing up a CT log isn't
+currently justified by any real gap it would close.
 
 ## Fulcio configuration - three things that had to be discovered live, not guessed
 
@@ -158,6 +162,12 @@ Three more things confirmed live, not assumed from docs:
   default `transparency.url` is the *public* `rekor.sigstore.dev` - leaving this unset
   would mean this Fulcio-only setup silently attempts to upload every signature there.
 
+**2026-09-05: `transparency.enabled` is now `"true"`, `transparency.url` points at this
+cluster's own self-hosted `rekor-server` (not the public default)**, now that Rekor is
+deployed - see `docs/provenance-policy.md`. The config block above is left as written
+for historical accuracy; the live `chains-config` ConfigMap now differs only in that one
+value pair.
+
 **Registry credentials**: Chains signs asynchronously from its own central controller
 (watching completed TaskRuns cluster-wide), not from within an Application's pipeline
 pod - it resolves registry push credentials via the `secrets`/`imagePullSecrets`
@@ -238,6 +248,17 @@ list matching the actual PipelineRun.
 - Security check: `fulcio-secret` unreadable from other namespaces' ServiceAccounts
   (confirmed `pipeline-runner` in an Application's namespace gets `no`); the projected identity
   token's audience (`sigstore`) is narrowly scoped, not a general credential.
+
+**2026-09-05 update: the `--insecure-ignore-tlog=true` call above is now historical -
+verification uses `--insecure-ignore-tlog=false` in production** (`--insecure-ignore-sct`
+stays, see above). Re-verified live with the same shape of test, standalone rather than
+through a real PipelineRun (the webhook trigger path was down for an unrelated reason
+this session): a real `cosign sign-blob`/`cosign verify-blob` round trip against this
+cluster's real Fulcio + Rekor produced a genuine Rekor entry (`logIndex: 1`, this
+cluster's first), fetched back independently from `rekor-server`'s own
+`/api/v1/log/entries` endpoint, and verified with `--insecure-ignore-tlog=false`
+(`Verified OK`) - confirming the exact mechanism `verify-image-provenance.yaml`/
+`verify-sast-attestation.yaml` now use.
 
 ## A real bug found in sub-item 3: `artifacts.taskrun.storage: "oci"` broke every signing run
 
