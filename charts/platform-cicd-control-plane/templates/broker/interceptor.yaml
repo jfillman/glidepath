@@ -103,10 +103,21 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: interceptor
-          image: ghcr.io/jfillman/platform-cicd-token-review-interceptor:latest
+          image: {{ .Values.interceptorImage }}
           # Public image on ghcr.io, not kind-loaded. Previously referenced a
           # nonexistent ghcr.io/platform-cicd org and only ran via a stale kind-loaded
           # image.
+          #
+          # interceptorImage's tag is a git-sha (.github/workflows/broker-image-ci.yaml),
+          # not "latest", specifically so IfNotPresent is safe: a real live bug (2026-09-
+          # 06) had this Deployment silently running a build from over two weeks earlier
+          # - source had long since fixed it, but nothing ever rebuilt+pushed the image
+          # (docs/admin/installation.md's documented "no CI wired to a private cluster"
+          # gap), and even after a manual rebuild+push, IfNotPresent+":latest" kept
+          # serving the node's already-cached old digest for that same tag until it was
+          # evicted by hand. An immutable per-commit tag makes that whole class of bug
+          # structurally impossible: IfNotPresent can only ever "already have" a tag by
+          # having previously pulled that exact commit's image.
           imagePullPolicy: IfNotPresent
           ports: [{ containerPort: 8080, name: http }]
           securityContext:

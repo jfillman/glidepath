@@ -35,6 +35,18 @@ selfManageNamespace: false
 # templates/dora-exporter/deployment.yaml's own comment for the gap this closes.
 doraExporterImage: ghcr.io/jfillman/platform-cicd-dora-exporter:latest
 
+# The cdevents-broker-auth Deployment's own image (templates/broker/interceptor.yaml).
+# Unlike toolboxImage/doraExporterImage above, this is NOT hand-bumped - .github/
+# workflows/broker-image-ci.yaml builds+pushes a new `sha-<short-sha>` tag on every push
+# to main touching platform/broker/**, then commits the bump to this exact line right
+# back into this file. ArgoCD's existing auto-sync (this chart's own Application, ADR-
+# free - ArgoCD's ordinary git polling, ~3min) picks up that commit and rolls the
+# Deployment - no direct access from CI into the (private, local) cluster needed, same
+# pull-based model as every app deploy on this platform. See interceptor.yaml's own
+# comment on this value for the real live bug (stale image, 2026-09-06) a floating
+# "latest" tag caused here.
+interceptorImage: ghcr.io/jfillman/platform-cicd-token-review-interceptor:latest
+
 # This platform's own repo - the tenant-onboarding ApplicationSet (templates/argocd/
 # tenant-onboarding-applicationset.yaml) reads tenants/*.yaml from here (its generator
 # source) AND renders the platform-cicd-app chart straight from here at main HEAD. Also

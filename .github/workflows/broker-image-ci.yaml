@@ -1,0 +1,70 @@
+name: broker-image-ci
+
+# Closes a real, live gap (found 2026-09-06, see charts/platform-cicd-control-plane/
+# templates/broker/interceptor.yaml's own comment on interceptorImage): docs/admin/
+# installation.md already documented "no CI wired to a private cluster" for
+# platform/broker/cmd/* images, meaning a source fix could sit merged on main for over
+# two weeks with the running cdevents-broker-auth Deployment never actually rebuilt -
+# exactly what happened to the PR-preview-notify fallback fix (verifyAppOwnsRepo,
+# 2026-08-23). GitHub-hosted runners still can't reach this platform's private local
+# clusters (same constraint catalog-ci.yaml/app-chart-ci.yaml's own headers document) -
+# so this workflow does the one half CI actually CAN do (build + push the image to the
+# public ghcr.io registry) and then commits the new tag back into this repo's own
+# values.yaml, letting the platform-cicd-control-plane Application's EXISTING
+# automated+selfHeal ArgoCD sync (pull-based, already polling this repo from near/inside
+# the cluster) pick it up and roll the Deployment - no direct reach into the private
+# cluster needed, same GitOps loop every app deploy on this platform already uses.
+#
+# Tags with the commit's own short SHA, not "latest" - see interceptorImage's own
+# comment for why a floating tag plus IfNotPresent was the second half of the live bug
+# this closes (the node kept serving an old cached digest for the same tag string even
+# after a fresh push). An immutable tag makes that class of bug structurally impossible.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "platform/broker/cmd/token-review-interceptor/**"
+      - "platform/broker/internal/**"
+      - "platform/broker/go.mod"
+      - "platform/broker/go.sum"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and push interceptor image
+        id: image
+        working-directory: platform/broker
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          sha_tag="sha-$(git rev-parse --short HEAD)"
+          image="ghcr.io/jfillman/platform-cicd-token-review-interceptor:${sha_tag}"
+
+          docker build -f cmd/token-review-interceptor/Dockerfile -t "${image}" .
+          docker push "${image}"
+
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+
+      # Deliberately a plain commit straight to main, not a PR - this is the platform's
+      # own control-plane component, not a tenant app going through the release-PR
+      # promotion gates (open-release-pr.yaml/bump-manifest-pr.yaml exist for THOSE, for
+      # reasons that don't apply to the platform's own single dev cluster). Uses only the
+      # per-run, auto-expiring GITHUB_TOKEN - no persisted PAT/secret for this.
+      - name: Bump deployed tag in platform-cicd-control-plane's own values.yaml
+        run: |
+          set -euo pipefail
+          sed -i "s|^interceptorImage: .*|interceptorImage: ${{ steps.image.outputs.image }}|" \
+            charts/platform-cicd-control-plane/values.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add charts/platform-cicd-control-plane/values.yaml
+          git commit -m "Bump cdevents-broker-auth image to ${{ steps.image.outputs.image }}"
+          git push
