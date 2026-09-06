@@ -231,13 +231,30 @@ spec:
           # keys, cross-checked against a known entry's own payloadHash field) - not the
           # cert, not a public key, not the image digest, all of which return nothing.
           payload_hash="$(echo "${payload_b64}" | base64 -d | sha256sum | awk '{print $1}')"
-          rekor_uuid="$(curl -fsSL --max-time 10 -X POST -H "Content-Type: application/json" \
-            -d "{\"hash\": \"sha256:${payload_hash}\"}" \
-            http://rekor-server.rekor-system.svc/api/v1/index/retrieve | jq -r '.[0] // empty')"
-          if [[ -z "${rekor_uuid}" ]]; then
-            echo "FAIL: no Rekor tlog entry found for attestation payload hash ${payload_hash} - was it signed before Rekor was deployed, or before transparency.enabled was set?" >&2
+          # Retried, not a single shot: confirmed live 2026-09-05 that Trillian commits
+          # the entry immediately (Chains' own logs show a real logIndex right after
+          # upload) but rekor-redis's search index - what /api/v1/index/retrieve
+          # actually queries - lags a few seconds behind. A verify Task running this
+          # soon after the signing step (the normal case, same pipeline chain) can hit
+          # an empty index result even though the entry genuinely exists; re-running the
+          # exact same search moments later (manually, post-incident) found it
+          # immediately. with_retry's exponential backoff (2/4/8/16/32s, ~62s total)
+          # comfortably clears this indexing lag without masking a real "never logged"
+          # case, which still fails after all attempts.
+          rekor_uuid_file="${att_dir}/rekor-uuid-${i}.txt"
+          rekor_index_lookup() {
+            local uuid
+            uuid="$(curl -fsSL --max-time 10 -X POST -H "Content-Type: application/json" \
+              -d "{\"hash\": \"sha256:${payload_hash}\"}" \
+              http://rekor-server.rekor-system.svc/api/v1/index/retrieve | jq -r '.[0] // empty')"
+            [[ -n "${uuid}" ]] || return 1
+            printf '%s' "${uuid}" > "${rekor_uuid_file}"
+          }
+          if ! with_retry 6 -- rekor_index_lookup; then
+            echo "FAIL: no Rekor tlog entry found for attestation payload hash ${payload_hash} after retrying - was it signed before Rekor was deployed, or before transparency.enabled was set?" >&2
             exit 1
           fi
+          rekor_uuid="$(cat "${rekor_uuid_file}")"
           rekor_entry="$(curl -fsSL --max-time 10 "http://rekor-server.rekor-system.svc/api/v1/log/entries/${rekor_uuid}" | jq ".[\"${rekor_uuid}\"]")"
           rekor_body_b64="$(jq -r '.body' <<<"${rekor_entry}")"
           # logID/rootHash/hashes come back hex from Rekor's REST API but cosign's bundle
