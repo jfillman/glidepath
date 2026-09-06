@@ -133,9 +133,20 @@ spec:
         kubectl get configmap fulcio-root-ca -n platform-catalog \
           -o jsonpath='{.data.cert\.pem}' > "${workdir}/fulcio-root.pem"
 
-        # Public half of Rekor's tlog signing key - same pattern, separate ConfigMap.
-        kubectl get configmap rekor-public-key -n platform-catalog \
-          -o jsonpath='{.data.rekor\.pub}' > "${workdir}/rekor.pub"
+        # Public half of Rekor's tlog signing key - fetched LIVE from Rekor's own
+        # /api/v1/log/publicKey, not a cached ConfigMap (that was the original design,
+        # synced by a control-plane-chart hook Job - removed 2026-09-06 after it caused
+        # a real live failure: Rekor's Trillian tree got recreated independently of the
+        # control-plane chart's own install/upgrade cycle - a separate ArgoCD
+        # Application owns Rekor - so nothing re-ran the sync Job, and the cached
+        # ConfigMap silently kept serving a stale key. cosign's signature check against
+        # that wrong key failed exactly like a missing tlog entry would
+        # ("not enough verified log entries from transparency log: 0 < 1"), with no
+        # hint it was actually a key mismatch - confirmed live by diffing the
+        # ConfigMap's key against this same endpoint's current response. Rekor's key is
+        # genuinely public data with a live discovery endpoint; caching it was the bug,
+        # not a performance optimization worth keeping.
+        curl -fsSL --max-time 10 http://rekor-server.rekor-system.svc/api/v1/log/publicKey > "${workdir}/rekor.pub"
 
         # --trusted-root (a local JSON doc) replaces the older --ca-roots (bare PEM): once
         # generate-sbom.yaml started signing via cosign 3.x's newer bundle format, cosign

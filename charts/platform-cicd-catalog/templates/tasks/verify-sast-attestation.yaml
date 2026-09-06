@@ -71,8 +71,11 @@ spec:
 
         kubectl get configmap fulcio-root-ca -n platform-catalog \
           -o jsonpath='{.data.cert\.pem}' > "${workdir}/fulcio-root.pem"
-        kubectl get configmap rekor-public-key -n platform-catalog \
-          -o jsonpath='{.data.rekor\.pub}' > "${workdir}/rekor.pub"
+        # Fetched live, not from a cached ConfigMap - see verify-image-provenance.yaml's
+        # identical block for the live incident that caused this (a stale cached key
+        # silently failed signature checks with the same error a missing tlog entry
+        # would give).
+        curl -fsSL --max-time 10 http://rekor-server.rekor-system.svc/api/v1/log/publicKey > "${workdir}/rekor.pub"
         cosign trusted-root create \
           --fulcio="url=http://fulcio-server.fulcio-system.svc,certificate-chain=${workdir}/fulcio-root.pem" \
           --rekor="url=http://rekor-server.rekor-system.svc,public-key=${workdir}/rekor.pub,start-time=2020-01-01T00:00:00Z" \
