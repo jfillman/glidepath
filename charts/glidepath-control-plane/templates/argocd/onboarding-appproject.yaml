@@ -1,0 +1,85 @@
+# templates/argocd/onboarding-appproject.yaml
+#
+# Scopes the tenant-onboarding ApplicationSet's generated Applications (see
+# tenant-onboarding-applicationset.yaml). Deliberately broader than glidepath-app's
+# per-tenant AppProject: this one governs what installing/upgrading the onboarding chart
+# itself creates (RBAC, ServiceAccounts, Triggers, ExternalSecrets), which is more
+# privileged than what a tenant's own release deploys - it mirrors what an operator's
+# kubeconfig could already do via `helm upgrade`, not a new privilege.
+#
+# destinations use app-*/infra-* namespace globs, not per-env enumeration, since this
+# chart's RBAC spans multiple env namespaces per tenant, not just <app>-cicd.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform-onboarding
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "argocd"
+  namespace: argocd
+spec:
+  description: >-
+    Tenant onboarding - installs/manages the glidepath-app chart release for every
+    tenant registered under tenants/*/identity.yaml in this repo. Broader than any
+    single tenant's own AppProject by design - see this file's own header comment.
+  sourceRepos:
+    - {{ required "platformCicdRepoUrl must be set" .Values.platformCicdRepoUrl }}
+    # Any tenant app repo under this org - each generated Application reads cicd.yaml
+    # live from platformIdentity.appRepoUrl, so a fixed list can't keep pace with new
+    # tenants. See tenant-onboarding-applicationset.yaml for why merging a
+    # developer-controlled values file into the same Application as platformIdentity is safe.
+    # Owner derived from platformCicdRepoUrl (see _helpers.tpl's githubOwner helper),
+    # not hardcoded - this org is whoever's actually running this chart.
+    - https://github.com/{{ include "glidepath-control-plane.githubOwner" . }}/*
+  destinations:
+    - namespace: argocd
+      server: https://kubernetes.default.svc
+    # glidepath-app's per-tenant AppProject (templates/argocd/appproject.yaml) renders
+    # a copy here too when ephemeral environments are enabled - an ArgoCD instance only
+    # ever looks for an AppProject inside its own control-plane namespace, so this is what
+    # puts PR-based ephemeral environments under argocd-apps instead of argocd-platform.
+    - namespace: argocd-apps
+      server: https://kubernetes.default.svc
+    - namespace: "app-*"
+      server: https://kubernetes.default.svc
+    - namespace: "infra-*"
+      server: https://kubernetes.default.svc
+    # Needed for read-registry-rbac.yaml's get-only Role/RoleBinding (a cluster-mapped
+    # tenant reading the shared cluster-registry ConfigMap) - see docs/admin/multi-cluster.md.
+    - namespace: platform-system
+      server: https://kubernetes.default.svc
+    # Needed for glidepath-app's templates/testkube/rbac-and-secret.yaml - each
+    # tenant's onboarding render also places a placeholder Secret + resourceNames-
+    # scoped RBAC into Testkube's own shared namespace (ADR-0007). Found live 2026-08-24:
+    # without this, ArgoCD silently leaves those resources OutOfSync/Unknown forever -
+    # no InvalidSpecError condition surfaced, just a perpetually out-of-sync Application.
+    - namespace: {{ .Values.testkubeNamespace }}
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - { group: "", kind: Namespace }
+  namespaceResourceWhitelist:
+    - { group: "argoproj.io", kind: AppProject }
+    - { group: "argoproj.io", kind: Application }
+    - { group: "argoproj.io", kind: ApplicationSet }
+    - { group: "batch", kind: CronJob }
+    # Needed for templates/hooks/onboarding-resync-bootstrap.yaml's PostSync hook Job -
+    # found live 2026-08-24 re-syncing order-api-cicd after adding that hook: "resource
+    # batch:Job is not permitted in project platform-onboarding". CronJob (above) was
+    # already whitelisted for the pr-token-refresher; plain Job never had a use here
+    # until this hook.
+    - { group: "batch", kind: Job }
+    - { group: "external-secrets.io", kind: ExternalSecret }
+    - { group: "rbac.authorization.k8s.io", kind: Role }
+    - { group: "rbac.authorization.k8s.io", kind: RoleBinding }
+    - { group: "triggers.tekton.dev", kind: Trigger }
+    - { group: "triggers.tekton.dev", kind: TriggerBinding }
+    - { group: "triggers.tekton.dev", kind: TriggerTemplate }
+    # Needed for glidepath-app's pipelines-as-code/repository.yaml.
+    - { group: "pipelinesascode.tekton.dev", kind: Repository }
+    - { group: "", kind: ConfigMap }
+    - { group: "", kind: PersistentVolumeClaim }
+    - { group: "", kind: ServiceAccount }
+    # Needed for templates/testkube/rbac-and-secret.yaml's placeholder Secret - not
+    # previously needed by anything this AppProject scoped (app-secrets itself is
+    # rendered by an ExternalSecret, not a plain Secret, elsewhere in this chart).
+    - { group: "", kind: Secret }

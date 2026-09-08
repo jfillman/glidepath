@@ -1,0 +1,156 @@
+# catalog/tasks/detect-bypass-merge.yaml
+#
+# Break-glass audit (Phase 3 item 8.6). Bypass access is a manual GitHub
+# branch-protection role/group, not something this platform grants (docs/release.md) -
+# this Task exists so a bypass merge also gets a Slack alert, not just GitHub's own
+# audit trail.
+#
+# Fires on any gitops-repo PR close. Detection: if the PR merged but its head commit's
+# governance check-runs aren't all "success", that combination can only happen via a
+# branch-protection bypass - a normal merge requires all required checks green. Quiet
+# otherwise, by design.
+#
+# The gate list itself is Helm-rendered from .Values.releaseGuardrails
+# (charts/glidepath-catalog/values.yaml, docs/admin/release-guardrails.md) - the
+# single source of truth for every gate enforced on a release PR, so adding/removing a
+# gate there is reflected here automatically without touching this file's own logic.
+#
+# Always alerts, ignoring notifications.slack.enabled - a security bypass shouldn't be
+# silenceable via a routine preference. Uses the same app-secrets webhook and
+# design-language conventions as notify-slack.yaml.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: detect-bypass-merge
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Checks whether a just-closed gitops-repo PR merged despite a non-passing required governance check, and alerts Slack if so.
+  params:
+    - name: repo-url
+      type: string
+      description: The gitops repo's own URL - PaC's `repo_url`.
+    - name: pr-number
+      type: string
+      description: PaC's `pull_request_number` (or equivalent raw body field - see the trigger file's own comment on how this is sourced).
+    - name: merged
+      type: string
+      description: "'true'/'false' - whether the PR actually merged (vs. just closed unmerged, which is never a bypass and skips this check entirely)."
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+    - name: slack-webhook
+      secret:
+        secretName: app-secrets
+        optional: true
+  steps:
+    - name: check
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+        - name: slack-webhook
+          mountPath: /var/run/secrets/slack
+          readOnly: true
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: PR_NUMBER
+          value: $(params.pr-number)
+        - name: MERGED
+          value: $(params.merged)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+
+        if [[ "${MERGED}" != "true" ]]; then
+          echo "PR closed without merging - not a bypass candidate, nothing to check."
+          exit 0
+        fi
+
+        owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+
+        pr_json="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+          -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${owner}/${repo}/pulls/${PR_NUMBER}")"
+        head_sha="$(jq -r '.head.sha' <<<"${pr_json}")"
+        merged_by="$(jq -r '.merged_by.login // "unknown"' <<<"${pr_json}")"
+        pr_title="$(jq -r '.title' <<<"${pr_json}")"
+        pr_url="$(jq -r '.html_url' <<<"${pr_json}")"
+
+        checks_json="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+          -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs")"
+
+        # Checked by name (not "were all check-runs green") so an unrelated future
+        # Check some other tool adds can't cause a false positive/negative.
+        failed_checks=""
+        for gate in {{ range .Values.releaseGuardrails }}{{ .name }} {{ end }}; do
+          # Trailing "-": see wait-for-release-guardrails.yaml's identical match for why
+          # - the real check-run name includes generateName's own trailing dash. Without
+          # this every gate reads back "missing" here, which would report BYPASS DETECTED
+          # on every single normal merge regardless of real outcome - confirmed live
+          # 2026-09-06 this was silently broken since 9706649 the day before.
+          conclusion="$(jq -r --arg name "Pipelines as Code CI / ${gate}-" \
+            '[.check_runs[] | select(.name == $name)][0].conclusion // "missing"' <<<"${checks_json}")"
+          if [[ "${conclusion}" != "success" ]]; then
+            failed_checks="${failed_checks}${failed_checks:+, }${gate} (${conclusion})"
+          fi
+        done
+
+        if [[ -z "${failed_checks}" ]]; then
+          echo "All governance checks passed on ${head_sha} - normal merge, no bypass detected."
+          exit 0
+        fi
+
+        echo "BYPASS DETECTED: PR #${PR_NUMBER} merged by ${merged_by} despite: ${failed_checks}" >&2
+
+        WEBHOOK_URL="$(cat /var/run/secrets/slack/slack-webhook-url 2>/dev/null || true)"
+        if [[ -z "${WEBHOOK_URL}" ]]; then
+          echo "warn: no slack-webhook-url secret mounted for this Application - bypass detected but could not alert Slack (see the log line above)" >&2
+          exit 0
+        fi
+
+        # Same design language as notify-slack.yaml - bypass is always the red case.
+        payload="$(jq -n \
+          --arg headerText "⚠ ${owner}/${repo} · Break-glass merge" \
+          --arg prTitle "${pr_title}" \
+          --arg prUrl "${pr_url}" \
+          --arg mergedBy "${merged_by}" \
+          --arg failedChecks "${failed_checks}" \
+          --arg footer "platform-cicd · $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          '
+          def field(fieldLabel; fieldValue): {type: "mrkdwn", text: ("*" + fieldLabel + "*\n" + fieldValue)};
+          {
+            attachments: [{
+              color: "#B91C1C",
+              blocks: [
+                {type: "header", text: {type: "plain_text", text: $headerText, emoji: true}},
+                {type: "section", fields: [
+                  field("PR"; "<" + $prUrl + "|" + $prTitle + ">"),
+                  field("Merged by"; $mergedBy),
+                  field("Failing checks"; $failedChecks)
+                ]},
+                {type: "context", elements: [{type: "mrkdwn", text: $footer}]}
+              ]
+            }]
+          }
+          ')"
+
+        curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
+          -X POST "${WEBHOOK_URL}" \
+          -H 'Content-Type: application/json' \
+          -d "${payload}"

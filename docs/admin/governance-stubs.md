@@ -14,8 +14,8 @@ standing design rule, not just a one-time migration detail.
 ## How a stub stays honestly a stub
 
 Before a gate has real logic behind it, its Task
-(`charts/platform-cicd-catalog/templates/tasks/governance-gate-stub.yaml`) calls
-`charts/platform-cicd-catalog/templates/stepactions/governance-stub.yaml`, which:
+(`charts/glidepath-catalog/templates/tasks/governance-gate-stub.yaml`) calls
+`charts/glidepath-catalog/templates/stepactions/governance-stub.yaml`, which:
 
 1. Logs, loudly, to the step's own output: `no real check implemented yet`.
 2. Emits its own child span, named `governance:<gate>` and parented to the current
@@ -25,7 +25,7 @@ Before a gate has real logic behind it, its Task
 3. Sets its Task result to the literal string `"stub"` - never `"passed"` or
    `"failed"`, which would imply a real judgment was made.
 
-`charts/platform-cicd-control-plane/files/dashboards/pipeline-detail.json`'s
+`charts/glidepath-control-plane/files/dashboards/pipeline-detail.json`'s
 "Governance gates in this run" panel renders any `governance.stub=true` row with a
 distinct grey background and the label "STUB - not a real check", so a stub can never
 be visually confused with a real pass/fail result.

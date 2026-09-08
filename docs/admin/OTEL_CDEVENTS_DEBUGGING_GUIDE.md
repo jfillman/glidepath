@@ -245,7 +245,7 @@ kubectl -n app-demo-cicd logs $(kubectl -n app-demo-cicd get pod -l tekton.dev/p
 Example: How does `build-image.yaml` emit its span?
 
 ```bash
-# File: charts/platform-cicd-catalog/templates/tasks/build-image.yaml
+# File: charts/glidepath-catalog/templates/tasks/build-image.yaml
 # Look at the emit-image-ref-and-span step (the one with bash)
 
 # Key env vars passed in:

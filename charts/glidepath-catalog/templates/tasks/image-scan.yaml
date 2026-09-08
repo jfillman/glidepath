@@ -1,0 +1,270 @@
+# catalog/tasks/image-scan.yaml
+#
+# Real (not stub) image vulnerability scanning via Trivy - Phase 3 item 8.5. Replaces
+# governance-gate-stub for the `image-scan` gate in both build.yaml's image-scan Task
+# and (via extract-promoted-image.yaml + catalog/pipelines/image-scan-check.yaml) the
+# gitops repo's PR-triggered image-scan Check.
+#
+# Trivy, not a second SAST-style source scanner: scans the actual built OCI image (OS
+# packages + language deps), no server/license needed, single static binary (a real
+# GitHub-release binary confirmed live for linux/arm64, unlike Semgrep - see
+# sast-scan.yaml's own header for that contrast) - pinned into the toolbox image
+# (catalog/toolbox/Dockerfile) the same way as gitsign/ec/cosign. Runs entirely inside
+# the toolbox image (unlike sast-scan's dedicated non-toolbox step image) - no
+# start/end-timestamp handoff needed, otel-cli is right there, so this wraps the trivy
+# invocation directly in otel_child_span.
+#
+# --severity HIGH,CRITICAL: MEDIUM/LOW findings are real but not build-blocking at this
+# phase - a real, deliberate bar, not "scan everything and never fail." Revisit if this
+# proves too loose/strict once run against more real images.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: image-scan
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Runs Trivy against the given image reference; fails closed on HIGH/CRITICAL vulnerabilities.
+  params:
+    - name: image-ref
+      type: string
+      description: Full image reference (repo:tag) to scan - must already be pushed to the registry, Trivy pulls it directly.
+    - name: flow-traceparent
+      type: string
+      default: ""
+      description: Leave empty when there's no flow/stage context (e.g. a PR-triggered GitOps-repo check) - see governance-stub.yaml for the same convention.
+    - name: stage-span-id
+      type: string
+      default: ""
+      description: The calling stage's own span id - this scan's span is parented to it. Ignored when flow-traceparent is empty.
+    - name: config-json
+      type: string
+      default: ""
+      description: Output of validate-cicd-config's config-json result - read for notifications.slack.* only (same as notify-slack.yaml). Left empty in the gitops-repo PR-check context, same as flow-traceparent above.
+    - name: app-name
+      type: string
+      default: ""
+    - name: git-url
+      type: string
+      default: ""
+    - name: git-revision
+      type: string
+      default: ""
+  results:
+    - name: outcome
+      description: "'passed'/'failed' - a real result, never 'stub' (this is a real implementation, not governance-gate-stub)."
+    - name: findings-summary
+      description: 'Total finding count plus up to 8 real CVE entries (severity/ID/package), extracted from a second JSON-formatted trivy invocation for the shift-left Slack notification below - not just Trivy''s own "Total: N" count line, a real gap the user caught live in the first version of this Task.'
+  volumes:
+    - name: slack-webhook
+      secret:
+        secretName: app-secrets
+        optional: true
+    # Registry pull credentials for trivy's remote image fetch - same Secret/key mapping
+    # generate-sbom.yaml already uses for cosign, consumed the same way (DOCKER_CONFIG),
+    # since trivy's remote scanner is also built on go-containerregistry. Missing until
+    # now: trivy was always attempting an anonymous pull, which 401s the moment a
+    # package is private - GHCR's real default visibility for a freshly-pushed package
+    # (see generate-sbom.yaml's own build-image.yaml sibling comment on this).
+    - name: registry-credentials
+      secret:
+        secretName: registry-credentials
+        items:
+          - key: .dockerconfigjson
+            path: config.json
+  steps:
+    # onError: continue - a real bug found live: Tekton's DEFAULT behavior is to skip
+    # every subsequent step once one fails ("Skipping step because a previous step
+    # failed" in the pod logs), not run them regardless the way this file's own
+    # emit-span/notify-slack steps need to. The otel span still appeared on a failed
+    # scan before this fix, but only because that send happens *inside* this step
+    # (wrapping trivy directly), before its own exit 1 - a genuinely separate later
+    # step, like notify-slack, was never reached on failure until this was added. The
+    # notify-slack step below re-raises this step's real failure explicitly (reading the
+    # outcome result) - onError: continue means this step no longer fails the Task on
+    # its own, so something still has to.
+    - name: scan
+      onError: continue
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: registry-credentials
+          mountPath: /var/run/secrets/registry
+          readOnly: true
+      env:
+        - name: IMAGE_REF
+          value: $(params.image-ref)
+        - name: DOCKER_CONFIG
+          value: /var/run/secrets/registry
+        - name: FLOW_TRACEPARENT
+          value: $(params.flow-traceparent)
+        - name: STAGE_SPAN_ID
+          value: $(params.stage-span-id)
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://otel-collector-opentelemetry-collector.observability.svc.cluster.local:4318
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        source "${PLATFORM_LIB}/otel.sh"
+        # otel.sh itself does `set -euo pipefail` at module level (catalog/lib/otel.sh) -
+        # sourcing it silently forces -e onto THIS script too, since `source` runs in the
+        # same shell, not a subshell. A real, previously-undiscovered bug found live via
+        # a throwaway debug pod: this script deliberately wants -e OFF (it needs to
+        # survive trivy's own real exit-1 on findings and keep going to build the
+        # findings summary below), but explicitly re-declaring `set -uo pipefail` again
+        # does NOT clear an already-set -e (set's flags are independent toggles - `-o
+        # pipefail`/`-u` don't touch `-e` either way). Only an explicit `set +e` does.
+        set +e
+
+        if [[ -n "${FLOW_TRACEPARENT}" ]]; then
+          otel_child_span "image-scan" "${FLOW_TRACEPARENT}" "${STAGE_SPAN_ID}" "image=${IMAGE_REF}" -- \
+            trivy image --severity HIGH,CRITICAL --exit-code 1 --scanners vuln "${IMAGE_REF}" 2>&1 | tee /tmp/scan-output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+        else
+          echo "no flow-traceparent provided - skipping span emission (expected for PR-triggered GitOps-repo checks)" >&2
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --scanners vuln "${IMAGE_REF}" 2>&1 | tee /tmp/scan-output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+        fi
+
+        # Real findings, not just Trivy's "Total: N" summary count - a real gap the user
+        # caught live: the first version of this Task's Slack message only ever showed a
+        # count, never which CVEs. A second, JSON-formatted trivy invocation gets
+        # structured data to build a real, readable list from - reuses the vulnerability
+        # DB the first call already downloaded/cached in this same pod, so this doesn't
+        # re-pay that cost, only the (fast) re-scan of the already-pulled image layers.
+        # Confirmed live (not assumed) via `trivy image --format json`'s real schema:
+        # .Results[].Vulnerabilities[] with VulnerabilityID/PkgName/InstalledVersion/
+        # Severity/Title fields.
+        trivy image --severity HIGH,CRITICAL --scanners vuln --format json --output /tmp/scan-results.json "${IMAGE_REF}" || true
+        TOTAL_COUNT="$(jq -r '[.Results[]?.Vulnerabilities[]?] | length' /tmp/scan-results.json 2>/dev/null || echo 0)"
+        TOP_FINDINGS="$(jq -r '
+          [.Results[]?.Vulnerabilities[]?]
+          | sort_by(if .Severity == "CRITICAL" then 0 else 1 end)
+          | .[:8]
+          | map("*" + .Severity + "* " + .VulnerabilityID + " - " + .PkgName + "@" + .InstalledVersion)
+          | join("\n")
+          ' /tmp/scan-results.json 2>/dev/null || echo "")"
+        {
+          echo "${TOTAL_COUNT} finding(s) (HIGH/CRITICAL, vuln scanner only)"
+          if [[ -n "${TOP_FINDINGS}" ]]; then
+            echo "${TOP_FINDINGS}"
+            [[ "${TOTAL_COUNT}" -gt 8 ]] && echo "_+$((TOTAL_COUNT - 8)) more - see the full report in this Task's own log_"
+          fi
+        } | tee "$(results.findings-summary.path)"
+
+        if [[ "${EXIT_CODE}" -eq 0 ]]; then
+          echo -n "passed" | tee "$(results.outcome.path)"
+        else
+          echo "image-scan: trivy found HIGH/CRITICAL vulnerabilities (exit ${EXIT_CODE})" >&2
+          echo -n "failed" | tee "$(results.outcome.path)"
+          exit 1
+        fi
+
+    # Shift-left visibility (prompted directly by the user, same as sast-scan.yaml's own
+    # notify-slack step - see that file's header for the full reasoning on why this
+    # lives inside the Task rather than as a separate pipeline-level notify step).
+    - name: notify-slack
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: slack-webhook
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+      env:
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: GIT_URL
+          value: $(params.git-url)
+        - name: GIT_REVISION
+          value: $(params.git-revision)
+        - name: IMAGE_REF
+          value: $(params.image-ref)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        # Read this first, and re-check it at the very end regardless of what happens
+        # in between - scan (above) has onError: continue, so a real failure there no
+        # longer fails this Task on its own; every early-exit path below must fall
+        # through to that final check rather than `exit 0` directly, or a real scan
+        # failure would silently report as a passing Task.
+        OUTCOME_VALUE="$(cat /tekton/results/outcome 2>/dev/null || echo unknown)"
+
+        CFG='$(params.config-json)'
+        if [[ -z "${CFG}" ]]; then
+          echo "no config-json provided - skipping notification (expected for PR-triggered GitOps-repo checks, this Task isn't called there)" >&2
+        elif [[ "$(jq -r '.notifications.slack.enabled // false' <<< "${CFG}")" != "true" ]]; then
+          echo "slack notifications disabled in cicd.yaml, skipping"
+        elif [[ "$(jq -r 'if .notifications.slack.scanResults == false then "false" else "true" end' <<< "${CFG}")" != "true" ]]; then
+          echo "notifications.slack.scanResults is false in cicd.yaml - shift-left scan notifications disabled for this Application (general per-stage notifications are unaffected), skipping"
+        else
+          CHANNEL="$(jq -r '.notifications.slack.channel // empty' <<< "${CFG}")"
+          WEBHOOK_URL="$(cat /var/run/secrets/platform/slack-webhook-url 2>/dev/null || true)"
+          if [[ -z "${WEBHOOK_URL}" ]]; then
+            echo "warn: notifications.slack.enabled=true but no slack-webhook-url secret is mounted for this Application - skipping, not failing the pipeline" >&2
+          else
+            FINDINGS="$(cat /tekton/results/findings-summary 2>/dev/null || echo "")"
+
+            if [[ "${OUTCOME_VALUE}" == "passed" ]]; then
+              COLOR="#2563EB"
+              HEADER_TEXT="${APP_NAME} · Image Scan Passed"
+            else
+              COLOR="#B91C1C"
+              HEADER_TEXT="⚠ ${APP_NAME} · Image Scan Failed"
+            fi
+            REPO_SHORT="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/([^/.]+).*#\1/\2#')"
+            SHORT_SHA="${GIT_REVISION:0:12}"
+            COMMIT_URL="${GIT_URL}/commit/${GIT_REVISION}"
+
+            # Scan parameters are fixed platform policy right now (not per-app
+            # configurable), so this is a plain string, not derived from anything
+            # dynamic - the user asked to see it alongside findings for context on what
+            # was actually checked.
+            SCAN_PARAMS="severity: HIGH,CRITICAL · scanners: vuln"
+
+            payload="$(jq -n \
+              --arg channel "${CHANNEL}" \
+              --arg color "${COLOR}" \
+              --arg headerText "${HEADER_TEXT}" \
+              --arg app "${APP_NAME}" \
+              --arg repoShort "${REPO_SHORT}" \
+              --arg repoUrl "${GIT_URL}" \
+              --arg shortSha "${SHORT_SHA}" \
+              --arg commitUrl "${COMMIT_URL}" \
+              --arg image "${IMAGE_REF}" \
+              --arg scanParams "${SCAN_PARAMS}" \
+              --arg findings "${FINDINGS:-no summary available}" \
+              --arg footer "platform-cicd · $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '
+              def field(fieldLabel; fieldValue): {type: "mrkdwn", text: ("*" + fieldLabel + "*\n" + fieldValue)};
+              {
+                channel: $channel,
+                attachments: [{
+                  color: $color,
+                  blocks: [
+                    {type: "header", text: {type: "plain_text", text: $headerText, emoji: true}},
+                    {type: "section", fields: [
+                      field("App"; $app),
+                      field("Repo"; "<" + $repoUrl + "|" + $repoShort + ">"),
+                      field("Commit"; "<" + $commitUrl + "|" + $shortSha + ">"),
+                      field("Image"; "`" + $image + "`"),
+                      field("Scan parameters"; $scanParams)
+                    ]},
+                    {type: "section", text: {type: "mrkdwn", text: ("*Findings*\n" + $findings)}},
+                    {type: "context", elements: [{type: "mrkdwn", text: $footer}]}
+                  ]
+                }]
+              }
+              ')"
+
+            curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
+              -X POST "${WEBHOOK_URL}" \
+              -H 'Content-Type: application/json' \
+              -d "${payload}"
+          fi
+        fi
+
+        # Re-raise scan's own real failure - see that step's onError: continue comment.
+        if [[ "${OUTCOME_VALUE}" != "passed" ]]; then
+          exit 1
+        fi

@@ -1,8 +1,8 @@
 name: app-chart-ci
 
 # Covers the single highest-risk piece of new logic in Phase 3 item 7: conditional
-# rendering off cicd.yaml's pipeline: stage list (charts/platform-cicd-app/templates/
-# _helpers.tpl's platform-cicd-app.hasStage). This is the direct fix for a
+# rendering off cicd.yaml's pipeline: stage list (charts/glidepath-app/templates/
+# _helpers.tpl's glidepath-app.hasStage). This is the direct fix for a
 # live-confirmed bug (a release PipelineRun fired for an Application whose cicd.yaml
 # never declared a release stage) - a regression here would silently reproduce that bug
 # in a new form, so every fixture below asserts both presence AND absence of the
@@ -11,11 +11,11 @@ name: app-chart-ci
 on:
   pull_request:
     paths:
-      - "charts/platform-cicd-app/**"
+      - "charts/glidepath-app/**"
   push:
     branches: [main]
     paths:
-      - "charts/platform-cicd-app/**"
+      - "charts/glidepath-app/**"
       - ".github/workflows/app-chart-ci.yaml"
 
 jobs:
@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
-      - run: helm lint charts/platform-cicd-app
+      - run: helm lint charts/glidepath-app
 
   fixture-matrix:
     runs-on: ubuntu-latest
@@ -98,7 +98,7 @@ jobs:
 
       - name: 'Fixture: build-only - test/deploy/release/argocd resources must be ABSENT (policy ConfigMap + build-cache PVC are unconditional, always present - see docs/onboarding.md)'
         run: |
-          helm template t charts/platform-cicd-app \
+          helm template t charts/glidepath-app \
             -f /tmp/fixtures/build-only.yaml -f /tmp/fixtures/platform-identity.yaml \
             > /tmp/rendered-build-only.yaml
           python3 hack/ci/assert_app_render.py /tmp/rendered-build-only.yaml \
@@ -110,7 +110,7 @@ jobs:
 
       - name: 'Fixture: build-test - only on-build-success Trigger present'
         run: |
-          helm template t charts/platform-cicd-app \
+          helm template t charts/glidepath-app \
             -f /tmp/fixtures/build-test.yaml -f /tmp/fixtures/platform-identity.yaml \
             > /tmp/rendered-build-test.yaml
           python3 hack/ci/assert_app_render.py /tmp/rendered-build-test.yaml \
@@ -120,7 +120,7 @@ jobs:
 
       - name: 'Fixture: full-pipeline - every stage-gated resource must be PRESENT, sized correctly'
         run: |
-          helm template t charts/platform-cicd-app \
+          helm template t charts/glidepath-app \
             -f /tmp/fixtures/full-pipeline.yaml -f /tmp/fixtures/platform-identity.yaml \
             > /tmp/rendered-full.yaml
           python3 hack/ci/assert_app_render.py /tmp/rendered-full.yaml \
@@ -143,7 +143,7 @@ jobs:
           fi
           echo "OK: only the expected, deliberately-escaped ArgoCD template syntax present"
 
-  # Lightweight, ungated publish (2026-08-11 - see charts/platform-cicd-control-plane/
+  # Lightweight, ungated publish (2026-08-11 - see charts/glidepath-control-plane/
   # templates/argocd/tenant-onboarding-applicationset.yaml's own header for why the
   # ApplicationSet pulls this chart from an OCI registry instead of rendering it
   # straight from this git repo). Deliberately NOT a real release process - every push
@@ -184,9 +184,9 @@ jobs:
           # auto-tracking (confirmed via a real ArgoCD issue, argoproj/argo-cd#14097,
           # not assumed). Same <version>-<shortsha> shape this platform already uses for
           # every app image it builds (see build-image.yaml).
-          base_version="$(grep '^version:' charts/platform-cicd-app/Chart.yaml | awk '{print $2}')"
+          base_version="$(grep '^version:' charts/glidepath-app/Chart.yaml | awk '{print $2}')"
           chart_version="${base_version}-$(git rev-parse --short=7 HEAD)"
 
           mkdir -p /tmp/chart-dist
-          helm package charts/platform-cicd-app --version "${chart_version}" --app-version "${chart_version}" -d /tmp/chart-dist
-          helm push "/tmp/chart-dist/platform-cicd-app-${chart_version}.tgz" oci://ghcr.io/jfillman/charts
+          helm package charts/glidepath-app --version "${chart_version}" --app-version "${chart_version}" -d /tmp/chart-dist
+          helm push "/tmp/chart-dist/glidepath-app-${chart_version}.tgz" oci://ghcr.io/jfillman/charts

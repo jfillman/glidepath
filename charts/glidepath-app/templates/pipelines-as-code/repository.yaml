@@ -1,0 +1,71 @@
+{{- if .Values.platformIdentity.registerPipelinesAsCode }}
+{{- $appNamespace := include "glidepath-app.namespace" . }}
+# Registers this Application's repos with Pipelines-as-Code via the Repository CRD.
+# The CR itself is inert (just a name->URL registration) until the platform's GitHub App
+# is installed on the repo - an external GitHub-side prerequisite.
+#
+# Also load-bearing for token minting: the broker's verifyAppOwnsRepo
+# (platform/broker/cmd/token-review-interceptor/main.go) authorizes a GitHub App
+# installation-token request by checking for a Repository CR in the caller's own
+# namespace matching the requested repo name, not by Kubernetes RBAC. Without this CR,
+# ephemeral-envs.yaml's token refresher and open-release-pr.yaml both fail with a 403.
+#
+# registerPipelinesAsCode defaults true but is overridable per-app to deregister a repo
+# without the chart recreating the CR on next sync.
+apiVersion: pipelinesascode.tekton.dev/v1alpha1
+kind: Repository
+metadata:
+  name: {{ .Values.platformIdentity.appName }}
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "pipelines-as-code"
+  annotations:
+    # Earlier than onboarding-resync-bootstrap.yaml's Job (default wave "0", Sync phase):
+    # that Job's bootstrap PipelineRun mints a GitHub App installation token, which the
+    # broker's verifyAppOwnsRepo authorizes by checking for this Repository CR in the
+    # Job's own namespace (see comment above) - without an explicit wave both land in the
+    # same apply batch with no ordering guarantee between them.
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  url: {{ .Values.platformIdentity.appRepoUrl }}
+{{- if .Values.platformIdentity.gitopsRepoUrl }}
+---
+# gitops-<app-name>'s own Repository CR, matched via the "gitops-" naming convention
+# (see main.go's verifyAppOwnsRepo). Only rendered when gitopsRepoUrl is set - an app
+# with no release stage has no gitops repo to register.
+apiVersion: pipelinesascode.tekton.dev/v1alpha1
+kind: Repository
+metadata:
+  name: gitops-{{ .Values.platformIdentity.appName }}
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "pipelines-as-code"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  url: {{ .Values.platformIdentity.gitopsRepoUrl }}
+{{- end }}
+{{- range .Values.platformIdentity.extraGitopsRepos }}
+---
+# Extra Repository CR beyond the gitops-<app-name> convention above - see
+# platformIdentity.extraGitopsRepos in values.yaml for why this is operator-granted
+# rather than self-served. Name is the repo's own name (the URL's last path segment,
+# already "gitops-..."-shaped by convention), NOT re-prefixed - matches main.go's
+# verifyAppOwnsRepo exact-name branch, since these repos don't necessarily follow the
+# gitops-<this-app-name> shape (e.g. a shared gitops-cluster-* repo).
+apiVersion: pipelinesascode.tekton.dev/v1alpha1
+kind: Repository
+metadata:
+  name: {{ regexReplaceAll ".*/([^/]+?)(\\.git)?$" . "${1}" }}
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" $ | nindent 4 }}
+    hangar.io/subcomponent: "pipelines-as-code"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  url: {{ . }}
+{{- end }}
+{{- end }}

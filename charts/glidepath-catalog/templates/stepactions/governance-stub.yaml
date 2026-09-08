@@ -1,0 +1,63 @@
+# catalog/stepactions/governance-stub.yaml
+#
+# Fixes the old platform's "governance theater": stub gates (QA, gatekeeper, etc.) were
+# `exit 0` one-liners that looked identical to real checks. Every stubbed gate here MUST
+# call this StepAction, which emits a real child span carrying governance.stub=true so
+# Grafana's pipeline-detail dashboard can render it visually distinct from a real result.
+# When a real implementation lands for a gate, just delete the call - nothing else
+# about the Pipeline shape changes.
+#
+# Previously attached governance.stub as a span *event* via a background daemon - that
+# daemon was unreachable across Task Pod boundaries and TraceQL doesn't match span
+# events anyway, so it never worked. A real standalone child span fixes both.
+#
+# flow-traceparent/stage-span-id default to "" because this StepAction is also called
+# from PR-triggered GitOps-repo governance checks, which have no flow/stage context at
+# all (not part of the CDEvents chain). Emitting a span there would mean inventing a
+# fake parent trace, so span emission is skipped whenever flow-traceparent is empty
+# (the stub work and logging still happen).
+apiVersion: tekton.dev/v1beta1
+kind: StepAction
+metadata:
+  name: governance-stub
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+    hangar.io/stub: "true"
+spec:
+  image: {{ .Values.toolboxImage }}
+  params:
+    - name: gate-name
+      type: string
+      description: e.g. sast, image-scan, provenance, sbom.
+    - name: flow-traceparent
+      type: string
+      default: ""
+      description: Root traceparent for the whole flow - gives this span its trace id. Leave empty when there's no flow/stage context (e.g. a PR-triggered GitOps-repo check) - span emission is skipped in that case.
+    - name: stage-span-id
+      type: string
+      default: ""
+      description: The current stage's own span id (from otel_stage_span_begin) - this stub's span is parented to it. Ignored when flow-traceparent is empty.
+  results:
+    - name: outcome
+      description: Always "stub" in this phase of the platform - never "passed"/"failed", which would misrepresent a stub as a real enforcement result.
+  env:
+    - name: OTEL_EXPORTER_OTLP_ENDPOINT
+      value: http://otel-collector-opentelemetry-collector.observability.svc.cluster.local:4318
+  # See otel-flow-root-start.yaml's comment - $(params.x) can't be substituted directly
+  # into a StepAction's script, only passed in as positional args.
+  args:
+    - "$(params.gate-name)"
+    - "$(params.flow-traceparent)"
+    - "$(params.stage-span-id)"
+  script: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "${PLATFORM_LIB}/otel.sh"
+    echo "[governance-stub] gate=$1 - no real check implemented yet, see docs/governance-stubs.md" >&2
+    if [[ -n "$2" ]]; then
+      otel_child_span "governance:$1" "$2" "$3" "governance.gate=$1,governance.stub=true" -- true
+    else
+      echo "[governance-stub] no flow-traceparent provided - skipping span emission (this is expected for PR-triggered GitOps-repo checks)" >&2
+    fi
+    echo -n "stub" | tee "$(step.results.outcome.path)"

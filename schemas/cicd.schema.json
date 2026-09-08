@@ -269,7 +269,7 @@
                     },
                     "manifestPath": {
                       "type": "string",
-                      "description": "Only meaningful (and required) on a gitops-image-bump step: path within gitopsRepo to a plain Kubernetes manifest (not idp-application Helm values.yaml) whose first container's image field gets patched, e.g. '60-backstage/backstage/deployment.yaml'."
+                      "description": "Only meaningful (and required) on a gitops-image-bump step: path within gitopsRepo to a plain Kubernetes manifest (not airframe-application Helm values.yaml) whose first container's image field gets patched, e.g. '60-backstage/backstage/deployment.yaml'."
                     }
                   }
                 }

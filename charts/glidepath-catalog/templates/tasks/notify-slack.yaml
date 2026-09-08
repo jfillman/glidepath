@@ -1,0 +1,232 @@
+# catalog/tasks/notify-slack.yaml
+#
+# Best-effort pipeline-result notification. Reads notifications.slack from cicd.yaml;
+# no-ops cleanly if disabled/unconfigured. Webhook URL comes from a per-Application
+# Secret, never hardcoded (avoiding the old platform's hardcoded Testkube API keys).
+#
+# The Secret volume mounts app-secrets (ESO-synced from the Application's own backend
+# store, charts/glidepath-app/templates/secrets/app-secrets-external-secret.yaml),
+# not a hand-created Secret - same mechanism SAST scan credentials use, see
+# docs/app-secrets.md. `optional: true` because most Applications don't declare this key
+# at all and the pod must still start cleanly for them.
+#
+# Message format follows docs/design-language.md: one blue accent, muted red + a single
+# `⚠` only on failure, consistent field vocabulary.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: notify-slack
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  params:
+    - name: config-json
+      type: string
+    - name: stage-name
+      type: string
+    - name: status
+      type: string
+      description: succeeded, failed, or completed - typically $(tasks.status)/$(context.pipelineRun.name) from the calling Pipeline's finally block.
+    - name: pipeline-run-name
+      type: string
+    - name: app-namespace
+      type: string
+    - name: app-name
+      type: string
+    - name: git-url
+      type: string
+    - name: git-revision
+      type: string
+    - name: image-ref
+      type: string
+      default: ""
+      description: Full image ref, when the calling Pipeline already has one as a plain param (test/deploy/release). Leave empty for build - resolved via a live TaskRun lookup instead, see the script's own comment.
+    - name: env
+      type: string
+      default: ""
+      description: Only meaningful on deploy - omitted from the message when empty.
+    - name: pr-url
+      type: string
+      default: ""
+      description: >-
+        Only meaningful on release-outcome, where the PR was opened in a DIFFERENT
+        PipelineRun than this one, so the open-release-pr TaskRun lookup below can't
+        find it - passed directly instead, taking priority over that lookup when
+        non-empty. release itself still uses the lookup (its open-release-pr TaskRun is
+        a sibling in the same PipelineRun), so this stays empty there.
+  volumes:
+    - name: slack-webhook
+      secret:
+        secretName: app-secrets
+        optional: true
+  steps:
+    - name: notify
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: slack-webhook
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+      env:
+        - name: APP_NAMESPACE
+          value: $(params.app-namespace)
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: PIPELINE_RUN_NAME
+          value: $(params.pipeline-run-name)
+        - name: STAGE_NAME
+          value: $(params.stage-name)
+        - name: STATUS
+          value: $(params.status)
+        - name: GIT_URL
+          value: $(params.git-url)
+        - name: GIT_REVISION
+          value: $(params.git-revision)
+        - name: IMAGE_REF
+          value: $(params.image-ref)
+        - name: ENV_NAME
+          value: $(params.env)
+        - name: PR_URL_PARAM
+          value: $(params.pr-url)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        CFG='$(params.config-json)'
+        ENABLED="$(jq -r '.notifications.slack.enabled // false' <<< "${CFG}")"
+        if [[ "${ENABLED}" != "true" ]]; then
+          echo "slack notifications disabled in cicd.yaml, skipping"
+          exit 0
+        fi
+        CHANNEL="$(jq -r '.notifications.slack.channel // empty' <<< "${CFG}")"
+        WEBHOOK_URL="$(cat /var/run/secrets/platform/slack-webhook-url 2>/dev/null || true)"
+        if [[ -z "${WEBHOOK_URL}" ]]; then
+          echo "warn: notifications.slack.enabled=true but no slack-webhook-url secret is mounted for this Application - skipping, not failing the pipeline" >&2
+          exit 0
+        fi
+
+        # docs/design-language.md: blue accent, muted red + a single ⚠ only on failure -
+        # not a stoplight, not a per-stage icon.
+        case "${STAGE_NAME}" in
+          build) STAGE_DISPLAY="Build" ;;
+          test) STAGE_DISPLAY="Test" ;;
+          deploy) STAGE_DISPLAY="Deploy" ;;
+          release) STAGE_DISPLAY="Release" ;;
+          *) STAGE_DISPLAY="${STAGE_NAME}" ;;
+        esac
+        if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
+          COLOR="#2563EB"
+          HEADER_TEXT="${APP_NAME} · ${STAGE_DISPLAY} ${STATUS}"
+        else
+          COLOR="#B91C1C"
+          HEADER_TEXT="⚠ ${APP_NAME} · ${STAGE_DISPLAY} ${STATUS}"
+        fi
+
+        # 12-char SHA for display only (matches sast-scan.yaml/image-scan.yaml) -
+        # intentionally independent of build-image.yaml's own 7-char image-tag SHA.
+        REPO_SHORT="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/([^/.]+).*#\1/\2#')"
+        SHORT_SHA="${GIT_REVISION:0:12}"
+        COMMIT_URL="${GIT_URL}/commit/${GIT_REVISION}"
+
+        # Tekton Dashboard deep-link (HashRouter route, undocumented but confirmed
+        # against the installed dashboard's JS bundle). Only resolves when someone has
+        # the dashboard port-forwarded locally (no ingress/stable URL exists yet) - a
+        # dead link otherwise costs nothing.
+        DASHBOARD_URL="http://localhost:9097/#/namespaces/${APP_NAMESPACE}/pipelineruns/${PIPELINE_RUN_NAME}"
+
+        # build only - best-effort live lookup of build-image's own result, not a
+        # Tekton-level $(tasks.build-image.results.image-ref) param reference: Tekton
+        # skips a finally task entirely if any param references a result from a task
+        # that failed/didn't run, which would break notification on exactly the failure
+        # case that matters most. Previously hand-reconstructed a guessed ref (a real
+        # bug, wrong once build-image started tagging <version>-<sha>) - querying the
+        # TaskRun result directly reports the exact tag pushed, and comes back empty
+        # cleanly when build-image never ran or failed.
+        if [[ -z "${IMAGE_REF}" && "${STAGE_NAME}" == "build" ]]; then
+          IMAGE_REF="$(kubectl get taskrun -n "${APP_NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME},tekton.dev/pipelineTask=build-image" \
+            -o jsonpath='{.items[0].status.results[?(@.name=="image-ref")].value}' 2>/dev/null || true)"
+        fi
+
+        # release only - same reasoning as the build-image lookup above: a
+        # $(tasks.open-release-pr.results...) reference would skip this notify task
+        # whenever open-release-pr fails, which is release's most likely failure point.
+        pr_url="${PR_URL_PARAM}"
+        if [[ -z "${pr_url}" && "${STAGE_NAME}" == "release" ]]; then
+          pr_url="$(kubectl get taskrun -n "${APP_NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME},tekton.dev/pipelineTask=open-release-pr" \
+            -o jsonpath='{.items[0].status.results[?(@.name=="pr-url")].value}' 2>/dev/null || true)"
+        fi
+
+        # Failure log excerpt - attempted for any non-success status (Cancelled/Timeout
+        # included), not just "Failed". Needs no new RBAC - pipeline-runner's existing
+        # Role already covers taskruns/pods/pods-log.
+        failed_taskrun=""
+        log_excerpt=""
+        if [[ "${STATUS}" != "Succeeded" && "${STATUS}" != "Completed" ]]; then
+          failed_taskrun="$(kubectl get taskrun -n "${APP_NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json \
+            | jq -r '[.items[] | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
+          if [[ -n "${failed_taskrun}" ]]; then
+            pod_name="$(kubectl get taskrun "${failed_taskrun}" -n "${APP_NAMESPACE}" -o jsonpath='{.status.podName}' 2>/dev/null || true)"
+            if [[ -n "${pod_name}" ]]; then
+              log_excerpt="$(kubectl logs "${pod_name}" -n "${APP_NAMESPACE}" --all-containers --tail=30 2>/dev/null | tail -c 1500 || true)"
+            fi
+          fi
+        fi
+
+        payload="$(jq -n \
+          --arg channel "${CHANNEL}" \
+          --arg color "${COLOR}" \
+          --arg headerText "${HEADER_TEXT}" \
+          --arg app "${APP_NAME}" \
+          --arg appNamespace "${APP_NAMESPACE}" \
+          --arg repoShort "${REPO_SHORT}" \
+          --arg repoUrl "${GIT_URL}" \
+          --arg shortSha "${SHORT_SHA}" \
+          --arg commitUrl "${COMMIT_URL}" \
+          --arg image "${IMAGE_REF}" \
+          --arg runName "${PIPELINE_RUN_NAME}" \
+          --arg dashboardUrl "${DASHBOARD_URL}" \
+          --arg envName "${ENV_NAME}" \
+          --arg prUrl "${pr_url}" \
+          --arg failedTask "${failed_taskrun}" \
+          --arg logExcerpt "${log_excerpt}" \
+          --arg footer "platform-cicd · $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          '
+          def field(fieldLabel; fieldValue): {type: "mrkdwn", text: ("*" + fieldLabel + "*\n" + fieldValue)};
+          (
+            [
+              field("App"; $app),
+              field("App Namespace"; $appNamespace),
+              field("Repo"; "<" + $repoUrl + "|" + $repoShort + ">"),
+              field("Commit"; "<" + $commitUrl + "|" + $shortSha + ">")
+            ]
+            + (if $image != "" then [field("Image"; "`" + $image + "`")] else [] end)
+            + (if $envName != "" then [field("Environment"; $envName)] else [] end)
+            + [field("Run"; "<" + $dashboardUrl + "|" + $runName + ">")]
+            + (if $prUrl != "" then [field("PR"; "<" + $prUrl + "|View PR>")] else [] end)
+          ) as $fields
+          |
+          (
+            {
+              channel: $channel,
+              attachments: [{
+                color: $color,
+                blocks: (
+                  [
+                    {type: "header", text: {type: "plain_text", text: $headerText, emoji: true}},
+                    {type: "section", fields: $fields}
+                  ]
+                  + (if $logExcerpt != "" then [
+                      {type: "section", text: {type: "mrkdwn", text: ("*Failed task:* `" + $failedTask + "`")}},
+                      {type: "section", text: {type: "mrkdwn", text: ("```" + $logExcerpt + "```")}}
+                    ] else [] end)
+                  + [{type: "context", elements: [{type: "mrkdwn", text: $footer}]}]
+                )
+              }]
+            }
+          )
+          ')"
+
+        curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
+          -X POST "${WEBHOOK_URL}" \
+          -H 'Content-Type: application/json' \
+          -d "${payload}"

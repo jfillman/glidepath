@@ -1,0 +1,129 @@
+# templates/tekton/pipelinerun-pruner-cronjob.yaml
+#
+# Shared, platform-level CronJob (not per-Application) - closes a real gap: PaC's
+# max-keep-runs annotation only prunes PaC-triggered PipelineRuns (a flow's git-rooted
+# first step), not the event-chained ones flow-triggers.yaml creates for every other
+# step, and Tekton never garbage-collects completed PipelineRuns/TaskRuns/Pods on its
+# own. A heavy test session once left 200+ completed runs behind, competing with running
+# pods for this cluster's node pod-count ceiling.
+#
+# Retention: group completed PipelineRuns by (namespace, tekton.dev/pipeline label); the
+# single newest per group is never pruned regardless of age; everything else older than
+# RETENTION_HOURS (default 24) is deleted. Both Succeeded and Failed count as "done"
+# here (unlike stalled-pipeline-detector, pruning doesn't need that distinction).
+#
+# Deletes TaskRuns explicitly before their owning PipelineRun rather than relying on
+# ownerReference cascade-GC - cascade deletion alone didn't reliably clean up orphaned
+# TaskRun pods under load in testing.
+#
+# RBAC is cluster-scoped by necessity but narrow: get/list/delete on pipelineruns and
+# taskruns only - no Secrets, no write access to spec/status.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pipelinerun-pruner
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "tekton"
+  namespace: platform-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pipelinerun-pruner
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "tekton"
+rules:
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns", "taskruns"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pipelinerun-pruner
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "tekton"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pipelinerun-pruner
+subjects:
+  - kind: ServiceAccount
+    name: pipelinerun-pruner
+    namespace: platform-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pipelinerun-pruner
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "tekton"
+  namespace: platform-system
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: pipelinerun-pruner
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: prune
+              image: ghcr.io/jfillman/platform-cicd-toolbox:latest
+              imagePullPolicy: IfNotPresent  # published to ghcr.io/jfillman, not kind-loaded
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              env:
+                - name: RETENTION_HOURS
+                  value: "24"
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  now_epoch="$(date -u +%s)"
+                  retention_seconds=$(( RETENTION_HOURS * 3600 ))
+
+                  # One pruning candidate per line: every completed PipelineRun in a
+                  # (namespace, pipeline) group except that group's own newest (dropped
+                  # before age is even considered, so the last surviving run of a
+                  # pipeline can never be pruned).
+                  candidates="$(kubectl get pipelinerun -A -o json | jq -r '
+                    .items
+                    | map(select(.status.completionTime != null))
+                    | map(select((.metadata.labels // {})["tekton.dev/pipeline"] != null))
+                    | group_by(.metadata.namespace + "/" + .metadata.labels["tekton.dev/pipeline"])
+                    | map(sort_by(.status.completionTime) | reverse | .[1:])
+                    | flatten
+                    | .[]
+                    | [.metadata.namespace, .metadata.name, .status.completionTime] | @tsv
+                  ')"
+
+                  pruned=0
+                  while IFS=$'\t' read -r run_ns run_name completion_time; do
+                    [[ -z "${run_ns}" ]] && continue
+
+                    completion_epoch="$(date -u -d "${completion_time}" +%s)"
+                    age=$(( now_epoch - completion_epoch ))
+                    if [ "${age}" -lt "${retention_seconds}" ]; then
+                      continue
+                    fi
+
+                    echo "[pipelinerun-pruner] deleting ${run_ns}/${run_name} (completed ${age}s ago, > ${RETENTION_HOURS}h retention, not the newest in its pipeline group)"
+                    kubectl delete taskrun -n "${run_ns}" -l "tekton.dev/pipelineRun=${run_name}" --ignore-not-found >/dev/null
+                    kubectl delete pipelinerun "${run_name}" -n "${run_ns}" --ignore-not-found >/dev/null
+                    pruned=$((pruned + 1))
+                  done <<< "${candidates}"
+
+                  echo "[pipelinerun-pruner] done - pruned ${pruned} PipelineRun(s)"

@@ -1,0 +1,61 @@
+{{- $appNamespace := include "glidepath-app.namespace" . }}
+# Rendered unconditionally, regardless of governance.policyCheck: the release-gate Task
+# that reads this (verify-commit-signature.yaml) is a required GitHub Check the tenant
+# can't turn off, so gating this ConfigMap on the flag used to leave apps with
+# policyCheck:false with no ConfigMap at all, crashing the check with a bare NotFound
+# instead of the graceful "empty allowlist -> fail closed" path the Task already handles.
+# governance.policyCheck no longer gates anything real; kept in the schema to avoid a
+# breaking removal.
+#
+# allowed-commit-signers is a plain list of emails, not a regex - the Task builds
+# gitsign's --certificate-identity-regexp from it at runtime.
+#
+# Lives in the Application's own namespace so the same-namespace verify-commit-signature
+# Task (part of the release stage's `provenance` gate, renamed from `policy-check`
+# 2026-08-23) can read it without cross-namespace RBAC.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.platformIdentity.appName }}-policy-config
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "governance"
+  namespace: {{ $appNamespace }}
+data:
+  # One email per line; # comments and blank lines are ignored by verify-commit-signature.yaml.
+  allowed-commit-signers: |
+    {{- range .Values.governance.allowedCommitSigners | default list }}
+    {{ . }}
+    {{- else }}
+    # Add one email per line, e.g.:
+    # dev@example.com
+    {{- end }}
+---
+# Lets pipeline-runner read exactly this one named ConfigMap.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: allow-policy-config-read-{{ .Values.platformIdentity.appName }}
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "governance"
+  namespace: {{ $appNamespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["{{ .Values.platformIdentity.appName }}-policy-config"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: allow-policy-config-read-{{ .Values.platformIdentity.appName }}
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "governance"
+  namespace: {{ $appNamespace }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: allow-policy-config-read-{{ .Values.platformIdentity.appName }} }
+subjects:
+  - kind: ServiceAccount
+    name: pipeline-runner
+    namespace: {{ $appNamespace }}

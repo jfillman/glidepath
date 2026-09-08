@@ -3,7 +3,7 @@
 #
 # MANUAL OVERRIDE PATH ONLY as of 2026-09-05 (ADR-0006's "Update",
 # docs/admin/adr/0006-cluster-agnostic-bootstrap.md) - a fresh cluster no longer needs
-# this run by hand. charts/platform-cicd-control-plane/templates/hooks/
+# this run by hand. charts/glidepath-control-plane/templates/hooks/
 # fulcio-bootstrap-job.yaml now ports this exact recipe into an ArgoCD pre-install hook
 # Job that generates the same root CA live, inside the cluster, on first sync -
 # idempotent, same refuse-to-clobber-an-existing-root guard as this script. Use this
@@ -15,7 +15,7 @@
 # single script run. Produces <output-dir>/values-<context>.yaml, meant to land next
 # to the ArgoCD Application that consumes it via a multi-source $ref - e.g.:
 #   ./hack/generate-cluster-values.sh kind-dev kind-dev \
-#     ../gitops-cluster-dev/50-platform-cicd/platform-cicd-control-plane
+#     ../gitops-cluster-dev/50-platform-cicd/glidepath-control-plane
 # platform-cicd carries no cluster-specific state this way, staying installable
 # standalone on any cluster. Note this OVERWRITES values-<context>.yaml's clusterName/
 # fulcio fields specifically (see step 4 below) - preserve any other keys already in
@@ -143,7 +143,7 @@ log "4/4 - writing ${OUTPUT_FILE} (public material only - clusterName + both CA 
   echo "# values-${CONTEXT}.yaml"
   echo "#"
   echo "# Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) by platform-cicd's hack/generate-cluster-values.sh ${CONTEXT} ${CLUSTER_NAME}."
-  echo "# Consumed by this cluster's ArgoCD Application for platform-cicd-control-plane via a"
+  echo "# Consumed by this cluster's ArgoCD Application for glidepath-control-plane via a"
   echo "# multi-source \$ref - see that Application's own header."
   echo "# Re-run the generator (not this file by hand) if the cluster's own API server CA ever"
   echo "# rotates; NEVER re-run it to regenerate the Fulcio root without FORCE=1 - see that"

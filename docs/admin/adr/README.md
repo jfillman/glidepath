@@ -18,7 +18,7 @@ distilled from.
 | [0009](0009-eso-infisical-secrets-backend.md) | External Secrets Operator + self-hosted Infisical as the secrets backend |
 | [0010](0010-kaniko-rootless-builds.md) | Kaniko for rootless image builds under PSS `restricted` |
 | [0011](0011-two-namespace-tenancy-model.md) | Every Application is (at least) two peer namespaces, not one |
-| [0012](0012-ephemeral-environments-idp-application.md) | Ephemeral (PR-preview) environments deploy through `idp-application`, TTL-swept |
+| [0012](0012-ephemeral-environments-airframe-application.md) | Ephemeral (PR-preview) environments deploy through `airframe-application`, TTL-swept |
 | [0013](0013-catalog-git-tag-pinned-distribution.md) | Shared catalog distributed as a git-tag-pinned Helm chart, not a bundle resolver |
 | [0014](0014-keyless-signing-two-trust-roots.md) | Keyless signing uses two separate trust roots - public Sigstore for humans, self-hosted Fulcio for workloads |
 | [0015](0015-provenance-policy-validates-attestation-input.md) | Provenance policy validates the attestation as input, additive to commit signing |

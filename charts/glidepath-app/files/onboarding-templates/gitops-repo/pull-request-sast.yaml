@@ -1,0 +1,70 @@
+# BOILERPLATE - real (not stub), shift-left redesign. See also
+# pull-request-image-scan.yaml, pull-request-provenance.yaml, pull-request-sbom.yaml.
+# References the dedicated sast-check Pipeline, which resolves the promoted image and
+# checks whether sast-scan passed at build time via its SLSA provenance attestation -
+# not a re-scan (re-scanning source at a fixed commit would be redundant).
+#
+# No <APP_NAMESPACE> substitution or workspace needed (an <APP_NAME> substitution now exists, for the hangar.io/app label below) - repo-url/revision come
+# from PaC's template vars, and the check clones/queries in its own scratch space.
+#
+# pr-number feeds this Pipeline's finally block, which posts a PR comment reporting the
+# outcome via comment-pr-check-result.yaml, on top of the native GitHub Check.
+#
+# timeouts.tasks/finally, not just timeouts.pipeline: found live 2026-08-23 that a
+# single shared `pipeline: 10m` budget lets the main check tasks starve the finally
+# block's own comment-pr step of any time at all - a check that's merely slow (not
+# wrong) got cancelled mid-run by the overall timeout, taking its not-yet-started
+# comment-pr TaskRun down with it (confirmed live: stuck "Pending"/"containers with
+# incomplete status" for minutes, then TaskRunCancelled). Splitting the budget
+# guarantees `finally` its own reserved window regardless of how long the real check
+# took - see docs/admin/release-guardrails.md.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: sast-
+  labels:
+    hangar.io/app: "<APP_NAME>"
+  annotations:
+    # on-cel-expression, not on-event/on-target-branch - PaC ignores those two entirely
+    # once a CEL expression is present, so this expression has to carry the whole
+    # condition. release-<sha>-<timestamp> (open-release-pr.yaml's branch convention)
+    # distinguishes a real release-promotion PR from any other PR (e.g. onboarding-resync,
+    # which has no promoted image to scan).
+    #
+    # Per-commit verification is intentional, not restricted to body.action == "opened":
+    # that restriction was tried once to stop duplicate PR comments on a second commit,
+    # but it also meant later commits were never independently re-checked (a real gap -
+    # GitHub showed no Check Run for the PR's actual HEAD). Fixed properly instead:
+    # comment-pr-check-result.yaml now edits its own prior comment on the PR in place
+    # (via a hidden marker) rather than always appending a new one.
+    #
+    # has(body.pull_request) guards against a push webhook (e.g. this same PR merging)
+    # hitting the same CEL expression - a push event has no pull_request key, which
+    # without the guard raised a CEL "no such key" error and posted a false-alarm bot
+    # comment even though the real check had already passed.
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main" && body.pull_request.head.ref.startsWith("release-")'
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+spec:
+  pipelineRef:
+    resolver: cluster
+    params:
+      - { name: kind, value: pipeline }
+      - { name: name, value: sast-check }
+      - { name: namespace, value: platform-catalog }
+  params:
+    - { name: repo-url, value: "{{ repo_url }}" }
+    - { name: revision, value: "{{ revision }}" }
+    - { name: pr-number, value: "{{ body.pull_request.number }}" }
+  taskRunTemplate:
+    serviceAccountName: pipeline-runner
+  timeouts:
+    tasks: "8m"
+    # 2026-08-24: a live run's comment-pr TaskRun (qa7wddf, same shared
+    # comment-pr-check-result Task every gate uses) took >114s against a normal
+    # ~60-70s and was cancelled by a 2m finally budget before it could post/edit
+    # the PR comment - the gate's real outcome (stub or otherwise) never made it
+    # onto the PR, leaving a stale comment from an earlier commit's run in place.
+    # No error in cdevents-broker-auth logs at the time; ordinary GitHub API
+    # latency variance, not a broker/tunnel issue. 4m gives real headroom.
+    finally: "4m"
+    pipeline: "12m"

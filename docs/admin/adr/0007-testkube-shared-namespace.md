@@ -41,7 +41,7 @@ this Application's own name.
 
 RBAC for the one shared namespace splits two ways, deliberately not identically:
 
-- **Secrets** (`platform-cicd-app`'s `templates/testkube/rbac-and-secret.yaml`):
+- **Secrets** (`glidepath-app`'s `templates/testkube/rbac-and-secret.yaml`):
   resourceNames-restricted to exactly this Application's own placeholder Secret, and
   crucially `get/update/patch` only, never `create` - the placeholder is pre-seeded by
   this same chart. Kubernetes RBAC can restrict `get`/`update`/`patch` to one named
@@ -49,7 +49,7 @@ RBAC for the one shared namespace splits two ways, deliberately not identically:
   name against), so granting `create` on secrets in a namespace every tenant shares
   would let any one tenant's `pipeline-runner` mint a secret under another tenant's
   naming convention. Pre-seeding closes that off entirely.
-- **TestWorkflow/TestWorkflowExecution** (`platform-cicd-control-plane`'s
+- **TestWorkflow/TestWorkflowExecution** (`glidepath-control-plane`'s
   `templates/testkube/rbac.yaml`, one shared Role, bound per-tenant by each
   Application's own chart): deliberately NOT resourceNames-restricted. Names are
   developer-chosen and self-service - a file dropped in the app repo's own `platform/`
@@ -62,7 +62,7 @@ RBAC for the one shared namespace splits two ways, deliberately not identically:
   commit controls) as a correctness backstop, not an RBAC one - it stops a well-behaved
   pipeline from colliding by accident, not a compromised one from colliding on purpose.
 
-`pipeline-runner` (`platform-cicd-app`'s `templates/identity/pipeline-runner.yaml`)
+`pipeline-runner` (`glidepath-app`'s `templates/identity/pipeline-runner.yaml`)
 gained one new in-namespace rule too: `get` on its own `app-secrets`, resourceNames-
 restricted, needed to read the values it forwards - previously that Secret only ever
 reached a Task via a volume mount the Tekton controller set up, never an API read by
@@ -82,7 +82,7 @@ the pipeline-runner identity itself.
 - A future upgrade to Testkube Pro/Enterprise (a real Control Plane connection) would
   make the original per-namespace design possible again - this decision is reversible,
   not a permanent ceiling, just the honest floor of the free tier as of Testkube 2.12.2.
-- `platform-cicd-app` now renders resources outside its own `<type>-<appName>-cicd`
+- `glidepath-app` now renders resources outside its own `<type>-<appName>-cicd`
   namespace for the first time (into the shared `testkube` namespace) - a deliberate,
   narrow exception to that chart's otherwise-universal "only ever touches its own
   namespace" rule, documented at the point it happens

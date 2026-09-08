@@ -1,0 +1,20 @@
+# templates/clusters/cluster-registry.yaml - see values.yaml (clusters:) and
+# docs/admin/multi-cluster.md for the full rationale.
+#
+# One ConfigMap, one key per registered cluster (JSON blob each) - resolved LIVE at
+# pipeline-run time / by the outcome relay, not baked into any per-Application Helm
+# release, so every app that releases onto a cluster shares one source of truth for
+# relaySecretName/outcomeRelayURL instead of a per-app copy that can drift.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-registry
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "clusters"
+data:
+  {{- range .Values.clusters }}
+  {{ .name }}: |
+    {{- $entry := dict "relaySecretName" .relaySecretName "outcomeRelayURL" .outcomeRelayURL }}
+    {{ $entry | toJson }}
+  {{- end }}

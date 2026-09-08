@@ -1,6 +1,6 @@
 # Rootless image builds under Pod Security Standards "restricted"
 
-`charts/platform-cicd-catalog/templates/tasks/build-image.yaml` uses [kaniko](https://github.com/GoogleContainerTools/kaniko)
+`charts/glidepath-catalog/templates/tasks/build-image.yaml` uses [kaniko](https://github.com/GoogleContainerTools/kaniko)
 rather than Docker-in-Docker or a privileged `buildah`/`buildctl` daemon, specifically so
 image builds work under PSS `restricted` (no privileged containers, no host
 namespaces/mounts, non-root by default) - a deliberate "vanilla Kubernetes, portable"

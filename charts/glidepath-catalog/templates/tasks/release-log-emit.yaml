@@ -1,0 +1,234 @@
+# catalog/tasks/release-log-emit.yaml
+#
+# Release log (added 2026-08-23): one structured OTLP log record per confirmed release
+# outcome, enriched with the same GitHub PR/check data detect-bypass-merge.yaml already
+# fetches for break-glass detection - who approved, which gate concluded what, whether
+# this merge bypassed a failing required check. Sent via otel_log_send
+# (catalog/lib/otel.sh) into the same OTel Collector every span already targets, whose
+# existing `logs:` pipeline (gitops-cluster-dev/40-observability/otel-collector) already
+# exports to Loki's own OTLP endpoint - that pipeline just had no producer before this.
+# Deliberately not a new service/store: reuses infrastructure that was already running
+# but empty. See docs/admin/release-log.md.
+#
+# Wired into release-outcome-notify.yaml as a fourth independent task, alongside
+# notify/span/update-dora-metrics - same params, no runAfter.
+#
+# **Scope note**: this only runs for cluster-mapped releases (release-outcome-notify's
+# own trigger - charts/glidepath-app/templates/triggers/release-outcome-trigger.yaml
+# - is only rendered when the app has a cluster-mapped upper env). A same-cluster release
+# (e.g. today's nodejs-demo-app/cicd-flow-test-app staging) never reaches this Task at
+# all - dora-exporter's own direct Application watch handles DORA metrics for that path,
+# but nothing today gives it the GitHub App identity it would safely need (per-app,
+# Repository-CR-scoped, like this Task has) to do the same enrichment. Left open
+# deliberately rather than widening dora-exporter (a cluster-wide singleton) into a
+# component that can mint a GitHub token for any tenant's gitops repo - see this Task's
+# own token-broker call below and docs/admin/release-log.md's "Known gap" section.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: release-log-emit
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Assembles and emits one structured release-log record (outcome, approvers, per-gate results, bypass) for a confirmed cluster-mapped release.
+  params:
+    - name: app-namespace
+      type: string
+    - name: app-name
+      type: string
+    - name: env
+      type: string
+    - name: cluster
+      type: string
+      default: ""
+    - name: status
+      type: string
+    - name: git-url
+      type: string
+      default: ""
+    - name: git-revision
+      type: string
+      default: ""
+    - name: pr-url
+      type: string
+      default: ""
+      description: The gitops-repo release PR's own URL - if empty (an app onboarded before this field existed), this Task is a no-op.
+    - name: chain-id
+      type: string
+      default: ""
+    - name: flow-start-time
+      type: string
+      default: ""
+    - name: pr-created-at
+      type: string
+      default: ""
+    - name: finished-at
+      type: string
+      default: ""
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+  steps:
+    - name: emit
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+      env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://otel-collector-opentelemetry-collector.observability.svc.cluster.local:4318
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: APP_NAMESPACE
+          value: $(params.app-namespace)
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: ENV
+          value: $(params.env)
+        - name: CLUSTER
+          value: $(params.cluster)
+        - name: STATUS
+          value: $(params.status)
+        - name: GIT_URL
+          value: $(params.git-url)
+        - name: GIT_REVISION
+          value: $(params.git-revision)
+        - name: PR_URL
+          value: $(params.pr-url)
+        - name: CHAIN_ID
+          value: $(params.chain-id)
+        - name: FLOW_START_TIME
+          value: $(params.flow-start-time)
+        - name: PR_CREATED_AT
+          value: $(params.pr-created-at)
+        - name: FINISHED_AT
+          value: $(params.finished-at)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/otel.sh"
+        source "${PLATFORM_LIB}/github-app.sh"
+
+        if [[ -z "${PR_URL}" ]]; then
+          echo "[release-log-emit] no pr-url (app onboarded before this field existed) - skipping, nothing to enrich" >&2
+          exit 0
+        fi
+
+        owner="$(echo "${PR_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${PR_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/]+)/pull/.*#\1#')"
+        pr_number="$(echo "${PR_URL}" | sed -E 's#.*/pull/([0-9]+).*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+
+        pr_json="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+          -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}")"
+        head_sha="$(jq -r '.head.sha' <<<"${pr_json}")"
+        merged="$(jq -r '.merged' <<<"${pr_json}")"
+        merged_by="$(jq -r '.merged_by.login // "unknown"' <<<"${pr_json}")"
+        pr_title="$(jq -r '.title' <<<"${pr_json}")"
+
+        reviews_json="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+          -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/reviews")"
+        approvers="$(jq -r '[.[] | select(.state == "APPROVED") | .user.login] | unique | join(",")' <<<"${reviews_json}")"
+
+        checks_json="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+          -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs")"
+
+        # Same "checked by name, not blanket all-green" approach as
+        # detect-bypass-merge.yaml, and the same releaseGuardrails single-source-of-truth
+        # Helm range - a gate added/removed there needs no change here.
+        # Flat gate_<name> keys (dashes normalized to underscores), not a nested "gates"
+        # object - Grafana's "Extract fields" table transform (release-log.json) turns
+        # each top-level JSON key into its own column directly; a nested object would
+        # just render as one column holding a stringified sub-object instead of one
+        # column per gate.
+        gates_json="{}"
+        bypass="false"
+        for gate in {{ range .Values.releaseGuardrails }}{{ .name }} {{ end }}; do
+          # Trailing "-": see wait-for-release-guardrails.yaml's identical match for why -
+          # the real check-run name includes generateName's own trailing dash. Without
+          # this every gate reads back "missing" and bypass="true" fires on every merge -
+          # confirmed live 2026-09-06 this was silently broken since 9706649 the day before.
+          conclusion="$(jq -r --arg name "Pipelines as Code CI / ${gate}-" \
+            '[.check_runs[] | select(.name == $name)][0].conclusion // "missing"' <<<"${checks_json}")"
+          gate_key="gate_$(echo "${gate}" | tr '-' '_')"
+          gates_json="$(jq -nc --argjson gates "${gates_json}" --arg k "${gate_key}" --arg v "${conclusion}" \
+            '$gates + {($k): $v}')"
+          if [[ "${conclusion}" != "success" && "${merged}" == "true" ]]; then
+            bypass="true"
+          fi
+        done
+
+        # Loki's OTLP ingestion routes every log-record *attribute* to structured
+        # metadata, not a real indexed stream label (confirmed live, 2026-08-23 against
+        # the real cluster - `/loki/api/v1/labels` never lists them regardless of how
+        # many are sent; only k8s_namespace_name/k8s_pod_name/pod/service_name/stream
+        # are real index labels here). So the split below isn't about avoiding index
+        # cardinality (structured metadata has none) - it's so the handful of fields a
+        # dashboard actually filters/groups by (app/env/status/bypass) are queryable
+        # directly via LogQL's `| key="value"` without needing a `| json` parse first,
+        # while the rest of the record's detail - including every per-gate result and
+        # every per-release-unique field - lives in the log body as one JSON object,
+        # queried via `| json` when the full record is needed. See
+        # docs/admin/release-log.md's "Live-verified" section for the query proof.
+        record_json="$(jq -nc \
+          --arg appNamespace "${APP_NAMESPACE}" \
+          --arg appName "${APP_NAME}" \
+          --arg env "${ENV}" \
+          --arg cluster "${CLUSTER}" \
+          --arg status "${STATUS}" \
+          --arg gitUrl "${GIT_URL}" \
+          --arg gitRevision "${GIT_REVISION}" \
+          --arg chainId "${CHAIN_ID}" \
+          --arg flowStartTime "${FLOW_START_TIME}" \
+          --arg prCreatedAt "${PR_CREATED_AT}" \
+          --arg finishedAt "${FINISHED_AT}" \
+          --arg prUrl "${PR_URL}" \
+          --arg prNumber "${pr_number}" \
+          --arg prTitle "${pr_title}" \
+          --arg mergedBy "${merged_by}" \
+          --arg approversCsv "${approvers}" \
+          --argjson bypass "${bypass}" \
+          --argjson gates "${gates_json}" \
+          '{
+            app_namespace: $appNamespace, app_name: $appName, env: $env, cluster: $cluster,
+            status: $status, git_url: $gitUrl, git_revision: $gitRevision, chain_id: $chainId,
+            flow_start_time: $flowStartTime, pr_created_at: $prCreatedAt, finished_at: $finishedAt,
+            pr_url: $prUrl, pr_number: $prNumber, pr_title: $prTitle, merged_by: $mergedBy,
+            approvers: ($approversCsv | split(",") | map(select(length > 0)) | join(", ")),
+            bypass: $bypass
+          } + $gates')"
+
+        # Bounded-cardinality only: one value per app x env x outcome x bypass, never
+        # per-release-unique - see the comment above.
+        label_attrs="$(jq -nc \
+          --arg appNamespace "${APP_NAMESPACE}" \
+          --arg appName "${APP_NAME}" \
+          --arg env "${ENV}" \
+          --arg cluster "${CLUSTER}" \
+          --arg status "${STATUS}" \
+          --arg bypass "${bypass}" \
+          '[
+            { key: "platform.release_log.app_namespace", value: { stringValue: $appNamespace } },
+            { key: "platform.release_log.app_name", value: { stringValue: $appName } },
+            { key: "platform.release_log.env", value: { stringValue: $env } },
+            { key: "platform.release_log.cluster", value: { stringValue: $cluster } },
+            { key: "platform.release_log.status", value: { stringValue: $status } },
+            { key: "platform.release_log.bypass", value: { stringValue: $bypass } }
+          ]')"
+
+        severity="INFO"
+        [[ "${STATUS}" != "Succeeded" ]] && severity="ERROR"
+
+        otel_log_send "${record_json}" "${severity}" "${label_attrs}"
+        echo "[release-log-emit] emitted release_log record for ${APP_NAME}/${ENV} (status=${STATUS}, bypass=${bypass}, approvers=${approvers:-none})"

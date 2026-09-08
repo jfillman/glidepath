@@ -1,0 +1,43 @@
+# catalog/stepactions/otel-stage-span-start.yaml
+#
+# Generates a span id + start timestamp for one stage's (build/test/deploy/release)
+# own span, WITHOUT sending anything to the collector yet - same two-phase pattern as
+# otel-flow-root-start.yaml, and for the same reason: this stage's own `finally` Task
+# (end-stage-span) runs in a different Pod and can't reach any local state this step
+# might otherwise try to keep alive. See docs/tracing.md.
+#
+# The stage span is parented directly to the flow-root - NOT to the previous stage's
+# span. Stages are siblings under one trace, never nested, because they don't overlap
+# in time; nesting would make Tempo render misleading durations.
+apiVersion: tekton.dev/v1beta1
+kind: StepAction
+metadata:
+  name: otel-stage-span-start
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  image: {{ .Values.toolboxImage }}
+  params:
+    - name: flow-traceparent
+      type: string
+      description: Root traceparent for the whole flow (from otel-flow-root-start, or carried in the triggering CDEvent for stages after the first). Only used here to fail fast on a malformed value - the real trace/parent linkage happens later, at send time.
+  results:
+    - name: span-id
+      description: This stage's own span id. Thread through this stage's own finally task (end-stage-span) and any Task that needs to parent a child span under this stage (e.g. governance-gate-stub).
+    - name: start-time
+      description: This stage's real start time. Thread through to end-stage-span.
+  # StepActions reject $(params.x) substitution directly inside `script:` (Tekton's
+  # admission webhook: "param substitution in scripts is not allowed") - unlike Tasks,
+  # where it's fine. Params have to come in as positional args instead and be read via
+  # $1/$2/... - see docs/tracing.md for this getting caught the hard way, against a
+  # real cluster, not in review.
+  args:
+    - "$(params.flow-traceparent)"
+  script: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "${PLATFORM_LIB}/otel.sh"
+    read -r span_id start_time <<< "$(otel_stage_span_begin "$1")"
+    printf '%s' "${span_id}" > "$(step.results.span-id.path)"
+    printf '%s' "${start_time}" > "$(step.results.start-time.path)"

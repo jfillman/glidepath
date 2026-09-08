@@ -7,8 +7,8 @@ genuinely independent real gate alongside `verify` (gitsign commit signatures,
 `docs/commit-signing.md`). `verify-provenance` checks the *promoted image's* own
 signature and SLSA provenance attestation (both produced by Tekton Chains,
 `docs/image-signing.md`) against Conforma's policy engine. See
-`charts/platform-cicd-catalog/templates/tasks/verify-image-provenance.yaml` and
-`charts/platform-cicd-catalog/templates/pipelines/provenance-check.yaml`. The rest of
+`charts/glidepath-catalog/templates/tasks/verify-image-provenance.yaml` and
+`charts/glidepath-catalog/templates/pipelines/provenance-check.yaml`. The rest of
 this doc's "confirmed live" sections were written before the rename and quote the
 GitHub Check/PipelineRun names as they were observed at the time (`policy-check`) -
 left as accurate historical record rather than rewritten.
@@ -172,7 +172,7 @@ at runtime via `jq`, concatenating:
   deliberate, not-the-safest choice - see "What a real run against this platform's actual
   provenance shows" below for what that surfaces.
 - **This Application's own data**: the same `<app-name>-policy-config` ConfigMap
-  (`charts/platform-cicd-app/templates/governance/policy-config.yaml`) `verify-commit-signature.yaml`
+  (`charts/glidepath-app/templates/governance/policy-config.yaml`) `verify-commit-signature.yaml`
   already reads, turned into a JSON array and passed as `ruleData.allowed_commit_signers`
   - present and "concatenated" per the original request, unused by any current base-policy
   rule (see "Scope decision" above for why that's fine).
@@ -184,7 +184,7 @@ at runtime via `jq`, concatenating:
 - **A platform-wide `required-tasks` data file** (`sources[].data`, a directory containing
   one `data.json`) - see "Required tasks: verifying the pipeline actually ran" below for
   the mechanism, the file-naming gotcha, and why it's platform-wide rather than per-app
-  (confirmed with the user: this describes an invariant of `charts/platform-cicd-catalog/templates/pipelines/build.yaml`
+  (confirmed with the user: this describes an invariant of `charts/glidepath-catalog/templates/pipelines/build.yaml`
   itself, not an Application preference).
 
 `config.include` also explicitly adds `tasks.required_tasks_found`,
@@ -300,7 +300,7 @@ reading the YAML by eye) - exactly the class of drift a static copy invites ever
 gap. Deriving live makes this structurally impossible to drift: whatever `build.yaml`
 currently requires is what gets checked, always. `pipeline-runner` already has cluster-wide
 `get`/`list`/`watch` on `pipelines.tekton.dev` in `platform-catalog`
-(`charts/platform-cicd-catalog/templates/rbac/catalog-read-only.yaml`, needed for the cluster resolver anyway) - no new
+(`charts/glidepath-catalog/templates/rbac/catalog-read-only.yaml`, needed for the cluster resolver anyway) - no new
 RBAC required.
 
 **Known limitation, not currently hit**: the `jq` above only recognizes resolver types
@@ -351,7 +351,7 @@ explained away; revisit if this platform ever adopts OCI-bundle-resolved Tasks.
 `verify-image-provenance.yaml` needs the same public Fulcio root CA sub-item 2 uses for
 its own verification, but the private signing key lives in the same `fulcio-secret`
 Secret and Kubernetes RBAC can't scope access to one key within a Secret - only to the
-whole object. `charts/platform-cicd-control-plane/templates/sigstore/fulcio-root-configmap.yaml` splits the public cert.pem
+whole object. `charts/glidepath-control-plane/templates/sigstore/fulcio-root-configmap.yaml` splits the public cert.pem
 into its own `fulcio-root-ca` ConfigMap in `platform-catalog`, readable by
 `system:serviceaccounts` broadly (genuinely public data, same trust level as Fulcio's own
 `/api/v2/configuration` endpoint) via a `Role`/`RoleBinding` scoped by `resourceNames` to
@@ -597,7 +597,7 @@ assuming the VM itself needs a bigger disk allocation - the disk may already be 
 
 ## Phase 3 item 8.7 fallout: cosign's `--ca-roots` deprecation, and an unresolved SBOM/provenance conflict
 
-Building real SBOM generation (`charts/platform-cicd-catalog/templates/tasks/generate-sbom.yaml`, Trivy + a real
+Building real SBOM generation (`charts/glidepath-catalog/templates/tasks/generate-sbom.yaml`, Trivy + a real
 keyless cosign attestation) surfaced two real issues in this Task's own
 `verify-attestation` call, one fixed, one genuinely still open.
 

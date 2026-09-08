@@ -11,7 +11,7 @@ decision, not a new one.
 
 ## The single source of truth
 
-`charts/platform-cicd-catalog/values.yaml`'s `releaseGuardrails` list is the canonical
+`charts/glidepath-catalog/values.yaml`'s `releaseGuardrails` list is the canonical
 registry of every gate enforced on a release PR - `name`, a human `description`, and
 `status` (`real` or `stub`, cosmetic only - see below). Two places render off it instead
 of hardcoding the gate list:
@@ -34,7 +34,7 @@ provenance, sbom, itsm, qa, policy-validation) run in parallel off the same PR
 webhook, with no dependency on each other's outcome:
 
 - **Stub, fully generic (least effort)**: add one onboarding template file,
-  `charts/platform-cicd-app/files/onboarding-templates/gitops-repo/pull-request-<name>.yaml`,
+  `charts/glidepath-app/files/onboarding-templates/gitops-repo/pull-request-<name>.yaml`,
   pointing at the existing shared `governance-check` Pipeline with `gate-name: <name>`
   (copy `pull-request-itsm.yaml` or `pull-request-policy-validation.yaml` as a starting
   point). That Pipeline already calls `governance-gate-stub` (loud "no real check
@@ -124,7 +124,7 @@ fixes, kept as independent required checks rather than folded together.
 ## Removing a gate
 
 Delete its onboarding template file
-(`charts/platform-cicd-app/files/onboarding-templates/gitops-repo/pull-request-<name>.yaml`)
+(`charts/glidepath-app/files/onboarding-templates/gitops-repo/pull-request-<name>.yaml`)
 and its `releaseGuardrails` entry. If it had a dedicated Pipeline/Task (a promoted-to-real
 gate, or `image-promotion`'s Pipeline/Task), remove those too once nothing else
 references them. Two things this does **not** do automatically:

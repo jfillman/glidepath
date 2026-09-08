@@ -1,0 +1,222 @@
+# charts/glidepath-control-plane/values.yaml
+
+# The shared toolbox image every hook Job / bash-based Task in this platform uses -
+# kept as one value here (rather than hardcoded per-file) so a version bump is a single
+# values change, matching how catalog/toolbox/Dockerfile is already versioned separately
+# from the code that consumes it. Same value/default as charts/glidepath-catalog's
+# own toolboxImage - kept in sync deliberately, not duplicated by accident. Defaults to
+# this repo's own published image (real, public, working) - override if you've built
+# and published your own copy.
+toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-05-chain-slug
+
+# The single shared namespace Testkube CE installs into on this cluster (see
+# gitops-cluster-dev/50-platform-cicd/testkube/application.yaml's own header for why
+# it's one shared namespace, not one per tenant - executionNamespaces/multinamespace
+# is a Pro/Enterprise-only feature in Testkube's own source, confirmed live). Same
+# value/default as charts/glidepath-app's own testkubeNamespace - kept in sync
+# across both charts deliberately, not duplicated by accident. Consumed by
+# templates/testkube/rbac.yaml here.
+testkubeNamespace: testkube
+
+# Same field, same default, same reasoning as charts/glidepath-catalog/values.yaml's
+# own tektonChainsNamespace comment - kept in sync across both charts deliberately, not
+# duplicated by accident. Consumed by templates/hooks/chains-config-patch-job.yaml here.
+# Defaults to tektoncd/operator's single-targetNamespace convention (see
+# gitops-cluster-dev/50-platform-cicd/tekton-operator/) - the sole install path now.
+tektonChainsNamespace: tekton-pipelines
+
+# See templates/broker/interceptor.yaml's own header comment on its Namespace resource
+# for the full reasoning. Defaults false: every cluster installs via an ArgoCD
+# Application with CreateNamespace=true (see docs/admin/installation.md), which owns
+# namespace creation - this chart's own Namespace resource would conflict with that.
+selfManageNamespace: false
+
+# Real registry-published image, same reasoning as toolboxImage above - see
+# templates/dora-exporter/deployment.yaml's own comment for the gap this closes.
+doraExporterImage: ghcr.io/jfillman/platform-cicd-dora-exporter:latest
+
+# The cdevents-broker-auth Deployment's own image (templates/broker/interceptor.yaml).
+# Unlike toolboxImage/doraExporterImage above, this is NOT hand-bumped - .github/
+# workflows/broker-image-ci.yaml builds+pushes a new `sha-<short-sha>` tag on every push
+# to main touching platform/broker/**, then commits the bump to this exact line right
+# back into this file. ArgoCD's existing auto-sync (this chart's own Application, ADR-
+# free - ArgoCD's ordinary git polling, ~3min) picks up that commit and rolls the
+# Deployment - no direct access from CI into the (private, local) cluster needed, same
+# pull-based model as every app deploy on this platform. See interceptor.yaml's own
+# comment on this value for the real live bug (stale image, 2026-09-06) a floating
+# "latest" tag caused here.
+interceptorImage: ghcr.io/jfillman/platform-cicd-token-review-interceptor:latest
+
+# This platform's own repo - the tenant-onboarding ApplicationSet (templates/argocd/
+# tenant-onboarding-applicationset.yaml) reads tenants/*.yaml from here (its generator
+# source) AND renders the glidepath-app chart straight from here at main HEAD. Also
+# the source `githubOwner` (see _helpers.tpl) derives from - required, no default, so
+# this chart never silently points at someone else's fork.
+#
+# .github/workflows/app-chart-ci.yaml's `publish` job also pushes that same chart to
+# ghcr.io/<owner>/charts/glidepath-app on every push - real, working, verified live
+# on this repo's own fork - but the ApplicationSet doesn't pull from there (yet):
+# ArgoCD's semver-range targetRevision resolution genuinely doesn't work against OCI
+# Helm sources (confirmed live, argoproj/argo-cd#9528 - not a config mistake). See that
+# ApplicationSet's own header for the full story and why this is folded into the
+# already-flagged proper-release-workflow follow-up instead of worked around here.
+platformCicdRepoUrl: ""
+
+# Cluster-agnostic derivation input: tenantsRepoUrl/tenantOnboardingApplicationSetName
+# below are DERIVED from this by convention for any cluster that doesn't explicitly
+# override them - see templates/argocd/tenant-onboarding-applicationset.yaml's own
+# header for the exact `default` expressions. Set this to the cluster's own name (e.g.
+# "kind-dev") for any new cluster instead of hand-typing both derived fields
+# separately.
+clusterName: ""
+
+# Which repo/path the tenant-onboarding ApplicationSet's generator scans for
+# tenants/*/identity.yaml (templates/argocd/tenant-onboarding-applicationset.yaml) and
+# which templates/argocd/onboarding-appproject.yaml allowlists as a sourceRepo.
+# Deliberately separate from platformCicdRepoUrl above: that value also drives the SAME
+# ApplicationSet's chart-source repoURL, which legitimately should stay this
+# platform's one shared repo on every cluster this chart is installed on - but the
+# tenant LIST must not, or a second cluster's install would onboard the first
+# cluster's real, live tenants too.
+#
+# Empty by default - derived from clusterName above
+# (https://github.com/jfillman/platform-cicd-<clusterName>-tenants.git) unless
+# explicitly set here.
+tenantsRepoUrl: ""
+
+# See templates/argocd/tenant-onboarding-applicationset.yaml's own header comment for
+# the real name collision this guards against and why it's a value, not an in-place
+# rename.
+#
+# Empty by default - derived as "platform-cicd-tenant-onboarding" unless explicitly
+# set here.
+tenantOnboardingApplicationSetName: ""
+
+# Fulcio's root key/cert material is no longer a Helm value at all (ADR-0006's
+# "Update") - hooks/fulcio-bootstrap-job.yaml generates it inside the cluster on first
+# sync (idempotent, skips if fulcio-secret already exists) and writes
+# fulcio-root-ca/fulcio-config directly, rather than a human running
+# hack/generate-cluster-values.sh and pasting cert material into this file. That script
+# still exists as a documented manual override path for deliberately rotating a root
+# (FORCE=1) - see its own header and docs/admin/adr/0006-cluster-agnostic-bootstrap.md.
+
+# Overlay onto Tekton Chains' own `chains-config` ConfigMap (installed empty by default -
+# confirmed live, nothing to clobber) - applied via `kubectl patch --type merge` by
+# templates/hooks/chains-config-patch-job.yaml, not `kubectl apply` replacing the whole
+# object, matching this platform's existing patch-not-replace convention for
+# third-party-owned config.
+#
+# signers.x509.fulcio.address/issuer values are cluster-specific, confirmed live against
+# the real fulcio-server Service and its own real /api/v2/configuration response - not
+# copied from any example. See templates/sigstore/fulcio-config.yaml for why the issuer
+# has the ".cluster.local" suffix.
+#
+# signers.x509.identity.token.file points at /var/run/sigstore/cosign/oidc-token -
+# Tekton Chains' controller Deployment already ships a projected ServiceAccount token
+# volume at exactly this path with audience "sigstore" out of the box - no patch needed
+# to add it.
+#
+# artifacts.pipelinerun.storage is "oci" (provenance attached to the produced image in
+# the registry, standard cosign/SLSA convention) - confirmed live the seemingly-simpler
+# "tekton" (annotations on the object itself) breaks: a real PipelineRun's full in-toto/
+# SLSA payload exceeded Kubernetes' hard 256KiB total-annotations cap.
+#
+# artifacts.taskrun.storage is deliberately EMPTY (disabled) - Chains' per-TaskRun OCI
+# artifact processing scans every TaskRun's own step container images, and this
+# platform's shared toolbox image is kind-loaded only, never pushed to a real registry,
+# so its "image ID" has no registry name component to combine with a digest - every
+# TaskRun using it failed signing otherwise. We only ever consume PIPELINE-level
+# provenance, so disabling this removes a whole buggy, unused path.
+#
+# transparency.enabled: "true" / transparency.url point at this cluster's own
+# self-hosted rekor-server (docs/admin/provenance-policy.md) - Rekor was deployed
+# 2026-09-05 after being deferred since Phase 3 item 2. Deliberately still NOT the
+# Chains default (the PUBLIC rekor.sigstore.dev) - this platform's images/attestations
+# have no business in the public transparency log. This closes a real, previously-open
+# gap: without a Rekor entry, verify-image-provenance.yaml/verify-sast-attestation.yaml
+# had no timestamp anchor to prove Fulcio's short-lived (10-minute) leaf cert was valid
+# AT SIGNING TIME, so cosign correctly rejected it as expired by release-PR time on
+# every real release (docs/admin/release-guardrails.md's "known open issue").
+chains:
+  configPatch:
+    signers.x509.fulcio.enabled: "true"
+    signers.x509.fulcio.address: "http://fulcio-server.fulcio-system.svc"
+    signers.x509.fulcio.issuer: "https://kubernetes.default.svc.cluster.local"
+    signers.x509.fulcio.provider: "filesystem"
+    signers.x509.identity.token.file: "/var/run/sigstore/cosign/oidc-token"
+    artifacts.taskrun.storage: ""
+    artifacts.pipelinerun.storage: "oci"
+    artifacts.oci.storage: "oci"
+    transparency.enabled: "true"
+    transparency.url: "http://rekor-server.rekor-system.svc"
+
+# Phase 3 item 7 / Infisical migration: External Secrets Operator is platform
+# infrastructure, not just a bootstrap-time install - every chart in this platform
+# consumes secret material via ExternalSecret, not a hand-applied raw Secret. The real
+# backend is now self-hosted Infisical (via infisical-secretstore-operator, the same
+# mechanism airframe's own apps use) - see
+# templates/secretstore/infisical-project.yaml/cluster-secret-store.yaml. Store
+# name/kind stay values (not hardcoded in every downstream chart) so a future backend
+# swap is still a one-file change here, same reasoning as before, just already landed
+# on Infisical instead of still deferring to it.
+secretStore:
+  name: platform-secret-store
+  kind: ClusterSecretStore
+  infisical:
+    # This control plane's own Infisical project slug - see infisical-project.yaml's
+    # header for why it's a dedicated project, not a reused app project. Only used for
+    # genuinely platform-wide material (registry-credentials, github-app-creds,
+    # relay tokens) - never app secrets, see docs/admin/app-secrets.md.
+    projectSlug: platform-cicd-kind-dev
+    # In-cluster Service DNS for airframe's self-hosted Infisical install
+    # (gitops-cluster-dev/10-crds-operators/infisical) - only correct when this chart
+    # runs on the same cluster that hosts Infisical, see cluster-secret-store.yaml.
+    hostAPI: http://infisical-infisical-standalone-infisical.infisical.svc.cluster.local:8080/api
+    credentialsSecretName: platform-cicd-infisical-creds
+
+# 2026-08-19: no per-Application ClusterSecretStore/appSecretStores list rendered by
+# this chart any more - a real, live redundancy caught after the previous fix:
+# rendering "<type>-<appName>-secret-store" here, mirrored field-for-field from that
+# Application's own idp-managed ClusterSecretStore (<appName>-<devClusterName>,
+# provisioned by idp's NodeJSApplication XR), meant two live objects pointed at the
+# exact same Infisical project - confirmed live, byte-identical specs except that
+# idp's own store ALSO carries a namespaceRegexes scope this chart's mirror never had
+# (a real least-privilege gap, not just duplication - the mirror was strictly WIDER
+# than the original). glidepath-app's own app-secrets-external-secret.yaml now
+# references idp's ClusterSecretStore directly by its own computed name - see that
+# file's header. See docs/admin/app-secrets.md for the full history of this mechanism.
+
+# The cluster registry: an app's cicd.yaml never names infrastructure directly - a
+# release step's env: (e.g. "staging") is a tenant-facing config concept,
+# deploy.upperEnvironments maps that name to a cluster NAME (e.g. "kind-prod"), and
+# THIS list is what that cluster name actually resolves to. Adding a cluster here is a
+# deliberate, operator-driven step, not something tenant onboarding does. Rendered
+# into a ConfigMap (templates/clusters/cluster-registry.yaml) that pipeline Tasks and
+# the ArgoCD-outcome relay both resolve live against, rather than being duplicated
+# into every app's own Helm values - see that file's header for why.
+#
+# relaySecretName: name of a Secret in THIS namespace holding the shared bearer token
+# the outcome-reporting hook Jobs on THAT cluster present to the outcome relay (a copy
+# of the SAME token also lives directly in each app's own namespace on that cluster -
+# see docs/admin/multi-cluster.md, the hook runs there, not here). ESO-backed, like
+# everything else in this file now - see templates/clusters/
+# relay-token-external-secret.yaml, synced from this control plane's own Infisical
+# project (a small number of platform-wide tokens, one per registered cluster - not an
+# app secret, so it lives in platform-cicd-kind-dev, not any app's own project).
+#
+# outcomeRelayURL: where THAT cluster's own outcome-reporting hook Jobs reach this
+# (the dev) cluster's argocd-outcome-relay - baked into the hook Job manifests
+# open-release-pr.yaml generates, since a Job running on a different cluster obviously
+# can't resolve this cluster's in-cluster DNS name. A same-host podman IP works for a
+# shared-host dev setup (see docs/admin/multi-cluster.md's cross-cluster-reachability
+# section); a genuinely remote cluster needs a real ingress/DNS name here instead.
+#
+# Empty by default - this is cluster state (which real upper clusters are registered),
+# not chart source, so real entries live in each cluster's own gitops-cluster-<name>
+# repo. Rendering .Values.clusters non-empty is also what turns on argocd-outcome-relay
+# itself (templates/clusters/argocd-outcome-relay.yaml's own `if .Values.clusters`).
+#
+# - name: kind-prod
+#   relaySecretName: cluster-kind-prod-relay-token
+#   outcomeRelayURL: http://<dev-cluster-node-ip>:30880/outcome/kind-prod
+clusters: []

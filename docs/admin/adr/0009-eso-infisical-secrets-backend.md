@@ -13,7 +13,7 @@ namespace) was always documented as a stopgap, not the destination.
 
 External Secrets Operator is platform infrastructure, not a bootstrap-only install -
 every chart consumes secret material via a real `ExternalSecret`, never a hand-applied
-raw `Secret`. The backend is self-hosted Infisical (`idp-service-catalog`'s instance,
+raw `Secret`. The backend is self-hosted Infisical (`airframe`'s instance,
 kind-dev only), not ESO's `kubernetes` provider, HashiCorp Vault, or a cloud secrets
 manager.
 

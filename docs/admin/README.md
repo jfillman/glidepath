@@ -1,4 +1,4 @@
-# platform-cicd: admin guide
+# Glidepath: admin guide
 
 Documentation for people **running** this platform - installing it, operating it,
 and understanding why it's built the way it is. If you're an application developer

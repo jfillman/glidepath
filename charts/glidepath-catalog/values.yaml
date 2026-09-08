@@ -1,0 +1,71 @@
+# charts/glidepath-catalog/values.yaml
+#
+# Deliberately minimal - every Task/Pipeline/StepAction under templates/ is unparameterized
+# by design (see Chart.yaml). The only real values knob is which RBAC group gets read
+# access, kept as a value rather than hardcoded so a canary install (see
+# docs/admin/catalog-versioning.md) can, if ever needed, bind a narrower group than
+# system:serviceaccounts instead of the cluster-wide default every Application already relies on.
+
+rbac:
+  readOnlyGroup: system:serviceaccounts
+
+# The shared toolbox image (catalog/toolbox/Dockerfile) every bash-based catalog step
+# runs in. Defaults to this repo's own published image - real, public, and pullable by
+# anyone, so it's a working default (unlike a repo URL or secret, sharing a public tool
+# image is normal). Override if you've built and published your own copy - see
+# catalog/toolbox/Dockerfile's own build command.
+#
+# Pinned to an explicit tag, not :latest, as of 2026-08-24: schemas/cicd.schema.json is
+# baked into this image (Dockerfile's own header explains why), and validate-cicd-config
+# needs the version carrying the test.suite -> test.name / steps[].suite -> testName
+# rename. Every Task uses imagePullPolicy: IfNotPresent, so re-pushing :latest wouldn't
+# actually reach already-cached nodes - a real staleness class this platform has hit
+# before. Bump this tag (not just the image content) whenever schema.json changes.
+toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-05-chain-slug
+
+# Cluster-agnostic namespace derivation: which namespace Tekton Chains runs in -
+# matters here because verify-image-provenance.yaml/verify-sast-attestation.yaml
+# verify the Chains controller's own signing identity by SERVICE ACCOUNT NAMESPACE
+# (certificate-identity-regexp), a security-critical check, not cosmetic. Defaults to
+# tektoncd/operator's single-targetNamespace convention (see
+# gitops-cluster-dev/50-platform-cicd/tekton-operator/) - the sole install path now.
+tektonChainsNamespace: tekton-pipelines
+
+# Single source of truth for every guardrail gate enforced on a gitops-repo release PR
+# (docs/admin/release-guardrails.md). Adding or removing a gate here is only PART of the
+# change - it also needs its own catalog Pipeline (a dedicated one for a real gate, or
+# just a new .tekton/pull-request-<name>.yaml onboarding template pointing at the shared
+# `governance-check` Pipeline for a stub - see governance-check.yaml/governance-gate-
+# stub.yaml) plus a matching required-status-check entry in the gitops repo's own branch
+# protection (a manual GitHub setting, not platform IaC - see release.md). This list
+# itself only drives the two places that used to hardcode all four original gate names:
+# detect-bypass-merge.yaml's break-glass check and open-release-pr.yaml's PR-body table.
+# `status: real` vs `stub` controls only how each is described in that table - it has no
+# effect on enforcement (branch protection enforces every required check identically
+# regardless of stub-ness; see ADR-0003 for why a stub is still a real, structurally-loud
+# gate, just one whose check always reports "stub" rather than passing real judgment).
+releaseGuardrails:
+  - name: sast
+    description: Static analysis (Semgrep) of the promoted commit's source
+    status: real
+  - name: image-scan
+    description: Vulnerability scan (Trivy) of the promoted image
+    status: real
+  - name: provenance
+    description: Commit signature (gitsign) + SLSA provenance (Conforma)
+    status: real
+  - name: sbom
+    description: Software bill of materials
+    status: real
+  - name: itsm
+    description: ServiceNow Change Request
+    status: stub
+  - name: qa
+    description: Test-completion verification
+    status: stub
+  - name: policy-validation
+    description: Gatekeeper/Kyverno admission-policy validation of the rendered manifest
+    status: stub
+  - name: image-promotion
+    description: Promotes the image from the dev registry to this env's upper registry - runs last, only once every other gate above has passed
+    status: stub

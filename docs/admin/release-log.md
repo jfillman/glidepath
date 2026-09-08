@@ -143,7 +143,7 @@ testing above. Two real, distinct bugs:
    transform. The standalone version didn't error, it just silently did nothing.
 
 Also found via the same render: Grafana's Loki datasource is configured with a global
-`derivedFields` entry (`charts/platform-cicd-control-plane` observability stack) that
+`derivedFields` entry (`charts/glidepath-control-plane` observability stack) that
 injects its own `TraceID` field into every logs query - unrelated to this feature,
 excluded explicitly rather than left to leak into the table.
 
@@ -157,8 +157,8 @@ platform, just applied to a Grafana panel instead of a cluster resource.
 
 `release-log-emit` only runs for releases with a cluster-mapped upper env
 (`release-outcome-notify`'s own trigger,
-`charts/platform-cicd-app/templates/triggers/release-outcome-trigger.yaml`, is only
-rendered when `platform-cicd-app.hasClusterMappedUpperEnv` is true - see
+`charts/glidepath-app/templates/triggers/release-outcome-trigger.yaml`, is only
+rendered when `glidepath-app.hasClusterMappedUpperEnv` is true - see
 `docs/admin/multi-cluster.md`). A same-cluster release (today's `nodejs-demo-app`/
 `cicd-flow-test-app` staging deploys) never reaches this Task - `dora-exporter`'s own
 direct `Application` watch handles DORA metrics for that path instead, with no

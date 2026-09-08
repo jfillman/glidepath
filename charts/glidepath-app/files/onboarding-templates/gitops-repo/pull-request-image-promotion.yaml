@@ -1,0 +1,49 @@
+# STUB - see docs/admin/governance-stubs.md and docs/admin/release-guardrails.md.
+# References the dedicated image-promotion-check Pipeline. Unlike the other gates in
+# this directory, image-promotion is deliberately NOT independent/parallel: it waits
+# (wait-for-release-guardrails.yaml, real logic) for every other guardrail check on this
+# same PR to succeed before doing anything, so it's always the last check to go green -
+# the intended final gate before merge. The actual dev-to-upper-registry image copy is
+# still a stub; only the ordering is real today.
+#
+# timeouts.tasks/finally split - see pull-request-sast.yaml's own header (2026-08-23)
+# for why finally/comment-pr must never share a budget with the real check tasks.
+# `tasks` here is bigger than every other gate's because it has to comfortably exceed
+# wait-for-release-guardrails' own default 1080s (18m) poll timeout - which itself has
+# to comfortably exceed the slowest sibling gate's own PipelineRun timeout (today
+# image-scan's 15m) - plus the trivial promote step after it. If image-scan's own
+# timeout ever changes, bump both wait-for-release-guardrails' timeout-seconds default
+# and this file's `tasks`/`pipeline` values to stay ahead of it.
+#
+# No <APP_NAMESPACE> substitution or workspace needed (an <APP_NAME> substitution now exists, for the hangar.io/app label below) - same reasons as
+# pull-request-sast.yaml. pr-number feeds the finally-block PR comment.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: image-promotion-
+  labels:
+    hangar.io/app: "<APP_NAME>"
+  annotations:
+    # See pull-request-sast.yaml for why this is on-cel-expression (release-branch-only)
+    # and why has() guards the pull_request field.
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main" && body.pull_request.head.ref.startsWith("release-")'
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+spec:
+  pipelineRef:
+    resolver: cluster
+    params:
+      - { name: kind, value: pipeline }
+      - { name: name, value: image-promotion-check }
+      - { name: namespace, value: platform-catalog }
+  params:
+    - { name: repo-url, value: "{{ repo_url }}" }
+    - { name: revision, value: "{{ revision }}" }
+    - { name: pr-number, value: "{{ body.pull_request.number }}" }
+  taskRunTemplate:
+    serviceAccountName: pipeline-runner
+  timeouts:
+    tasks: "19m"
+    # finally bumped 2m->4m - see pull-request-sast.yaml's own header (2026-08-24)
+    # for the live comment-pr cancellation this fixes.
+    finally: "4m"
+    pipeline: "23m"

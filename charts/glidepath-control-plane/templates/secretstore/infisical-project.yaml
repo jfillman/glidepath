@@ -1,0 +1,33 @@
+# templates/secretstore/infisical-project.yaml (docs/admin/secrets-management.md)
+#
+# The control plane's own Infisical project - genuinely platform-wide operational
+# secrets ONLY (registry-credentials, github-app-creds, per-cluster relay tokens), never
+# any Application's own secrets (those come from that Application's own idp-managed
+# project instead - see docs/admin/app-secrets.md; a real, since-corrected mistake
+# briefly put them here too). Deliberately NOT one of airframe's own
+# per-(app,cluster) projects (slug <appName>-<cluster>, created by its SecretStore
+# XRD/Composition) - this control plane isn't an "app" in that sense, and reusing an
+# app's own project would tie this platform's operational secrets to whichever app
+# happened to be onboarded first. Same InfisicalProject CRD
+# (secrets.idp.io/v1alpha1) idp's Composition uses, reconciled by the same
+# infisical-secretstore-operator already running on this cluster - rendered directly
+# here instead of going through the SecretStore XRD/Crossplane Composition layer, which
+# is scoped for per-app, namespace-narrowed concerns this control plane's own secrets
+# don't need.
+#
+# authMethod: kubernetes - see cluster-secret-store.yaml's own header for why this is
+# hardcoded rather than a live cluster-registry lookup.
+apiVersion: secrets.idp.io/v1alpha1
+kind: InfisicalProject
+metadata:
+  name: {{ .Values.secretStore.infisical.projectSlug }}
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "secretstore"
+spec:
+  projectName: {{ .Values.secretStore.infisical.projectSlug }}
+  slug: {{ .Values.secretStore.infisical.projectSlug }}
+  environmentSlug: shared
+  credentialsSecretName: {{ .Values.secretStore.infisical.credentialsSecretName }}
+  authMethod: kubernetes

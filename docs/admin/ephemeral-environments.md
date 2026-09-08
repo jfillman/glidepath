@@ -1,7 +1,7 @@
 # PR-based ephemeral environments
 
 Any PR against `nodejs-demo-app` labeled `preview` gets a real, running, isolated
-environment - its own namespace, a full `idp-application`-chart-rendered workload
+environment - its own namespace, a full `airframe-application`-chart-rendered workload
 (`Rollout`/`Service`/`ServiceAccount`/`NetworkPolicy`/`ServiceMonitor`/`RolloutWatch`),
 running the exact image that PR's own build produced - torn down within the TTL sweep's
 window after the PR closes or the label is removed. This is modeled on a real prior
@@ -12,8 +12,8 @@ supporting pieces got wrong in production - see "What's different from the old s
 below.
 
 **2026-08-24: moved off a raw Kustomize base (`k8s/ephemeral/`) onto the same
-`idp-service-catalog` `idp-application` chart every other tier (release, lower-env)
-deploys through** - see "Flow" and "Deploying through idp-application, not raw Kustomize"
+`airframe` `airframe-application` chart every other tier (release, lower-env)
+deploys through** - see "Flow" and "Deploying through airframe-application, not raw Kustomize"
 below for the current mechanism. Sections describing the old Kustomize-specific
 mechanics have been removed; check this file's own git history if you need them.
 
@@ -24,7 +24,7 @@ developer adds the `preview` label to a PR on nodejs-demo-app
   -> within ~180s, ArgoCD's ApplicationSet pullRequest generator (polling GitHub,
      label-gated) picks it up
   -> generates an Application named nodejs-demo-app-pr-<number>, with two sources:
-     idp-service-catalog's idp-application chart (envName/rollout.image stamped per-PR
+     airframe's airframe-application chart (envName/rollout.image stamped per-PR
      via valuesObject) plus a ref-only source into nodejs-demo-app's own repo, pinned to
      that PR's head SHA, for platform/pr-env.yaml's values
   -> a separate, dedicated pull_request-triggered flow (cicd.yaml's own pipelines: entry
@@ -43,15 +43,15 @@ developer adds the `preview` label to a PR on nodejs-demo-app
      TTL sweep removes it (up to 24h later)
 ```
 
-## Deploying through idp-application, not raw Kustomize
+## Deploying through airframe-application, not raw Kustomize
 
 Originally this ApplicationSet sourced straight from the app repo's own `k8s/ephemeral/`
 Kustomize base (`namespace.yaml`/`deployment.yaml`/`service.yaml`/`kustomization.yaml`).
-Replaced 2026-08-24 with the same two-source `idp-application`-chart pattern the
+Replaced 2026-08-24 with the same two-source `airframe-application`-chart pattern the
 lower-env tier's own `lower-envs-applicationset.yaml` uses, so a PR preview environment
 behaves like every other tier instead of a bespoke, Kustomize-only path:
 
-- **Source 0**: `idp-service-catalog`'s `charts/idp-application`, pinned version, with a
+- **Source 0**: `airframe`'s `charts/airframe-application`, pinned version, with a
   `helm.valuesObject` stamping `appName`/`cluster`/`envName` (`pr-<number>`) and
   `rollout.image.{repository,tag}` per-PR - these three fields can't be overridden by a
   developer's own values file, since `valuesObject` wins over `valueFiles`.
@@ -93,7 +93,7 @@ map needs an explicit entry with `trigger.event: pull_request`.
 
 ## Namespace cleanup: TTL sweep, not cascade-delete
 
-Real, deliberate trade-off, not an oversight: `idp-application`, like the lower-env
+Real, deliberate trade-off, not an oversight: `airframe-application`, like the lower-env
 tier, never renders a `Namespace` object of its own - it relies on
 `syncOptions: [CreateNamespace=true]`. `CreateNamespace=true` is a sync-time convenience,
 not something that adds the namespace to the Application's own tracked-resource set, so
@@ -103,8 +103,8 @@ confirmed live, and the exact bug the old cd-pipelines system hit (see below) an
 fixed.
 
 Accepted here instead of reverting to a tracked `Namespace` object (which the shared
-`idp-application` chart doesn't support): `ephemeral-envs.yaml`'s
-`managedNamespaceMetadata` stamps `platform.io/ephemeral-env: "true"` on every PR
+`airframe-application` chart doesn't support): `ephemeral-envs.yaml`'s
+`managedNamespaceMetadata` stamps `hangar.io/ephemeral-env: "true"` on every PR
 namespace it creates, so `pr-namespace-ttl-sweep-cronjob.yaml`'s existing 24h sweep (see
 below) becomes the real cleanup path for the empty namespace left behind, not just a
 backstop for a stuck finalizer. Means a closed PR's namespace can sit empty for up to
@@ -199,17 +199,17 @@ request for an unrelated repo still gets rejected.
 
 `pr-namespace-ttl-sweep-cronjob.yaml` is a single shared, platform-level CronJob (applied
 once, not per Application) in `platform-system`, running every 30 minutes: lists every
-namespace labeled `platform.io/ephemeral-env=true` across all Applications and deletes any
+namespace labeled `hangar.io/ephemeral-env=true` across all Applications and deletes any
 older than `TTL_HOURS` (24) by `metadata.creationTimestamp`. Originally built purely as a
 backstop to the finalizer (a namespace surviving 24h despite the finalizer firing is far
 more likely to be something stuck than a still-legitimately-open PR, so no live GitHub
 check is needed here, just age + the label) - since the 2026-08-24 move to
-`idp-application` (see "Namespace cleanup: TTL sweep, not cascade-delete" above), this is
+`airframe-application` (see "Namespace cleanup: TTL sweep, not cascade-delete" above), this is
 now the mechanism that actually removes every PR namespace, not just the rare stuck one.
 RBAC is cluster-scoped by necessity (`Namespace` has no namespaced form) but deliberately
 narrow: `list`/`get`/`delete` on `namespaces` only.
 
-The label this sweep selects on (`platform.io/ephemeral-env: "true"`) is stamped by
+The label this sweep selects on (`hangar.io/ephemeral-env: "true"`) is stamped by
 `ephemeral-envs.yaml`'s own `managedNamespaceMetadata` at sync time, not by a manifest in
 the app's own repo (that was true only under the old Kustomize-based design, where
 `k8s/ephemeral/namespace.yaml` set it). The old cd-pipelines system had an equivalent
@@ -236,7 +236,7 @@ needs to happen once per app.)
 One-time setup per app, same spirit as the release stage's onboarding steps.
 
 1. **Push `nodejs-demo-app`'s new `platform/pr-env.yaml`** (see "Deploying through
-   idp-application, not raw Kustomize" above for its shape) - no PR needed unless the
+   airframe-application, not raw Kustomize" above for its shape) - no PR needed unless the
    repo has branch protection configured (it doesn't currently, unlike
    `gitops-nodejs-demo-app`).
 
@@ -272,7 +272,7 @@ One-time setup per app, same spirit as the release stage's onboarding steps.
    sed -e 's#<APP_NAMESPACE>#platform-cicd-demo#g' -e 's#<APP_NAME>#nodejs-demo-app#g' \
        -e 's#<APP_REPO_URL>#https://github.com/jfillman/nodejs-demo-app#g' \
        -e 's#<GITHUB_OWNER>#jfillman#g' \
-     charts/platform-cicd-app/templates/argocd/ephemeral-envs.yaml | kubectl apply -f -
+     charts/glidepath-app/templates/argocd/ephemeral-envs.yaml | kubectl apply -f -
    ```
    This renders a second `AppProject` of the same name into `argocd-apps` alongside the
    release stage's own `AppProject` in `argocd` (`templates/argocd/appproject.yaml` now
@@ -284,12 +284,12 @@ One-time setup per app, same spirit as the release stage's onboarding steps.
    ```
    sed -e 's#<APP_NAMESPACE>#app-nodejs-demo-app-cicd#g' -e 's#<APP_NAME>#nodejs-demo-app#g' \
        -e 's#<GITHUB_OWNER>#jfillman#g' \
-     charts/platform-cicd-app/templates/argocd/ephemeral-envs.yaml | kubectl apply -f -
+     charts/glidepath-app/templates/argocd/ephemeral-envs.yaml | kubectl apply -f -
    ```
 
 4. **Apply the TTL sweep CronJob** - once per cluster, not per Application:
    ```
-   kubectl apply -f charts/platform-cicd-control-plane/templates/argocd/pr-namespace-ttl-sweep-cronjob.yaml
+   kubectl apply -f charts/glidepath-control-plane/templates/argocd/pr-namespace-ttl-sweep-cronjob.yaml
    ```
 
 5. **Bootstrap the generator's token Secret once**, rather than waiting up to 20 minutes
@@ -304,14 +304,14 @@ One-time setup per app, same spirit as the release stage's onboarding steps.
    gap this surfaced: newly-created GHCR packages default to private" above. One-time,
    not needed again for this app.
 
-## PR comment: `charts/pr-preview-notify`
+## PR comment: `charts/glidepath-pr-preview-notify`
 
 An ArgoCD `PostSync` hook Job, sourced as a third `sources:` entry on
 `ephemeral-envs.yaml`'s per-PR `Application` (not a Tekton Task - the build stage
 finishes before ArgoCD has even attempted to deploy, so it can't know whether the sync
-will succeed; not a conditional resource inside the shared `idp-application` chart -
+will succeed; not a conditional resource inside the shared `airframe-application` chart -
 that chart is used by every tier, and nothing outside this one `ApplicationSet`
-template ever references `pr-preview-notify`, which is what actually guarantees this
+template ever references `glidepath-pr-preview-notify`, which is what actually guarantees this
 can't fire for a regular env). Posts/edits one PR comment (hidden-marker dedup, same
 pattern as `comment-pr-check-result.yaml`) with the namespace, the ArgoCD Application
 link, and a preview URL - or, since this platform has no ingress/DNS yet, a
@@ -330,7 +330,7 @@ This platform's clusters have no ingress/DNS by default (an already-documented g
 there's no clickable preview URL to post as a PR comment - access is
 `kubectl port-forward` into the PR's namespace, same as every other environment. Unlike
 the old Kustomize-based design, the Service name is NOT per-PR-suffixed - only the
-destination namespace differs between PRs (`idp-application` doesn't rename resources
+destination namespace differs between PRs (`airframe-application` doesn't rename resources
 per environment, it deploys the same fixed name into a different namespace each time):
 ```
 kubectl port-forward -n app-nodejs-demo-app-pr-<number> svc/nodejs-demo-app 8080:80

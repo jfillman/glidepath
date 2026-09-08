@@ -1,0 +1,11 @@
+apiVersion: v2
+name: glidepath-pr-preview-notify
+description: >-
+  A single PostSync hook Job that posts/edits a PR comment once a PR-based ephemeral
+  environment (glidepath-app's ephemeral-envs.yaml) syncs. Sourced ONLY as an extra
+  `sources:` entry on that ApplicationSet's per-PR Application template - never
+  referenced by release-application.yaml or the lower-env tier, so it structurally
+  cannot fire for a regular (non-PR) environment. See docs/admin/ephemeral-environments.md.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

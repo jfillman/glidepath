@@ -1,0 +1,23 @@
+# platform/dora-exporter/manifests/servicemonitor.yaml
+#
+# Standalone ServiceMonitor - relies on the cluster's Prometheus CR having empty
+# serviceMonitorSelector/serviceMonitorNamespaceSelector (matches everything
+# cluster-wide, confirmed on every real cluster this platform runs on so far), so this
+# is picked up with no extra wiring. Revisit if that Prometheus install's selectors are
+# ever tightened.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dora-exporter
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "dora-exporter"
+  namespace: platform-system
+spec:
+  selector:
+    matchLabels: { app: dora-exporter }
+  namespaceSelector:
+    matchNames: [platform-system]
+  endpoints:
+    - port: metrics
+      interval: 30s

@@ -1,0 +1,81 @@
+# catalog/pipelines/provenance-check.yaml
+#
+# Wraps two independent real gates (Phase 3 item 2) - the real (not stub) `provenance`
+# gate (renamed from `policy-check` 2026-08-23 - the old name was the only gate whose
+# own identity redundantly baked in "check", and didn't say what it actually verifies;
+# see docs/admin/release-guardrails.md). Referenced from an Application's GitOps repo's
+# own .tekton/pull-request-provenance.yaml, matching the exact structural shape
+# governance-check.yaml already established for the still-stub gates - one Check per
+# file, dedicated Pipeline per real gate, not a shared do-everything Pipeline.
+#
+# `verify` (sub-item 1, docs/commit-signing.md) checks the human's gitsign commit
+# signature against the Application's allowed-emails list. `verify-provenance` (sub-item 3,
+# docs/provenance-policy.md) is a genuinely separate, additive gate: the promoted
+# *image*'s own signature + SLSA provenance attestation, checked against Conforma's
+# policy engine - it doesn't re-check emails (deliberate, see that doc). Both must pass;
+# neither `runAfter`s the other - independent checks, not a pipeline.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: provenance-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+    - name: app-namespace
+      type: string
+    - name: app-name
+      type: string
+    - name: pr-number
+      type: string
+      default: ""
+      description: "PaC's raw pull_request.number webhook body field - only used to post the PR comment in this Pipeline's finally block."
+  tasks:
+    - name: verify
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: verify-commit-signature }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+
+    - name: verify-provenance
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: verify-image-provenance }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+
+  finally:
+    - name: comment-pr
+      when:
+        - { input: $(params.pr-number), operator: notin, values: [""] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: comment-pr-check-result }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: gate-name, value: provenance }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: status, value: $(tasks.status) }

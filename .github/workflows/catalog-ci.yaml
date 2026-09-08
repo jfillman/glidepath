@@ -15,11 +15,11 @@ name: catalog-ci
 on:
   pull_request:
     paths:
-      - "charts/platform-cicd-catalog/**"
+      - "charts/glidepath-catalog/**"
   push:
     branches: [main]
     paths:
-      - "charts/platform-cicd-catalog/**"
+      - "charts/glidepath-catalog/**"
 
 jobs:
   lint-and-render:
@@ -31,11 +31,11 @@ jobs:
         uses: azure/setup-helm@v4
 
       - name: helm lint
-        run: helm lint charts/platform-cicd-catalog
+        run: helm lint charts/glidepath-catalog
 
       - name: helm template (full render)
         run: |
-          helm template platform-cicd-catalog charts/platform-cicd-catalog \
+          helm template glidepath-catalog charts/glidepath-catalog \
             --namespace platform-catalog > /tmp/rendered.yaml
 
       - name: Structural sanity check

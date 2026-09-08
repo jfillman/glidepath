@@ -49,7 +49,7 @@ nested beneath it - `env = dev`/`staging`/`pr-<number>` produce
 conceptually - it's where the Application *runs*, not where its pipeline runs - so
 baking "cicd" into its name would be a real naming smell, not just redundant.
 
-`charts/platform-cicd-app`'s `platform-cicd-app.envNamespace` helper computes any of
+`charts/glidepath-app`'s `glidepath-app.envNamespace` helper computes any of
 these from `platformIdentity.type` + `platformIdentity.appName` + a given `env` value -
 nothing is a separately-set, independently-typed field that could drift from the
 convention.
@@ -64,7 +64,7 @@ above - never shared across Applications.
 
 ## Where this shows up
 
-- **Helm**: `charts/platform-cicd-app` (renamed from `platform-cicd-tenant`) -
+- **Helm**: `charts/glidepath-app` (renamed from `platform-cicd-tenant`) -
   `platformIdentity: {appName, type, gitopsRepoUrl, appRepoUrl, githubOwner}`. No
   `tenantNamespace` field anymore - see the computed App namespace above.
 - **Catalog Tekton params**: every Pipeline/Task parameter that used to be named
@@ -76,8 +76,8 @@ above - never shared across Applications.
   suffixing `app-namespace` with `-<env>` (that reproduced the old, now-corrected
   base-plus-suffix bug) - it takes a separate `app-type` param and builds
   `<app-type>-<app-name>-<env>` directly, the flat peer pattern described above.
-- **Labels**: `platform.io/app` is the only identity label now - `platform.io/tenant`
-  is dropped (it was always redundant with `platform.io/app`, since the two values were
+- **Labels**: `hangar.io/app` is the only identity label now - `hangar.io/tenant`
+  is dropped (it was always redundant with `hangar.io/app`, since the two values were
   always identical in practice). See [naming-conventions.md](naming-conventions.md).
 - **This is a chart-level rename, not yet a live one**: nothing has been `helm install`ed
   against the real cluster with these charts yet (see the Phase 3 item 7 status note in

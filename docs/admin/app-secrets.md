@@ -9,8 +9,8 @@ motivated building this generically instead of one-off per secret).
 
 **2026-08-19: every Application secret comes directly from that Application's own
 idp-managed Infisical `ClusterSecretStore`** - `<appName>-<devClusterName>` (e.g.
-`checkout-api-kind-dev`), the exact same object idp-service-catalog's
-`NodeJSApplication` XR provisions and `idp-application`'s own
+`checkout-api-kind-dev`), the exact same object airframe's
+`NodeJSApplication` XR provisions and `airframe-application`'s own
 `external-secret.yaml`/`notify-external-secret.yaml` already reference. `platform-cicd-
 app`'s own `app-secrets-external-secret.yaml` references it **by name, directly** - no
 platform-cicd-rendered store in between any more.
@@ -20,7 +20,7 @@ platform-cicd-rendered store in between any more.
 1. The first pass at this migration created a platform-cicd-owned
    `platform-cicd-kind-dev` Infisical project and expected every Application's
    secrets - including `slack-webhook-url`, already managed in the app's own project
-   for `idp-application`'s AI-triage notifications - to be planted there too, under a
+   for `airframe-application`'s AI-triage notifications - to be planted there too, under a
    `/<type>/<appName>/` path. Two copies of the same credential, two places to keep in
    sync.
 2. The immediate fix kept a platform-cicd-rendered `<type>-<appName>-secret-store`
@@ -73,7 +73,7 @@ purpose is a `cicd.yaml` edit only, never a new volume/volumeMount anywhere. `ke
 defaults to `name` - set it only when the secret's actual name in Infisical differs from
 the name you want exposed as. No `remoteRef.property` - ESO's `infisical` provider
 treats `property` as "extract a field from a structured/JSON secret value," not "which
-flat secret to read" (confirmed live by idp-service-catalog); every secret here is an
+flat secret to read" (confirmed live by airframe); every secret here is an
 ordinary flat value, so `key` alone is correct.
 
 The `ExternalSecret` renders **only** when `secrets:` is non-empty - an Application
@@ -125,7 +125,7 @@ what `notify-slack.yaml` already does for `slack-webhook-url`, sourced from
    ```
 3. Plant `slack-webhook-url` in the Application's own Infisical project (`shared`
    environment, root path) - via the Infisical UI/API, never through this chart or
-   committed to this repo. If `idp-application`'s own AI-triage Slack notifications are
+   committed to this repo. If `airframe-application`'s own AI-triage Slack notifications are
    already enabled for this app, this value already exists - nothing more to do.
 
 No control-plane-side onboarding step any more - `app-secrets-external-secret.yaml`

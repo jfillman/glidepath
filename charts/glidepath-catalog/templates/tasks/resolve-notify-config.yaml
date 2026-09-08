@@ -1,0 +1,81 @@
+# catalog/tasks/resolve-notify-config.yaml
+#
+# Produces the config-json notify-slack.yaml needs for deploy/release, which no longer
+# clone the app repo and full-schema-validate cicd.yaml just to get it (see docs/release.md).
+#
+# Two cases:
+#   - Event-chained (common case): config-json is forwarded as a Pipeline param from
+#     test's validate-config, through each stage's finally send-cdevent. No source
+#     workspace bound, so no clone/PVC cost - that's the point of this Task.
+#   - Git-rooted (deploy/release fired directly by a git event, no upstream stage): this
+#     Task does its own clone of just cicd.yaml's repo and reads it directly, skipping
+#     schema validation (cicd.yaml was already validated when onboarding-resync generated
+#     the .tekton file; this output only feeds a Slack notification, never a gate).
+#
+# The git-rooted case can't use the shared hub git-clone Task instead: that Task declares
+# its workspace required, and Tekton rejects a PipelineRun at admission time if an
+# `optional: true` Pipeline workspace is referenced by any task that isn't ALSO optional
+# at the Task level ("[User error] Optional workspace not supported by task"). Folding
+# the clone into this Task (whose workspace is `optional: true`) satisfies that check.
+#
+# Never when-gated, and has no result-dependency on any other task - only params and its
+# own workspace's bound-state. Tekton skips a task's result-consumers whenever the
+# producing task itself was skipped via `when:`, so notify-slack's reference to this
+# Task's result must always resolve regardless of git-rooted vs event-chained.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: resolve-notify-config
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: >-
+    Passes through an event-chained config-json inherited from an upstream stage, or
+    clones just enough to read cicd.yaml directly (best-effort, not schema-validated)
+    for a git-rooted deploy/release with no upstream stage in this run.
+  params:
+    - name: config-json
+      type: string
+      default: "{}"
+      description: Event-chained config-json forwarded from an upstream stage. "{}" when git-rooted (nothing upstream in this run - clone and read the workspace instead).
+    - name: git-url
+      type: string
+      default: ""
+      description: Only used for the git-rooted case (workspace bound but empty) - same git-url this Pipeline itself received.
+    - name: git-revision
+      type: string
+      default: ""
+      description: Only used for the git-rooted case - same git-revision this Pipeline itself received.
+  workspaces:
+    - name: source
+      optional: true
+      description: Only bound for a git-rooted run (see deploy.yaml/release.yaml) - left unbound for the common event-chained case, which is what lets the Pipeline skip PVC provisioning entirely.
+  results:
+    - name: config-json
+  steps:
+    - name: resolve
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/retry.sh"
+        if [[ "$(workspaces.source.bound)" == "true" ]]; then
+          WS="$(workspaces.source.path)"
+          CONFIG_FILE="${WS}/cicd.yaml"
+          if [[ ! -f "${CONFIG_FILE}" ]]; then
+            # A freshly-provisioned PVC's dir isn't owned by this container's non-root
+            # UID, so git's "dubious ownership" check refuses to operate on it without
+            # this explicit exception.
+            git config --global --add safe.directory "${WS}"
+            with_retry 3 -- git clone --quiet '$(params.git-url)' "${WS}"
+            git -C "${WS}" checkout --quiet '$(params.git-revision)'
+          fi
+          if [[ -f "${CONFIG_FILE}" ]]; then
+            yq -o=json '.' "${CONFIG_FILE}" | tee "$(results.config-json.path)" > /dev/null
+            exit 0
+          fi
+          echo "warning: ${CONFIG_FILE} not found even after cloning - falling back to the incoming config-json param." >&2
+        fi
+        echo -n '$(params.config-json)' | tee "$(results.config-json.path)" > /dev/null

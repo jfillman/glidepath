@@ -1,0 +1,163 @@
+# charts/glidepath-app/values.yaml
+#
+# Real installs merge three sources, later wins on key collision:
+#   helm install <app-name> charts/glidepath-app \
+#     -f <this file> -f <app-repo>/cicd.yaml -f platform-identity.yaml
+#
+# platform-identity.yaml supplies platformIdentity: below. It's not authoritative because
+# it's loaded last - it's authoritative because `platformIdentity` isn't a key
+# schemas/cicd.schema.json permits, so validate-cicd-config's additionalProperties:false
+# check rejects any cicd.yaml that tries to define it.
+#
+# Non-platformIdentity defaults below mirror schemas/cicd.schema.json's own defaults, so
+# `helm template`/`helm lint` work standalone without a real cicd.yaml (see
+# docs/admin/catalog-versioning.md's fixture-matrix testing).
+
+build:
+  agent: nodejs-20
+  unitTest:
+    enabled: true
+  sonar: false
+  cache:
+    enabled: false
+    size: small
+  sourceVolume:
+    size: small
+
+test:
+  enabled: true
+
+deploy:
+  lowerEnvironments: [dev]
+  upperEnvironments: []
+  strategy: deployment
+
+ephemeralEnvironments:
+  branch:
+    enabled: false
+  pullRequest:
+    enabled: false
+  ttl: 5d
+
+governance:
+  sast: false
+  imageScan: false
+  policyCheck: false
+  sbom: false
+  allowedCommitSigners: []
+
+notifications:
+  slack:
+    enabled: false
+
+# Optional named pipeline flows. Each entry defines a root trigger plus an ordered list
+# of stages (build -> deploy -> test -> release) without hand-writing Tekton YAML.
+#
+# Example explicit trigger shape:
+# pipelines:
+#   ci:
+#     trigger:
+#       source: git
+#       event: push
+#       branch: main
+#       filePathPattern:
+#         - "src/**"
+#     steps:
+#       - stage: build
+#       - stage: deploy
+#         env: dev
+#
+pipelines: {}
+
+# Stage presence is derived from `.Values.pipelines`; the older top-level `pipeline:`
+# array is no longer used.
+
+# Optional. Each entry pulls one key out of this Application's own idp-managed
+# Infisical project into an ExternalSecret-synced app-secrets Kubernetes Secret. Empty
+# by default - the ExternalSecret template only renders when non-empty. Every secret
+# declared here is this Application's OWN, read directly from the SAME
+# ClusterSecretStore idp's own NodeJSApplication XR already provisions for it (see
+# app-secrets-external-secret.yaml's own header) - nothing declared here needs
+# planting twice, and platform-cicd itself never owns or copies it.
+#
+# - name: slack-webhook-url  # key inside the synced Secret's data, and the secret's
+#                              # own name in Infisical (same key airframe-application's own
+#                              # notify-external-secret.yaml already reads)
+#   key: slack-webhook-url    # optional - only needed if the two differ (defaults to
+#                              # `name`)
+secrets: []
+
+# The dev cluster's name, matching airframe's own SecretStore XRD naming
+# convention (<appName>-<cluster>) - app-secrets-external-secret.yaml uses this to
+# compute this Application's own idp-managed ClusterSecretStore name directly
+# (<appName>-<devClusterName>). Must match whatever idp's NodeJSApplication XR actually
+# used for this Application's `cluster` field (today, always kind-dev - this
+# platform's CI stays on the dev cluster always).
+devClusterName: kind-dev
+
+# PR-based ephemeral environments (ephemeral-envs.yaml) deploy through
+# Airframe's airframe-application chart - same chart/pin-update discipline the
+# lower-env tier already uses (gitops-cluster-dev's lower-envs-applicationset.yaml),
+# so a preview env behaves like any other tier instead of a bespoke Kustomize-only
+# path. v0.3.40 (2026-08-24): airframe-application now renders an explicit Namespace
+# object, fixing the leftover-namespace-after-cascade-delete bug - bumped alongside
+# every other consumer's pin (lower-envs-applicationset.yaml,
+# tenant-onboarding/applicationset.yaml, both clusters) the same day.
+idpServiceCatalog:
+  repoUrl: https://github.com/jfillman/airframe.git
+  chartVersion: v0.3.40
+
+# Platform-wide constants every Application install shares (not per-app identity, so
+# kept outside platformIdentity). Defaults to this repo's own published image (real,
+# public, working) - override if you've built and published your own copy.
+toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-05-chain-slug
+
+# The single shared namespace Testkube CE installs into on this cluster - see
+# templates/testkube/rbac-and-secret.yaml's own header for why this Application
+# renders resources into it. Same value/default as charts/glidepath-control-plane's
+# own testkubeNamespace - kept in sync across both charts deliberately, not duplicated
+# by accident.
+testkubeNamespace: testkube
+
+# This chart's own repo - needed once ephemeral-envs.yaml's per-PR Application sources
+# charts/glidepath-pr-preview-notify from here as a third source. Same value/precedent as
+# glidepath-control-plane's own platformCicdRepoUrl (required there, no default) -
+# defaulted here instead, since a canary/test install without this set shouldn't fail
+# outright just because it can't post PR comments; the ApplicationSet source simply
+# points nowhere useful until overridden.
+platformCicdRepoUrl: https://github.com/jfillman/glidepath.git
+
+# Placeholder only - a real install MUST override every field here via
+# `-f platform-identity.yaml`. Left empty rather than a fake example so an accidental
+# install without that file fails loudly instead of deploying to a plausible-looking
+# wrong place. catalogNamespace may be overridden alone, e.g. for a canary Application
+# pointed at platform-catalog-canary (docs/admin/catalog-versioning.md).
+#
+# No `tenantNamespace` field - the Application's namespace is always computed from
+# type+appName via _helpers.tpl's namespace/envNamespace helpers, so it can't drift from
+# the <type>-<app-name>-<env> convention.
+platformIdentity:
+  appName: ""
+  type: app
+  gitopsRepoUrl: ""
+  appRepoUrl: ""
+  githubOwner: ""
+  catalogNamespace: platform-catalog
+  # Extra Repository CRs beyond gitops-<app-name> (full URLs), for an app whose
+  # gitops-image-bump stage targets a repo it doesn't itself own by naming convention
+  # (e.g. a hand-deployed singleton writing into a shared gitops-cluster-* repo - see
+  # docs/backstage-design.md). Deliberately lives here, in the operator-owned tenant
+  # identity.yaml, not in the app's own self-served cicd.yaml - granting write access
+  # to a repo an app doesn't already own by convention is a trust decision, not
+  # something the app owner should be able to self-grant by editing their own repo.
+  extraGitopsRepos: []
+  # Renders templates/pipelines-as-code/repository.yaml's Repository CR(s). Defaults true;
+  # set false to deregister a repo without the chart recreating the CR on next sync.
+  registerPipelinesAsCode: true
+  # Both stubs for real ingress/DNS, not yet present on this platform (docs/admin/
+  # ephemeral-environments.md's own "Access" section) - empty by default, so
+  # glidepath-pr-preview-notify's PR comment falls back to kubectl port-forward instructions for
+  # both. Platform-level facts (which cluster has which URLs), not per-app choices, so
+  # they live here rather than in cicd.yaml's schema-validated, app-owner-facing surface.
+  previewIngressBaseDomain: ""
+  argocdUIBaseURL: ""

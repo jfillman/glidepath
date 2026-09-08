@@ -22,7 +22,7 @@ execution), `app-nodejs-demo-app-dev` (deploy target), `app-nodejs-demo-app-stag
 (release staging), `app-nodejs-demo-app-pr-42` (PR ephemeral env),
 `infra-payments-db-cicd` (an `infra`-type Application's own pipeline execution).
 
-`charts/platform-cicd-app`'s `platform-cicd-app.envNamespace` helper computes any of
+`charts/glidepath-app`'s `glidepath-app.envNamespace` helper computes any of
 these from `platformIdentity.type` + `platformIdentity.appName` + a given `env` value -
 nothing is a separately-set, independently-typed field that could drift from the
 convention.
@@ -39,7 +39,7 @@ not changing: `platform-system`, `platform-catalog`, `platform-catalog-canary`,
 whatever that tool's own install convention uses.
 
 **Helm release name = namespace name, exactly.** `helm install <type>-<app-name>-cicd
-charts/platform-cicd-app ...` - one less thing to keep in sync by hand.
+charts/glidepath-app ...` - one less thing to keep in sync by hand.
 
 ## Catalog Task names
 
@@ -167,11 +167,11 @@ after the name is already assigned - see above), but build's PipelineRun *object
 still be labeled with its flow's `chainSlug` after the fact, since labels (unlike names)
 can be patched post-creation. `start-flow-root-span` mints chain-id and would need one
 more step to compute `chain_slug` (reusing `cdevents.sh`'s `chain_id_to_slug`) and
-`kubectl label pipelinerun $(context.pipelineRun.name) platform.io/chain-slug=<slug>
+`kubectl label pipelinerun $(context.pipelineRun.name) hangar.io/chain-slug=<slug>
 --overwrite` against itself - Tekton exposes `$(context.pipelineRun.name)` inside a
 step for exactly this. Would need confirming `pipeline-runner`'s ServiceAccount can
 `patch` PipelineRuns in its own namespace first. This would let `kubectl get pipelinerun
--l platform.io/chain-slug=<slug>` pull back build alongside test/deploy/release even
+-l hangar.io/chain-slug=<slug>` pull back build alongside test/deploy/release even
 though build's name string alone never will. Raised and consciously left undone
 2026-09-05 - worth reconsidering if build's isolation from the rest of its flow becomes
 an actual pain point (e.g. in dashboards or triage), not just a naming curiosity.
@@ -182,7 +182,7 @@ correlation to their release either, and unlike build there's no existing chain-
 channel into them at all - they're triggered by PaC straight off a GitHub PR event on
 the gitops repo, not through the CDEvents broker. Two paths considered and rejected for
 now:
-1. Bake a `platform.io/chain-slug` label into the static `.tekton/pull-request-*.yaml`
+1. Bake a `hangar.io/chain-slug` label into the static `.tekton/pull-request-*.yaml`
    check files when `open-release-pr.yaml` opens the release PR - rejected because that
    Task deliberately makes "exactly ONE commit per release PR" touching only the
    manifest (a prior incident, 2026-08-31, found that widening the diff re-ran every
@@ -204,8 +204,8 @@ Short, no trailing dash, matching the concept the file represents (`sast`, `prov
 
 ## Helm chart and file naming
 
-- Chart names: `platform-cicd-<concern>` (`platform-cicd-catalog`,
-  `platform-cicd-control-plane`, `platform-cicd-app`).
+- Chart names: `glidepath-<concern>` (`glidepath-catalog`,
+  `glidepath-control-plane`, `glidepath-app`).
 - Catalog Task/Pipeline/StepAction files: `<metadata.name>.yaml`, exactly - already the
   norm, keep it exact (a mismatch is a real "which file is this Task actually defined
   in" trap).
@@ -217,7 +217,7 @@ Short, no trailing dash, matching the concept the file represents (`sast`, `prov
 
 ## Labels and annotations
 
-`platform.io/*` is this platform's own label namespace. As of this pass, every resource
+`hangar.io/*` is this platform's own label namespace. As of this pass, every resource
 across all three charts (116 total: 43 catalog, 38 control-plane, 35 in a full-fixture
 App render) carries a full, consistent label set via a per-chart `<chart>.labels`
 named template (`templates/_helpers.tpl`) - not just the handful of resources that
@@ -232,43 +232,43 @@ app.kubernetes.io/name: <chart name>
 app.kubernetes.io/instance: <helm release name>
 app.kubernetes.io/version: <Chart.yaml appVersion>
 app.kubernetes.io/managed-by: Helm
-app.kubernetes.io/part-of: platform-cicd
+app.kubernetes.io/part-of: glidepath
 helm.sh/chart: <chart name>-<chart version>
 ```
 
-**`platform.io/component`**: `catalog` | `control-plane` | `app` - which of the three
+**`hangar.io/component`**: `catalog` | `control-plane` | `app` - which of the three
 charts owns this resource. The single most useful selector for a cross-cutting audit,
-e.g. `kubectl get role -A -l platform.io/component=app`.
+e.g. `kubectl get role -A -l hangar.io/component=app`.
 
-**`platform.io/subcomponent`**: which concern *within* that chart - matches the template
+**`hangar.io/subcomponent`**: which concern *within* that chart - matches the template
 subdirectory a resource's file lives in (`identity`, `triggers`, `env`, `argocd`,
 `governance`, `broker`, `dora-exporter`, `sigstore`, `hooks`, `secretstore`, `grafana`). Lets you
-narrow `platform.io/component=control-plane` down to just
-`platform.io/subcomponent=sigstore`, for example.
+narrow `hangar.io/component=control-plane` down to just
+`hangar.io/subcomponent=sigstore`, for example.
 
-**`platform.io/app`** (app chart only, on every resource it creates): most valuable on
+**`hangar.io/app`** (app chart only, on every resource it creates): most valuable on
 the resources that live in a *shared* namespace with other Applications' resources
 (`argocd`'s AppProjects/Applications/ApplicationSets/Roles) - lets you
-`kubectl get application -n argocd -l platform.io/app=nodejs-demo-app` instead of relying
+`kubectl get application -n argocd -l hangar.io/app=nodejs-demo-app` instead of relying
 on name-pattern matching. Applied to every app-chart resource, not just the
 shared-namespace ones, for consistency.
 
-**`platform.io/stub`**: `"true"` on catalog resources that are still genuinely stub
+**`hangar.io/stub`**: `"true"` on catalog resources that are still genuinely stub
 implementations - currently `governance-gate-stub` (Task), `governance-stub`
 (StepAction), `governance-check` (Pipeline, though live-confirmed unreferenced by any
 current onboarding trigger - a real, minor dead-code finding, not acted on here).
 Reinforces this platform's existing "stub-ness must be structurally loud" principle
 (previously only visible in trace span attributes and docs) at the resource-selection
-level too: `kubectl get task -n platform-catalog -l platform.io/stub=true` now answers
+level too: `kubectl get task -n platform-catalog -l hangar.io/stub=true` now answers
 "which catalog gates are still fake" directly.
 
-**Pre-existing `platform.io/*` labels/annotations** (kept exactly as-is, already
-consistent with this scheme): `platform.io/catalog: "true"` (catalog-resolvable
-resources), `platform.io/dora-track: "true"` (Applications the DORA exporter watches),
-`platform.io/dora-pending`/`-app-namespace`/`-app`/`-flow-start-time`/`-baseline-started-at`
-(DORA tracking state annotations on Applications), `platform.io/stall-alerted` (dedup
-marker), `platform.io/ephemeral-env` (PR-namespace TTL sweep target marker),
-`platform.io/purpose` (free-text annotation, currently only on the ClusterSecretStore's
+**Pre-existing `hangar.io/*` labels/annotations** (kept exactly as-is, already
+consistent with this scheme): `hangar.io/catalog: "true"` (catalog-resolvable
+resources), `hangar.io/dora-track: "true"` (Applications the DORA exporter watches),
+`hangar.io/dora-pending`/`-app-namespace`/`-app`/`-flow-start-time`/`-baseline-started-at`
+(DORA tracking state annotations on Applications), `hangar.io/stall-alerted` (dedup
+marker), `hangar.io/ephemeral-env` (PR-namespace TTL sweep target marker),
+`hangar.io/purpose` (free-text annotation, currently only on the ClusterSecretStore's
 source namespace).
 
 A real bug found and fixed while applying this broadly: two pre-existing resources

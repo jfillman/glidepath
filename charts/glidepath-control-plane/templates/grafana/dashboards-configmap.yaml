@@ -1,0 +1,26 @@
+# templates/grafana/dashboards-configmap.yaml
+#
+# Renders each files/dashboards/*.json as its own ConfigMap (`grafana_dashboard: "1"`
+# sidecar convention) - one ConfigMap per dashboard, not one multi-key ConfigMap, so a
+# `helm diff` on one dashboard edit doesn't touch every other dashboard. Migrated from a
+# separate, untracked `kubectl apply -k observability/grafana/` step into this chart's
+# own release for real version/rollback (docs/admin/installation.md).
+#
+# namespace is a literal "observability", not a value - both real clusters this chart
+# runs on use that name for their observability stack.
+{{- range $path, $_ := .Files.Glob "files/dashboards/*.json" }}
+{{- $name := base $path | trimSuffix ".json" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-{{ $name }}
+  labels:
+    {{- include "glidepath-control-plane.labels" $ | nindent 4 }}
+    hangar.io/subcomponent: "grafana"
+    grafana_dashboard: "1"
+  namespace: observability
+data:
+  {{ base $path }}: |
+    {{- $.Files.Get $path | nindent 4 }}
+{{- end }}

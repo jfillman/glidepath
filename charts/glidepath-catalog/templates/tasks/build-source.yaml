@@ -1,0 +1,189 @@
+# catalog/tasks/build-source.yaml
+#
+# Runs the app's own build.sh inside its resolved build-agent image, before
+# build-image.yaml packages the result with kaniko. Split into its own Task so it can run
+# concurrently with unit-test, host the dependency-cache workspace, and get its own
+# retry/observability separate from the image push. Optional - build.yaml's when: clause
+# skips it for apps building entirely inside a Dockerfile (see has-build-script result).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: build-source
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Runs build.script (if cicd.yaml defines one) inside the resolved build-agent image, before kaniko packages the result.
+  workspaces:
+    - name: source
+  # Per-app dependency-download cache PVC (charts/glidepath-app/templates/env/
+  # build-cache-pvc.yaml) - one per Application since build.cache.size is a per-app
+  # choice. claimName is param-substituted (Tekton allows $(params.*) in volume
+  # claimNames).
+  #
+  # A plain volume, not a Tekton *workspace*: a workspace-backed PVC here would collide
+  # with Tekton's Affinity Assistant, which only allows one PVC-backed workspace per
+  # TaskRun pod - and unit-test/build-source already share the `source` workspace and run
+  # concurrently. Real error hit: "more than one PersistentVolumeClaim is bound". A raw
+  # volume sidesteps Affinity Assistant (same pattern build-image.yaml uses for
+  # registry-credentials). Always mounted; actual use is gated on build.cache.enabled in
+  # the script below.
+  volumes:
+    - name: build-cache
+      persistentVolumeClaim:
+        claimName: build-cache-$(params.app-name)
+  params:
+    - name: config-json
+      type: string
+      description: Output of validate-cicd-config's config-json result.
+    - name: agent-image
+      type: string
+      description: Resolved build-agent image (catalog/tasks/validate-cicd-config.yaml's agent-image result) - build.sh runs inside this, same image run-tests.yaml uses.
+    - name: app-name
+      type: string
+      description: Selects this app's own build-cache-<app-name> PVC (charts/glidepath-app/templates/env/build-cache-pvc.yaml) - not used for anything else in this Task.
+    - name: flow-traceparent
+      type: string
+      description: Root traceparent for the whole flow (from start-flow-root-span) - gives this Task's span its trace id. Always provided by build.yaml, unlike governance-gate-stub which also runs from context-less PR checks.
+    - name: stage-span-id
+      type: string
+      description: The current stage's own span id (from start-stage-span) - this Task's span is parented to it.
+  results:
+    - name: span-start-time
+      description: Set only if run-build-script's own step ran (i.e. a real build.script was configured, not skipped). Consumed by emit-span below.
+    - name: span-end-time
+      description: Set only if run-build-script's real work succeeded - see emit-span's own header comment for the honest limit this implies.
+  steps:
+    - name: resolve-build-script-path
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      results:
+        - name: build-script-path
+        - name: cache-type
+          description: "'npm'/'maven'/'' - derived from build.agent's prefix rather than a separate cicd.yaml field. Empty when caching is disabled or the agent has no cache support yet (python-*/go-1.22)."
+        - name: cache-subdir
+          description: "'<cache-type>/<lockfile-hash>', or '' if caching isn't active. The lockfile hash is the cache-invalidation mechanism - a dependency change produces a new subdir instead of reusing stale packages."
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        CFG='$(params.config-json)'
+        BUILD_SCRIPT_PATH="$(jq -r '.build.script' <<< "${CFG}")"
+        echo -n "${BUILD_SCRIPT_PATH}" | tee "$(step.results.build-script-path.path)"
+
+        CACHE_ENABLED="$(jq -r '.build.cache.enabled // false' <<< "${CFG}")"
+        AGENT="$(jq -r '.build.agent' <<< "${CFG}")"
+        CACHE_TYPE=""
+        LOCKFILE=""
+        case "${AGENT}" in
+          nodejs-*) CACHE_TYPE="npm"; LOCKFILE="$(workspaces.source.path)/package-lock.json" ;;
+          openjdk-*) CACHE_TYPE="maven"; LOCKFILE="$(workspaces.source.path)/pom.xml" ;;
+          *) echo "build.cache: no cache support yet for agent '${AGENT}' - enabled flag is a no-op" ;;
+        esac
+        CACHE_SUBDIR=""
+        if [[ "${CACHE_ENABLED}" == "true" && -n "${CACHE_TYPE}" ]]; then
+          if [[ -f "${LOCKFILE}" ]]; then
+            LOCKFILE_HASH="$(sha256sum "${LOCKFILE}" | cut -d' ' -f1 | cut -c1-16)"
+            CACHE_SUBDIR="${CACHE_TYPE}/${LOCKFILE_HASH}"
+          else
+            echo "build.cache: enabled but no ${LOCKFILE} found - proceeding uncached" >&2
+          fi
+        fi
+        echo -n "${CACHE_TYPE}" | tee "$(step.results.cache-type.path)"
+        echo -n "${CACHE_SUBDIR}" | tee "$(step.results.cache-subdir.path)"
+
+    - name: run-build-script
+      image: $(params.agent-image)
+      workingDir: $(workspaces.source.path)
+      volumeMounts:
+        - name: build-cache
+          mountPath: /cache
+      # Cross-step result refs ($(steps.X.results.Y)) are only allowed in env/command/args,
+      # not inline in `script:` - Tekton's admission webhook rejects that. Routed through
+      # env vars instead.
+      env:
+        - name: BUILD_SCRIPT_PATH
+          value: $(steps.resolve-build-script-path.results.build-script-path)
+        - name: CACHE_TYPE
+          value: $(steps.resolve-build-script-path.results.cache-type)
+        - name: CACHE_SUBDIR
+          value: $(steps.resolve-build-script-path.results.cache-subdir)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        # Plain `date`, not catalog/lib/otel.sh - this step runs inside the app's own
+        # generic build-agent image, which has neither otel-cli nor $PLATFORM_LIB.
+        # Timestamps are handed off as results; emit-span below sends the actual span
+        # later from the toolbox image where otel-cli exists.
+        date -u +"%Y-%m-%dT%H:%M:%S.%NZ" | tee "$(results.span-start-time.path)"
+
+        # Points the build tool's own dependency-download cache at the persistent `cache`
+        # workspace, not node_modules/target directly - the tool's own incremental logic
+        # (npm's tarball cache, Maven's local repo) is what avoids re-downloading, and
+        # `npm ci` rebuilds node_modules from scratch every run anyway.
+        #
+        # Cache is per-APP, not per-branch/per-PipelineRun, so concurrent builds of the
+        # same app share it - expected, not an edge case. npm's cache store is
+        # content-addressable and safe for concurrent access; Maven's local repo is NOT
+        # (concurrent `mvn` writes corrupt it), so MAVEN_LOCK_DIR below is a portable
+        # mkdir-based lock serializing builds that land on the same cache key (i.e. the
+        # same pom.xml, so they'd produce the same deps anyway).
+        if [[ -n "${CACHE_SUBDIR}" ]]; then
+          CACHE_DIR="/cache/${CACHE_SUBDIR}"
+          mkdir -p "${CACHE_DIR}"
+          case "${CACHE_TYPE}" in
+            npm) export NPM_CONFIG_CACHE="${CACHE_DIR}" ;;
+            maven)
+              export MAVEN_OPTS="-Dmaven.repo.local=${CACHE_DIR} ${MAVEN_OPTS:-}"
+              MAVEN_LOCK_DIR="${CACHE_DIR}/.build-lock"
+              WAITED=0
+              until mkdir "${MAVEN_LOCK_DIR}" 2>/dev/null; do
+                if (( WAITED >= 600 )); then
+                  echo "error: timed out waiting for build-cache lock at ${MAVEN_LOCK_DIR} (another concurrent Maven build holding it too long?)" >&2
+                  exit 1
+                fi
+                sleep 2
+                WAITED=$((WAITED + 2))
+              done
+              trap 'rmdir "${MAVEN_LOCK_DIR}" 2>/dev/null || true' EXIT
+              echo "build.cache: acquired Maven local-repo lock at ${MAVEN_LOCK_DIR} (concurrent-write protection)"
+              ;;
+          esac
+          echo "build.cache: enabled (${CACHE_TYPE}, keyed at ${CACHE_SUBDIR})"
+        fi
+
+        SCRIPT="${BUILD_SCRIPT_PATH}"
+        if [[ ! -f "${SCRIPT}" ]]; then
+          echo "error: build.script '${SCRIPT}' (from cicd.yaml) not found in repo." >&2
+          exit 1
+        fi
+        chmod +x "${SCRIPT}" || true
+        bash "${SCRIPT}"
+        date -u +"%Y-%m-%dT%H:%M:%S.%NZ" | tee "$(results.span-end-time.path)"
+
+    # Only reached on success - `set -euo pipefail` above halts the TaskRun before this
+    # runs if build.script fails, so a failed build-source gets no span (same documented
+    # gap as clone-repo not being instrumented, see docs/tracing.md). Tekton's own
+    # TaskRun timestamps still show that a failure happened, just not as a Tempo span.
+    - name: emit-span
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      env:
+        - name: FLOW_TRACEPARENT
+          value: $(params.flow-traceparent)
+        - name: STAGE_SPAN_ID
+          value: $(params.stage-span-id)
+        - name: SPAN_START
+          value: $(results.span-start-time.path)
+        - name: SPAN_END
+          value: $(results.span-end-time.path)
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://otel-collector-opentelemetry-collector.observability.svc.cluster.local:4318
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/otel.sh"
+        # otel_child_span (used elsewhere) wraps a *live* command - not applicable here
+        # since the real work already finished in the previous step. Send the known
+        # start/end times directly instead.
+        otel_task_span_send "build-source" "${FLOW_TRACEPARENT}" "${STAGE_SPAN_ID}" \
+          "$(cat "${SPAN_START}")" "$(cat "${SPAN_END}")" "Succeeded"

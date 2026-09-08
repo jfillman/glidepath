@@ -11,8 +11,8 @@ ESO was installed early in this platform's life but had zero configured backends
 Phase 3 item 7; the pragmatic bridge that followed (ESO's `kubernetes` provider,
 mirroring real `Secret`s out of one hand-managed namespace) was always documented as a
 stopgap pending "community Infisical, via Dream IDP" - that future step has arrived.
-`idp-service-catalog` runs a self-hosted Infisical instance (kind-dev only) plus
-`infisical-secretstore-operator`, the same mechanism idp-application-delivered apps
+`airframe` runs a self-hosted Infisical instance (kind-dev only) plus
+`infisical-secretstore-operator`, the same mechanism airframe-application-delivered apps
 already use for their own runtime secrets.
 
 The control plane gets its **own** Infisical project (not an app's), one per cluster it
@@ -31,14 +31,14 @@ spec:
   authMethod: kubernetes
 ```
 
-(`charts/platform-cicd-control-plane/templates/secretstore/infisical-project.yaml`).
+(`charts/glidepath-control-plane/templates/secretstore/infisical-project.yaml`).
 `authMethod: kubernetes` (zero-persisted-credential, ESO's controller SA token verified
 live against this cluster's own TokenReview API) is correct here because kind-dev is
 also the Infisical host - see `infisicalHost`/Kubernetes-vs-Universal-Auth in
 `idp/docs/service-catalog-design.md` Item 8 for the underlying mechanism this reuses. A
 cluster that runs this control plane but does NOT host Infisical would need
 `authMethod: universal` instead - not built, since kind-dev is currently the only
-platform-cicd-control-plane install.
+glidepath-control-plane install.
 
 The resulting `ClusterSecretStore` (`platform-secret-store`, name unchanged from the old
 `kubernetes`-provider version so every downstream `secretStoreRef.name` reference kept
@@ -56,7 +56,7 @@ An Application's own secrets (Slack webhook, SAST scan credentials, ...) - see
 [app-secrets.md](app-secrets.md) - come from THAT Application's own idp-managed
 `ClusterSecretStore` (`<appName>-<devClusterName>`, e.g. `checkout-api-kind-dev`,
 provisioned by idp's `NodeJSApplication` XR) - referenced **directly, by name**, from
-`platform-cicd-app`'s own `app-secrets-external-secret.yaml`. No platform-cicd-rendered
+`glidepath-app`'s own `app-secrets-external-secret.yaml`. No platform-cicd-rendered
 store in between. Never a platform-cicd-owned project either - app secrets are the app
 owner's to manage, once, in the one place idp already gives every onboarded app.
 
@@ -67,7 +67,7 @@ migration**:
    `platform-cicd-kind-dev` project instead, path-scoped per app
    (`/<type>/<appName>/`) - a real design mistake. It meant `slack-webhook-url`
    specifically needed planting TWICE: once there, and once in the app's own project,
-   where `idp-application`'s own AI-triage Slack notifications already read it from.
+   where `airframe-application`'s own AI-triage Slack notifications already read it from.
 2. The immediate fix still rendered a platform-cicd-owned `ClusterSecretStore`
    (`<type>-<appName>-secret-store`) per app, just repointed at the app's own project -
    a real, live-caught redundancy: `kubectl get clustersecretstore checkout-api-kind-dev
@@ -95,20 +95,20 @@ deploy infrastructure doubling as a secret backend. That's gone too.
 ## registry-credentials: disseminated via ClusterExternalSecret
 
 **2026-08-19: no longer a per-app opt-in.** Every Application used to need its own
-`registry-credentials` `ExternalSecret`, rendered by the app chart (platform-cicd-app)
-or, for idp-application-delivered workloads, gated behind a `registryCredentials.enabled`
+`registry-credentials` `ExternalSecret`, rendered by the app chart (glidepath-app)
+or, for airframe-application-delivered workloads, gated behind a `registryCredentials.enabled`
 values flag. Both are gone, replaced by ONE `ClusterExternalSecret`
-(`charts/platform-cicd-control-plane/templates/secretstore/
+(`charts/glidepath-control-plane/templates/secretstore/
 registry-credentials-cluster-external-secret.yaml`, mirrored hand-authored on kind-prod
 in `gitops-cluster-kind-prod/10-crds-operators/external-secrets/`), which generates the
 `registry-credentials` `Secret` automatically in every namespace labeled
-`platform.io/managed-secrets: "true"` - applied by ArgoCD's own
+`hangar.io/managed-secrets: "true"` - applied by ArgoCD's own
 `syncPolicy.managedNamespaceMetadata` on every namespace this platform's
 `tenant-onboarding` `ApplicationSet`s create (both platform-cicd's own CI namespaces and
 idp's `app-<appName>-<env>` ones), re-applied every sync so it also lands on
 already-existing namespaces. Every app's own `ServiceAccount` (both
-`charts/platform-cicd-app/templates/identity/pipeline-runner.yaml` and
-`idp-application`'s `workload/serviceaccount.yaml`) references that Secret name
+`charts/glidepath-app/templates/identity/pipeline-runner.yaml` and
+`airframe-application`'s `workload/serviceaccount.yaml`) references that Secret name
 unconditionally now - no per-app opt-in left to forget.
 
 Populating the credential itself (one-time, manual, by design): plant a
@@ -118,7 +118,7 @@ cluster - same "manual by design" posture as everything else here. A single-flat
 key, not multiple Infisical fields extracted via `dataFrom.extract`, since ESO's real
 provider behavior for that combination against Infisical wasn't confirmed live going
 into this migration - safer to store the one already-shaped JSON blob and template
-`kubernetes.io/dockerconfigjson` from it directly (the same pattern idp-application's
+`kubernetes.io/dockerconfigjson` from it directly (the same pattern airframe-application's
 own registry-credentials template already used).
 
 ## Relay-token distribution
@@ -131,12 +131,12 @@ app's namespace on the upper cluster (`hack/bootstrap-upper-cluster.sh`). Now:
 - The dev-cluster (verifier) side - `cluster-<name>-relay-token` `Secret`s in
   `platform-system`, which `argocd-outcome-relay` compares bearer tokens against - sync
   from `platform-cicd-kind-dev`'s Infisical project (`relay-token-<cluster>` key per
-  registered cluster), via `charts/platform-cicd-control-plane/templates/clusters/
+  registered cluster), via `charts/glidepath-control-plane/templates/clusters/
   relay-token-external-secret.yaml`.
 - The upper-cluster (caller) side - `platform-outcome-relay-token`, read by the
   release-tracking hook Jobs (`catalog/lib/argocd-outcome-hook.sh`) - syncs from that
   cluster's OWN `platform-cicd-<cluster>` Infisical project, via
-  `idp-service-catalog/charts/idp-application`'s `templates/release-tracking/
+  `airframe/charts/airframe-application`'s `templates/release-tracking/
   relay-token-external-secret.yaml`, gated on `releaseTracking` exactly like the hook
   Jobs/RBAC it accompanies.
 
@@ -156,7 +156,7 @@ Excluded from this migration, deliberately: `fulcio-secret`/`fulcio-server-confi
 (fresh, per-cluster-generated root key material by design - not something "synced from
 a backend" makes sense for). **2026-09-05: this generation moved from a manually-run
 script into an ArgoCD pre-install hook Job**
-(`charts/platform-cicd-control-plane/templates/hooks/fulcio-bootstrap-job.yaml`) - the
+(`charts/glidepath-control-plane/templates/hooks/fulcio-bootstrap-job.yaml`) - the
 key still never touches Infisical, a repo, or a human's terminal, only the trigger
 changed (runs on first cluster sync instead of an operator remembering to run
 `hack/generate-cluster-values.sh`, which is now a documented manual override path for

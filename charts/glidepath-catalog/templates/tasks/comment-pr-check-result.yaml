@@ -1,0 +1,236 @@
+# catalog/tasks/comment-pr-check-result.yaml
+#
+# Posts a PR comment reporting a governance check's outcome, on top of the GitHub Check
+# PaC already reports natively - failure detail, a gate-specific recommendation, and the
+# `/retest` command, right in the PR conversation. Posts on success too, not just failure.
+#
+# Invoked from each governance-check Pipeline's `finally:` block, same placement as
+# notify-slack.yaml, so it still runs when an earlier task failed. Auth via the same
+# shared-broker GitHub App token mechanism as open-release-pr.yaml/detect-bypass-merge.yaml.
+#
+# Failure detail is a live, best-effort pod-log lookup rather than a per-Task result
+# field - avoids adding a result to every gate's own verification Task(s) for
+# information already sitting in their pod logs.
+#
+# Edits an existing comment in place (hidden `<!-- platform-cicd:gate:<name> -->` marker)
+# instead of always posting new: every commit on a PR is now independently re-verified
+# (a real Check Run each time), so without this dedup that would spam N appended comments
+# for unchanged outcomes.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: comment-pr-check-result
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Posts a PR comment reporting a governance check's real outcome - failure detail + a gate-specific recommendation + the /retest command on failure, a short confirmation on success.
+  params:
+    - name: repo-url
+      type: string
+      description: The gitops repo's own URL - PaC's `repo_url`.
+    - name: pr-number
+      type: string
+      description: "PaC's raw pull_request.number webhook body field - the check Pipelines don't otherwise carry a PR number, only repo-url/revision."
+    - name: revision
+      type: string
+      default: ""
+      description: "The gitops PR's head commit - PaC's `revision`. Fallback source for the real PR number when pr-number arrives unsubstituted (see script header on PaC's pull_request.number webhook var only resolving for genuine pull_request webhooks)."
+    - name: gate-name
+      type: string
+      description: Any name from .Values.releaseGuardrails (docs/admin/release-guardrails.md) - must match the real `/retest <name>` PaC expects (docs/release.md).
+    - name: pipeline-run-name
+      type: string
+      description: $(context.pipelineRun.name) from the calling Pipeline - used to find which of its own child TaskRuns failed.
+    - name: status
+      type: string
+      description: $(tasks.status) from the calling Pipeline's finally block.
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+  steps:
+    - name: comment
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: PR_NUMBER
+          value: $(params.pr-number)
+        - name: REVISION
+          value: $(params.revision)
+        - name: GATE_NAME
+          value: $(params.gate-name)
+        - name: PIPELINE_RUN_NAME
+          value: $(params.pipeline-run-name)
+        - name: STATUS
+          value: $(params.status)
+        - name: NAMESPACE
+          # $(context.pipelineRun.namespace) does NOT resolve here - that variable is only
+          # valid inside a Pipeline's own spec, never inside a Task's field values
+          # directly. It's left completely unsubstituted (a literal string, not an
+          # error), so every kubectl call below would target a nonexistent namespace and
+          # fail silently under set -e. $(context.taskRun.namespace) is the correct
+          # Task-level equivalent - a TaskRun always runs in the same namespace as its
+          # owning PipelineRun.
+          value: $(context.taskRun.namespace)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+
+        owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+
+        # PaC's {{ "{{" }} body.pull_request.number {{ "}}" }} template var only resolves for a genuine
+        # `pull_request` webhook - a `/retest <gate>`/`/test <gate>` PR comment fires an
+        # `issue_comment` webhook instead, whose payload has no top-level `pull_request`
+        # field, so PaC leaves the raw, unsubstituted template string in place (confirmed
+        # live 2026-08-23: every retest-triggered check got that literal string as
+        # PR_NUMBER, breaking every curl URL below). Fall back to the Commits API, which
+        # finds the PR from the commit itself and works regardless of what triggered this
+        # run.
+        if ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+          resolved=""
+          if [[ -n "${REVISION}" ]]; then
+            resolved="$(curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
+              -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/pulls" \
+              | jq -r '.[0].number // empty')"
+          fi
+          if ! [[ "${resolved}" =~ ^[0-9]+$ ]]; then
+            echo "pr-number param wasn't a real PR number ('${PR_NUMBER}') and couldn't resolve one from revision '${REVISION}' either - skipping PR comment (the native GitHub Check already reports this gate's outcome)." >&2
+            exit 0
+          fi
+          PR_NUMBER="${resolved}"
+        fi
+
+        if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
+          # Best-effort: surface a Task result if one exists (only image-scan produces
+          # findings-summary today) - never required, a plain pass is a complete comment too.
+          taskrun_results="$(kubectl get taskrun -n "${NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json 2>/dev/null)"
+          summary="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "findings-summary")][0].value // empty')"
+          # governance-gate-stub/qa-gate (ADR-0003) emit outcome=stub - a stub always
+          # succeeds, so STATUS alone can't tell "really passed" from "not a real check
+          # yet". Without this, a stubbed gate (currently itsm/qa/policy-validation/
+          # image-promotion) posts the same "passed" wording as a genuine result, which
+          # reads as the gate having actually verified something it never checked.
+          outcome="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "outcome")][0].value // empty')"
+          if [[ "${outcome}" == "stub" ]]; then
+            body="### ⚠️ \`${GATE_NAME}\` — stub, not a real check yet"$'\n\n'"This gate always succeeds today; it hasn't verified anything real. See docs/admin/governance-stubs.md."
+          else
+            body="### ✅ \`${GATE_NAME}\` passed"
+            if [[ -n "${summary}" ]]; then
+              body="${body}"$'\n\n'"${summary}"
+            fi
+          fi
+        else
+          # Same failed-TaskRun + log-excerpt lookup notify-slack.yaml uses - best-effort,
+          # naturally empty if no False-conditioned child exists yet.
+          failed_taskrun="$(kubectl get taskrun -n "${NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json 2>/dev/null \
+            | jq -r '[.items[] | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
+          log_excerpt=""
+          if [[ -n "${failed_taskrun}" ]]; then
+            pod_name="$(kubectl get taskrun "${failed_taskrun}" -n "${NAMESPACE}" -o jsonpath='{.status.podName}' 2>/dev/null || true)"
+            if [[ -n "${pod_name}" ]]; then
+              log_excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=20 2>/dev/null | tail -c 1200 || true)"
+            fi
+          fi
+          [[ -z "${log_excerpt}" ]] && log_excerpt="(no log excerpt available)"
+
+          # Gate-specific guidance - each check fails for a different reason, so "push a
+          # new commit and retest" isn't right for all of them (sast/image-scan need a new
+          # build; provenance's two sub-checks need different fixes; sbom is usually transient).
+          case "${GATE_NAME}" in
+            sast)
+              recommendation="This checks the SAST (Semgrep) result already recorded when the image was **built**, not a fresh scan - re-running this check alone can't change the outcome. Fix the findings in your source and push a new commit to trigger a fresh build; once that build's own sast-scan passes, this check will pass against the new image."
+              ;;
+            image-scan)
+              recommendation="This is a live Trivy re-scan of the actual image about to be promoted. Update the vulnerable dependencies and push a new commit to trigger a fresh build+release - re-running this check alone re-scans the same unchanged image."
+              ;;
+            provenance)
+              recommendation="If the error above mentions an empty allowlist: this app has no \`governance.allowedCommitSigners\` configured yet - a platform admin needs to populate it before any commit can pass. If it instead mentions certificate/attestation verification: this is a known platform-level issue (see docs/provenance-policy.md), not something fixable from this PR - contact platform admins."
+              ;;
+            sbom)
+              recommendation="This usually indicates a transient generation/signing/push error, not a content problem."
+              ;;
+            itsm|qa|policy-validation)
+              recommendation="This gate is a stub - it always no-ops and reports \`stub\`, never a real pass/fail judgment (see docs/admin/governance-stubs.md). A failure here means something broke in the platform scaffolding itself (e.g. the shared toolbox image or OTel collector), not a real ITSM/QA/policy rejection - check the log excerpt above and \`/retest ${GATE_NAME}\`."
+              ;;
+            image-promotion)
+              recommendation="This either means a sibling guardrail check on this PR hasn't passed yet, or timed out waiting for one to finish (see the log excerpt above for which) - image-promotion runs last and depends on every other check succeeding first (docs/admin/release-guardrails.md). Once every other check on this PR is green, comment \`/retest image-promotion\`. Note the actual dev-to-upper-registry image copy is still a stub - this check only enforces the ordering today."
+              ;;
+            *)
+              recommendation="See the log excerpt above for detail."
+              ;;
+          esac
+
+          body="$(printf '### ❌ `%s` failed\n\n**What happened:**\n```\n%s\n```\n\n**Recommendation:** %s\n\n**To retry:** comment `/retest %s` on this PR once the underlying issue is fixed.' \
+            "${GATE_NAME}" "${log_excerpt}" "${recommendation}" "${GATE_NAME}")"
+        fi
+
+        # Hidden marker (HTML comment, invisible in rendered markdown) identifying which
+        # gate this comment belongs to, so a later run can find and edit it in place.
+        marker="<!-- platform-cicd:gate:${GATE_NAME} -->"
+        body="${marker}"$'\n'"${body}"
+
+        # Response captured via $(...), not streamed to stdout - GitHub's create-comment
+        # response is a full ~4KB comment object; leaving it uncaptured made this step
+        # fail with zero output. Matches this codebase's convention of capturing any large
+        # API response (open-release-pr.yaml's pr_response, etc.) rather than streaming it raw.
+        #
+        # Look for this gate's prior comment on this PR (paginated, 100 is plenty) before
+        # deciding whether to PATCH (edit in place) or POST (first report for this gate).
+        existing_comment_id="$(curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
+          -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${owner}/${repo}/issues/${PR_NUMBER}/comments?per_page=100" \
+          | jq -r --arg marker "${marker}" '[.[] | select(.body | startswith($marker))][0].id // empty')"
+
+        if [[ -n "${existing_comment_id}" ]]; then
+          comment_response="$(curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
+            -X PATCH -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${owner}/${repo}/issues/comments/${existing_comment_id}" \
+            -d "$(jq -n --arg body "${body}" '{body: $body}')")"
+          echo "updated existing PR comment: $(jq -r '.html_url' <<<"${comment_response}")"
+        else
+          comment_response="$(curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
+            -X POST -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${owner}/${repo}/issues/${PR_NUMBER}/comments" \
+            -d "$(jq -n --arg body "${body}" '{body: $body}')")"
+          echo "posted new PR comment: $(jq -r '.html_url' <<<"${comment_response}")"
+
+          # Self-heal a real race: since every commit on a release PR is independently
+          # re-verified, ANY two check runs for the same gate landing close together
+          # (e.g. a `/retest <gate>` racing a webhook redelivery of the original run, or -
+          # before 2026-08-31 - open-release-pr.yaml's own two commits, back when it made
+          # two) can both read "no existing comment" before either posts - two comments
+          # with the same marker. No lock needed: re-list this gate's comments now and
+          # collapse to the single earliest (lowest id) survivor. Every racing run
+          # converges on the same decision off the same eventually-consistent list;
+          # deleting an already-deleted duplicate is expected and tolerated (--fail
+          # dropped on purpose here).
+          dup_ids="$(curl --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${owner}/${repo}/issues/${PR_NUMBER}/comments?per_page=100" \
+            | jq -r --arg marker "${marker}" '[.[] | select(.body | startswith($marker))] | sort_by(.id) | .[1:][].id' \
+            || true)"
+          while IFS= read -r dup_id; do
+            [[ -z "${dup_id}" ]] && continue
+            echo "collapsing duplicate ${GATE_NAME} comment ${dup_id} (race with a concurrent check run)"
+            curl --silent --show-error --max-time 10 --retry 3 --retry-connrefused -o /dev/null \
+              -X DELETE -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${owner}/${repo}/issues/comments/${dup_id}" || true
+          done <<<"${dup_ids}"
+        fi

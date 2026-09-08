@@ -5,10 +5,10 @@ the operator-facing counterpart to [../user/install-guide.md](../user/install-gu
 
 `cicd.yaml` is the app chart's own values file: every resource the platform creates
 for an Application conditionally renders off what `cicd.yaml` declares (see
-`charts/platform-cicd-app/templates/_helpers.tpl`'s `platform-cicd-app.hasStage`).
+`charts/glidepath-app/templates/_helpers.tpl`'s `glidepath-app.hasStage`).
 
 Onboarding is ArgoCD-managed end to end. An `ApplicationSet`
-(`charts/platform-cicd-control-plane/templates/argocd/tenant-onboarding-applicationset.yaml`)
+(`charts/glidepath-control-plane/templates/argocd/tenant-onboarding-applicationset.yaml`)
 generates one `Application` per tenant from a git `files` generator scanning
 `tenants/*/identity.yaml`. Onboarding a new Application, or changing an existing one's
 `platformIdentity`, is "add/edit a file in `tenants/`, get it reviewed" - never a manual
@@ -23,7 +23,7 @@ cluster - see [installation.md](installation.md).
 
 1. **Install the platform's GitHub App on the app's repo** - the one manual,
    GitHub-side prerequisite. The Pipelines-as-Code `Repository` CR itself is rendered
-   by the chart (`charts/platform-cicd-app/templates/pipelines-as-code/repository.yaml`,
+   by the chart (`charts/glidepath-app/templates/pipelines-as-code/repository.yaml`,
    gated on `platformIdentity.registerPipelinesAsCode`, default `true`) - not a separate
    manual step.
 
@@ -70,7 +70,7 @@ cluster - see [installation.md](installation.md).
    for an app whose deploy target isn't its own `gitops-<app-name>` repo (a
    hand-deployed singleton writing into a shared `gitops-cluster-*` repo instead - see
    `docs/backstage-design.md` in the `idp` repo for a real example). Rendered as an
-   extra `Repository` CR grant by `platform-cicd-app`'s `repository.yaml`. It's a list,
+   extra `Repository` CR grant by `glidepath-app`'s `repository.yaml`. It's a list,
    so - unlike the six scalar fields above - it can't be forwarded through the
    `ApplicationSet`'s Helm `valuesObject` (`goTemplate`'s per-field substitution can't
    emit array items); the `ApplicationSet`'s third source $refs this whole
@@ -121,7 +121,7 @@ cluster - see [installation.md](installation.md).
    so on a repo where `.tekton/` doesn't exist yet, no `cicd.yaml` push (past or future)
    can trigger it - PaC only matches against `.tekton/*.yaml` files already committed at
    the pushed ref. `templates/hooks/onboarding-resync-bootstrap.yaml` (an ArgoCD
-   `PostSync` hook on this Application, same shape as `charts/pr-preview-notify`'s own
+   `PostSync` hook on this Application, same shape as `charts/glidepath-pr-preview-notify`'s own
    hook) closes this gap: it fires on every sync, checks whether
    `.tekton/onboarding-resync.yaml` already exists on the app repo, and only if not,
    creates the same bootstrap `PipelineRun` this section used to have you run by hand
@@ -137,7 +137,7 @@ re-rendered the app chart), and the platform's own onboarding templates changing
 (nothing re-delivered already-onboarded repos' copies). Both are solved the same way
 now - `onboarding-resync.yaml` fires on any `cicd.yaml` push and re-delivers current
 templates regardless of which side went stale. Templates live in a ConfigMap
-(`charts/platform-cicd-app/templates/configmaps/onboarding-templates.yaml`, one per
+(`charts/glidepath-app/templates/configmaps/onboarding-templates.yaml`, one per
 Application, not baked into the toolbox image), so an edit takes effect on that
 Application's next `helm upgrade` - though it does mean updating N already-onboarded
 Applications individually to propagate a template change.

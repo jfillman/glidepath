@@ -1,0 +1,77 @@
+{{- if eq (include "glidepath-app.hasStage" (dict "ctx" . "name" "release")) "true" }}
+{{- $appNamespace := include "glidepath-app.namespace" . }}
+{{- $localUpperEnvs := include "glidepath-app.localUpperEnvs" . | fromYamlArray }}
+# Rendered only if cicd.yaml declares a "release" stage. One Namespace/Application/RBAC
+# set per same-cluster upper env (docs/multi-cluster.md). A cluster-mapped entry gets
+# nothing rendered here - its Application is delivered via GitOps instead, picked up by
+# the remote cluster's own ArgoCD.
+{{- range $env := $localUpperEnvs }}
+{{- $envNamespace := include "glidepath-app.envNamespace" (list $ $env) }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $envNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" $ | nindent 4 }}
+    hangar.io/subcomponent: "argocd"
+---
+# No pipeline-runner RBAC needed here (unlike dev) - only ArgoCD's own identity touches
+# the cluster for this tier, after a human approves the GitOps PR.
+#
+# hangar.io/dora-track: "true" marks this Application for the DORA exporter's
+# informer filter, since argocd also holds unrelated Applications it has no business reading.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ $.Values.platformIdentity.appName }}-{{ $env }}
+  namespace: argocd
+  labels:
+    {{- include "glidepath-app.labels" $ | nindent 4 }}
+    hangar.io/subcomponent: "argocd"
+    hangar.io/dora-track: "true"
+spec:
+  project: {{ $appNamespace }}
+  source:
+    repoURL: {{ $.Values.platformIdentity.gitopsRepoUrl }}
+    targetRevision: main
+    path: {{ $.Values.platformIdentity.appName }}/{{ $env }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ $envNamespace }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+# Lets this Application's pipeline-runner SA stamp/clear DORA tracking annotations on
+# exactly its own <app-name>-<env> Application - resourceNames-scoped, no other access.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: allow-dora-tracking-{{ $.Values.platformIdentity.appName }}-{{ $env }}
+  namespace: argocd
+  labels:
+    {{- include "glidepath-app.labels" $ | nindent 4 }}
+    hangar.io/subcomponent: "argocd"
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    resourceNames: ["{{ $.Values.platformIdentity.appName }}-{{ $env }}"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: allow-dora-tracking-{{ $.Values.platformIdentity.appName }}-{{ $env }}
+  namespace: argocd
+  labels:
+    {{- include "glidepath-app.labels" $ | nindent 4 }}
+    hangar.io/subcomponent: "argocd"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: allow-dora-tracking-{{ $.Values.platformIdentity.appName }}-{{ $env }} }
+subjects:
+  - kind: ServiceAccount
+    name: pipeline-runner
+    namespace: {{ $appNamespace }}
+{{- end }}
+{{- end }}

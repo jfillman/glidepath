@@ -1,4 +1,4 @@
-# platform-cicd: user guide
+# Glidepath: user guide
 
 Documentation for **application developers** using this platform - not the people
 running it. If you're onboarding a new app or maintaining one already onboarded, start

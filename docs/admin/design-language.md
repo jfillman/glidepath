@@ -38,7 +38,7 @@ Same labels, same order, everywhere a message has room for them:
 | App | app name | |
 | App Namespace | app namespace | omitted where the audience is external (e.g. the PR body - a GitHub reviewer doesn't care about internal namespace naming) |
 | Repo | linked `owner/repo` | derived from `git-url` the same way `open-release-pr.yaml` already derives its owner segment - not reimplemented differently |
-| Commit | linked 12-char SHA | 12 chars matches this platform's existing truncation convention from `charts/platform-cicd-catalog/templates/tasks/build-image.yaml`, not a new one |
+| Commit | linked 12-char SHA | 12 chars matches this platform's existing truncation convention from `charts/glidepath-catalog/templates/tasks/build-image.yaml`, not a new one |
 | Image | code-formatted image ref | |
 | Run | PipelineRun name | Slack only - not meaningful to an external PR reviewer |
 
@@ -53,14 +53,14 @@ consistent signature, not a decoration.
 
 ## Per-channel application
 
-- **Slack** (`charts/platform-cicd-catalog/templates/tasks/notify-slack.yaml`): Block Kit - `header` + `section` with
+- **Slack** (`charts/glidepath-catalog/templates/tasks/notify-slack.yaml`): Block Kit - `header` + `section` with
   `fields` + `context`, wrapped in a single `attachments[0]` entry so the color bar can
   be shown alongside modern blocks (confirmed live against the real webhook before this
   was trusted - Slack's own docs frame `attachments.color` as legacy and don't confirm
   it composes with a `blocks` array, so this was verified empirically, not assumed).
   Failure adds a `*Failed task:* \`<name>\`` line and the existing log-excerpt code
   block, unchanged from Phase 3 item 3's design.
-- **Release PR body** (`charts/platform-cicd-catalog/templates/tasks/open-release-pr.yaml`): the same field
+- **Release PR body** (`charts/glidepath-catalog/templates/tasks/open-release-pr.yaml`): the same field
   vocabulary/labels/ordering, in GitHub-flavored markdown. No color - GitHub PR bodies
   can't carry inline color without an embedded badge image, which would itself be the
   kind of flashy this explicitly isn't going for. So the PR body's contribution to "one

@@ -23,7 +23,7 @@ time `test` starts (they don't overlap), and Tempo's waterfall view interprets n
 as "this ran during my parent" - nesting sequential, non-overlapping work misrepresents
 duration. Flat siblings under one root is both more honest and still gives exactly the
 per-stage drill-down the dashboard needs (see
-[../../charts/platform-cicd-control-plane/files/dashboards/pipeline-detail.json](../../charts/platform-cicd-control-plane/files/dashboards/pipeline-detail.json)).
+[../../charts/glidepath-control-plane/files/dashboards/pipeline-detail.json](../../charts/glidepath-control-plane/files/dashboards/pipeline-detail.json)).
 
 ## How context crosses independently-triggered PipelineRuns
 
@@ -42,7 +42,7 @@ per-stage drill-down the dashboard needs (see
 3. The shared broker's Trigger for this Application extracts all three fields via a
    `TriggerBinding` and passes them as params (`flow-traceparent`, `chain-id`,
    `flow-start-time`) into the next stage's `PipelineRun` (see
-   [../../charts/platform-cicd-app/templates/triggers/](../../charts/platform-cicd-app/templates/triggers/)).
+   [../../charts/glidepath-app/templates/triggers/](../../charts/glidepath-app/templates/triggers/)).
 4. `test` (and later `deploy`/`release`) receive `flow-traceparent` as a Pipeline param
    instead of generating their own - they call `start-stage-span` with it, producing a
    span parented to the *original* flow root, reconstructing one continuous trace across
@@ -167,7 +167,7 @@ this platform actually needs). `otel-cli exec` (used by `otel_child_span`, e.g. 
 governance-stub spans) is not the right tool for sub-second in-step instrumentation
 (process-per-invocation overhead dominates at that granularity) -
 `resolve-build-config`-style config-parsing steps deliberately skip span wrapping for
-exactly this reason, see the comment in `charts/platform-cicd-catalog/templates/tasks/build-image.yaml`.
+exactly this reason, see the comment in `charts/glidepath-catalog/templates/tasks/build-image.yaml`.
 
 ## Span-send reliability (added 2026-08-12)
 

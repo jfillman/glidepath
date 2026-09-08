@@ -1,0 +1,102 @@
+# catalog/tasks/mark-release-pending.yaml
+#
+# Stamps tracking annotations on the Application's own ArgoCD Application object
+# (<app-name>-<env>, in the argocd namespace) right after open-release-pr successfully
+# opens a promotion PR - the hand-off mechanism the DORA exporter (platform/dora-exporter)
+# reads back to know a release is in flight, and to compute Deployment Frequency / Lead
+# Time / Change Failure Rate / MTTR once ArgoCD actually confirms the sync succeeded or
+# failed. See docs/dora-metrics.md for the full mechanism and why this is
+# annotation-based rather than a CDEvent the exporter subscribes to (status.summary.images,
+# the field that would have made image-based correlation possible, is empty on this
+# ArgoCD install - checked live, not assumed).
+#
+# Same-cluster envs only (no cluster: set in deploy.upperEnvironments, see
+# docs/multi-cluster.md) - this Task's direct kubectl patch assumes the Application
+# object lives on THIS cluster, which is only true for the same-cluster case; a
+# cluster-mapped env's tracking annotations are set a different way instead (via the
+# GitOps-committed Application manifest itself, see open-release-pr.yaml once Phase D
+# lands), never by this Task reaching into a remote cluster's API.
+#
+# hangar.io/dora-baseline-started-at matters more than it looks: ArgoCD's own
+# operationState is overwritten by ANY sync, including its unrelated periodic selfHeal
+# drift-correction syncs - stamping the CURRENT operationState.startedAt here, before
+# this promotion's own sync has even been triggered by the merge, is what lets the
+# exporter tell "the sync I'm waiting for" apart from "a sync that already finished
+# before I started waiting."
+#
+# Runs as pipeline-runner (the Application's own SA, via the calling PipelineRun's
+# taskRunTemplate) - kubectl here uses the pod's normal in-cluster identity, no projected
+# broker token needed (unlike open-release-pr.yaml's GitHub call). RBAC for this is
+# scoped in charts/glidepath-app/templates/argocd/release-application.yaml: get+patch
+# on exactly this Application's own <app-name>-<env> Application, resourceNames-scoped,
+# nothing else.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: mark-release-pending
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  params:
+    - name: app-namespace
+      type: string
+    - name: app-name
+      type: string
+    - name: flow-start-time
+      type: string
+      description: The flow's original start time (from build's start-flow-root-span), threaded through as the Lead Time start anchor.
+    - name: env
+      type: string
+      default: "staging"
+      description: The upper environment being promoted to - see open-release-pr.yaml's own env param for the full rationale.
+    - name: cluster
+      type: string
+      default: ""
+      description: >-
+        Set when env is mapped to a different physical cluster (airframe's
+        ApplicationEnvironment.spec.cluster - see open-release-pr.yaml's own header
+        note) - when non-empty, this Task is a deliberate no-op: its own live kubectl
+        patch can't reach a remote cluster's API. The replacement tracking mechanism
+        for that case is airframe-application's own releaseTracking PostSync/SyncFail
+        hook Jobs (airframe/charts/airframe-application/templates/
+        release-tracking/, wired up by open-release-pr.yaml - see that Task's own
+        2026-08-17 header note), not this Task reaching further than it safely can.
+  steps:
+    - name: mark-pending
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      env:
+        - name: APP_NAMESPACE
+          value: $(params.app-namespace)
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: FLOW_START_TIME
+          value: $(params.flow-start-time)
+        - name: ENV
+          value: $(params.env)
+        - name: CLUSTER
+          value: $(params.cluster)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        if [[ -n "${CLUSTER}" ]]; then
+          echo "[mark-release-pending] env=${ENV} is mapped to cluster=${CLUSTER} - no-op, open-release-pr.yaml already handled tracking annotations via the GitOps-committed Application manifest."
+          exit 0
+        fi
+
+        app="${APP_NAME}-${ENV}"
+
+        baseline="$(kubectl get application.argoproj.io "${app}" -n argocd \
+          -o jsonpath='{.status.operationState.startedAt}' 2>/dev/null || echo "")"
+
+        kubectl annotate application.argoproj.io "${app}" -n argocd \
+          hangar.io/dora-pending=true \
+          hangar.io/dora-flow-start-time="${FLOW_START_TIME}" \
+          hangar.io/dora-baseline-started-at="${baseline}" \
+          hangar.io/dora-app-namespace="${APP_NAMESPACE}" \
+          hangar.io/dora-app="${APP_NAME}" \
+          --overwrite
+
+        echo "[mark-release-pending] ${app}: pending=true, baseline-started-at='${baseline}', flow-start-time=${FLOW_START_TIME}"

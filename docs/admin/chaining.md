@@ -18,7 +18,7 @@ the top-level [README.md](../../README.md) architecture summary.
 
 ## The shared broker
 
-One Tekton Triggers `EventListener` (`charts/platform-cicd-control-plane/templates/broker/eventlistener.yaml`,
+One Tekton Triggers `EventListener` (`charts/glidepath-control-plane/templates/broker/eventlistener.yaml`,
 2-3 replicas, stateless), shared across every Application - **not** one EventListener per
 Application. An earlier draft of this design had per-app EventListener pods; design
 review rejected that as an unnecessary ongoing operational tax (patch/cert/config drift
@@ -27,7 +27,7 @@ approach doesn't already provide.
 
 **Authentication**: each pipeline pod's own cluster-issued, audience-bound projected
 ServiceAccount token (`audience: cdevents-broker`, minted fresh per Task run, 10-minute
-expiry - see the `volumes:` block in `charts/platform-cicd-catalog/templates/tasks/send-cdevent.yaml`), verified by a
+expiry - see the `volumes:` block in `charts/glidepath-catalog/templates/tasks/send-cdevent.yaml`), verified by a
 small custom `ClusterInterceptor`
 (`platform/broker/cmd/token-review-interceptor`) calling the Kubernetes `TokenReview`
 API. There is no platform-minted credential anywhere in this path - no key material,
@@ -46,7 +46,7 @@ prerequisite, not a nice-to-have, in `hack/kind-config.yaml`).
 **PipelineRun creation identity**: when a `Trigger` fires, Tekton Triggers creates the
 resulting `PipelineRun` using *that Trigger's own* `spec.serviceAccountName` - each
 Application's own least-privilege, namespace-scoped `pipeline-runner` SA (see
-`charts/platform-cicd-app/templates/triggers/` (+ `templates/identity/pipeline-runner.yaml`)), never the broker's own
+`charts/glidepath-app/templates/triggers/` (+ `templates/identity/pipeline-runner.yaml`)), never the broker's own
 identity. The broker's ServiceAccount holds no rights to create PipelineRuns anywhere;
 it can only watch `Trigger`/`TriggerBinding`/`TriggerTemplate` objects cluster-wide.
 
@@ -55,7 +55,7 @@ PipelineRun" is implemented via **scoped Kubernetes impersonation**: each Applic
 onboarding grants the broker's SA `impersonate` on exactly that Application's one named
 `pipeline-runner` SA, in that one namespace only (a namespaced `Role`+`RoleBinding`
 living in the Application's own namespace - see the "Scoped impersonation grant" block in
-`charts/platform-cicd-app/templates/identity/pipeline-runner.yaml`). This is Kubernetes'
+`charts/glidepath-app/templates/identity/pipeline-runner.yaml`). This is Kubernetes'
 own `impersonate` verb, narrowed to one explicit, auditable, individually-revocable
 grant per Application - no cluster-wide impersonation grant and no `cluster-admin`
 anywhere in the picture.
@@ -86,7 +86,7 @@ separate, PEER namespaces with different jobs, not a base-plus-suffix pair:
 - `<type>-<app-name>-cicd` is the Application's *CI control plane* - where
   `pipeline-runner` and its RBAC live, where PaC actually creates build/test
   PipelineRuns (that's where the `Repository` CR and the chaining `Trigger` CRs from
-  `charts/platform-cicd-app/templates/triggers/*.yaml` live), where kaniko's registry
+  `charts/glidepath-app/templates/triggers/*.yaml` live), where kaniko's registry
   push credentials sit. Pipelines *execute* here.
 - `<type>-<app-name>-<env>` is where the *deployed application* actually runs - the
   long-lived `Deployment`/`Service` serving traffic. `deploy-manifests.yaml` derives
@@ -96,11 +96,11 @@ separate, PEER namespaces with different jobs, not a base-plus-suffix pair:
   than every environment's Deployment colliding in one namespace.
 
 The split matters for RBAC, not just tidiness: `pipeline-runner`'s Role in
-`charts/platform-cicd-app/templates/identity/pipeline-runner.yaml` only grants rights
+`charts/glidepath-app/templates/identity/pipeline-runner.yaml` only grants rights
 inside the Application's own `<type>-<app-name>-cicd` namespace - a namespace-scoped
 `Role` never extends into a different namespace. Deploying into `<type>-<app-name>-<env>`
 needs its own, separate grant - see
-`charts/platform-cicd-app/templates/env/deploy-rbac.yaml`, applied once per environment
+`charts/glidepath-app/templates/env/deploy-rbac.yaml`, applied once per environment
 (a real gap caught the same way most of this doc's caveats were: by reasoning through
 what actually calls what, not by running it and hoping).
 
@@ -108,7 +108,7 @@ what actually calls what, not by running it and hoping).
 
 Each stage's own domain event, keyed by whatever stage the current one is chained FROM
 (not by the current stage's own identity - any stage can legally follow any other, see
-`charts/platform-cicd-app/templates/triggers/flow-triggers.yaml`'s `$eventTypeMap`):
+`charts/glidepath-app/templates/triggers/flow-triggers.yaml`'s `$eventTypeMap`):
 
 - `dev.cdevents.artifact.published.0.3.0` (from `build`) -> fires whatever's next
 - `dev.cdevents.testcaserun.finished.0.3.0`, `outcome=Succeeded` (from `test`) -> fires
@@ -233,7 +233,7 @@ already used), each with three predicates - `queued`, `started`, `finished`.
   outside), which is separable infrastructure, not a natural extension of the existing
   `send-cdevent` pattern every other event here uses.
 - **No changes to the existing domain events or the broker's chaining Triggers.** Every
-  Trigger's CEL filter (`charts/platform-cicd-app/templates/triggers/*.yaml`) checks
+  Trigger's CEL filter (`charts/glidepath-app/templates/triggers/*.yaml`) checks
   an exact `body.context.type` string - a new type the filter doesn't check for simply
   never matches, so this is safely additive to the real chaining mechanism.
 
@@ -256,7 +256,7 @@ signal that only reports on success isn't a useful uniform signal at all.
 reasons - confirmed against Tekton's own docs) don't match CDEvents' `outcome` enum
 (`success`/`failure`/`cancel`/`error`) directly. Rather than hand-mapping this in every
 pipeline's YAML (Tekton param wiring has no conditional logic - only a Task's own script
-can compute a mapped value), `charts/platform-cicd-catalog/templates/tasks/send-cdevent.yaml` gained one new **optional**
+can compute a mapped value), `charts/glidepath-catalog/templates/tasks/send-cdevent.yaml` gained one new **optional**
 param, `tekton-status` (default `""`). When set (every `pipelinerun-finished` task passes
 `$(tasks.status)`), the script maps it via `cdevents_map_outcome()` (new in
 `catalog/lib/cdevents.sh`, a small pure function alongside `cdevent_send()`, not replacing

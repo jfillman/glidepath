@@ -1,0 +1,140 @@
+# catalog/tasks/wait-for-release-guardrails.yaml
+#
+# Built for the `image-promotion` gate (docs/admin/release-guardrails.md): the user's
+# explicit design requirement was that image-promotion run last, dependent on every
+# other release guardrail on this same PR having already passed - it promotes the image
+# only once nothing else could still reject the release. Tekton has no cross-PipelineRun
+# `runAfter` (each gate is its own independently PaC-triggered PipelineRun, run in
+# parallel off the same webhook - see governance-check.yaml), so "depends on" is enforced
+# here by polling the GitHub Checks API for the same head commit until every sibling gate
+# in .Values.releaseGuardrails reaches a terminal conclusion, then failing closed if any
+# of them didn't succeed. Generic/reusable by name list, not hardcoded to today's set -
+# any gate added to that values list is automatically waited on too.
+#
+# Deliberately real, not a stub: unlike the actual registry-promotion logic (still
+# unimplemented - see image-promotion-check.yaml), the ordering/dependency guarantee
+# itself is exactly the piece of architecture being asked for here, so it's built for
+# real rather than stubbed alongside the promotion step it gates.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: wait-for-release-guardrails
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Polls the GitHub Checks API for this commit until every other release-guardrail gate has reported success, failing closed on any non-success conclusion or on timeout.
+  params:
+    - name: repo-url
+      type: string
+      description: The gitops repo's own URL - PaC's repo_url.
+    - name: revision
+      type: string
+      description: The head commit to check - PaC's revision.
+    - name: poll-interval-seconds
+      type: string
+      default: "15"
+    - name: timeout-seconds
+      type: string
+      default: "1080"
+      description: >-
+        Give up and fail closed if sibling gates haven't all finished within this long.
+        Must stay comfortably ABOVE the slowest sibling gate's own PipelineRun timeout
+        (today that's image-scan's 15m, see pull-request-image-scan.yaml's own
+        2026-08-23 header for why it needs that much) - image-promotion can't report a
+        real result before the slowest thing it's waiting on could possibly finish.
+        Also keep comfortably under this Pipeline's own `tasks` timeout (see
+        image-promotion-check.yaml's onboarding template) to leave headroom for the
+        promote+comment steps after this one.
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+  steps:
+    - name: wait
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: REVISION
+          value: $(params.revision)
+        - name: POLL_INTERVAL_SECONDS
+          value: $(params.poll-interval-seconds)
+        - name: TIMEOUT_SECONDS
+          value: $(params.timeout-seconds)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+
+        owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+
+        # Every other gate in the registry - image-promotion never waits on itself.
+        # Rendered at chart-template time from .Values.releaseGuardrails
+        # (docs/admin/release-guardrails.md), the same single source of truth
+        # detect-bypass-merge.yaml/open-release-pr.yaml already render off.
+        sibling_gates=({{ range .Values.releaseGuardrails }}{{ if ne .name "image-promotion" }}"{{ .name }}" {{ end }}{{ end }})
+
+        echo "Waiting on sibling guardrail checks for ${REVISION}: ${sibling_gates[*]}"
+        deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
+
+        while true; do
+          checks_json="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/check-runs")"
+
+          pending=()
+          for gate in "${sibling_gates[@]}"; do
+            # Sorted by most recently started, not just the first match - a gate can have
+            # multiple check-runs on the same commit after a `/retest`, and only the
+            # latest one reflects the current outcome.
+            # Trailing "-" required: every gate's onboarding-template PipelineRun uses
+            # `generateName: <gate>-` (2026-09-05, 9706649), and Pipelines as Code names
+            # the GitHub check-run after that raw generateName value verbatim (the
+            # "original-prname" annotation captures it before Kubernetes appends its own
+            # random suffix) - the check-run itself is literally
+            # "Pipelines as Code CI / sast-", not "... / sast". Confirmed live 2026-09-06:
+            # without this, every gate always reads back "missing" and this Task polls
+            # until timeout regardless of real outcome, even though every sibling gate
+            # had genuinely already succeeded.
+            run_json="$(jq -c --arg name "Pipelines as Code CI / ${gate}-" \
+              '[.check_runs[] | select(.name == $name)] | sort_by(.started_at) | last // {}' <<<"${checks_json}")"
+            status="$(jq -r '.status // "missing"' <<<"${run_json}")"
+            conclusion="$(jq -r '.conclusion // empty' <<<"${run_json}")"
+
+            if [[ "${status}" != "completed" ]]; then
+              pending+=("${gate}")
+              continue
+            fi
+            if [[ "${conclusion}" != "success" ]]; then
+              echo "error: sibling guardrail '${gate}' completed with conclusion '${conclusion}' on ${REVISION} - image-promotion cannot proceed until it passes." >&2
+              exit 1
+            fi
+          done
+
+          if [[ "${#pending[@]}" -eq 0 ]]; then
+            echo "All sibling guardrail checks passed - proceeding."
+            exit 0
+          fi
+
+          if [[ "$(date +%s)" -ge "${deadline}" ]]; then
+            echo "error: timed out after ${TIMEOUT_SECONDS}s waiting for: ${pending[*]}" >&2
+            exit 1
+          fi
+
+          echo "Still waiting on: ${pending[*]} - retrying in ${POLL_INTERVAL_SECONDS}s"
+          sleep "${POLL_INTERVAL_SECONDS}"
+        done

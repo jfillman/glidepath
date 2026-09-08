@@ -76,7 +76,7 @@ echo "  gitops-cluster-kind-prod/10-crds-operators/external-secrets/ for the rea
 echo "  example) needs a platform-outcome-relay-token key holding the SAME value that"
 echo "  backs cluster-registry.relaySecretName on the dev cluster - plant it once, via"
 echo "  the Infisical UI/API, never through this script or pasted through chat."
-echo "  idp-application's own release-tracking/relay-token-external-secret.yaml syncs"
+echo "  airframe-application's own release-tracking/relay-token-external-secret.yaml syncs"
 echo "  it into every onboarded app's namespace automatically from there - see"
 echo "  docs/admin/multi-cluster.md and docs/admin/secrets-management.md."
 

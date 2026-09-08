@@ -103,7 +103,7 @@ COPY schemas/cicd.schema.json /opt/platform/schemas/cicd.schema.json
 
 # Onboarding boilerplate (catalog/tasks/deliver-onboarding-files.yaml,
 # docs/admin/onboarding-mechanics.md) used to be baked in here too - moved to a
-# ConfigMap instead (charts/platform-cicd-app/templates/configmaps/onboarding-
+# ConfigMap instead (charts/glidepath-app/templates/configmaps/onboarding-
 # templates.yaml, one per Application), the opposite choice from schema.json below.
 # Baking it in meant a template edit silently depended on an image rebuild+push AND
 # :latest/IfNotPresent re-pulling on every node - a real staleness class this platform

@@ -13,7 +13,7 @@ deploy (dev) succeeds
   -> dev.cdevents.service.deployed CDEvent, now carrying git-url/revision forward
   -> broker fires `release` PipelineRun
   -> release opens a PR against gitops-<app-name>, bumping the image tag in
-     <cluster>/<env>/values.yaml (charts/platform-cicd-catalog/templates/tasks/
+     <cluster>/<env>/values.yaml (charts/glidepath-catalog/templates/tasks/
      open-release-pr.yaml) - this is where the automated part of the flow ends; the
      flow-root trace closes here (see docs/tracing.md)
   -> the release-guardrail GitHub Checks run on that PR, one per gate in
@@ -143,9 +143,9 @@ broker:
 ## Onboarding an Application's release stage (per app)
 
 **2026-08-16: superseded for any app onboarded through `idp`** (Crossplane-based,
-`idp-service-catalog`'s `ApplicationEnvironment` composition) - that composition already
+`airframe`'s `ApplicationEnvironment` composition) - that composition already
 scaffolds `gitops-<app-name>` with the `<cluster>/<env>/values.yaml` layout
-`open-release-pr.yaml` now requires (an `idp-application` Helm values file, not a raw
+`open-release-pr.yaml` now requires (an `airframe-application` Helm values file, not a raw
 Deployment manifest), and its own tenant-onboarding `ApplicationSet` already creates and
 owns the ArgoCD `Application` generically for every env - steps 2 and 5 below (manually
 pushing `deployment.yaml`, applying `release-application.yaml`) don't apply and would
@@ -166,7 +166,7 @@ This is all one-time setup per app, same spirit as onboarding the app repo itsel
 1. **Plant the GitHub App credentials into Infisical**, once per cluster, not per
    Application (skip if already done) - **2026-08-19: no longer a `kubectl` copy of
    `pipelines-as-code-secret`.** `github-app-creds` in `platform-system` is now a real
-   `ExternalSecret` (`charts/platform-cicd-control-plane/templates/secretstore/
+   `ExternalSecret` (`charts/glidepath-control-plane/templates/secretstore/
    github-app-creds-external-secret.yaml`), synced from the control plane's own
    Infisical project (`platform-cicd-kind-dev`) - see
    [secrets-management.md](secrets-management.md). Read the GitHub App's id/private key
@@ -215,7 +215,7 @@ This is all one-time setup per app, same spirit as onboarding the app repo itsel
    live 2026-08-22 against `gitops-checkout-api`.
 
 4. **Nothing to do here anymore** - as long as `platformIdentity.gitopsRepoUrl` is set,
-   `charts/platform-cicd-app/templates/pipelines-as-code/repository.yaml` renders the
+   `charts/glidepath-app/templates/pipelines-as-code/repository.yaml` renders the
    `gitops-<app-name>` PaC `Repository` CR automatically (same file that renders the app
    repo's own Repository CR - see [onboarding-mechanics.md](onboarding-mechanics.md) step 1). Previously a
    manual `kubectl apply`, folded into the chart once step 2 above already needs
@@ -226,13 +226,13 @@ This is all one-time setup per app, same spirit as onboarding the app repo itsel
    ```
    sed -e 's#<APP_NAMESPACE>#app-nodejs-demo-app-cicd#g' -e 's#<APP_NAME>#nodejs-demo-app#g' \
        -e 's#<GITOPS_REPO_URL>#https://github.com/<org>/gitops-nodejs-demo-app#g' \
-     charts/platform-cicd-app/templates/argocd/release-application.yaml | kubectl apply -f -
+     charts/glidepath-app/templates/argocd/release-application.yaml | kubectl apply -f -
    ```
 
 6. **Configure branch protection** on the gitops repo's `main` branch (GitHub UI or
    API - not IaC-managed by this platform, documented here so it isn't a tribal-
    knowledge step): require status checks matching every `name` currently in
-   `.Values.releaseGuardrails` (`charts/platform-cicd-catalog/values.yaml` - today
+   `.Values.releaseGuardrails` (`charts/glidepath-catalog/values.yaml` - today
    `sast`, `image-scan`, `provenance`, `sbom`, `itsm`, `qa`, `policy-validation`,
    `image-promotion`) to pass, and require **2 approving reviews**. Enable "Allow
    auto-merge" on the repo so a PR merges itself the moment checks + reviews are
@@ -305,7 +305,7 @@ failing required check, and how it's made visible.
   requirement" section above) - a manual, out-of-band GitHub setting, not platform IaC.
 - **Audit**: GitHub's own merge/audit-log record is real and already visible on the PR,
   but a security-relevant bypass shouldn't depend on someone thinking to go check it -
-  `charts/platform-cicd-catalog/templates/tasks/detect-bypass-merge.yaml` fires on every PR close (via the new
+  `charts/glidepath-catalog/templates/tasks/detect-bypass-merge.yaml` fires on every PR close (via the new
   `.tekton/pull-request-merged.yaml` trigger) and posts a real Slack alert (same
   `slack-webhook-url` Secret/design language as every other notification, but **not**
   gated on `notifications.slack.enabled` - a bypass alert isn't a routine preference)

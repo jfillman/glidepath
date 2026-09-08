@@ -1,6 +1,6 @@
 name: broker-image-ci
 
-# Closes a real, live gap (found 2026-09-06, see charts/platform-cicd-control-plane/
+# Closes a real, live gap (found 2026-09-06, see charts/glidepath-control-plane/
 # templates/broker/interceptor.yaml's own comment on interceptorImage): docs/admin/
 # installation.md already documented "no CI wired to a private cluster" for
 # platform/broker/cmd/* images, meaning a source fix could sit merged on main for over
@@ -10,7 +10,7 @@ name: broker-image-ci
 # clusters (same constraint catalog-ci.yaml/app-chart-ci.yaml's own headers document) -
 # so this workflow does the one half CI actually CAN do (build + push the image to the
 # public ghcr.io registry) and then commits the new tag back into this repo's own
-# values.yaml, letting the platform-cicd-control-plane Application's EXISTING
+# values.yaml, letting the glidepath-control-plane Application's EXISTING
 # automated+selfHeal ArgoCD sync (pull-based, already polling this repo from near/inside
 # the cluster) pick it up and roll the Deployment - no direct reach into the private
 # cluster needed, same GitOps loop every app deploy on this platform already uses.
@@ -58,13 +58,13 @@ jobs:
       # promotion gates (open-release-pr.yaml/bump-manifest-pr.yaml exist for THOSE, for
       # reasons that don't apply to the platform's own single dev cluster). Uses only the
       # per-run, auto-expiring GITHUB_TOKEN - no persisted PAT/secret for this.
-      - name: Bump deployed tag in platform-cicd-control-plane's own values.yaml
+      - name: Bump deployed tag in glidepath-control-plane's own values.yaml
         run: |
           set -euo pipefail
           sed -i "s|^interceptorImage: .*|interceptorImage: ${{ steps.image.outputs.image }}|" \
-            charts/platform-cicd-control-plane/values.yaml
+            charts/glidepath-control-plane/values.yaml
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add charts/platform-cicd-control-plane/values.yaml
+          git add charts/glidepath-control-plane/values.yaml
           git commit -m "Bump cdevents-broker-auth image to ${{ steps.image.outputs.image }}"
           git push

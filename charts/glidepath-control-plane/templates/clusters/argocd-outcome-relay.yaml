@@ -1,0 +1,132 @@
+# templates/clusters/argocd-outcome-relay.yaml
+#
+# Sibling entry point into the shared broker, deployed in platform-system alongside it -
+# see platform/broker/cmd/argocd-outcome-relay/main.go for the full design
+# (docs/admin/multi-cluster.md).
+#
+# RBAC is narrow and enumerated, not wildcard get-on-secrets: resourceNames lists exactly
+# the relay-secret names declared in .Values.clusters, plus the cluster-registry
+# ConfigMap. Adding a cluster later needs a `helm upgrade` here - accepted, matches this
+# platform's "manual by design" posture for infra-level config.
+{{- if .Values.clusters }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argocd-outcome-relay
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "clusters"
+  namespace: platform-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argocd-outcome-relay
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "clusters"
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["cluster-registry"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      {{- range .Values.clusters }}
+      - {{ .relaySecretName | quote }}
+      {{- end }}
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argocd-outcome-relay
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "clusters"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: argocd-outcome-relay }
+subjects:
+  - kind: ServiceAccount
+    name: argocd-outcome-relay
+    namespace: platform-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-outcome-relay
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "clusters"
+  namespace: platform-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: argocd-outcome-relay }
+  template:
+    metadata:
+      labels: { app: argocd-outcome-relay }
+    spec:
+      serviceAccountName: argocd-outcome-relay
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532 # distroless "nonroot" - see interceptor.yaml's identical comment for why this is required, not cosmetic
+        seccompProfile: { type: RuntimeDefault }
+      # Audience-bound projected SA token, re-read from disk each request (not cached)
+      # so kubelet's rotation just works with no pod restart. No github-app-creds mount -
+      # see main.go for why that mechanism was removed.
+      volumes:
+        - name: broker-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: broker-token
+                  audience: cdevents-broker
+                  expirationSeconds: 3600
+      containers:
+        - name: relay
+          image: ghcr.io/jfillman/platform-cicd-argocd-outcome-relay:latest
+          # Published to ghcr.io/jfillman - previously referenced a nonexistent
+          # ghcr.io/platform-cicd org; relay pods were only surviving on a stale
+          # locally-cached image (same gap dora-exporter had).
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080, name: http }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http, scheme: HTTP }
+          volumeMounts:
+            - name: broker-token
+              mountPath: /var/run/secrets/platform
+              readOnly: true
+          env:
+            - name: CDEVENTS_BROKER_URL
+              value: http://el-cdevents-broker.platform-system.svc.cluster.local:8080
+            # DORA_EXPORTER_URL removed 2026-08-22: dora-exporter is now updated by
+            # update-dora-metrics.yaml, a Task in release-outcome-notify's own
+            # PipelineRun, not a direct call from this Deployment - see that Task's
+            # header and docs/admin/multi-cluster.md.
+---
+# NodePort, not ClusterIP - this is the one Service genuinely called from OUTSIDE the
+# cluster (another cluster's outcome-reporting hook Jobs). podman's kind provider puts
+# every kind cluster's node container on one shared bridge network, so a fixed NodePort
+# is reachable at <node-container-ip>:30880 with no Ingress needed for this same-host
+# setup - see hack/bootstrap-upper-cluster.sh. A genuinely remote cluster would need real
+# ingress/DNS instead.
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-outcome-relay
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "clusters"
+  namespace: platform-system
+spec:
+  type: NodePort
+  selector: { app: argocd-outcome-relay }
+  ports: [{ name: http, port: 8080, targetPort: http, nodePort: 30880 }]
+{{- end }}

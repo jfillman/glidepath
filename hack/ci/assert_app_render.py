@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Fixture-matrix assertions for charts/platform-cicd-app's `helm template` output.
+"""Fixture-matrix assertions for charts/glidepath-app's `helm template` output.
 
 Used by .github/workflows/app-chart-ci.yaml to verify the conditional-rendering
-logic (platform-cicd-app.hasStage in templates/_helpers.tpl) actually gates
+logic (glidepath-app.hasStage in templates/_helpers.tpl) actually gates
 resources on cicd.yaml's declared pipeline stages - the direct regression test for the
 live-confirmed bug this whole chart exists to fix (a release PipelineRun firing for an
 Application that never declared a release stage).

@@ -4,7 +4,7 @@
 //
 //  1. Same-cluster envs (no cluster: in deploy.upperEnvironments): watches ArgoCD
 //     Application objects directly (applications.argoproj.io, in the argocd
-//     namespace, filtered to platform.io/dora-track=true) for confirmed terminal sync
+//     namespace, filtered to hangar.io/dora-track=true) for confirmed terminal sync
 //     outcomes - unchanged since this service's original design. See
 //     docs/dora-metrics.md for the full mechanism and why this watches ArgoCD
 //     directly instead of subscribing to the CDEvents broker like the original
@@ -49,7 +49,7 @@
 // the HTTP server can process a single live event - so a restart resumes from the last
 // recorded totals instead of zero.
 //
-// Correlation with a specific release attempt happens via the platform.io/dora-*
+// Correlation with a specific release attempt happens via the hangar.io/dora-*
 // annotations the release Pipeline stamps directly onto the Application object
 // (catalog/tasks/mark-release-pending.yaml for path 1, open-release-pr.yaml's
 // GitOps-committed manifest for path 2) - not a separate datastore, not image/revision
@@ -90,15 +90,15 @@ import (
 var applicationGVR = schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}
 
 const (
-	annoPending            = "platform.io/dora-pending"
-	annoFlowStartTime      = "platform.io/dora-flow-start-time"
-	annoBaselineStartedAt  = "platform.io/dora-baseline-started-at"
-	annoAppNamespace       = "platform.io/dora-app-namespace"
-	annoApp                = "platform.io/dora-app"
-	annoLastFailureTime    = "platform.io/dora-last-failure-time"
+	annoPending            = "hangar.io/dora-pending"
+	annoFlowStartTime      = "hangar.io/dora-flow-start-time"
+	annoBaselineStartedAt  = "hangar.io/dora-baseline-started-at"
+	annoAppNamespace       = "hangar.io/dora-app-namespace"
+	annoApp                = "hangar.io/dora-app"
+	annoLastFailureTime    = "hangar.io/dora-last-failure-time"
 	argocdNamespace        = "argocd"
 	platformNamespace      = "platform-system"
-	doraTrackLabelSelector = "platform.io/dora-track=true"
+	doraTrackLabelSelector = "hangar.io/dora-track=true"
 	clusterMappedStateCM   = "dora-cluster-mapped-state"
 	metricsStateCM         = "dora-metrics-state"
 )
@@ -217,7 +217,7 @@ func main() {
 	if !cache.WaitForCacheSync(stop, informer.HasSynced) {
 		log.Fatal("failed to sync informer cache")
 	}
-	log.Println("dora-exporter: informer cache synced, watching applications.argoproj.io in argocd (platform.io/dora-track=true)")
+	log.Println("dora-exporter: informer cache synced, watching applications.argoproj.io in argocd (hangar.io/dora-track=true)")
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())

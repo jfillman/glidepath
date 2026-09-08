@@ -1,0 +1,186 @@
+# platform/dora-exporter/manifests/deployment.yaml
+#
+# Deploys the DORA exporter - a plain metrics Deployment (not Tekton-specific), only
+# watching ArgoCD Applications and serving /metrics. See docs/dora-metrics.md.
+#
+# 1 replica, not 2 like the broker: this Deployment's own restart no longer loses data
+# (dora-metrics-state below rehydrates every counter/histogram at startup - a real gap,
+# found live 2026-08-22, that used to mean a routine pod replacement silently zeroed
+# every app's deployment/release/lead-time history), but 2 replicas would still race on
+# that same ConfigMap's read-modify-write cycle (see persistMetricsState's own comment
+# in cmd/dora-exporter/main.go) - not on the critical chaining path, so not worth the
+# added complexity to make that safe.
+#
+# RBAC is two namespaced Roles, narrower than this platform's other cluster-scoped
+# components: one in argocd (Applications, for the same-cluster path's informer), one in
+# platform-system (get+patch on exactly the two ConfigMaps below: dora-cluster-mapped-
+# state for the cluster-mapped path's MTTR correlation, dora-metrics-state for every
+# app's durable counters - see each ConfigMap's own comment). Both grant patch as a
+# deliberate widening beyond read-only - RBAC can't scope patch to "annotations only" or
+# "this one data key only", so this identity can technically modify any field on any
+# Application in argocd, or any key in either ConfigMap.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dora-exporter
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "dora-exporter"
+  namespace: platform-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dora-exporter
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "dora-exporter"
+  namespace: argocd
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dora-exporter
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "dora-exporter"
+  namespace: argocd
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: dora-exporter }
+subjects:
+  - kind: ServiceAccount
+    name: dora-exporter
+    namespace: platform-system
+---
+# dora-cluster-mapped-state: this service's own MTTR state store for cluster-mapped
+# apps (docs/admin/dora-metrics.md, "MTTR for cluster-mapped envs") - it has no live
+# API access to a remote cluster's Application object to patch a last-failure-time
+# annotation onto (path 1's mechanism), so it persists the same thing here instead,
+# on THIS cluster, where it already has RBAC.
+#
+# Deliberately renders with NO `data:` field at all, not even `data: {}` - a
+# `kubectl apply`/ArgoCD 3-way-merge sync only prunes fields that were previously
+# present in its own last-applied-configuration. If this manifest ever declared
+# `data: {}`, a later sync would see "data desired: empty" and wipe every key this
+# service's own PATCH calls have added since. Never declaring the field at all means
+# it's simply never part of what this manifest manages, so out-of-band keys survive
+# indefinitely across ordinary syncs - same reasoning as this service's existing
+# annotation patch-back not fighting ArgoCD's own reconcile loop.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dora-cluster-mapped-state
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "dora-exporter"
+  namespace: platform-system
+---
+# dora-metrics-state: this service's durable mirror of every dora_* counter/histogram
+# observation, for BOTH input paths (docs/admin/dora-metrics.md) - not just the
+# cluster-mapped one dora-cluster-mapped-state above already covers for MTTR. Real gap
+# found live 2026-08-22: those Prometheus collectors only ever lived in this process's
+# memory, so a routine pod replacement (a redeploy, a node drain, an image update)
+# silently zeroed every app's deployment/release/lead-time history - checkout-api lost
+# two real ArgoCD-confirmed releases from the same day this way. primeMetricsFromState
+# (cmd/dora-exporter/main.go) replays this ConfigMap's contents back into the live
+# collectors once at startup, before either input path can process a live event.
+#
+# Same "no `data:` field at all" reasoning as dora-cluster-mapped-state above - see that
+# ConfigMap's own comment for why declaring the field, even empty, would let a later
+# `kubectl apply`/ArgoCD sync prune every key this service's own PATCH calls have added
+# since.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dora-metrics-state
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "dora-exporter"
+  namespace: platform-system
+---
+# get+patch only, resourceNames-scoped to exactly these two ConfigMaps - no create,
+# matching this platform's "no wildcard verbs, enumerate resourceNames" RBAC
+# convention everywhere else (see e.g. argocd-outcome-relay's own Role). Never needs
+# create because both ConfigMaps above are always pre-rendered by this same chart.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dora-exporter-state
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "dora-exporter"
+  namespace: platform-system
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["dora-cluster-mapped-state", "dora-metrics-state"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dora-exporter-state
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "dora-exporter"
+  namespace: platform-system
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: dora-exporter-state }
+subjects:
+  - kind: ServiceAccount
+    name: dora-exporter
+    namespace: platform-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dora-exporter
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "dora-exporter"
+  namespace: platform-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: dora-exporter }
+  template:
+    metadata:
+      labels: { app: dora-exporter }
+    spec:
+      serviceAccountName: dora-exporter
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532  # distroless "nonroot" user's documented numeric UID - see cmd/dora-exporter/Dockerfile
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: exporter
+          # Real gap, fixed: this claimed to be registry-published but was never
+          # actually built/pushed anywhere - it only worked via a manual, off-script
+          # kind-load. Now defaults to a genuinely published tag.
+          image: {{ .Values.doraExporterImage }}
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080, name: metrics }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          livenessProbe:
+            httpGet: { path: /healthz, port: metrics, scheme: HTTP }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dora-exporter
+  # ServiceMonitor's selector.matchLabels matches THIS Service's own metadata.labels,
+  # not spec.selector (which only selects pods) - without the `app` label here,
+  # Prometheus's relabel rule drops every target.
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "dora-exporter"
+    app: dora-exporter
+  namespace: platform-system
+spec:
+  selector: { app: dora-exporter }
+  ports: [{ name: metrics, port: 8080, targetPort: metrics }]

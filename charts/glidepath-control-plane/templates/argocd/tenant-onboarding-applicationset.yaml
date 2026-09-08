@@ -1,0 +1,148 @@
+# templates/argocd/tenant-onboarding-applicationset.yaml
+#
+# ArgoCD-managed tenant onboarding, replacing the manual `helm upgrade --install
+# <type>-<app-name>-cicd charts/glidepath-app -f cicd.yaml -f platform-identity.yaml`
+# step (docs/admin/onboarding-mechanics.md). Lives here, not glidepath-app - a chart
+# can't define the ApplicationSet that creates its own Application.
+#
+# IMPORTANT: this file's `template:` block uses ArgoCD ApplicationSet's OWN Go-template
+# syntax (goTemplate: true, resolved by ArgoCD at generate time), which collides with
+# Helm's Go-template engine (Helm renders this file first, at install time). Every ArgoCD
+# template expression below is escaped as a literal string for Helm to emit verbatim -
+# do not "simplify" these.
+#
+# Generator scans tenants/*/identity.yaml - one Application per tenant, driven purely by
+# that operator-owned file.
+#
+# tenantsRepoUrl is deliberately separate from platformCicdRepoUrl: platformCicdRepoUrl
+# (chart source, below) stays this platform's one shared repo on every cluster, but
+# tenantsRepoUrl is which tenant LIST this installation onboards - it must be
+# independent per cluster, or a second cluster's install would onboard the first
+# cluster's live tenants too.
+#
+# $tenantsRepoUrl/$tenantOnboardingSetName fall back to a convention derived from
+# .Values.clusterName when not explicitly set - see values.yaml's comments on
+# clusterName/tenantsRepoUrl/tenantOnboardingApplicationSetName. The derived URL's
+# owner comes from platformCicdRepoUrl (via the githubOwner helper), not a hardcoded
+# org, so this convention works for any fork/deployment of this chart.
+{{- $githubOwner := include "glidepath-control-plane.githubOwner" . }}
+{{- $tenantsRepoUrl := .Values.tenantsRepoUrl | default (printf "https://github.com/%s/platform-cicd-%s-tenants.git" $githubOwner .Values.clusterName) }}
+{{- $tenantOnboardingSetName := .Values.tenantOnboardingApplicationSetName | default "platform-cicd-tenant-onboarding" }}
+#
+# Source 0 renders straight from this git repo at main HEAD, not the OCI chart
+# app-chart-ci.yaml's `publish` job also pushes on every push - ArgoCD's semver-range
+# targetRevision resolution doesn't work against OCI Helm sources (no index.yaml to
+# resolve against; argoproj/argo-cd#9528). Revisit once chart versions are pinned by a
+# proper release workflow instead of floating ranges. Chart versions publish as
+# `<version>-<shortsha>` (hyphen, not `+build` - OCI tags can't contain `+`, and older
+# ArgoCD doesn't reverse Helm's `+`-to-`_` rewrite before matching either - argo-cd#14097).
+#
+# cicd.yaml is read live from the tenant's own app repo (source 1, $ref'd) rather than a
+# tracked copy, now that ArgoCD needs standing read access to app repos anyway (a planned
+# self-service Crossplane XR folder). Verified safe: helm.valuesObject (source 0, built
+# only from generator params) takes precedence over helm.valueFiles (source 1's
+# cicd.yaml) for any overlapping key, so a tenant's cicd.yaml can't override
+# platformIdentity. `directory: {exclude: "*"}` on source 1 is required - without it every
+# *.yaml in the app repo root would be auto-applied as raw manifests by this Application.
+#
+# identity.yaml itself is ALSO ref'd as a valueFiles entry (source 2), not just mined for
+# the generator's params - goTemplate's per-string-field substitution (see IMPORTANT
+# above) can only ever produce scalar values, not dynamically generate array items, so an
+# optional list field like platformIdentity.extraGitopsRepos (xrds/tektoncicd.yaml) can't
+# be forwarded through valuesObject at all: a real live bug (backstage's
+# tenants/backstage/identity.yaml never reached its Repository CR) found while testing an
+# attempted range-based valuesObject fix, which Helm itself rejects as invalid YAML before
+# ArgoCD ever gets to templating it. Reading identity.yaml directly sidesteps the
+# field-by-field allowlist entirely - safe against valuesObject's fixed 6 keys per the
+# same precedence rule above, and safe to trust (unlike cicd.yaml) since it's
+# operator-owned, not the tenant's own repo.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  # Value, not a hardcoded name: a real collision was found with an unrelated idp
+  # ApplicationSet also named "tenant-onboarding". Renaming in place would delete-and-
+  # regenerate every tenant's Application via k8s GC (they carry ownerReferences +
+  # resources-finalizer back to this object), transiently pruning their live pipeline
+  # resources - so this defaults to the original name (zero cutover for existing
+  # clusters) and only a colliding cluster overrides it.
+  name: {{ $tenantOnboardingSetName }}
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "argocd"
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=invalid"]
+  generators:
+    - git:
+        repoURL: {{ $tenantsRepoUrl }}
+        revision: main
+        files:
+          - path: "tenants/*/identity.yaml"
+  template:
+    metadata:
+      name: "{{ "{{" }}.platformIdentity.appName{{ "}}" }}-cicd"
+      labels:
+        {{- include "glidepath-control-plane.labels" . | nindent 8 }}
+        hangar.io/subcomponent: "argocd"
+      # Cascade-deletes this chart's resources if a tenant's identity.yaml is removed -
+      # same mechanism as ephemeral-envs.yaml's finalizer.
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+      namespace: argocd
+    spec:
+      project: platform-onboarding
+      sources:
+        - repoURL: {{ required "platformCicdRepoUrl must be set" .Values.platformCicdRepoUrl }}
+          targetRevision: main
+          path: charts/glidepath-app
+          helm:
+            valuesObject:
+              platformIdentity:
+                appName: "{{ "{{" }}.platformIdentity.appName{{ "}}" }}"
+                type: "{{ "{{" }}.platformIdentity.type{{ "}}" }}"
+                gitopsRepoUrl: "{{ "{{" }}.platformIdentity.gitopsRepoUrl{{ "}}" }}"
+                appRepoUrl: "{{ "{{" }}.platformIdentity.appRepoUrl{{ "}}" }}"
+                githubOwner: "{{ "{{" }}.platformIdentity.githubOwner{{ "}}" }}"
+                catalogNamespace: "{{ "{{" }}.platformIdentity.catalogNamespace{{ "}}" }}"
+            valueFiles:
+              # $ref value files resolve relative to that source's checkout root -
+              # cicd.yaml always lives at the app repo's own root, identity.yaml at
+              # tenants/<appName>/identity.yaml in the tenants repo (source 2 below).
+              - $appsrc/cicd.yaml
+              - "$tenantsrc/tenants/{{ "{{" }}.platformIdentity.appName{{ "}}" }}/identity.yaml"
+        - repoURL: "{{ "{{" }}.platformIdentity.appRepoUrl{{ "}}" }}"
+          targetRevision: main
+          ref: appsrc
+          # Exists only to be $ref'd for valueFiles above - directory:exclude prevents
+          # it from being applied as raw manifests (see header).
+          directory:
+            exclude: "*"
+        - repoURL: {{ $tenantsRepoUrl }}
+          targetRevision: main
+          ref: tenantsrc
+          # Same tenants repo the generator above already reads - just also declared
+          # as a live source so its identity.yaml can be $ref'd for valueFiles.
+          directory:
+            exclude: "*"
+      destination:
+        server: https://kubernetes.default.svc
+        # Matches glidepath-app.namespace's own <type>-<appName>-cicd convention,
+        # replicated here since this is a different Helm release/scope - both must
+        # compute the same value.
+        namespace: "{{ "{{" }}.platformIdentity.type{{ "}}" }}-{{ "{{" }}.platformIdentity.appName{{ "}}" }}-cicd"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+        # Lets the registry-credentials ClusterExternalSecret
+        # (control-plane's own templates/secretstore/
+        # registry-credentials-cluster-external-secret.yaml) select this namespace
+        # automatically - see that file's header. managedNamespaceMetadata only takes
+        # effect alongside CreateNamespace=true (ArgoCD re-applies it every sync, so a
+        # label added here later also lands on an already-existing namespace).
+        managedNamespaceMetadata:
+          labels:
+            hangar.io/managed-secrets: "true"

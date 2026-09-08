@@ -1,0 +1,635 @@
+# templates/tasks/deliver-onboarding-files.yaml - see docs/onboarding.md.
+#
+# Replaces manual copy-paste onboarding: mints a fresh, single-repo-scoped GitHub App
+# installation token per target repo (never a standing credential), opens a PR rather than
+# pushing directly to the default branch, and lets PaC's own webhook auth decide when this
+# Task runs (see files/onboarding-templates/app-repo/onboarding-resync.yaml).
+#
+# Not gitsign-gated: the provenance gate's gitsign verification only runs on the gitops repo's
+# release PR, not on either repo's default branch, so this Task's machine commits don't
+# need to be signed.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deliver-onboarding-files
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  params:
+    - name: git-url
+      type: string
+      description: The app repo's own git-url - only its GitHub org/owner is used.
+    - name: app-namespace
+      type: string
+    - name: app-name
+      type: string
+    - name: app-type
+      type: string
+      description: >-
+        platformIdentity.type ("app"/"infra"/...) - forwarded into each generated
+        git-rooted PipelineRun's app-type param (deploy.yaml/release.yaml need it).
+    - name: github-owner
+      type: string
+    - name: gitops-repo-url
+      type: string
+      default: ""
+      description: >-
+        Optional - only needed if this Application's pipeline declares a release stage
+        (see the app chart's own conditional rendering). Empty skips the gitops-repo
+        delivery half entirely, not an error - unless cicd.yaml itself (read fresh in
+        this Task) declares a release stage, in which case the deliver-app-repo-files
+        step derives it from the gitops-<app-name> convention instead of trusting a
+        possibly-stale empty value forever (see that step's own 2026-08-23 header for
+        the real incident this fixed).
+  # Same audience-bound projected-ServiceAccount-token pattern as send-cdevent.yaml/
+  # open-release-pr.yaml - no new identity or RBAC needed; runs as pipeline-runner.
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+    # Rendered by the APP chart (one copy per Application), not this catalog chart -
+    # a Pod can only mount a ConfigMap from its own namespace, and this Task's Pod always
+    # runs in the calling Application's namespace, not platform-catalog. A fixed ConfigMap
+    # name works because each Application's own copy resolves locally, so this one shared
+    # Task definition transparently mounts a different copy per tenant.
+    - name: onboarding-templates-app-repo
+      configMap:
+        name: onboarding-templates-app-repo
+    - name: onboarding-templates-gitops-repo
+      configMap:
+        name: onboarding-templates-gitops-repo
+  steps:
+    - name: deliver-app-repo-files
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+        - name: onboarding-templates-app-repo
+          mountPath: /opt/platform/onboarding-templates/app-repo
+          readOnly: true
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: GIT_URL
+          value: $(params.git-url)
+        - name: APP_NAMESPACE
+          value: $(params.app-namespace)
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: APP_TYPE
+          value: $(params.app-type)
+        - name: GITHUB_OWNER
+          value: $(params.github-owner)
+        - name: GITOPS_REPO_URL
+          value: $(params.gitops-repo-url)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        source "${PLATFORM_LIB}/retry.sh"
+
+        owner="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        image_repo="ghcr.io/${GITHUB_OWNER}/${APP_NAME}"
+
+        # app-type is optional so a stale trigger file committed before app-type existed
+        # can still fire this Task and self-heal. Derived from app-namespace when absent:
+        # every namespace is <type>-<app-name>-cicd, so stripping the suffix recovers type.
+        if [[ -z "${APP_TYPE}" ]]; then
+          APP_TYPE="${APP_NAMESPACE%-${APP_NAME}-cicd}"
+          echo "app-type not supplied - derived '${APP_TYPE}' from app-namespace=${APP_NAMESPACE}"
+        fi
+
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+        workdir="$(mktemp -d)"
+        clone_url="https://x-access-token:${token}@github.com/${owner}/${repo}.git"
+        with_retry 3 -- git clone --quiet "${clone_url}" "${workdir}/repo"
+        cd "${workdir}/repo"
+        mkdir -p .tekton
+
+        # Read cicd.yaml BEFORE generating onboarding-resync.yaml below (not after, as
+        # this used to be ordered) - gitops-repo-url's own derivation fallback needs
+        # pipelines_json already in hand. Every other .tekton/ file comes from named
+        # flows under cicd.yaml's `pipelines:` section too. Only a flow's git-rooted
+        # first step needs a PaC file here - event-chained later steps are fired by the
+        # in-cluster CDEvents broker instead.
+        if [[ -f cicd.yaml ]]; then
+          pipelines_json="$(yq -o=json '.pipelines // {}' cicd.yaml)"
+          source_volume_size_raw="$(yq -r '.build.sourceVolume.size // "small"' cicd.yaml)"
+          # env name -> cluster lookup ("" for same-cluster), mirroring
+          # glidepath-app.upperEnvClusters. Necessarily duplicated as jq rather than
+          # shared - this script runs as bash against raw cicd.yaml, outside Helm's render
+          # pass. Needed so a git-rooted release step that omits cluster: still resolves the
+          # right cluster instead of silently falling through to same-cluster (a real bug
+          # that hit flow-triggers.yaml's Go-template equivalent too).
+          upper_env_clusters_json="$(yq -o=json '.deploy.upperEnvironments // []' cicd.yaml | jq 'map(if type == "object" then {(.name): (.cluster // "")} else {(.): ""} end) | add // {}')"
+
+          # Synthesize a pr-build flow from ephemeralEnvironments.pullRequest when the
+          # operator hasn't hand-declared one. Its shape never varies (pull_request-
+          # triggered, single build step, -pr-tagged image via generate_flow_file's own
+          # pull_request case below) - so ephemeralEnvironments.pullRequest.enabled: true
+          # is meant to be the whole on/off switch. Without this, that flag alone did
+          # nothing: the ApplicationSet it drives (ephemeral-envs.yaml) had nothing that
+          # ever produced the image it expects, and actually turning the feature on meant
+          # hand-writing an entire pipelines.pr-build entry that just duplicated
+          # ephemeralEnvironments.pullRequest.labels under a different key - found live
+          # 2026-08-24 chasing checkout-api's own hand-written copy of exactly this flow.
+          # pipelines.pr-build remains a full override escape hatch (a different base
+          # branch, extra steps, a second differently-labeled PR flow, etc) - only
+          # synthesized when genuinely absent, never overwrites an explicit declaration.
+          pr_enabled="$(yq -r '.ephemeralEnvironments.pullRequest.enabled // false' cicd.yaml)"
+          if [[ "${pr_enabled}" == "true" ]] && [[ "$(echo "${pipelines_json}" | jq -r 'has("pr-build")')" != "true" ]]; then
+            pr_labels_json="$(yq -o=json '.ephemeralEnvironments.pullRequest.labels // ["preview"]' cicd.yaml)"
+            # Base branch: reuse whichever push-triggered flow's branch is already
+            # declared (this platform's convention for "the" release branch) - falls back
+            # to main if no push flow exists at all.
+            base_branch="$(echo "${pipelines_json}" | jq -r '[.[] | select((.trigger.event // .trigger.type) == "push") | .trigger.branch // empty] | first // "main"')"
+            pipelines_json="$(echo "${pipelines_json}" | jq \
+              --arg branch "${base_branch}" --argjson labels "${pr_labels_json}" \
+              '. + {"pr-build": {trigger: {source: "git", event: "pull_request", branch: $branch, labels: $labels}, steps: [{stage: "build"}]}}')"
+            echo "cicd.yaml: ephemeralEnvironments.pullRequest.enabled=true with no explicit pipelines.pr-build - synthesized one (branch=${base_branch}, labels=${pr_labels_json})"
+          fi
+        else
+          pipelines_json="{}"
+          source_volume_size_raw="small"
+          upper_env_clusters_json="{}"
+        fi
+
+        # gitops-repo-url is optional (see this Task's own param description) so a stale
+        # trigger file committed before this fallback existed can still fire this Task
+        # and self-heal - same reasoning as APP_TYPE's own derivation above, just for a
+        # different failure mode. Unlike APP_TYPE (a hard Tekton admission deadlock),
+        # this one fails silently: deliver-gitops-repo-files below just skips, forever,
+        # since nothing ever re-derives the value from anything live - confirmed live
+        # 2026-08-23 against a real tenant (checkout-api) whose trigger file had carried
+        # an empty gitops-repo-url since a copy-paste bootstrap from a donor app that
+        # genuinely had no release stage, silently skipping every gitops delivery since.
+        # Only derived when cicd.yaml actually declares a release stage SOMEWHERE in any
+        # flow's steps (not just steps[0], unlike root_stage below - release is
+        # typically the LAST step in a build->test->deploy->release chain, not the
+        # first) - deriving it unconditionally would send an app with no gitops repo at
+        # all into a hard clone failure instead of the intended clean skip.
+        #
+        # Only fixes the COMMITTED trigger file (onboarding-resync.yaml, via the sed
+        # below), for next time - it does NOT retroactively fix THIS run's own
+        # deliver-gitops-repo-files step further down, which is a separate container
+        # reading $(params.gitops-repo-url) directly (Tekton steps don't share bash
+        # variables). A tenant hitting this self-heals over two resync cycles: this run
+        # delivers the corrected trigger file as a PR; merging it and pushing cicd.yaml
+        # again fires a second run that finally has the right value from the start. Same
+        # "heals eventually, not instantly" shape as APP_TYPE's own fix.
+        if [[ -z "${GITOPS_REPO_URL}" ]]; then
+          has_release="$(echo "${pipelines_json}" | jq -r '[.[] | .steps[]? | select(.stage == "release")] | length > 0')"
+          if [[ "${has_release}" == "true" ]]; then
+            GITOPS_REPO_URL="https://github.com/${GITHUB_OWNER}/gitops-${APP_NAME}"
+            echo "gitops-repo-url not supplied but cicd.yaml declares a release stage - derived '${GITOPS_REPO_URL}' from the gitops-<app-name> convention"
+          fi
+        fi
+
+        # onboarding-resync.yaml is the only file delivered unconditionally - the trigger
+        # that re-invokes this mechanism next time cicd.yaml changes. Everything else is
+        # app-specific behavior, generated below from cicd.yaml's own `pipelines:` section;
+        # there's no implicit "push to main always builds" default.
+        sed \
+          -e "s|<APP_NAMESPACE>|${APP_NAMESPACE}|g" \
+          -e "s|<APP_NAME>|${APP_NAME}|g" \
+          -e "s|<APP_TYPE>|${APP_TYPE}|g" \
+          -e "s|<GITHUB_OWNER>|${GITHUB_OWNER}|g" \
+          -e "s|<GITOPS_REPO_URL>|${GITOPS_REPO_URL}|g" \
+          "/opt/platform/onboarding-templates/app-repo/onboarding-resync.yaml" > ".tekton/onboarding-resync.yaml"
+
+        # Regenerated fresh every run (stale removed first) so a flow deleted from
+        # cicd.yaml also disappears.
+        rm -f .tekton/flow-*.yaml
+        # T-shirt lookup for build.sourceVolume.size, duplicated from the sourceVolumeSize
+        # Helm helper since this script runs outside Helm's render pass and can't call it.
+        case "${source_volume_size_raw}" in
+          small) SOURCE_VOLUME_STORAGE="2Gi" ;;
+          medium) SOURCE_VOLUME_STORAGE="5Gi" ;;
+          large) SOURCE_VOLUME_STORAGE="10Gi" ;;
+          xlarge) SOURCE_VOLUME_STORAGE="20Gi" ;;
+          *) SOURCE_VOLUME_STORAGE="2Gi" ;;
+        esac
+
+        # PaC's dynamic-variable syntax uses the same double-brace delimiter Helm renders
+        # this file with, so writing it literally would make Helm try to parse it instead
+        # of passing it through. Built from printf hex escapes instead so no literal
+        # double-brace sequence appears in this file's own source.
+        OB="$(printf '\x7b\x7b')"
+        CB="$(printf '\x7d\x7d')"
+        GIT_URL_VAR="${OB} repo_url ${CB}"
+        GIT_REVISION_VAR="${OB} revision ${CB}"
+        # PaC's source_branch dynamic var carries the raw ref for a tag push (e.g.
+        # refs/tags/v1.2.3), matching what build-image.yaml's version-extraction expects.
+        GIT_TAG_VAR="${OB} source_branch ${CB}"
+
+        generate_flow_file() {
+          local flow_name="$1" event="$2" branch="$3" tag_pattern="$4" file_paths_json="$5" root_stage="$6"
+          local root_env="$7" root_test_name="$8" root_cluster="$9" root_name="${10}" is_flow_terminal="${11}"
+          local labels_json="${12:-[]}"
+          local on_event="" branch_line="" cel_line="" tag_param_line=""
+          # deploy/release/test can all be a flow's git-rooted first step (e.g. a tag push
+          # deploying straight to prod). Their Pipelines read env/test-name/cluster/name as
+          # regular params, only emitted when set. This quartet was previously missing
+          # entirely: a git-rooted deploy declaring `env: staging` would have silently
+          # deployed to "dev" (deploy.yaml's own Tekton-level default) since nothing passed
+          # the declared value through.
+          local root_param_lines=""
+          if [[ -n "${root_env}" ]]; then
+            root_param_lines="${root_param_lines}
+            - { name: env, value: \"${root_env}\" }"
+          fi
+          if [[ -n "${root_test_name}" ]]; then
+            root_param_lines="${root_param_lines}
+            - { name: test-name, value: \"${root_test_name}\" }"
+          fi
+          if [[ -n "${root_cluster}" ]]; then
+            root_param_lines="${root_param_lines}
+            - { name: cluster, value: \"${root_cluster}\" }"
+          fi
+          if [[ -n "${root_name}" ]]; then
+            root_param_lines="${root_param_lines}
+            - { name: name, value: \"${root_name}\" }"
+          fi
+          # PR-validation builds get their own -pr image repo suffix (kept from the old
+          # static pull-request.yaml template) so they never collide with a real release
+          # tag in the same registry path.
+          local effective_image_repo="${image_repo}"
+          # pr_tag_only: build-image.yaml's own param - see that Task's comment for why a
+          # PR image can't carry the normal <version>-<short-sha> tag (ArgoCD's
+          # pullRequest generator, in glidepath-app's ephemeral-envs.yaml, has no way
+          # to read package.json's version at manifest-generation time, only .head_sha).
+          local pr_tag_only="false"
+
+          case "${event}" in
+            push)
+              on_event="[push]"
+              if [[ -n "${branch}" ]]; then
+                branch_line="    pipelinesascode.tekton.dev/on-target-branch: \"[${branch}]\""
+              fi
+              # Guard against deploy-manifests.yaml's own commits re-triggering this flow -
+              # a real infinite loop hit live on checkout-api: that Task commits to
+              # platform/envs/<env>.yaml on this same branch, which is itself a push to
+              # main, which re-triggered build, which deployed again, forever.
+              #
+              # Uses a CEL expression rather than the separate on-path-change-ignore
+              # annotation: PaC's matcher takes the CEL branch entirely whenever
+              # on-cel-expression is set and never evaluates on-path-change-ignore, so an
+              # app that also sets trigger.paths would silently keep looping if this guard
+              # were the separate annotation. One mechanism, always applied, covers both.
+              #
+              # NOT path-based (was: !("platform/envs/**".pathChanged())) - real bug hit
+              # live on order-api 2026-08-29: pathChanged() diffs the whole push's
+              # before...after range, not each commit individually. Once deploy-manifests.yaml
+              # pushes its commit straight to main, the developer's next `git push` needs a
+              # merge/rebase first, so their push's range ends up containing BOTH their own
+              # commit and the bot's platform/envs/ commit - pathChanged() then matches on
+              # the bot's file and skips the developer's push too, silently, until they push
+              # again (by which point the bot's commit is no longer in the new range).
+              #
+              # Matching on the push's head-commit author instead is range-proof: it only
+              # asks "did the bot itself produce this push's tip", which is only ever true
+              # for deploy-manifests.yaml's own solo push (see its git config user.email,
+              # same literal here - keep in sync).
+              local loop_guard='(!has(body.head_commit) || body.head_commit.author.email != "deploy@platform-cicd.invalid")'
+              # Same on-cel-expression-drops-on-event/on-target-branch gap as the
+              # pull_request case below, hit live 2026-08-24: this flow's on-target-branch
+              # ([main]) was silently ignored once the loop-guard CEL line was added, so a
+              # push to ANY branch (including a PR's own branch) matched it - a push to a
+              # preview PR branch fired both pr-build AND ci. has(body.ref) also guards
+              # against a pull_request webhook (which has no top-level ref) evaluating this
+              # expression at all, same reasoning as has(body.pull_request) below.
+              local push_branch_expr=""
+              if [[ -n "${branch}" ]]; then
+                push_branch_expr=" && has(body.ref) && body.ref == \"refs/heads/${branch}\""
+              fi
+              if [[ "${file_paths_json}" != "[]" ]]; then
+                local expr
+                # pathChanged() is a suffix method on the pattern string itself, not a
+                # function taking the pattern as an argument - the inverted form parses
+                # but PaC's CEL evaluator rejects it at webhook-delivery time.
+                expr="$(echo "${file_paths_json}" | jq -r 'map("\"" + . + "\".pathChanged()") | join(" || ")')"
+                cel_line="    pipelinesascode.tekton.dev/on-cel-expression: '(${expr}) && ${loop_guard}${push_branch_expr}'"
+              else
+                cel_line="    pipelinesascode.tekton.dev/on-cel-expression: '${loop_guard}${push_branch_expr}'"
+              fi
+              ;;
+            pull_request)
+              on_event="[pull_request]"
+              if [[ -n "${branch}" ]]; then
+                branch_line="    pipelinesascode.tekton.dev/on-target-branch: \"[${branch}]\""
+              fi
+              effective_image_repo="${image_repo}-pr"
+              pr_tag_only="true"
+              # trigger.labels (schemas/cicd.schema.json) - all-must-match, same semantics
+              # as ArgoCD's own pullRequest generator `labels:` field. Without this, a
+              # pull_request-triggered build flow fires for every PR touching this branch,
+              # not just ones actually opted into an ephemeral environment (which IS
+              # label-gated, via ephemeral-envs.yaml's own ApplicationSet generator) -
+              # wastes a real build+push+SBOM/SAST/image-scan run on every WIP PR.
+              #
+              # Folds on-target-branch's own check into this same CEL expression, same
+              # precedent branch.created's own case below already established: PaC's own
+              # matcher logs a real, confirmed warning that on-cel-expression, once set,
+              # makes it ignore on-event/on-target-branch entirely - dropping the branch
+              # restriction silently instead of just adding a label filter on top of it.
+              #
+              # has(body.pull_request) guards the SAME reason, confirmed live 2026-08-24
+              # (a real CEL evaluation error on a plain push event, not just theoretical):
+              # on-cel-expression replaces on-event too, so PaC evaluates this expression
+              # against every webhook type, not just pull_request ones - a push event's
+              # body has no pull_request field at all, so body.pull_request.labels errors
+              # "no such key: labels" instead of just not matching, without this guard.
+              if [[ "$(echo "${labels_json}" | jq -r 'length > 0')" == "true" ]]; then
+                local label_expr branch_expr=""
+                label_expr="$(echo "${labels_json}" | jq -r 'map("body.pull_request.labels.exists(l, l.name == \"" + . + "\")") | join(" && ")')"
+                if [[ -n "${branch}" ]]; then
+                  branch_expr=" && body.pull_request.base.ref == \"${branch}\""
+                fi
+                # body.action != "opened" - confirmed live 2026-08-24: `gh pr create --label`
+                # (and equivalent UI flows) issue PR-creation and label-add as two separate
+                # GitHub API calls a second or so apart, each firing its own webhook (plain
+                # "opened" + "labeled"). GitHub webhook payloads reflect PR state at dispatch
+                # time, not at the instant the action fired, so if the "opened" delivery is
+                # dispatched even slightly late, body.pull_request.labels already shows the
+                # label - matching this same CEL a second time and firing a duplicate build
+                # (duplicate PipelineRun, check-run, and Slack notification) for the identical
+                # SHA. The "labeled" event on its own already covers "PR just became build-
+                # eligible", so opened never needs to independently match here; synchronize/
+                # reopened/etc. are untouched and still trigger rebuilds as intended.
+                cel_line="    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.action != \"opened\" && ${label_expr}${branch_expr}'"
+              fi
+              ;;
+            branch.created)
+              on_event="[push]"
+              local branch_expr=""
+              if [[ -n "${branch}" ]]; then
+                # branch.created has no PaC on-target-branch annotation to lean on (that
+                # matcher is for an existing branch's pushes, not "was this ref just
+                # created"). A previous version of this cel_line ignored trigger.branch
+                # entirely, so e.g. `branch: "release/*"` never filtered - any newly
+                # created branch fired the flow. Fold the same glob syntax push/pull_request
+                # accept via on-target-branch into CEL instead. Raw string (r"...") avoids
+                # double-escaping a pattern containing a literal ".".
+                local branch_regex
+                branch_regex="$(echo "${branch}" | sed -E 's/[.+?^${}()|\[\]\\]/\\&/g; s/\*/.*/g')"
+                branch_expr=" && body.ref.matches(r\"refs/heads/${branch_regex}\")"
+              fi
+              cel_line="    pipelinesascode.tekton.dev/on-cel-expression: 'body.created == true && body.ref.startsWith(\"refs/heads/\")${branch_expr}'"
+              ;;
+            tag)
+              on_event="[push]"
+              local pattern="${tag_pattern:-v[0-9]+.[0-9]+.[0-9]+}"
+              # A regex tagPattern legitimately contains backslash escapes (\. for a
+              # literal dot). CEL's double-quoted literals treat backslash as their own
+              # escape character, breaking CEL's lexer on any backslash. A CEL raw string
+              # (r"...") disables that escape processing so the pattern reaches RE2 unmolested.
+              cel_line="    pipelinesascode.tekton.dev/on-cel-expression: 'body.ref.startsWith(\"refs/tags/\") && body.ref.matches(r\"refs/tags/${pattern}\")'"
+              tag_param_line="    - { name: git-tag, value: \"${GIT_TAG_VAR}\" }"
+              ;;
+            # No release.created case - PaC has no support for GitHub's "release" webhook
+            # at any version (confirmed: deliveries come back "skipping non supported
+            # event"). Publishing a GitHub Release also creates its underlying tag, which
+            # fires the "tag" push event above instead - use that.
+          esac
+
+          # Body below is indented 8 spaces to stay inside this step's `script: |` YAML
+          # block scalar - Helm strips that common indent when rendering, so don't add any
+          # extra stripping here (a bare `sed 's/^        //'` previously flattened
+          # volumeClaimTemplate.spec by double-stripping).
+          # generateName is keyed by flow_name-0-root_stage, matching flow-triggers.yaml's
+          # <flowName>-<index>-<stageName> convention for chained steps (this function only
+          # ever generates a flow's first step, hence the hardcoded "0"). flow_name (a
+          # cicd.yaml map key) is still the leading segment - PaC requires every PipelineRun
+          # under .tekton/ to have a unique generateName across the whole repo, and two flows
+          # can share a root stage (e.g. a "ci" push flow and a "pr-check" pull_request flow
+          # both rooted at build), which would collide on generateName otherwise.
+          cat <<YAMLEOF
+        apiVersion: tekton.dev/v1
+        kind: PipelineRun
+        metadata:
+          generateName: ${flow_name}-0-${root_stage}-
+          labels:
+            hangar.io/app: "${APP_NAME}"
+            hangar.io/flow: "${flow_name}"
+            hangar.io/stage: "${root_stage}"
+            hangar.io/step-index: "0"
+          annotations:
+            pipelinesascode.tekton.dev/on-event: "${on_event}"
+        ${branch_line}
+        ${cel_line}
+            pipelinesascode.tekton.dev/max-keep-runs: "5"
+        spec:
+          pipelineRef:
+            resolver: cluster
+            params:
+              - { name: kind, value: pipeline }
+              - { name: name, value: ${root_stage} }
+              - { name: namespace, value: platform-catalog }
+          params:
+            - { name: git-url, value: "${GIT_URL_VAR}" }
+            - { name: git-revision, value: "${GIT_REVISION_VAR}" }
+            - { name: image-repo, value: "${effective_image_repo}" }
+            - { name: pr-tag-only, value: "${pr_tag_only}" }
+            - { name: app-namespace, value: "${APP_NAMESPACE}" }
+            - { name: app-name, value: "${APP_NAME}" }
+            - { name: app-type, value: "${APP_TYPE}" }
+            - { name: is-flow-terminal, value: "${is_flow_terminal}" }
+        ${tag_param_line}${root_param_lines}
+          workspaces:
+            - name: source
+              volumeClaimTemplate:
+                spec:
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: ${SOURCE_VOLUME_STORAGE}
+          taskRunTemplate:
+            serviceAccountName: pipeline-runner
+          timeouts:
+            pipeline: "1h"
+        YAMLEOF
+        }
+
+        flow_names="$(echo "${pipelines_json}" | jq -r 'keys[]' 2>/dev/null || true)"
+        while IFS= read -r flow_name; do
+          [[ -z "${flow_name}" ]] && continue
+          flow_json="$(echo "${pipelines_json}" | jq -c --arg n "${flow_name}" '.[$n]')"
+          [[ "$(echo "${flow_json}" | jq -r 'type')" != "object" ]] && continue
+
+          trigger_source="$(echo "${flow_json}" | jq -r '.trigger.source // ""')"
+          trigger_event="$(echo "${flow_json}" | jq -r '.trigger.event // .trigger.type // ""')"
+          if [[ -z "${trigger_source}" ]]; then
+            case "${trigger_event}" in
+              push|pull_request|branch.created|tag) trigger_source="git" ;;
+              *) trigger_source="event" ;;
+            esac
+          fi
+          # Only a flow's git-rooted first step is generated here - event-chained flows
+          # and later steps are the broker/flow-triggers.yaml's responsibility, not PaC's.
+          [[ "${trigger_source}" != "git" ]] && continue
+
+          branch="$(echo "${flow_json}" | jq -r '.trigger.branch // ""')"
+          tag_pattern="$(echo "${flow_json}" | jq -r '.trigger.tagPattern // ""')"
+          file_paths_json="$(echo "${flow_json}" | jq -c '.trigger.filePathPattern // []')"
+          labels_json="$(echo "${flow_json}" | jq -c '.trigger.labels // []')"
+          root_stage="$(echo "${flow_json}" | jq -r '.steps[0].stage // "build"')"
+          root_env="$(echo "${flow_json}" | jq -r '.steps[0].env // ""')"
+          root_test_name="$(echo "${flow_json}" | jq -r '.steps[0].testName // ""')"
+          root_cluster="$(echo "${flow_json}" | jq -r '.steps[0].cluster // ""')"
+          if [[ -z "${root_cluster}" && "${root_stage}" == "release" ]]; then
+            root_cluster="$(jq -r --arg e "${root_env}" '.[$e] // ""' <<<"${upper_env_clusters_json}")"
+          fi
+          root_name="$(echo "${flow_json}" | jq -r '.steps[0].name // ""')"
+          # This function only generates a flow's first step (index 0). is-flow-terminal
+          # tells that step's Pipeline to close the flow-root span when it's also the
+          # flow's last step (a build-only or single-step-release flow).
+          step_count="$(echo "${flow_json}" | jq -r '.steps | length')"
+          is_flow_terminal="false"
+          [[ "${step_count}" -eq 1 ]] && is_flow_terminal="true"
+
+          generate_flow_file "${flow_name}" "${trigger_event}" "${branch}" "${tag_pattern}" "${file_paths_json}" "${root_stage}" "${root_env}" "${root_test_name}" "${root_cluster}" "${root_name}" "${is_flow_terminal}" "${labels_json}" > ".tekton/flow-${flow_name}.yaml"
+          echo "app repo: generated .tekton/flow-${flow_name}.yaml (${trigger_event} -> ${root_stage})"
+        done <<< "${flow_names}"
+
+        if git status --porcelain | grep -q .; then
+          git config user.name "platform-cicd onboarding automation"
+          git config user.email "onboarding@platform-cicd.invalid"
+          # Static, not timestamped: unlike bump-manifest-pr.yaml/open-release-pr.yaml
+          # (one branch per specific revision, safe to skip entirely on retry), there's
+          # no natural revision to key this branch on - it's regenerated fresh from
+          # whatever cicd.yaml/the platform's templates look like right now, which can
+          # differ on every trigger. A timestamped branch meant every trigger opened a
+          # brand new PR even when an earlier resync PR was still sitting open unmerged
+          # - duplicate PRs piling up, not just a retry-safety gap. A single static
+          # branch, force-pushed with fresh content each run, keeps at most one open
+          # onboarding-resync PR per repo that simply gets updated in place.
+          branch_name="onboarding-resync"
+          git checkout -b "${branch_name}"
+          git add .tekton/
+          git commit --quiet -m "$(printf 'Onboarding: re-sync .tekton boilerplate from the platform catalog\n\nRegenerated onboarding-resync.yaml plus one .tekton/flow-<name>.yaml per git-rooted flow declared under cicd.yaml'"'"'s pipelines: - see docs/onboarding.md. No developer action needed beyond merging.')"
+          # --force: the only way this exact branch name already exists remotely is a
+          # still-open resync PR from an earlier trigger - this run's freshly
+          # regenerated content should replace it outright, not be rejected as a
+          # non-fast-forward push.
+          with_retry 3 -- git push --quiet --force "${clone_url}" "${branch_name}"
+          # Check for an already-open PR from this branch before creating - the force-
+          # push above already updated it in place if one exists, and GitHub's create-PR
+          # call 422s on "A pull request already exists for owner:branch_name" anyway.
+          existing_pr_url="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${branch_name}&state=open" \
+            | jq -r '.[0].html_url // empty')"
+          if [[ -n "${existing_pr_url}" ]]; then
+            echo "app repo: onboarding-resync PR already open - updated it with the latest content: ${existing_pr_url}"
+          else
+            pr_body="$(jq -n \
+              --arg title "Onboarding: re-sync .tekton boilerplate" \
+              --arg body "Regenerated onboarding-resync.yaml from the platform catalog's onboarding templates, plus one .tekton/flow-<name>.yaml per git-rooted flow declared under cicd.yaml's pipelines: (push/pull_request/tag/branch.created) - see docs/onboarding.md. Fires automatically whenever cicd.yaml changes, or the platform's own onboarding templates change and this Application's files went stale." \
+              --arg head "${branch_name}" --arg base "main" \
+              '{title: $title, body: $body, head: $head, base: $base}')"
+            curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+              -X POST -H "Authorization: Bearer ${token}" \
+              -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${owner}/${repo}/pulls" -d "${pr_body}" > /dev/null
+            echo "app repo: opened onboarding-resync PR"
+          fi
+        else
+          echo "app repo: .tekton/ already up to date, nothing to deliver"
+        fi
+
+    - name: deliver-gitops-repo-files
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+        - name: onboarding-templates-gitops-repo
+          mountPath: /opt/platform/onboarding-templates/gitops-repo
+          readOnly: true
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: GITOPS_REPO_URL
+          value: $(params.gitops-repo-url)
+        - name: APP_NAMESPACE
+          value: $(params.app-namespace)
+        - name: APP_NAME
+          value: $(params.app-name)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        if [[ -z "${GITOPS_REPO_URL}" ]]; then
+          echo "gitops repo: no gitops-repo-url param given (release stage not declared), skipping"
+          exit 0
+        fi
+        source "${PLATFORM_LIB}/github-app.sh"
+        source "${PLATFORM_LIB}/retry.sh"
+
+        owner="$(echo "${GITOPS_REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${GITOPS_REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+        workdir="$(mktemp -d)"
+        clone_url="https://x-access-token:${token}@github.com/${owner}/${repo}.git"
+        with_retry 3 -- git clone --quiet "${clone_url}" "${workdir}/repo"
+        cd "${workdir}/repo"
+        mkdir -p .tekton
+
+        for f in /opt/platform/onboarding-templates/gitops-repo/*.yaml; do
+          base="$(basename "${f}")"
+          sed \
+            -e "s|<APP_NAMESPACE>|${APP_NAMESPACE}|g" \
+            -e "s|<APP_NAME>|${APP_NAME}|g" \
+            "${f}" > ".tekton/${base}"
+        done
+
+        if git status --porcelain | grep -q .; then
+          git config user.name "platform-cicd onboarding automation"
+          git config user.email "onboarding@platform-cicd.invalid"
+          # Static, not timestamped - same reasoning as deliver-app-repo-files' own
+          # branch_name above: no natural revision to key this on, and a timestamped
+          # name meant every trigger opened a brand new PR even with an earlier resync
+          # PR still open unmerged. A single static branch, force-pushed fresh each run,
+          # keeps at most one open onboarding-resync PR per repo.
+          branch="onboarding-resync"
+          git checkout -b "${branch}"
+          git add .tekton/
+          git commit --quiet -m "$(printf 'Onboarding: re-sync .tekton governance-check boilerplate\n\nRegenerated from the platform catalog'"'"'s onboarding templates - see docs/onboarding.md. No developer action needed beyond merging.')"
+          # --force: the only way this exact branch name already exists remotely is a
+          # still-open resync PR from an earlier trigger - replace its content outright
+          # rather than being rejected as a non-fast-forward push.
+          with_retry 3 -- git push --quiet --force "${clone_url}" "${branch}"
+          # Check for an already-open PR from this branch before creating - the force-
+          # push above already updated it in place if one exists, and GitHub's create-PR
+          # call 422s on "A pull request already exists for owner:branch" anyway.
+          existing_pr_url="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${branch}&state=open" \
+            | jq -r '.[0].html_url // empty')"
+          if [[ -n "${existing_pr_url}" ]]; then
+            echo "gitops repo: onboarding-resync PR already open - updated it with the latest content: ${existing_pr_url}"
+          else
+            pr_body="$(jq -n \
+              --arg title "Onboarding: re-sync governance-check boilerplate" \
+              --arg body "Regenerated the 5 governance-check .tekton files from the platform catalog's onboarding templates - see docs/onboarding.md." \
+              --arg head "${branch}" --arg base "main" \
+              '{title: $title, body: $body, head: $head, base: $base}')"
+            curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+              -X POST -H "Authorization: Bearer ${token}" \
+              -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${owner}/${repo}/pulls" -d "${pr_body}" > /dev/null
+            echo "gitops repo: opened onboarding-resync PR"
+          fi
+        else
+          echo "gitops repo: .tekton/ already up to date, nothing to deliver"
+        fi

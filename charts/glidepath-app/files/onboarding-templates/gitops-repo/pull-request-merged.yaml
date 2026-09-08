@@ -1,0 +1,36 @@
+# BOILERPLATE - break-glass audit trigger. Unlike the governance-check files, this
+# doesn't report a GitHub Check - it fires once a PR is closed (merged or not) and
+# hands off to detect-bypass-merge.yaml to decide whether anything needs alerting.
+#
+# on-cel-expression (not just on-event) is what limits this to close events - PaC's
+# on-event alone can't distinguish close from open/sync.
+#
+# has(body.action) guards against a push webhook (e.g. this PR's own merge) hitting the
+# same on-cel-expression once present: on-event alone is otherwise dead, since PaC
+# evaluates on-cel-expression against every webhook delivery for the repo, and a push
+# event's body has no `action` key.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: bypass-check-
+  labels:
+    hangar.io/app: "<APP_NAME>"
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[pull_request]"
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.action) && body.action == "closed"'
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+spec:
+  pipelineRef:
+    resolver: cluster
+    params:
+      - { name: kind, value: pipeline }
+      - { name: name, value: bypass-merge-check }
+      - { name: namespace, value: platform-catalog }
+  params:
+    - { name: repo-url, value: "{{ repo_url }}" }
+    - { name: pr-number, value: "{{ body.pull_request.number }}" }
+    - { name: merged, value: "{{ body.pull_request.merged }}" }
+  taskRunTemplate:
+    serviceAccountName: pipeline-runner
+  timeouts:
+    pipeline: "10m"

@@ -1,4 +1,4 @@
-# platform-cicd
+# Glidepath
 
 A CI/CD platform for Kubernetes, built on Tekton + Pipelines-as-Code. Installable
 standalone on any cluster, or as the CI/CD component of a larger internal developer
@@ -56,7 +56,7 @@ RBAC, supply chain signing, secrets, multi-cluster trust boundaries - see
 catalog/          shared Tekton catalog - Pipelines, Tasks, StepActions, bash lib, toolbox image
 platform/broker/   the internal CDEvents relay: EventListener + TokenReview interceptor (Go)
 schemas/           cicd.schema.json - the developer-facing config contract
-charts/            platform-cicd-control-plane, platform-cicd-catalog, platform-cicd-app
+charts/            glidepath-control-plane, glidepath-catalog, glidepath-app
 hack/              cluster bootstrap - see docs/admin/installation.md
 docs/user/         application-developer docs - start here if you're onboarding an app
 docs/admin/        operator docs - architecture, installation, ADRs

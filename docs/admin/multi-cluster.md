@@ -7,7 +7,7 @@
 Application manifest `open-release-pr.yaml` used to write into `gitopsApplicationsPath`,
 plus the RBAC/outcome-hook Jobs and everything downstream of them - the relay, the
 `release-outcome-*` Pipeline/Trigger, cluster-mapped DORA) was removed from
-`open-release-pr.yaml`.** `idp-service-catalog`'s `ApplicationEnvironment` composition
+`open-release-pr.yaml`.** `airframe`'s `ApplicationEnvironment` composition
 now scaffolds every `gitops-<app-name>` repo as `<cluster>/<env>/values.yaml`, and its
 own tenant-onboarding `ApplicationSet` already creates and owns the ArgoCD `Application`
 for that path generically - this platform writing a second, competing `Application` for
@@ -27,8 +27,8 @@ Short version: the two ArgoCD sync-hook Jobs described below (PostSync/SyncFail,
 shape and behavior - same relay, same HTTP path, same per-app shared secret. What
 changed is WHO writes them: `open-release-pr.yaml` no longer writes a second,
 GitOps-delivered Application manifest to carry them (the mechanism the rest of this
-section describes) - they're now rendered directly by `idp-service-catalog`'s own
-`idp-application` Helm chart, off a `releaseTracking:` values block
+section describes) - they're now rendered directly by `airframe`'s own
+`airframe-application` Helm chart, off a `releaseTracking:` values block
 `open-release-pr.yaml` patches into the SAME `<cluster>/<env>/values.yaml` commit it
 already writes `rollout.image.*` into. Read everything below as accurate history of the
 mechanism's *design* (why hooks over Notifications, why a shared secret, why the relay
@@ -42,7 +42,7 @@ hook Jobs get written from any more.
   `staging` is just whatever name a tenant's `cicd.yaml` uses.
 - **cluster** - which physical Kubernetes cluster hosts a given env, named via a release
   step's `cluster:` field and resolved against the control-plane chart's `clusters:`
-  registry (`charts/platform-cicd-control-plane/values.yaml`). An env with no `cluster`
+  registry (`charts/glidepath-control-plane/values.yaml`). An env with no `cluster`
   set stays on the dev cluster, exactly like today - this is the fully-backward-compatible
   default every existing tenant is still on.
 
@@ -112,9 +112,9 @@ deploy:
 
 A release step's own `env:` must name one of these; its optional `cluster:` (if set)
 must agree with what the registry entry says - see `validateFlows` in
-`charts/platform-cicd-app/templates/_helpers.tpl`. The cluster name itself resolves
+`charts/glidepath-app/templates/_helpers.tpl`. The cluster name itself resolves
 against the control-plane chart's own `clusters:` registry
-(`charts/platform-cicd-control-plane/values.yaml`, rendered as a ConfigMap by
+(`charts/glidepath-control-plane/values.yaml`, rendered as a ConfigMap by
 `templates/clusters/cluster-registry.yaml`) - `cicd.yaml` never embeds infrastructure
 details (gitops path, relay secret) directly, only the cluster's name.
 
@@ -136,7 +136,7 @@ For an env whose registry entry names a cluster, `open-release-pr.yaml` does two
 in the SAME commit/PR instead of one: the usual image-tag patch, plus writing/updating
 that cluster's Application manifest at `<gitopsApplicationsPath>/<app-name>-<env>.yaml`
 in the tenant's own gitops repo (resolved live from the `cluster-registry` ConfigMap via
-a new, narrowly-scoped `get`-only Role - `charts/platform-cicd-app/templates/clusters/
+a new, narrowly-scoped `get`-only Role - `charts/glidepath-app/templates/clusters/
 read-registry-rbac.yaml`, only rendered for apps that actually have a cluster-mapped
 env). This is the whole mechanism that keeps the dev-cluster pipeline from ever calling
 the remote cluster's API: the target cluster's ArgoCD is bootstrapped once, out of band,
@@ -158,11 +158,11 @@ still a deliberate no-op for a cluster-mapped env - see that Task's own `cluster
 
 **Historical, no longer live**: `deployment.yaml` used to also carry a small set of
 operator-visibility tracking annotations (added 2026-08-11, at the user's request) -
-`platform.io/dora-{git-revision,image,flow-start-time,gitops-pr-url}` -
+`hangar.io/dora-{git-revision,image,flow-start-time,gitops-pr-url}` -
 (`kubectl describe deployment` on the live upper-env cluster, no cross-referencing
 pipeline logs needed to see which build produced what's running). That mechanism doesn't
 exist any more: it targeted a raw `deployment.yaml`, from before releases moved onto the
-`idp-application` Helm chart's `<cluster>/<env>/values.yaml`, and was never ported over -
+`airframe-application` Helm chart's `<cluster>/<env>/values.yaml`, and was never ported over -
 this doc simply went stale rather than the feature being deliberately dropped. Because
 `gitops-pr-url` was one of those annotations, it was also the reason (alongside the
 release-tracking hook-Job fields below) that `open-release-pr.yaml` used to push a SECOND
@@ -220,7 +220,7 @@ earlier versions ruled out the alternatives - worth knowing before touching this
 ## What feeds the relay, and what didn't work first
 
 **Caller: ArgoCD sync hooks, not ArgoCD Notifications.** The first working version used
-ArgoCD's built-in Notifications controller (`selector: platform.io/dora-track=true`,
+ArgoCD's built-in Notifications controller (`selector: hangar.io/dora-track=true`,
 trigger on `operationState.phase`) to call the relay. Live testing (deliberately
 adversarial, at the user's request before committing to either direction) found a real,
 already-shipped bug: **Notifications fired on ANY completed sync operation, including
@@ -306,10 +306,10 @@ chain-id when the outcome CDEvent eventually arrives, rather than expecting the 
 itself to carry those two fields. `pr-namespace-ttl-sweep` is the backstop for a release
 whose PR never merges (so that Task never runs to consume/delete the ConfigMap).
 
-**A new per-app Trigger** (`charts/platform-cicd-app/templates/triggers/
+**A new per-app Trigger** (`charts/glidepath-app/templates/triggers/
 release-outcome-trigger.yaml`, rendered only for apps with a cluster-mapped upper env)
 consumes the relay's forwarded CDEvent and fires `release-outcome-notify`
-(`charts/platform-cicd-catalog/templates/pipelines/release-outcome-notify.yaml`) - real
+(`charts/glidepath-catalog/templates/pipelines/release-outcome-notify.yaml`) - real
 Slack notifications for a confirmed cluster-mapped release outcome, not just a CDEvent
 landing unseen. Two independent tasks as of 2026-08-12 (see "The outcome span" below for
 the second one, added that day - before it, this Pipeline really was the single
@@ -379,8 +379,8 @@ naming, `release-outcome:<app>/<env> [<status>]`.
 ## Relay-token distribution via External Secrets Operator (built 2026-08-19)
 
 **Was deferred, now built** - the thing this was waiting on ("package this platform's
-k8s-app delivery as a proper Helm chart") is exactly what `idp-service-catalog`'s
-`idp-application` chart now is. Every app onboarded to a cluster-mapped env used to need
+k8s-app delivery as a proper Helm chart") is exactly what `airframe`'s
+`airframe-application` chart now is. Every app onboarded to a cluster-mapped env used to need
 its own hand-provisioned `platform-outcome-relay-token` Secret (`hack/
 bootstrap-upper-cluster.sh`'s old per-app step) - the same shared per-cluster token
 value, copied by hand into every app's namespace on that cluster.
@@ -388,7 +388,7 @@ value, copied by hand into every app's namespace on that cluster.
 Now: the upper cluster (kind-prod) has its own Infisical-backed `platform-secret-store`
 (`gitops-cluster-kind-prod/10-crds-operators/external-secrets/`, mirroring
 platform-cicd's own on kind-dev - see [secrets-management.md](secrets-management.md)),
-and `idp-application`'s own `templates/release-tracking/
+and `airframe-application`'s own `templates/release-tracking/
 relay-token-external-secret.yaml` syncs `platform-outcome-relay-token` from it
 automatically, gated on `releaseTracking` exactly like the hook Jobs/RBAC it
 accompanies. The token value still has to be planted into that cluster's own Infisical
@@ -404,7 +404,7 @@ still the right, working mechanism for them). Both paths now funnel into one sha
 `recordOutcome()`:
 
 1. **Same-cluster** (unchanged): the `applications.argoproj.io` informer, still reading
-   the `platform.io/dora-baseline-started-at` annotation to tell "the sync I'm waiting
+   the `hangar.io/dora-baseline-started-at` annotation to tell "the sync I'm waiting
    for" apart from an unrelated selfHeal sync.
 2. **Cluster-mapped** (new): `POST /argocd-outcome`, called directly by the relay,
    which the outcome hook Jobs feed. No baseline check needed here - a hook only runs
@@ -460,7 +460,7 @@ had caught neither:
    correctly rejecting a duplicate name, doing exactly what it was asked). Confirmed
    live: `dora_deployments_total` kept incrementing correctly on every call (it doesn't
    dedup by pipeline-run-name), while `kubectl get pipelinerun -l
-   platform.io/subcomponent=release-outcome` stayed stuck at one, exposing the
+   hangar.io/subcomponent=release-outcome` stayed stuck at one, exposing the
    mismatch. Fixed by folding `finishedAt` into the id - each genuinely distinct sync
    outcome now produces a distinct id, while true redelivery of the SAME outcome (which
    would carry the same `finishedAt`) stays idempotent, matching ArgoCD Notifications'
@@ -496,7 +496,7 @@ an isolated, throwaway test (a standalone Application + Deployment with an artif
   correct it - a genuinely new `operationState.finishedAt` appeared, but the `PostSync`
   Job's pod creation timestamp stayed unchanged (same instance from the original sync,
   never recreated). Then, to make the comparison concrete rather than theoretical,
-  labeled the SAME test Application with `platform.io/dora-track: "true"` (what the
+  labeled the SAME test Application with `hangar.io/dora-track: "true"` (what the
   *real*, then-still-deployed Notifications subscription matched on) and repeated the
   drift - the real `on-platform-cicd-outcome` trigger fired for real, calling the real
   relay, for a sync that had nothing to do with a release (confirmed via the relay's
@@ -572,12 +572,12 @@ the Slack PR-link (both above), which needed the two-commit restructuring of
 `open-release-pr.yaml`. Also live-verified: a real release produced a PR with the
 expected two commits in order (release change, then outcome-reporting artifacts once the
 PR URL was known), the live Deployment on `kind-prod` carried all four
-`platform.io/dora-*` annotations with correct values including the real PR URL, and
+`hangar.io/dora-*` annotations with correct values including the real PR URL, and
 `release-outcome-notify`'s own `notify-slack` TaskRun actually posted (not skipped) with
 `pr-url` resolved correctly through the full relay/CDEvent/Trigger chain.
 
 Historical as of 2026-08-31: the deployment.yaml annotations described here didn't
-survive the later migration onto the `idp-application` Helm chart (see the "Historical,
+survive the later migration onto the `airframe-application` Helm chart (see the "Historical,
 no longer live" note above), and the two-commit restructuring itself was removed the
 same day the redundant-check-run cost it caused was found - see "pr-url/pr-created-at
 don't round-trip through git" above for the replacement mechanism. `pr-url` still
@@ -630,7 +630,7 @@ renders them:
   (`<gitopsApplicationsPath>/<app-name>-<env>.yaml`) purely to carry the hook Jobs
   alongside it, race-prone against idp's own ApplicationSet-owned Application for the
   same path.
-- **Now**: `idp-service-catalog/charts/idp-application` renders the hook Jobs itself
+- **Now**: `airframe/charts/airframe-application` renders the hook Jobs itself
   (`templates/release-tracking/hooks.yaml`+`rbac.yaml`), gated behind a `releaseTracking:`
   values block that's `null` by default - see that chart's own `values.yaml` header.
   They render as part of the SAME Application idp's tenant-onboarding `ApplicationSet`
@@ -641,13 +641,13 @@ renders them:
 SECOND commit on the same PR branch, pushed right after the PR opens, for the same
 reason as before: `prUrl`/`prCreatedAt` don't exist until the PR does. `outcomeRelayURL`
 is resolved live from platform-cicd's OWN cluster-registry ConfigMap (`platform-system`)
-via a re-added, narrowly-scoped Role (`charts/platform-cicd-app/templates/clusters/
+via a re-added, narrowly-scoped Role (`charts/glidepath-app/templates/clusters/
 read-registry-rbac.yaml`, get-only, this ConfigMap only) - `gitopsApplicationsPath`, the
 other field that ConfigMap used to carry, was dropped from the schema entirely since
 nothing writes an Application manifest from it any more.
 
 **Also fixed while rebuilding this**: the control-plane's own `clusters:` registry
-(`charts/platform-cicd-control-plane/values.yaml`) had gone back to empty (`[]`) at some
+(`charts/glidepath-control-plane/values.yaml`) had gone back to empty (`[]`) at some
 point after platform-cicd's control plane moved onto `kind-dev` as its own, independent
 instance - confirmed live, not assumed
 (`clusters: []`, `data: null` on the real ConfigMap). Since `argocd-outcome-relay`'s own
@@ -679,7 +679,7 @@ before - but cluster identity is exactly what the shared-secret lookup proves, s
 the one place a mismatch is rejected (400) rather than trusted at face value. This
 needed a new field threaded through: `releaseTracking.cluster`, set by
 `open-release-pr.yaml` from the same `${CLUSTER}` param it already resolves
-`outcomeRelayURL` from, consumed by `idp-service-catalog`'s `hooks.yaml` as a new
+`outcomeRelayURL` from, consumed by `airframe`'s `hooks.yaml` as a new
 `CLUSTER` env var on both hook Jobs.
 
 **Also done in this same pass**: the relay's direct `forwardToDoraExporter` HTTP call
@@ -696,7 +696,7 @@ in [dora-metrics.md](dora-metrics.md) for the full mechanism.
 catalog` (tagged `v0.3.37`) both committed+pushed, `targetRevision` repointed in every
 tenant-onboarding `ApplicationSet` that pins it (`gitops-cluster-dev`,
 `gitops-cluster-kind-prod`, and `gitops-cluster-template` for future clusters) -
-`idp-application`'s own `Chart.yaml` `version:` field is decorative here (confirmed via
+`airframe-application`'s own `Chart.yaml` `version:` field is decorative here (confirmed via
 `git show <tag>:...Chart.yaml`, stayed `0.3.0` across 36+ real tags) since these charts
 are consumed straight from a pinned git tag, not a packaged/published chart repo.
 

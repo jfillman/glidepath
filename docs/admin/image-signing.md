@@ -96,7 +96,7 @@ currently justified by any real gap it would close.
    with a real `403: system:anonymous cannot get path "/.well-known/openid-configuration"`
    - the auto-bearer-token shortcut from #2 doesn't fire either, for the same reason.
    Fixed with a new, narrow `ClusterRoleBinding`
-   (`charts/platform-cicd-control-plane/templates/sigstore/issuer-discovery-rbac.yaml`) granting `system:anonymous`
+   (`charts/glidepath-control-plane/templates/sigstore/issuer-discovery-rbac.yaml`) granting `system:anonymous`
    specifically (not the broader `system:unauthenticated` group) the built-in
    `system:service-account-issuer-discovery` ClusterRole - the same mechanism AWS
    EKS/GKE use to make their own clusters' issuer URLs externally verifiable, not a novel
@@ -126,7 +126,7 @@ Not previously installed on this cluster at all - installed as part of cluster b
 Pipelines/Triggers). Ships one Deployment (`tekton-chains-controller`), no separate
 webhook Deployment like Pipelines/Triggers/PaC have.
 
-`chains-config` ConfigMap overlay (`charts/platform-cicd-control-plane/templates/hooks/chains-config-patch-job.yaml`, applied
+`chains-config` ConfigMap overlay (`charts/glidepath-control-plane/templates/hooks/chains-config-patch-job.yaml`, applied
 via `kubectl patch --type merge`, not a full replace - Chains owns this ConfigMap):
 
 ```yaml
@@ -184,11 +184,11 @@ image a PipelineRun's provenance belongs to.** Without these, Chains signs succe
 but logs `No image subject to attest ... Skipping upload to registry` and silently
 produces nothing in the registry, despite `chains.tekton.dev/signed: "true"` on the
 object - a real, non-obvious gap this surfaced live, not a hypothetical. `IMAGE_URL` is
-the bare repo name (no tag); `IMAGE_DIGEST` is `sha256:...`. `charts/platform-cicd-catalog/templates/pipelines/build.yaml`
+the bare repo name (no tag); `IMAGE_DIGEST` is `sha256:...`. `charts/glidepath-catalog/templates/pipelines/build.yaml`
 declares these as Pipeline-level results. One added wrinkle: Tekton's own admission
 webhook rejects a Pipeline result whose value is a plain `$(params.*)` reference - it
 must be a task-result expression (`$(tasks.*.results.*)`) - so
-`charts/platform-cicd-catalog/templates/tasks/build-image.yaml` grew a trivial new `image-repo` result (the bare repo
+`charts/glidepath-catalog/templates/tasks/build-image.yaml` grew a trivial new `image-repo` result (the bare repo
 name, echoing back its own `image-repo` param) purely to give the Pipeline-level result
 something to point at.
 
@@ -298,10 +298,10 @@ nearly every step in every pipeline, this broke signing for every real build.
    *private*, unlike `nodejs-demo-app`'s image, which was made public separately at some
    point - rather than also flipping toolbox to public, `pipeline-runner` now carries
    `imagePullSecrets: [{name: registry-credentials}]`, reusing the same Secret kaniko
-   already pushes with. See `charts/platform-cicd-app/templates/identity/pipeline-runner.yaml`.)
+   already pushes with. See `charts/glidepath-app/templates/identity/pipeline-runner.yaml`.)
 2. **Defense in depth**: `artifacts.taskrun.storage` is now `""` (disabled) rather than
    `"oci"`. This platform's own provenance consumer
-   (`charts/platform-cicd-catalog/templates/tasks/verify-image-provenance.yaml`) only ever checks PipelineRun-level
+   (`charts/glidepath-catalog/templates/tasks/verify-image-provenance.yaml`) only ever checks PipelineRun-level
    attestations, never TaskRun-level ones, so TaskRun-level OCI storage was unused
    surface area, not a feature being traded away.
 

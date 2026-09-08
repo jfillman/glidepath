@@ -1,0 +1,144 @@
+# platform/broker/manifests/stalled-pipeline-detector-cronjob.yaml
+#
+# Shared, platform-level CronJob (not per-Application) - detects a stage that completed
+# successfully but whose expected next-stage PipelineRun never appeared, meaning a
+# CDEvent was lost between a stage's `finally` block and the broker's Trigger firing
+# (see docs/stalled-pipeline-detector.md).
+#
+# Not about CDEvents dedup (PipelineRun names are deterministic, see cdevents.sh, so
+# redelivery is a harmless no-op) - only about a stage finishing and nothing happening next.
+#
+# Detection uses hangar.io/flow + hangar.io/step-index labels plus the
+# is-flow-terminal Pipeline param (docs/tracing.md): a completed, non-terminal stage is a
+# stall candidate unless a PipelineRun exists labeled with this flow + step-index+1.
+#
+# Real bug fixed: this used to reconstruct the expected successor's name via a
+# hash-based guess tied to the old single-flow naming scheme, which broke once Phase 3
+# item 7's multi-flow naming ("<flow>-<index>-<stage>-<eventID>") shipped - every
+# completed run got falsely flagged. The label-based check above doesn't predict a name
+# at all, so it also now correctly covers `release`.
+#
+# RBAC is cluster-scoped by necessity (no app-namespace-discovery label exists yet) but
+# narrow: get/list/patch on pipelineruns (patch only for the dedup label), create on events.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stalled-pipeline-detector
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "broker"
+  namespace: platform-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: stalled-pipeline-detector
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "broker"
+rules:
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: stalled-pipeline-detector
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "broker"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: stalled-pipeline-detector
+subjects:
+  - kind: ServiceAccount
+    name: stalled-pipeline-detector
+    namespace: platform-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: stalled-pipeline-detector
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "broker"
+  namespace: platform-system
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: stalled-pipeline-detector
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: detect
+              image: ghcr.io/jfillman/platform-cicd-toolbox:latest
+              imagePullPolicy: IfNotPresent  # published to ghcr.io/jfillman, not kind-loaded
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              env:
+                - name: STALL_THRESHOLD_MINUTES
+                  value: "10"
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  now_epoch="$(date -u +%s)"
+                  threshold_seconds=$(( STALL_THRESHOLD_MINUTES * 60 ))
+
+                  # One candidate per line: succeeded stages not already alerted, that
+                  # belong to a flow, and aren't themselves the flow's terminal step.
+                  kubectl get pipelinerun -A -o json | jq -r '
+                    .items[]
+                    | select(.status.conditions // [] | any(.type == "Succeeded" and .status == "True"))
+                    | select(.status.completionTime != null)
+                    | select((.metadata.labels // {})["hangar.io/stall-alerted"] != "true")
+                    | select((.metadata.labels // {})["hangar.io/flow"] != null)
+                    | select(((.spec.params // []) | map(select(.name == "is-flow-terminal")) | .[0].value // "false") != "true")
+                    | . as $pr
+                    | [$pr.metadata.name, $pr.metadata.namespace, $pr.metadata.labels["hangar.io/flow"], ($pr.metadata.labels["hangar.io/step-index"] // "0"), ($pr.metadata.labels["hangar.io/stage"] // "?"), $pr.status.completionTime] | @tsv
+                  ' | while IFS=$'\t' read -r run_name run_ns flow_name step_index stage_name completion_time; do
+
+                    completion_epoch="$(date -u -d "${completion_time}" +%s)"
+                    age=$(( now_epoch - completion_epoch ))
+                    if [ "${age}" -lt "${threshold_seconds}" ]; then
+                      continue
+                    fi
+
+                    # Does any PipelineRun in this namespace belong to this flow's next
+                    # step - doesn't predict a name, just checks whether it ran.
+                    next_index=$(( step_index + 1 ))
+                    successor_count="$(kubectl get pipelinerun -n "${run_ns}" -l "hangar.io/flow=${flow_name},hangar.io/step-index=${next_index}" -o name | wc -l)"
+
+                    if [ "${successor_count}" -gt 0 ]; then
+                      echo "[stall-detector] ${run_ns}/${run_name} (flow=${flow_name} stage=${stage_name} step=${step_index}) -> step ${next_index} exists, chain OK"
+                      continue
+                    fi
+
+                    echo "[stall-detector] STALL DETECTED: ${run_ns}/${run_name} (flow=${flow_name} stage=${stage_name} step=${step_index}) completed ${age}s ago, step ${next_index} of this flow never appeared - CDEvent likely lost in transit"
+
+                    # printf + explicit \n, not a heredoc - a raw heredoc nested in this
+                    # indented block scalar broke YAML parsing once (see
+                    # open-release-pr.yaml's PR-body construction).
+                    now_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                    message="${stage_name} (flow ${flow_name}, step ${step_index}) completed ${age}s ago but step ${next_index} was never created - CDEvents delivery may have failed"
+                    printf 'apiVersion: v1\nkind: Event\nmetadata:\n  generateName: stall-detected-\n  namespace: %s\ninvolvedObject:\n  apiVersion: tekton.dev/v1\n  kind: PipelineRun\n  name: %s\n  namespace: %s\nreason: StageChainStalled\nmessage: %s\ntype: Warning\nsource:\n  component: stalled-pipeline-detector\nfirstTimestamp: "%s"\nlastTimestamp: "%s"\ncount: 1\n' \
+                      "${run_ns}" "${run_name}" "${run_ns}" "$(jq -Rn --arg m "${message}" '$m')" "${now_ts}" "${now_ts}" \
+                      | kubectl create -f - >/dev/null
+
+                    kubectl label pipelinerun "${run_name}" -n "${run_ns}" hangar.io/stall-alerted=true --overwrite
+                  done

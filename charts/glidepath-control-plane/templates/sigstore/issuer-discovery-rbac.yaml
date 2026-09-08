@@ -1,0 +1,30 @@
+# platform/sigstore/issuer-discovery-rbac.yaml
+#
+# Fulcio's self-hosted `type: kubernetes` issuer needs to fetch this cluster's own
+# /.well-known/openid-configuration and /openid/v1/jwks - both read-only, public-by-design
+# endpoints (the same mechanism AWS EKS/GKE use for their own issuer URLs). The built-in
+# system:service-account-issuer-discovery ClusterRole ships with Kubernetes, but its only
+# binding is scoped to system:serviceaccounts (already-authenticated callers), not
+# anonymous - and Fulcio's outbound request here happens as system:anonymous, since its
+# own SA-token-attach shortcut only fires for the literal issuer key
+# "https://kubernetes.default.svc" (ours is the longer .cluster.local form, see
+# fulcio-config.yaml).
+#
+# A new ClusterRoleBinding rather than widening the existing one - binds system:anonymous
+# specifically (not the broader system:unauthenticated group), matching this platform's
+# additive-only RBAC discipline.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fulcio-anonymous-issuer-discovery
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "sigstore"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:service-account-issuer-discovery
+subjects:
+  - kind: User
+    name: system:anonymous
+    apiGroup: rbac.authorization.k8s.io

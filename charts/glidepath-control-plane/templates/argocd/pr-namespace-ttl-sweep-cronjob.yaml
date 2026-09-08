@@ -1,0 +1,100 @@
+# platform/argocd/pr-namespace-ttl-sweep-cronjob.yaml
+#
+# Shared, platform-level CronJob (not per-Application) - deletes any
+# hangar.io/ephemeral-env=true namespace older than 24h, across all Applications.
+#
+# Backstop, not the primary mechanism: ephemeral-envs.yaml's ArgoCD finalizer normally
+# cascade-deletes a PR's namespace when its Application goes away. This catches cases
+# where that fails - a namespace lingering 24h is far more likely stuck than a
+# legitimately open PR, so age + label is enough with no GitHub check needed.
+#
+# RBAC is cluster-scoped by necessity (Namespace has no namespaced form) but narrow:
+# list/get/delete on namespaces only.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pr-namespace-ttl-sweep
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "broker"
+  namespace: platform-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pr-namespace-ttl-sweep
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "broker"
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list", "get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pr-namespace-ttl-sweep
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "broker"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pr-namespace-ttl-sweep
+subjects:
+  - kind: ServiceAccount
+    name: pr-namespace-ttl-sweep
+    namespace: platform-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pr-namespace-ttl-sweep
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "broker"
+  namespace: platform-system
+spec:
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: pr-namespace-ttl-sweep
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: sweep
+              image: ghcr.io/jfillman/platform-cicd-toolbox:latest
+              imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              env:
+                - name: TTL_HOURS
+                  value: "24"
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  now_epoch="$(date -u +%s)"
+                  ttl_seconds=$(( TTL_HOURS * 3600 ))
+                  kubectl get namespaces -l hangar.io/ephemeral-env=true -o json \
+                    | jq -r '.items[] | "\(.metadata.name) \(.metadata.creationTimestamp)"' \
+                    | while read -r ns created; do
+                        created_epoch="$(date -u -d "${created}" +%s)"
+                        age=$(( now_epoch - created_epoch ))
+                        if [ "${age}" -gt "${ttl_seconds}" ]; then
+                          echo "[ttl-sweep] deleting orphaned ephemeral namespace ${ns} (age ${age}s > ${ttl_seconds}s)"
+                          kubectl delete namespace "${ns}" --wait=false
+                        else
+                          echo "[ttl-sweep] ${ns} still within TTL (age ${age}s), leaving alone"
+                        fi
+                      done

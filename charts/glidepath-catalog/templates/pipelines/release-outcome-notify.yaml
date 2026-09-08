@@ -1,0 +1,173 @@
+# catalog/pipelines/release-outcome-notify.yaml (Phase 3 item 4, docs/multi-cluster.md)
+#
+# The downstream consumer of the environment.deployed CDEvent the argocd-outcome-relay
+# forwards (platform/broker/cmd/argocd-outcome-relay) once a cluster-mapped release
+# actually confirms success/failure on its own upper-env cluster - this is what "closes
+# the loop" in a way a human notices, not just a CDEvent landing unseen. Four tasks:
+# `resolve-release-tracking` reads pr-url/pr-created-at back out of the dev-cluster
+# ConfigMap open-release-pr.yaml wrote at PR-open time (added 2026-08-31 - those two
+# fields used to ride the CDEvent like everything else, via a second git commit on the
+# release PR, but that commit re-triggered every governance gate on the gitops repo a
+# second time on every release; see open-release-pr.yaml's own header). The other three
+# are independent of EACH OTHER (no runAfter among them), but all three depend on
+# resolve-release-tracking implicitly, via its $(tasks.resolve-release-tracking.
+# results.*) references below - no explicit runAfter needed for that, Tekton infers the
+# edge from the result reference: `notify` reuses notify-slack.yaml as-is rather than
+# duplicating its message formatting, `span` sends a real, standalone trace span
+# reporting the outcome (see release-outcome-span.yaml's own header for why it's a
+# separate trace, not appended to the original flow's - added 2026-08-12, a real gap
+# found live: this Pipeline had no tracing task at all before), `update-dora-metrics`
+# calls dora-exporter's own /argocd-outcome endpoint (added 2026-08-22, replacing a
+# direct HTTP call argocd-outcome-relay used to make itself - see
+# update-dora-metrics.yaml's own header for why running it here instead fixed a real
+# MTTR gap, not just moved the call). `release-log` emits one structured record of this
+# release's full outcome - approvers, per-gate results, bypass - into the release log
+# (added 2026-08-23, see release-log-emit.yaml's own header and docs/admin/release-log.md;
+# cluster-mapped releases only, a known scope gap covered in that doc).
+# No resolve-notify-config/clone/workspace needed here (unlike
+# deploy.yaml/release.yaml) - config-json arrives pre-resolved: open-release-pr.yaml
+# base64-encodes it into the PostSync/SyncFail hook Job's own CONFIG_JSON_B64 env var at
+# PR-open time, the hook script forwards it to argocd-outcome-relay, and the relay
+# decodes it straight into the CDEvent's body.subject.content.configJson this Pipeline's
+# own Trigger binds from (see release-outcome-trigger.yaml).
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: release-outcome-notify
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  params:
+    - name: app-namespace
+      type: string
+    - name: app-name
+      type: string
+    - name: env
+      type: string
+    - name: cluster
+      type: string
+    - name: status
+      type: string
+      description: "Succeeded or Failed - mapped from ArgoCD's own operationState.phase by the Trigger's own CEL/binding, see the app chart's release-outcome-trigger.yaml."
+    - name: git-url
+      type: string
+      default: ""
+    - name: git-revision
+      type: string
+      default: ""
+    - name: config-json
+      type: string
+      default: "{}"
+    - name: chain-id
+      type: string
+      default: ""
+      description: The original flow's chain-id, for span correlation - see release-outcome-span.yaml.
+    - name: flow-start-time
+      type: string
+      default: ""
+      description: The original flow's own start time (DORA lead-time anchor) - see release-outcome-span.yaml.
+    - name: finished-at
+      type: string
+      default: ""
+      description: >-
+        When argocd-outcome-hook.sh's own `date -u` ran (the CDEvent's
+        subject.content.finishedAt) - update-dora-metrics's lead-time/MTTR end anchor,
+        same field the same-cluster path reads off status.operationState.finishedAt.
+  tasks:
+    # pr-url/pr-created-at never round-trip through git or the outcome CDEvent (see
+    # open-release-pr.yaml's own header) - resolved here instead, from the dev-cluster
+    # ConfigMap that Task wrote at PR-open time. No runAfter needed on the three
+    # consumers below - referencing $(tasks.resolve-release-tracking.results.*) already
+    # gives Tekton the dependency edge.
+    - name: resolve-release-tracking
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: resolve-release-tracking }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: chain-id, value: $(params.chain-id) }
+
+    - name: notify
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: notify-slack }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: config-json, value: $(params.config-json) }
+        # A dedicated stage-name, not "release" - reusing that label would read as
+        # "the release Pipeline itself ran again", which is misleading (this
+        # PipelineRun never opens a PR or touches an image; it only relays a
+        # confirmation). notify-slack.yaml's own stage_display switch falls back to
+        # printing the raw value verbatim for anything it doesn't recognize - already
+        # exercised by every OTHER stage name, no change needed there.
+        - { name: stage-name, value: "release-outcome" }
+        - { name: status, value: $(params.status) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: pr-url, value: $(tasks.resolve-release-tracking.results.pr-url) }
+        - { name: env, value: $(params.env) }
+
+    # See release-outcome-span.yaml's own header for why this is a standalone span/
+    # trace, not a child of the original flow's (already-closed) trace.
+    - name: span
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: release-outcome-span }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: env, value: $(params.env) }
+        - { name: status, value: $(params.status) }
+        - { name: chain-id, value: $(params.chain-id) }
+        - { name: flow-start-time, value: $(params.flow-start-time) }
+        - { name: pr-created-at, value: $(tasks.resolve-release-tracking.results.pr-created-at) }
+
+    # See update-dora-metrics.yaml's own header for why this runs as a Task here now,
+    # instead of argocd-outcome-relay calling dora-exporter directly.
+    - name: update-dora-metrics
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: update-dora-metrics }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: status, value: $(params.status) }
+        - { name: finished-at, value: $(params.finished-at) }
+        - { name: flow-start-time, value: $(params.flow-start-time) }
+
+    # See release-log-emit.yaml's own header for the enrichment this does and the
+    # cluster-mapped-only scope gap.
+    - name: release-log
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: release-log-emit }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: env, value: $(params.env) }
+        - { name: cluster, value: $(params.cluster) }
+        - { name: status, value: $(params.status) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: pr-url, value: $(tasks.resolve-release-tracking.results.pr-url) }
+        - { name: chain-id, value: $(params.chain-id) }
+        - { name: flow-start-time, value: $(params.flow-start-time) }
+        - { name: pr-created-at, value: $(tasks.resolve-release-tracking.results.pr-created-at) }
+        - { name: finished-at, value: $(params.finished-at) }

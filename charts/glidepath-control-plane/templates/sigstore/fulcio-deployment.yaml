@@ -1,0 +1,124 @@
+# platform/sigstore/fulcio-deployment.yaml
+#
+# Self-hosted Fulcio (docs/image-signing.md) - plain Deployment/Service, not Knative:
+# every caller here is in-cluster via plain Service DNS, unlike sigstore-scaffolding's
+# Knative/Kourier "getting started" path built for external test clients. Shape matches
+# Fulcio's own upstream config/deployment.yaml, with two deviations:
+# - replicas: 1, trimmed resources (100Mi/50m) - matches Fulcio's own CI test's reduction
+#   from prod defaults; this is a single-org dev/test platform on a memory-constrained
+#   cluster, not an HA target.
+# - ClusterIP, not LoadBalancer - this platform's clusters have no LoadBalancer
+#   controller by default, and nothing outside the cluster needs to reach Fulcio.
+# FULCIO_SERVE_GCP_PRIVATE_CA_PARENT/the "private-ca" ConfigMap from upstream's manifest
+# are googleca-specific and omitted - irrelevant to the fileca backend used here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: fulcio-system
+  name: fulcio-server
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "sigstore"
+    app: fulcio-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fulcio-server
+  template:
+    metadata:
+      labels:
+        app: fulcio-server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "2112"
+    spec:
+      containers:
+        - name: fulcio-server
+          image: ghcr.io/sigstore/fulcio:v1.8.8
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5555
+            - containerPort: 5554
+            - containerPort: 2112 # metrics
+          args: ["serve", "-c", "/etc/fulcio-config/server.yaml"]
+          volumeMounts:
+            - name: fulcio-config
+              mountPath: /etc/fulcio-config/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: fulcio-server-config
+              mountPath: /etc/fulcio-config/server.yaml
+              subPath: server.yaml
+              readOnly: true
+            - name: fulcio-secret
+              mountPath: /etc/fulcio-secret
+              readOnly: true
+            - name: oidc-info
+              mountPath: /var/run/fulcio
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5555
+            initialDelaySeconds: 5
+          readinessProbe:
+            grpc:
+              port: 5554
+            initialDelaySeconds: 5
+          resources:
+            requests:
+              memory: "100Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+          securityContext:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65533
+            capabilities:
+              drop: ["all"]
+      volumes:
+        - name: fulcio-config
+          configMap:
+            name: fulcio-config
+        - name: fulcio-server-config
+          secret:
+            secretName: fulcio-server-config
+        - name: fulcio-secret
+          secret:
+            secretName: fulcio-secret
+        # Lets Fulcio trust this cluster's API server TLS cert when validating a `type:
+        # kubernetes` token - kube-root-ca.crt is Kubernetes' own auto-populated
+        # ConfigMap, matching Fulcio's upstream manifest.
+        - name: oidc-info
+          projected:
+            sources:
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+                      mode: 0666
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: fulcio-system
+  name: fulcio-server
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "sigstore"
+spec:
+  selector:
+    app: fulcio-server
+  type: ClusterIP
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 5555
+    - name: grpc
+      protocol: TCP
+      port: 5554
+      targetPort: 5554

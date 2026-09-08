@@ -1,0 +1,33 @@
+# catalog/pipelines/bypass-merge-check.yaml
+#
+# Thin wrapper around detect-bypass-merge.yaml (Phase 3 item 8.6) - matches this
+# platform's existing convention of every gitops-repo PR-check being a Pipeline
+# (sast-check.yaml, image-scan-check.yaml), even where, as here, there's only one Task.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: bypass-merge-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Checks whether a just-closed gitops-repo PR merged despite a non-passing required governance check, and alerts Slack if so.
+  params:
+    - name: repo-url
+      type: string
+    - name: pr-number
+      type: string
+    - name: merged
+      type: string
+  tasks:
+    - name: detect-bypass-merge
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: detect-bypass-merge }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: merged, value: $(params.merged) }

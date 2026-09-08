@@ -1,0 +1,65 @@
+# catalog/pipelines/image-scan-check.yaml
+#
+# Real (not stub) image-scan governance check - Phase 3 item 8.5. Runs as a PR-triggered
+# Check on an Application's gitops repo, scanning the actual image about to be promoted
+# (resolved from the staging manifest's own image field, not rebuilt or re-derived).
+#
+# No flow/stage context here - same reasoning as sast-check.yaml.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: image-scan-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Resolves the promoted image from a gitops PR's staging manifest, then runs a real Trivy scan against it.
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+    - name: pr-number
+      type: string
+      default: ""
+      description: "PaC's raw pull_request.number webhook body field - only used to post the PR comment in this Pipeline's finally block."
+  tasks:
+    - name: extract-promoted-image
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: extract-promoted-image }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+
+    - name: image-scan
+      runAfter: [extract-promoted-image]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: image-scan }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: image-ref, value: $(tasks.extract-promoted-image.results.image-ref) }
+
+  finally:
+    - name: comment-pr
+      when:
+        - { input: $(params.pr-number), operator: notin, values: [""] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: comment-pr-check-result }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: gate-name, value: image-scan }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: status, value: $(tasks.status) }

@@ -1,0 +1,49 @@
+# catalog/tasks/governance-gate-stub.yaml
+#
+# One reusable stub Task for every still-stub release-guardrail gate (currently itsm,
+# qa, policy-validation, image-promotion - see docs/admin/release-guardrails.md and
+# .Values.releaseGuardrails) rather than a near-duplicate file per gate. Called from
+# governance-check.yaml (the shared, parameterized-by-gate-name Pipeline for an
+# independent stub gate) and from image-promotion-check.yaml's own `promote` step,
+# parameterized by gate-name either way. Originally also covered sast/image-scan/
+# provenance/sbom before each was promoted to a dedicated, real Pipeline - see
+# governance-stubs.md's "Landing a real implementation" section for that migration
+# path. See catalog/stepactions/governance-stub.yaml and docs/governance-stubs.md for
+# why this exists as a loud, explicit stub instead of silently doing nothing or (the
+# old platform's mistake) an unmarked `exit 0`.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: governance-gate-stub
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+    hangar.io/stub: "true"
+spec:
+  params:
+    - name: gate-name
+      type: string
+    - name: flow-traceparent
+      type: string
+      default: ""
+      description: Leave empty when there's no flow/stage context (e.g. a PR-triggered GitOps-repo check) - see governance-stub.yaml.
+    - name: stage-span-id
+      type: string
+      default: ""
+      description: The calling stage's own span id (from start-stage-span) - this gate's span is parented to it. Ignored when flow-traceparent is empty.
+  results:
+    - name: outcome
+      value: $(steps.stub.results.outcome)
+  steps:
+    - name: stub
+      ref:
+        resolver: cluster
+        params:
+          - { name: kind, value: stepaction }
+          - { name: name, value: governance-stub }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      params:
+        - { name: gate-name, value: $(params.gate-name) }
+        - { name: flow-traceparent, value: $(params.flow-traceparent) }
+        - { name: stage-span-id, value: $(params.stage-span-id) }

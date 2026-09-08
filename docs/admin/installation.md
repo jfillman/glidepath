@@ -5,7 +5,7 @@ same way every other cluster-config piece gets installed: a couple of ArgoCD
 `Application` manifests in that cluster's own `gitops-cluster-<name>` repo. See
 `gitops-cluster-dev/50-platform-cicd/` for a working reference - it wires up
 `tektoncd/operator` (Tekton Pipelines/Triggers/Chains/Dashboard/PaC in one namespace),
-`platform-cicd-catalog`, and `platform-cicd-control-plane`.
+`glidepath-catalog`, and `glidepath-control-plane`.
 
 Steps for a brand-new cluster:
 
@@ -16,17 +16,17 @@ Steps for a brand-new cluster:
 
    ```
    ./hack/generate-cluster-values.sh <kube-context> <cluster-name> \
-     ../gitops-cluster-<name>/50-platform-cicd/platform-cicd-control-plane
+     ../gitops-cluster-<name>/50-platform-cicd/glidepath-control-plane
    ```
 
    This reads the cluster's own API server root CA live and generates a fresh,
    independent Fulcio signing root for it - it never copies another cluster's trust
    material. Commit and push the resulting file.
 3. Add the two Application manifests (control-plane, catalog) to that repo, each
-   multi-source: one source is this platform's chart at `charts/platform-cicd-catalog`
-   / `charts/platform-cicd-control-plane`, the other a `directory` source (`exclude:
+   multi-source: one source is this platform's chart at `charts/glidepath-catalog`
+   / `charts/glidepath-control-plane`, the other a `directory` source (`exclude:
    "*"`) pointed at the cluster-config repo itself, `$ref`'d for `valueFiles` - see
-   `gitops-cluster-dev/50-platform-cicd/platform-cicd-control-plane/application.yaml`
+   `gitops-cluster-dev/50-platform-cicd/glidepath-control-plane/application.yaml`
    for the exact shape, and [architecture-decisions](adr/) ADR-0006 for why cluster
    state never lives inside `platform-cicd` itself.
 4. Push. ArgoCD takes it from there.

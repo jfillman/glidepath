@@ -1,0 +1,15 @@
+apiVersion: v2
+name: glidepath-catalog
+description: >-
+  The shared Tekton catalog (Tasks/Pipelines/StepActions) every Application's onboarding-
+  generated .tekton/*.yaml resolves against via Tekton's cluster resolver. Versioning
+  strategy: see docs/catalog-versioning.md - this chart's own Chart.yaml `version` plus
+  `helm history`/`helm rollback` is Option A (adopted now); a second install of this same
+  chart into a `platform-catalog-canary` namespace is the canary-testing path, no OCI
+  bundle machinery needed. Content here (templates/tasks, templates/pipelines,
+  templates/stepactions) is otherwise unchanged from the pre-Helm catalog/ layout - every
+  file was already flat, unparameterized, valid standalone Tekton YAML, so this is a
+  wrapper, not a rewrite.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

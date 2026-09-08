@@ -492,11 +492,11 @@ DEPLOY PipelineRun (triggered by CDEvent from test)
 |------|---------|
 | [otel.sh](../../catalog/lib/otel.sh) | Span minting & sending functions |
 | [cdevents.sh](../../catalog/lib/cdevents.sh) | Event payload construction & broker delivery |
-| [build.yaml](../../charts/platform-cicd-catalog/templates/pipelines/build.yaml) | Build Pipeline (flow start) |
-| [start-flow-root-span.yaml](../../charts/platform-cicd-catalog/templates/tasks/start-flow-root-span.yaml) | Initializes traceparent & chain_id |
-| [start-stage-span.yaml](../../charts/platform-cicd-catalog/templates/tasks/start-stage-span.yaml) | Stage span initialization |
-| [end-stage-span.yaml](../../charts/platform-cicd-catalog/templates/tasks/end-stage-span.yaml) | Stage span completion to OTEL |
-| [end-flow-root-span.yaml](../../charts/platform-cicd-catalog/templates/tasks/end-flow-root-span.yaml) | Flow-root span completion |
-| [send-cdevent.yaml](../../charts/platform-cicd-catalog/templates/tasks/send-cdevent.yaml) | CDEvent delivery to broker |
-| [build-image.yaml](../../charts/platform-cicd-catalog/templates/tasks/build-image.yaml) | Example of task span emission |
-| [deploy.yaml](../../charts/platform-cicd-catalog/templates/pipelines/deploy.yaml) | Deploy Pipeline (receives CDEvent) |
+| [build.yaml](../../charts/glidepath-catalog/templates/pipelines/build.yaml) | Build Pipeline (flow start) |
+| [start-flow-root-span.yaml](../../charts/glidepath-catalog/templates/tasks/start-flow-root-span.yaml) | Initializes traceparent & chain_id |
+| [start-stage-span.yaml](../../charts/glidepath-catalog/templates/tasks/start-stage-span.yaml) | Stage span initialization |
+| [end-stage-span.yaml](../../charts/glidepath-catalog/templates/tasks/end-stage-span.yaml) | Stage span completion to OTEL |
+| [end-flow-root-span.yaml](../../charts/glidepath-catalog/templates/tasks/end-flow-root-span.yaml) | Flow-root span completion |
+| [send-cdevent.yaml](../../charts/glidepath-catalog/templates/tasks/send-cdevent.yaml) | CDEvent delivery to broker |
+| [build-image.yaml](../../charts/glidepath-catalog/templates/tasks/build-image.yaml) | Example of task span emission |
+| [deploy.yaml](../../charts/glidepath-catalog/templates/pipelines/deploy.yaml) | Deploy Pipeline (receives CDEvent) |

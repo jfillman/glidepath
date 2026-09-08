@@ -1,0 +1,39 @@
+# BOILERPLATE - real (not stub). See pull-request-sast.yaml for the full pattern
+# explanation. References the dedicated sbom-check Pipeline, which resolves the promoted
+# image and generates+attests a real SBOM for it.
+#
+# No <APP_NAMESPACE> substitution or workspace needed (an <APP_NAME> substitution now exists, for the hangar.io/app label below) - mirrors
+# pull-request-image-scan.yaml. pr-number feeds the finally-block PR comment.
+#
+# timeouts.tasks/finally split - see pull-request-sast.yaml's own header for why
+# (finally/comment-pr must never share a budget with the real check tasks).
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: sbom-
+  labels:
+    hangar.io/app: "<APP_NAME>"
+  annotations:
+    # See pull-request-sast.yaml for why this is on-cel-expression (release-branch-only)
+    # and why has() guards the pull_request field.
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main" && body.pull_request.head.ref.startsWith("release-")'
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+spec:
+  pipelineRef:
+    resolver: cluster
+    params:
+      - { name: kind, value: pipeline }
+      - { name: name, value: sbom-check }
+      - { name: namespace, value: platform-catalog }
+  params:
+    - { name: repo-url, value: "{{ repo_url }}" }
+    - { name: revision, value: "{{ revision }}" }
+    - { name: pr-number, value: "{{ body.pull_request.number }}" }
+  taskRunTemplate:
+    serviceAccountName: pipeline-runner
+  timeouts:
+    tasks: "8m"
+    # finally bumped 2m->4m - see pull-request-sast.yaml's own header (2026-08-24)
+    # for the live comment-pr cancellation this fixes.
+    finally: "4m"
+    pipeline: "12m"

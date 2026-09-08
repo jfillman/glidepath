@@ -1,0 +1,25 @@
+# Backs build-source.yaml's build-cache volume - a persistent PVC, not the ephemeral
+# per-run `source` workspace. One PVC per app since build.cache.size is a per-app choice.
+#
+# Rendered unconditionally regardless of build.cache.enabled: build-source.yaml always
+# mounts this volume and only checks enabled at the script level (not as a Tekton
+# workspace, to avoid colliding with the Affinity Assistant). Making it conditional here
+# once broke scheduling for every app with caching disabled (the default) -
+# "persistentvolumeclaim ... not found".
+#
+# ReadWriteOnce is sufficient on this single-node cluster. No live resize: the default
+# StorageClass has allowVolumeExpansion: false, so changing build.cache.size later means
+# deleting and recreating this PVC.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: build-cache-{{ .Values.platformIdentity.appName }}
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "env"
+  namespace: {{ include "glidepath-app.namespace" . }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ include "glidepath-app.cacheSize" (dict "size" .Values.build.cache.size) }}

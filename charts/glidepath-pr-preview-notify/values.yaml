@@ -1,0 +1,31 @@
+# charts/glidepath-pr-preview-notify/values.yaml
+#
+# Every field here is stamped per-PR by ephemeral-envs.yaml's ApplicationSet template
+# via helm.valuesObject - left empty here rather than faked, so a standalone
+# `helm template` without real values fails loudly (missing required-ish fields) instead
+# of silently rendering a comment for nobody.
+
+appName: ""
+prNumber: ""
+githubOwner: ""
+# Bare repo name (matches the Repository CR name the platform's onboarding already
+# creates) - the app's own repo, not a gitops-<app> one. PR-based ephemeral environments
+# only ever exist for an app's own repo.
+appRepoName: ""
+# The PR's own namespace (glidepath-app.envNamespace's "pr-<number>" convention),
+# e.g. app-checkout-api-pr-9 - both where this Job itself runs (as a PostSync hook) and
+# what the port-forward fallback below targets.
+namespace: ""
+argocdAppName: ""
+serviceName: ""
+
+# Both stubs for real ingress, not yet present on this platform (docs/admin/
+# ephemeral-environments.md's own "Access" section) - empty today, so the comment falls
+# back to kubectl port-forward instructions for both. Set either once real ingress
+# exists; no template change needed, just these two values on the ApplicationSet's own
+# valuesObject (or glidepath-app's values.yaml, once a real domain/URL exists
+# cluster-wide rather than being invented here).
+ingressBaseDomain: ""
+argocdUIBaseURL: ""
+
+toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:latest

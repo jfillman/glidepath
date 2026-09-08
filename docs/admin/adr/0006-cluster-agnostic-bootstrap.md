@@ -46,7 +46,7 @@ GitOps" - the private key must never be persisted to a repo or exist anywhere bu
 cluster's own Secret. Nothing about the *mechanism* that generates it needs to be
 manual.
 
-`charts/platform-cicd-control-plane/templates/hooks/fulcio-bootstrap-job.yaml` now
+`charts/glidepath-control-plane/templates/hooks/fulcio-bootstrap-job.yaml` now
 ports this exact recipe (same live `kube-root-ca.crt` read, same ed25519 openssl
 invocation, same refuse-to-clobber-an-existing-root idempotency) into an ArgoCD
 pre-install hook Job - the private key still never leaves that Job's own pod, still

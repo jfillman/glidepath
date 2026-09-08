@@ -1,0 +1,39 @@
+# Delivers the boilerplate files deliver-onboarding-files.yaml (a shared catalog Task)
+# commits into this Application's repos. Previously baked into the toolbox image, which
+# made template edits only take effect on the next image rebuild.
+#
+# Rendered by the app chart, one copy per Application, not a single shared ConfigMap in
+# platform-catalog - a Pod can only volume-mount a ConfigMap from its own namespace, and
+# the Task's Pod runs in the calling PipelineRun's namespace. Tradeoff: a template edit
+# here needs this Application's own next `helm upgrade` to take effect (same as any
+# cicd.yaml pipeline change - see docs/admin/onboarding-mechanics.md).
+#
+# Two ConfigMaps, not one: deliver-onboarding-files.yaml's two steps each need a
+# disjoint subset of these files, split by source directory (app-repo/ vs gitops-repo/).
+#
+# .Files.Glob/.AsConfig insert raw bytes as a plain string, never re-parsed as template
+# source, so these files' own literal PaC double-brace syntax (repo_url, revision)
+# passes through untouched - do not spell that syntax out literally even in a comment
+# here, it breaks Helm's parser the same way it would in code ("function \"repo_url\"
+# not defined").
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: onboarding-templates-app-repo
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "onboarding"
+  namespace: {{ include "glidepath-app.namespace" . }}
+data:
+  {{- (.Files.Glob "files/onboarding-templates/app-repo/*").AsConfig | nindent 2 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: onboarding-templates-gitops-repo
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "onboarding"
+  namespace: {{ include "glidepath-app.namespace" . }}
+data:
+  {{- (.Files.Glob "files/onboarding-templates/gitops-repo/*").AsConfig | nindent 2 }}

@@ -4,7 +4,7 @@ Deletes old, completed PipelineRuns (and their TaskRuns) so this platform's Tekt
 objects don't accumulate forever. Tekton never garbage-collects a completed
 PipelineRun on its own, and PaC's `pipelinesascode.tekton.dev/max-keep-runs`
 annotation only prunes PaC-triggered PipelineRuns - a flow's git-rooted first step.
-Every *event-chained* step (everything `charts/platform-cicd-app/templates/triggers/
+Every *event-chained* step (everything `charts/glidepath-app/templates/triggers/
 flow-triggers.yaml`'s Tekton Triggers create - which is most PipelineRuns in a typical
 multi-stage flow) had no pruning at all until this CronJob. A single heavy
 flow-testing session can leave 100+ completed PipelineRuns behind, and this cluster's
@@ -67,7 +67,7 @@ job only ever deletes or does nothing).
   itself runs GNU `date -u -d` inside the toolbox image, the same call already proven
   live in `stalled-pipeline-detector-cronjob.yaml`).
 - `helm template`/`helm lint` the control-plane chart - CronJob/RBAC render correctly.
-- Deployed live (`helm upgrade --install platform-cicd-control-plane`) and manually
+- Deployed live (`helm upgrade --install glidepath-control-plane`) and manually
   triggered (`kubectl create job --from=cronjob/pipelinerun-pruner ...`) against the
   real cluster. Result: pruned exactly 165 PipelineRuns, matching the pre-deploy
   prediction - `platform-cicd-demo` went from up to dozens of completed runs per

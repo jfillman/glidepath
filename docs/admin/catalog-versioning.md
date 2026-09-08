@@ -1,7 +1,7 @@
 # Catalog versioning, testing, and safe deployment
 
 Before Phase 3 item 7, the shared catalog (`catalog/tasks|pipelines|stepactions`, now
-`charts/platform-cicd-catalog`) had zero versioning: every catalog Pipeline resolves its
+`charts/glidepath-catalog`) had zero versioning: every catalog Pipeline resolves its
 Tasks via Tekton's `resolver: cluster` by bare name against whatever happened to be
 `kubectl apply`'d into the `platform-catalog` namespace at that moment - no git tags, no
 CI, no staging, no rollback path. Given every real Application's pipeline run resolves the
@@ -10,11 +10,11 @@ of hand-reverting and re-applying.
 
 ## What changed: the catalog is now a real Helm release
 
-`charts/platform-cicd-catalog` wraps the same Task/Pipeline/StepAction YAML that always
+`charts/glidepath-catalog` wraps the same Task/Pipeline/StepAction YAML that always
 lived under `catalog/` (a "nearly free" conversion - every file was already flat,
-unparameterized, valid standalone YAML). Every real cluster's `platform-cicd-catalog`
+unparameterized, valid standalone YAML). Every real cluster's `glidepath-catalog`
 Application tracks `main` with `selfHeal: true` (see
-`gitops-cluster-dev/50-platform-cicd/platform-cicd-catalog/application.yaml`) - a merge
+`gitops-cluster-dev/50-platform-cicd/glidepath-catalog/application.yaml`) - a merge
 to `main` is a live production change, immediately. Rollback is `git revert` the merge
 commit, not `helm rollback` - matching [ADR-0004](adr/0004-gitops-only-release.md)'s
 "promotion is ordinary git history" principle rather than a side-channel release
@@ -29,10 +29,10 @@ why it's not built yet).
 
 Since the chart needs zero real templating, a **second, temporary ArgoCD Application
 tracking your feature branch instead of `main`** gives a genuine, live staging target
-with zero OCI-bundle machinery. Copy `platform-cicd-catalog/application.yaml`, and in
+with zero OCI-bundle machinery. Copy `glidepath-catalog/application.yaml`, and in
 the copy:
 
-- rename it (e.g. `platform-cicd-catalog-canary`)
+- rename it (e.g. `glidepath-catalog-canary`)
 - set `spec.source.targetRevision` to your branch, not `main`
 - set `spec.destination.namespace` to `platform-catalog-canary`
 - drop `syncPolicy.automated` (sync by hand while iterating)
@@ -41,7 +41,7 @@ Apply that Application to the cluster, point one dedicated canary Application's
 `platformIdentity.catalogNamespace` (see the app chart's `values.yaml`) at
 `platform-catalog-canary` instead of the default `platform-catalog`, and run a real
 build→test→deploy through it. Once you're confident, merge your branch to `main` - the
-real `platform-cicd-catalog` Application's own `selfHeal` picks it up automatically, no
+real `glidepath-catalog` Application's own `selfHeal` picks it up automatically, no
 separate promote step. Delete the temporary canary Application when done.
 
 ## What CI actually checks (and what it can't)

@@ -1,7 +1,7 @@
 # Slack notifications
 
 Every stage's pipeline (`build`/`test`/`deploy`/`release`) calls
-`charts/platform-cicd-catalog/templates/tasks/notify-slack.yaml` unconditionally in its `finally` block - one status
+`charts/glidepath-catalog/templates/tasks/notify-slack.yaml` unconditionally in its `finally` block - one status
 message per stage completion, with a failure log excerpt appended when the stage didn't
 succeed.
 
@@ -74,7 +74,7 @@ hand-created, per-Application Secret.
   Slack code block.
 
 No new RBAC was needed for the log-fetching step - `pipeline-runner`'s existing Role
-(`charts/platform-cicd-app/templates/identity/pipeline-runner.yaml`) already grants `get`/`list`/
+(`charts/glidepath-app/templates/identity/pipeline-runner.yaml`) already grants `get`/`list`/
 `watch` on `taskruns` (tekton.dev) and `pods`/`pods/log` (core), confirmed by re-reading
 that file rather than assumed.
 

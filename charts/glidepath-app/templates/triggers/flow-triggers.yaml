@@ -1,0 +1,289 @@
+{{- /* Validate all flows before rendering */ -}}
+{{- include "glidepath-app.validateFlows" . -}}
+
+{{- /*
+Renders Trigger/TriggerBinding/TriggerTemplate only for EVENT-CHAINED steps (index > 0):
+stages fired by a CDEvent the previous stage's `finally` block emits (artifact.published
+-> test, testcaserun.finished -> deploy, service.deployed -> release).
+
+Git-rooted steps (a flow's first step, trigger.source: git) are not rendered here - PaC
+creates that PipelineRun directly from .tekton/*.yaml in the app's own repo, driven by a
+real git event. Routing that through a synthetic CDEvent would add a broker hop for no
+benefit. (release.created isn't a supported git event - PaC has no GitHub "release"
+webhook support; trigger off "tag" instead.) See docs/admin/chaining.md.
+*/ -}}
+
+{{- $appNamespace := include "glidepath-app.namespace" . -}}
+{{- $flows := .Values.pipelines | default (dict) -}}
+{{- range $flowName, $flow := $flows -}}
+{{- $normalizedFlow := fromYaml (include "glidepath-app.normalizeFlow" (dict "flow" $flow)) -}}
+{{- $steps := $normalizedFlow.steps | default (list) -}}
+{{- $stepCount := len $steps -}}
+{{- if gt $stepCount 0 -}}
+{{- $rootTrigger := $normalizedFlow.trigger | default (dict) -}}
+
+{{- $triggerSource := $rootTrigger.source | default "" -}}
+{{- if eq $triggerSource "" -}}
+  {{- $triggerEvent := $rootTrigger.event | default ($rootTrigger.type | default "") -}}
+  {{- if or (eq $triggerEvent "push") (eq $triggerEvent "pull_request") (eq $triggerEvent "branch.created") (eq $triggerEvent "tag") -}}
+    {{- $triggerSource = "git" -}}
+  {{- else if ne $triggerEvent "" -}}
+    {{- $triggerSource = "event" -}}
+  {{- end -}}
+{{- end -}}
+
+{{- range $index, $step := $steps -}}
+{{- $isFirst := eq $index 0 -}}
+{{- $isLast := eq $index (sub $stepCount 1) -}}
+{{- $isGitRooted := and $isFirst (eq $triggerSource "git") -}}
+{{- /* A first step with trigger.source: event has no previous step to key
+$eventTypeMap from - not a supported flow shape yet, so skip rather than index -1. */ -}}
+{{- $isUnsupportedEventRoot := and $isFirst (eq $triggerSource "event") -}}
+{{- if and (not $isGitRooted) (not $isUnsupportedEventRoot) -}}
+{{- $stageName := $step.stage | default "build" -}}
+{{- /* Includes $index: since a stage can repeat within a flow, "flow-<name>-<stage>"
+alone would collide and Helm would silently keep only the last-applied object. */ -}}
+{{- $triggerName := printf "flow-%s-%d-%s" $flowName $index $stageName -}}
+{{- $pipelineName := $stageName -}}
+
+{{- $eventTypeMap := dict "build" "artifact.published" "test" "testcaserun.finished" "deploy" "service.deployed" "release" "change.created" -}}
+{{- $prevIndex := sub $index 1 -}}
+{{- $prevStage := (index $steps $prevIndex).stage | default "" -}}
+{{- $eventType := get $eventTypeMap $prevStage -}}
+
+{{- /*
+CEL filter: must trigger only on the domain event from THIS flow's own chain, not just
+the right event type. A real bug: checking event-type + namespace alone let two flows
+sharing a stage-transition event type (e.g. one flow's deploy->release, another's
+X->deploy - both emit service.deployed) cross-trigger each other with no termination -
+an infinite cross-flow loop was observed live. Fixed by also requiring the event's
+source (which encodes the emitting PipelineRun's name, `<flowName>-...`) to start with
+this flow's name prefix. Known limitation: a flow name that's a literal prefix of
+another (e.g. "release"/"release-fast") would still cross-match; not worth the added
+complexity to close given no such flows currently exist.
+
+That alone wasn't sufficient: two steps in the same flow sharing a stage name (e.g. two
+`test` steps) produce byte-identical CEL filters, so either one completing fired both
+its own next-step trigger AND any sibling step's trigger - a narrower version of the
+same infinite-loop failure mode. Fixed by tightening the source match to the exact
+previous step: `<flowName>-<prevIndex>-<prevStage>-`, except when the previous step is
+the flow's git-rooted root (index 0), which keeps the looser flow-only prefix
+(`generateName: ${flow_name}-0-${root_stage}-`, i.e. `startsWith("<flowName>-")` rather
+than the full `<flowName>-0-<rootStage>-`) since there's only ever one root step per
+flow, so no sibling to disambiguate from.
+*/ -}}
+{{- $prevStepIsGitRoot := and (eq $prevIndex 0) (eq $triggerSource "git") -}}
+{{- $sourcePrefix := printf "%s-%d-%s-" $flowName $prevIndex $prevStage -}}
+{{- if $prevStepIsGitRoot -}}
+  {{- $sourcePrefix = printf "%s-" $flowName -}}
+{{- end -}}
+{{- $celFilter := printf "body.context.type == 'dev.cdevents.%s.0.3.0' && extensions.app_namespace == '%s' && body.context.source.startsWith('/platform-cicd/%s/%s')" $eventType $appNamespace $appNamespace $sourcePrefix -}}
+{{- /*
+Only chaining from TEST needs an explicit outcome check: testcaserun.finished fires
+unconditionally (pass or fail) by design. build/deploy/release's events are already
+gated at the source by `when: tasks.status in [Succeeded, Completed]`, so their mere
+existence implies success. Keyed off $prevStage, not the current stage, since any
+stage can now follow any other.
+*/ -}}
+{{- if eq $prevStage "test" -}}
+  {{- $celFilter = printf "%s && body.subject.content.outcome == 'Succeeded'" $celFilter -}}
+{{- end -}}
+
+{{- /* CDEvents vocabulary differs by subject type: build/test/release events use
+"image", service.deployed (deploy) uses "artifactId". Must key off $prevStage since any
+stage can now chain from any other. */ -}}
+{{- $imageField := "image" -}}
+{{- if eq $prevStage "deploy" -}}
+  {{- $imageField = "artifactId" -}}
+{{- end -}}
+
+{{- /* Only meaningful for test; falls back to top-level test.name. Threaded through
+unconditionally like cluster/name - Tekton tolerates the unused param on other stages. */ -}}
+{{- $effectiveTestName := $step.testName | default ($.Values.test.name | default "") -}}
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  name: {{ $triggerName }}-binding
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" $ | nindent 4 }}
+    hangar.io/subcomponent: "triggers"
+    hangar.io/flow: {{ $flowName }}
+    hangar.io/stage: {{ $stageName }}
+spec:
+  params:
+    - { name: flow-name, value: {{ $flowName | quote }} }
+    - { name: stage-name, value: {{ $stageName | quote }} }
+    {{/* $(body.context.id) (Tekton runtime substitution, not Helm) gives each firing a
+    unique name so a redelivered CDEvent no-ops, and repeated stage names don't collide.
+    $(body.customData.platform.chain_slug) is a two-word deterministic stand-in for
+    chain-id (see cdevents.sh's chain_id_to_slug) - same chain-id always yields the same
+    words, so every PipelineRun in one flow chain shows the same pair, making them easy
+    to spot as belonging together without needing the full chain-id.
+
+    NOTE: chain_slug is emitted by cdevents.sh, which lives inside the pinned
+    platform-cicd-toolbox image (values.yaml's toolboxImage), not this chart. A
+    TriggerBinding's $(body...) JSONPath hard-errors on a missing field (not an empty
+    value - same failure mode as the "outcome" bug above), so requiring chain_slug here
+    ever again before a published image actually emits it would break EVERY chained
+    transition platform-wide - confirmed live 2026-09-05 (EventListener logs: "chain_slug
+    is not found" on flow-ci-1-test), reverted in 942667f, and only re-added here after
+    the send-cdevent Task's shared image was rebuilt, pushed, repinned in all three
+    values.yaml files (760edc3), and confirmed synced. Never let this line ship in the
+    same deploy as a cdevents.sh change that alters what customData.platform carries -
+    the image must land first, verified, in its own deploy. */}}
+    - { name: pipeline-run-name, value: {{ printf "%s-%d-%s-$(body.customData.platform.chain_slug)-$(body.context.id)" $flowName $index $stageName | quote }} }
+    - { name: env, value: {{ $step.env | default "dev" | quote }} }
+    - { name: test-name, value: {{ $effectiveTestName | quote }} }
+    {{/* $step.cluster if set, else resolved from upperEnvironments - see _helpers.tpl's
+    resolveStepCluster. */}}
+    - { name: cluster, value: {{ include "glidepath-app.resolveStepCluster" (list $ $step) | quote }} }
+    - { name: name, value: {{ $step.name | default "" | quote }} }
+    - { name: is-flow-root, value: "false" }
+    {{/* Computed here since only the generator knows this step's position in the
+    flow - see docs/admin/tracing.md. */}}
+    - { name: is-flow-terminal, value: {{ $isLast | quote }} }
+    - { name: git-url, value: "$(body.subject.content.git-url)" }
+    - { name: git-revision, value: "$(body.subject.content.revision)" }
+    - { name: image-ref, value: "$(body.subject.content.{{ $imageField }})" }
+    {{/* No "outcome" param: a binding param's $(body...) JSONPath is evaluated
+    unconditionally, and build/deploy/release events have no subject.content.outcome
+    field - Tekton Triggers hard-errors on a missing JSONPath (not an empty value),
+    which previously broke every chain transition except from test. */}}
+    - { name: chain-id, value: "$(body.context.chainId)" }
+    - { name: traceparent, value: "$(body.customData.platform.traceparent)" }
+    - { name: flow-start-time, value: "$(body.customData.platform.flow_start_time)" }
+    {{/* gitops-image-bump only - Helm-time literals from this step's own cicd.yaml
+    entry, same pattern as test-name/cluster above, not a $(body...) CDEvent field.
+    Harmless empty default on every other stage. */}}
+    - { name: gitops-repo, value: {{ $step.gitopsRepo | default "" | quote }} }
+    - { name: manifest-path, value: {{ $step.manifestPath | default "" | quote }} }
+    {{/* Lets deploy/release skip their own clone-repo+validate-config and inherit
+    cicd.yaml's already-validated content instead (resolve-notify-config.yaml). Always a
+    plain string (JSON-as-a-string, not a nested object) - Tekton Triggers' JSONPath
+    extraction of nested objects isn't a proven pattern here. */}}
+    - { name: config-json, value: "$(body.customData.platform.config_json)" }
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: {{ $triggerName }}-template
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" $ | nindent 4 }}
+    hangar.io/subcomponent: "triggers"
+    hangar.io/flow: {{ $flowName }}
+    hangar.io/stage: {{ $stageName }}
+spec:
+  params:
+    - name: flow-name
+    - name: stage-name
+    - name: pipeline-run-name
+    - name: env
+    - name: test-name
+    - name: cluster
+    - name: name
+    - name: is-flow-root
+    - name: is-flow-terminal
+    - name: git-url
+    - name: git-revision
+    - name: image-ref
+    - name: chain-id
+    - name: traceparent
+    - name: flow-start-time
+    - name: config-json
+    - name: gitops-repo
+    - name: manifest-path
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        name: $(tt.params.pipeline-run-name)
+        labels:
+          # hangar.io/app (2026-09-05): matches the same label the Rollout/Deployment
+          # this app's own ApplicationEnvironment renders already carries
+          # (airframe-application chart) - added so a Backstage Kubernetes-plugin entity can
+          # use a single `hangar.io/app=<name>` selector (no namespace pin) to surface
+          # BOTH its deployed workload across every env namespace AND its own
+          # event-chained PipelineRuns in this CI namespace. Was missing entirely before
+          # this fix - $.Values.platformIdentity.appName was already threaded through as
+          # a Pipeline *param* (app-name, below) but never applied as a label on the
+          # PipelineRun itself. Doesn't cover this flow's git-rooted first step or the
+          # gitops-repo governance/scan/promotion PipelineRuns (PaC-created directly from
+          # .tekton/*.yaml, a separate template path - see TektonCICD's own composition)
+          # - those still need the same label added separately.
+          hangar.io/app: {{ $.Values.platformIdentity.appName }}
+          hangar.io/flow: {{ $flowName }}
+          hangar.io/stage: {{ $stageName }}
+          hangar.io/step-index: {{ $index | quote }}
+      spec:
+        pipelineRef:
+          resolver: cluster
+          params:
+            - { name: kind, value: pipeline }
+            - { name: name, value: {{ $pipelineName }} }
+            - { name: namespace, value: {{ $.Values.platformIdentity.catalogNamespace }} }
+        params:
+          - { name: is-flow-root, value: $(tt.params.is-flow-root) }
+          - { name: is-flow-terminal, value: $(tt.params.is-flow-terminal) }
+          - { name: app-namespace, value: {{ $appNamespace }} }
+          - { name: app-name, value: {{ $.Values.platformIdentity.appName }} }
+          - { name: app-type, value: {{ $.Values.platformIdentity.type }} }
+          - { name: env, value: $(tt.params.env) }
+          - { name: test-name, value: $(tt.params.test-name) }
+          - { name: cluster, value: $(tt.params.cluster) }
+          - { name: name, value: $(tt.params.name) }
+          - { name: git-url, value: $(tt.params.git-url) }
+          - { name: git-revision, value: $(tt.params.git-revision) }
+          - { name: image-ref, value: $(tt.params.image-ref) }
+          - { name: chain-id, value: $(tt.params.chain-id) }
+          - { name: flow-traceparent, value: $(tt.params.traceparent) }
+          - { name: flow-start-time, value: $(tt.params.flow-start-time) }
+          - { name: config-json, value: $(tt.params.config-json) }
+        {{- /* Only gitops-image-bump declares/needs these two - see that Pipeline's own
+        header for why they aren't threaded to every stage like the params above. */ -}}
+        {{- if eq $stageName "gitops-image-bump" }}
+          - { name: gitops-repo, value: $(tt.params.gitops-repo) }
+          - { name: manifest-path, value: $(tt.params.manifest-path) }
+        {{- end }}
+        {{- /* Only test needs the source workspace (real checkout for integration-test).
+        deploy/release use resolve-notify-config instead and need no workspace; omitting
+        the binding entirely (not just empty) skips a PVC provision/teardown per
+        transition for stages that never read from it. */ -}}
+        {{- if eq $stageName "test" }}
+        workspaces:
+          - name: source
+            volumeClaimTemplate:
+              spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: {{ include "glidepath-app.sourceVolumeSize" (dict "size" $.Values.build.sourceVolume.size) }} } } }
+        {{- end }}
+        taskRunTemplate: { serviceAccountName: pipeline-runner }
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: Trigger
+metadata:
+  name: {{ $triggerName }}
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" $ | nindent 4 }}
+    hangar.io/subcomponent: "triggers"
+    hangar.io/flow: {{ $flowName }}
+    hangar.io/stage: {{ $stageName }}
+spec:
+  serviceAccountName: pipeline-runner
+  interceptors:
+    - ref: { name: cdevents-broker-auth, kind: ClusterInterceptor }
+      params: [{ name: audience, value: cdevents-broker }]
+    - ref: { name: cel, kind: ClusterInterceptor }
+      params:
+        - name: filter
+          value: >-
+            {{ $celFilter }}
+  bindings:
+    - { ref: {{ $triggerName }}-binding }
+  template:
+    ref: {{ $triggerName }}-template
+{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}

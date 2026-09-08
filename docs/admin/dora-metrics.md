@@ -11,7 +11,7 @@ Go service that subscribes as another consumer off the same shared broker" - a C
 HTTP consumer, matching how every other stage of this platform's chain works. Working
 through the actual metric definitions surfaced a real problem with that: CDEvents, as
 this platform emits them today, can tell us a release **PR was opened**
-(`charts/platform-cicd-catalog/templates/pipelines/release.yaml`'s `open-release-pr` task succeeding) - but nothing
+(`charts/glidepath-catalog/templates/pipelines/release.yaml`'s `open-release-pr` task succeeding) - but nothing
 confirms whether that PR was ever merged, or whether ArgoCD's sync of it actually
 succeeded. All four DORA metrics need that confirmed outcome: Deployment Frequency and
 Lead Time need to know a deploy really happened, not just that one was proposed; Change
@@ -58,7 +58,7 @@ it pushed, not the merge-commit SHA GitHub assigns on merge.
 
 Instead: **the release Pipeline stamps tracking annotations directly onto its own
 Application's ArgoCD Application object**, and the exporter reads those back off the same object it's
-already watching - no separate correlation store, no guessing. `charts/platform-cicd-catalog/templates/tasks/mark-
+already watching - no separate correlation store, no guessing. `charts/glidepath-catalog/templates/tasks/mark-
 release-pending.yaml`, wired into `release.yaml` right after `open-release-pr` succeeds
 (`runAfter: [open-release-pr]` - only runs if the PR was actually opened, via standard
 Tekton DAG failure propagation, no `when` guard needed), does:
@@ -68,15 +68,15 @@ baseline="$(kubectl get application.argoproj.io "${app}" -n argocd \
   -o jsonpath='{.status.operationState.startedAt}' 2>/dev/null || echo "")"
 
 kubectl annotate application.argoproj.io "${app}" -n argocd \
-  platform.io/dora-pending=true \
-  platform.io/dora-flow-start-time="${FLOW_START_TIME}" \
-  platform.io/dora-baseline-started-at="${baseline}" \
-  platform.io/dora-app-namespace="${APP_NAMESPACE}" \
-  platform.io/dora-app="${APP_NAME}" \
+  hangar.io/dora-pending=true \
+  hangar.io/dora-flow-start-time="${FLOW_START_TIME}" \
+  hangar.io/dora-baseline-started-at="${baseline}" \
+  hangar.io/dora-app-namespace="${APP_NAMESPACE}" \
+  hangar.io/dora-app="${APP_NAME}" \
   --overwrite
 ```
 
-`platform.io/dora-baseline-started-at` is the detail that makes this correct rather than
+`hangar.io/dora-baseline-started-at` is the detail that makes this correct rather than
 approximately-correct: ArgoCD's `operationState` gets overwritten by *any* sync,
 including its own unrelated `selfHeal` drift-correction syncs that run continuously
 regardless of this pipeline. The exporter must not react to a sync that was already
@@ -86,29 +86,29 @@ once a *strictly newer* `startedAt` appears with a terminal phase, makes this pr
 regardless of how many unrelated syncs happen in between.
 
 On each Application watch event (`platform/dora-exporter/cmd/dora-exporter/main.go`'s
-`reconcile()`), if `platform.io/dora-pending: "true"` is present and
+`reconcile()`), if `hangar.io/dora-pending: "true"` is present and
 `status.operationState.startedAt` is after `dora-baseline-started-at` and `phase` is
 terminal:
 
 - **`Succeeded`**: record a successful deployment (see below), then patch the
   Application to clear `dora-pending` (and `dora-last-failure-time`, if present - see
   MTTR below). This clearing is the dedup mechanism - the same shape as the stalled-
-  pipeline detector's own `platform.io/stall-alerted` label
+  pipeline detector's own `hangar.io/stall-alerted` label
   (`docs/stalled-pipeline-detector.md`), just annotations on a different resource. Once
   cleared, the next watch event for that same object carries no `dora-pending`
   annotation, so `reconcile()`'s own early return makes it a no-op - no separate
   in-memory dedup tracking needed.
 - **`Failed`/`Error`**: record a failed release, patch to clear `dora-pending` and set
-  `platform.io/dora-last-failure-time` to `status.operationState.finishedAt` (consumed by
+  `hangar.io/dora-last-failure-time` to `status.operationState.finishedAt` (consumed by
   the *next* confirmed success, for MTTR).
 
 RBAC for `mark-release-pending` is `pipeline-runner` (the Application's own SA) granted
 `get`+`patch` on exactly its own `<app-name>-staging` Application, `resourceNames`-
-scoped, added to `charts/platform-cicd-app/templates/argocd/release-application.yaml` (the file that
+scoped, added to `charts/glidepath-app/templates/argocd/release-application.yaml` (the file that
 already sets up this Application's release-stage ArgoCD RBAC) rather than a new template file.
-That same file also adds `platform.io/dora-track: "true"` to the `Application` resource
+That same file also adds `hangar.io/dora-track: "true"` to the `Application` resource
 itself - a stable, explicit marker the exporter's informer filters on
-(`LabelSelector: "platform.io/dora-track=true"`), so it never processes unrelated
+(`LabelSelector: "hangar.io/dora-track=true"`), so it never processes unrelated
 Applications in the `argocd` namespace (e.g. the pre-existing `podinfo-demo-app`
 Application, which isn't part of this platform's Application model at all).
 
@@ -244,7 +244,7 @@ platform is a handful of events per app per day, nowhere near where a ConfigMap'
 limit would become a concern.
 
 Same "no `data:` field at all" rendering as `dora-cluster-mapped-state` - see that
-ConfigMap's own comment (`charts/platform-cicd-control-plane/templates/dora-exporter/deployment.yaml`)
+ConfigMap's own comment (`charts/glidepath-control-plane/templates/dora-exporter/deployment.yaml`)
 for why declaring the field, even empty, would let a later sync prune every key this
 service's own PATCH calls have added since.
 
@@ -289,7 +289,7 @@ Application's ArgoCD Application object, no other resource type.
   localhost:8080/metrics` for the raw Prometheus exposition.
 - Grafana: "CI/CD Platform - DORA Metrics" dashboard (`dora.json`), same
   `$app_namespace`/`$app` template-variable pattern as `pipelines-overview.json`.
-- A standalone `ServiceMonitor` (`charts/platform-cicd-control-plane/templates/dora-exporter/servicemonitor.yaml`)
+- A standalone `ServiceMonitor` (`charts/glidepath-control-plane/templates/dora-exporter/servicemonitor.yaml`)
   registers the scrape target - no Helm-chart wiring needed, since every real
   Prometheus CR this platform has run against has empty
   `serviceMonitorSelector`/`serviceMonitorNamespaceSelector` (matches everything

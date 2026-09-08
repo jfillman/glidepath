@@ -1,0 +1,48 @@
+# platform/sigstore/fulcio-root-configmap.yaml
+#
+# Public half of fulcio-secret, split out deliberately: fulcio-secret holds cert.pem AND
+# key.pem together, and RBAC can't scope access to one key within a Secret - granting
+# any Application `get` on fulcio-secret would hand them the private signing key too.
+# This ConfigMap holds only the public cert (already discoverable via Fulcio's own
+# /api/v2/configuration), so it's safe to expose broadly.
+#
+# Consumed by verify-image-provenance.yaml as the --ca-roots trust anchor for cosign
+# verify/verify-attestation (docs/provenance-policy.md).
+#
+# The ConfigMap object itself is created directly by hooks/fulcio-bootstrap-job.yaml,
+# not templated here - it's populated with the public half of whatever root that Job
+# generated (or found already present), which doesn't exist as a Helm value at all
+# (ADR-0006's "Update": the private key/cert pair are minted inside the cluster, never
+# passed through a values file). Only the RBAC below - genuinely static, unrelated to
+# which cluster's root it happens to guard - stays chart-templated.
+---
+# Broad but narrowly-scoped by resourceName: this ConfigMap holds genuinely public data,
+# so granting read to every ServiceAccount cluster-wide (rather than enumerating each
+# Application) is a reasonable trade.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: allow-fulcio-root-ca-read
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "sigstore"
+  namespace: platform-catalog
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["fulcio-root-ca"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: allow-fulcio-root-ca-read
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "sigstore"
+  namespace: platform-catalog
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: allow-fulcio-root-ca-read }
+subjects:
+  - kind: Group
+    name: system:serviceaccounts
+    apiGroup: rbac.authorization.k8s.io

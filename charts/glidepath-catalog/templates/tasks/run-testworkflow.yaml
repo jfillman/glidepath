@@ -1,0 +1,241 @@
+# catalog/tasks/run-testworkflow.yaml
+#
+# Deliberately not "run-integration-tests" (its original name through 2026-08-24) - a
+# TestWorkflow isn't necessarily a test. It's whatever the app repo's own
+# platform/<name>.yaml declares: an integration test, a smoke check, or an ops action
+# with no assertions at all (clearing a cache before release, warming something up,
+# etc). This Task's job is "run the named TestWorkflow and report pass/fail," not
+# "test the code" specifically.
+#
+# Two ways a named TestWorkflow can run, tried in this order:
+#
+# 1. Testkube (real integration, 2026-08-24): if the app repo has platform/<name>.yaml,
+#    it's applied as a TestWorkflow into Testkube CE's single shared `testkube`
+#    namespace (see gitops-cluster-dev/50-platform-cicd/testkube/application.yaml's own
+#    header for why it's one shared namespace, not one per tenant - executionNamespaces
+#    is a Testkube Pro/Enterprise-only feature, confirmed live + in source, so CE
+#    genuinely cannot run this inside the app's own -cicd namespace). Application
+#    secrets reach the workflow by a different route than namespace colocation: this
+#    step re-materializes this namespace's own app-secrets into a pre-seeded,
+#    per-Application placeholder Secret in the testkube namespace (rendered by this
+#    Application's own onboarding chart - see glidepath-app's templates/testkube/
+#    rbac-and-secret.yaml), which the TestWorkflow spec references via a standard
+#    env[].valueFrom.secretKeyRef naming the literal placeholder
+#    "__APP_SECRETS_NAME__" - this step substitutes that for the real per-Application
+#    secret name before applying, so the workflow file itself never needs to know or
+#    hardcode this Application's own name.
+#
+#    metadata.name in platform/<name>.yaml is ALWAYS overwritten to
+#    "<app-name>-<test-name>" before applying, regardless of what's in the file -
+#    Testkube's shared namespace means TestWorkflow names must be unique across every
+#    onboarded Application, and app-name here comes from the PipelineRun's own trusted
+#    platformIdentity-derived param, not anything a developer's commit controls, so
+#    this can't be spoofed by editing the workflow file itself.
+#
+# 2. Phase 1 fallback (original mechanism, kept for Applications not yet migrated): if
+#    there's no platform/<name>.yaml but ./integration-test.sh exists, run that
+#    against the freshly built image, in the Application's own agent-image (unlike the
+#    Testkube step above, which runs in the shared toolboxImage since it only needs
+#    kubectl/yq/testkube CLI, never the app's own runtime).
+#
+# Triggering/polling uses the official `testkube` CLI (added to the toolbox image
+# 2026-09-05), not a hand-crafted TestWorkflowExecution CR + raw REST polling - see the
+# execute-testworkflow step's own comment for why that switch alone didn't fix the
+# false-"aborted" bug it was hoped to, and what actually works around it.
+#
+# Skips cleanly, not a failure, if neither exists or cicd.yaml's `test.enabled` is
+# false. This Task's contract (take image-ref, produce pass/fail) hasn't changed since
+# Phase 1 - only what happens inside it has.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: run-testworkflow
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  workspaces:
+    - name: source
+  params:
+    - name: config-json
+      type: string
+    - name: agent-image
+      type: string
+    - name: image-ref
+      type: string
+    - name: env
+      type: string
+    - name: test-name
+      type: string
+    - name: app-name
+      type: string
+  steps:
+    - name: resolve-enabled
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      results:
+        - name: enabled
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        # NOT `.test.enabled // true` - a real, previously-undiscovered bug found live
+        # (see run-tests.yaml's own identical fix for the full explanation): jq's `//`
+        # treats `false` the same as missing/null, so an explicit `test.enabled: false`
+        # was silently ignored - no Application has ever actually been able to disable the
+        # test stage via cicd.yaml.
+        #
+        # Second, separate bug found live in THIS step while wiring up test env/name
+        # (2026-08-09): this used to pipe jq's own output straight into `tee` with no `-n`
+        # anywhere, so the result file held "true\n", not "true" - a real cross-step env
+        # var substitution (unlike a $(...) command substitution) does NOT strip that
+        # trailing newline (same gotcha build-image.yaml's own header already documents
+        # for span-start-time). `[[ "${TEST_ENABLED}" != "true" ]]` in the next step was
+        # therefore ALWAYS true regardless of cicd.yaml's actual value - confirmed live,
+        # every test run ever reported "disabled...skipping" even with test.enabled
+        # defaulting true. run-tests.yaml's equivalent step already avoided this by
+        # capturing into a variable first; mirrored here.
+        ENABLED="$(jq -r 'if .test.enabled == false then "false" else "true" end' <<< '$(params.config-json)')"
+        echo -n "${ENABLED}" | tee "$(step.results.enabled.path)"
+
+    - name: execute-testworkflow
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)
+      results:
+        - name: fallback-needed
+      # Cross-step result references only work in env/command/args, not inline script -
+      # see the comment in catalog/tasks/build-image.yaml's run-build-script step.
+      env:
+        - name: TEST_ENABLED
+          value: $(steps.resolve-enabled.results.enabled)
+        - name: TEST_NAME
+          value: $(params.test-name)
+        - name: APP_NAME
+          value: $(params.app-name)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        if [[ "${TEST_ENABLED}" != "true" ]]; then
+          echo "test stage disabled in cicd.yaml, skipping"
+          echo -n "false" | tee "$(step.results.fallback-needed.path)"
+          exit 0
+        fi
+
+        WORKFLOW_FILE="platform/${TEST_NAME}.yaml"
+        if [[ ! -f "${WORKFLOW_FILE}" ]]; then
+          echo "no ${WORKFLOW_FILE} - falling back to ./integration-test.sh if present"
+          echo -n "true" | tee "$(step.results.fallback-needed.path)"
+          exit 0
+        fi
+        echo -n "false" | tee "$(step.results.fallback-needed.path)"
+
+        WORKFLOW_NAME="${APP_NAME}-${TEST_NAME}"
+        SECRET_NAME="${APP_NAME}-app-secrets"
+
+        echo "materializing this namespace's app-secrets into testkube/${SECRET_NAME}"
+        if kubectl get secret app-secrets >/dev/null 2>&1; then
+          PATCH_DATA="$(kubectl get secret app-secrets -o json | jq -c '{data: .data}')"
+          kubectl -n testkube patch secret "${SECRET_NAME}" --type merge -p "${PATCH_DATA}"
+        else
+          echo "no app-secrets in this namespace - leaving ${SECRET_NAME} empty"
+        fi
+
+        echo "applying ${WORKFLOW_FILE} as TestWorkflow/${WORKFLOW_NAME} in testkube namespace"
+        yq eval ".metadata.name = \"${WORKFLOW_NAME}\"" "${WORKFLOW_FILE}" \
+          | sed "s/__APP_SECRETS_NAME__/${SECRET_NAME}/g" \
+          | kubectl -n testkube apply -f -
+
+        # --client direct talks straight to the in-cluster Service over plain HTTP, no
+        # RBAC or auth needed in standalone/CE mode (confirmed live 2026-09-05) - the
+        # alternative "cluster" client mode proxies through the k8s API server's
+        # services/proxy subresource instead, which this Task's ServiceAccount was
+        # never granted and doesn't need.
+        TK="testkube --client direct --api-uri http://testkube-api-server.testkube.svc.cluster.local:8088 --namespace testkube"
+
+        echo "triggering execution via testkube CLI"
+        # NOT `${TK} run tw ... -f` (follow/watch) - live-verified 2026-09-05 that -f's
+        # log-streaming path spams "failed to create fsnotify watcher: too many open
+        # files" dozens of times per run in this toolbox image and adds nothing we don't
+        # already get by polling `get twe` below. Trigger and poll are kept as separate
+        # calls, same shape as the old kubectl+curl version.
+        EXECUTION_ID="$(${TK} run tw "${WORKFLOW_NAME}" -o json | jq -r '.id')"
+        echo "TestWorkflowExecution ${EXECUTION_ID} started, polling for a terminal status"
+
+        # Live-verified 2026-09-05 this is a genuine, near-deterministic testkube
+        # 2.12.2/2.13.1 bug (10 of 11 real executions hit it), NOT the node-capacity
+        # theory from earlier incidents (reproduced with the node at 12% CPU / 48% mem)
+        # and NOT fixed by triggering via the CLI instead of a hand-crafted
+        # TestWorkflowExecution CR (reproduced identically via `testkube run tw -f`
+        # too, same "Job has been aborted" message). testkube's own watch declares the
+        # execution "aborted" the instant a step's container reports terminated/
+        # Completed but the pod's Ready/ContainersReady conditions (which, for a
+        # restartPolicy:Never pod, go permanently False on successful exit - not a
+        # readiness-probe symptom) and the parent Job's `status.active` haven't yet
+        # been rolled by the native Job controller - a race against Job-status
+        # reconciliation, not container runtime, so a longer-running step (tested with
+        # an explicit `sleep 10` step) hits it identically. The saved execution record
+        # still carries the real per-step result underneath: `result.initialization`
+        # is what falsely reports "aborted" while `result.steps.<ref>.status` shows
+        # the step's true outcome ("passed" in every reproduction) - so a truly aborted
+        # run (a real OOMKill, eviction, or manual abort) is distinguishable from this
+        # false one by checking whether every step still says "passed" underneath.
+        STATUS=""
+        RESULT_JSON=""
+        for i in $(seq 1 60); do
+          RESULT_JSON="$(${TK} get twe "${EXECUTION_ID}" -o json)"
+          STATUS="$(jq -r '.result.status // empty' <<< "${RESULT_JSON}")"
+          case "${STATUS}" in
+            passed|failed|aborted) break ;;
+          esac
+          sleep 10
+        done
+
+        echo "blanking ${SECRET_NAME} again (never deleting it - it's owned by this Application's own onboarding chart, not this Task)"
+        # NOT `-p '{"data":{}}'` - live-verified 2026-08-24 that's a no-op against an
+        # already-populated map under RFC 7396 JSON merge patch semantics (an empty
+        # object in the patch means "nothing to merge", not "clear this field") - the
+        # secret's real data silently survived every "blank" for as long as this bug
+        # existed. `data: null` is what actually clears it - a null in a merge patch
+        # means "remove this key", confirmed against the live object.
+        kubectl -n testkube patch secret "${SECRET_NAME}" --type merge -p '{"data":null}' || true
+
+        if [[ "${STATUS}" == "aborted" ]]; then
+          STEP_STATUSES="$(jq -r '.result.steps // {} | to_entries[].value.status' <<< "${RESULT_JSON}" | sort -u)"
+          if [[ -n "${STEP_STATUSES}" && "${STEP_STATUSES}" == "passed" ]]; then
+            echo "TestWorkflowExecution ${EXECUTION_ID} reported aborted, but every real step passed - treating as passed (see the comment above this loop for the known testkube race this works around)"
+            STATUS="passed"
+          fi
+        fi
+
+        echo "TestWorkflowExecution ${EXECUTION_ID} finished with status: ${STATUS:-timeout waiting 10m}"
+        if [[ "${STATUS}" != "passed" ]]; then
+          echo "${RESULT_JSON}" >&2
+          exit 1
+        fi
+
+    - name: fallback-script
+      image: $(params.agent-image)
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: IMAGE_REF
+          value: $(params.image-ref)
+        - name: FALLBACK_NEEDED
+          value: $(steps.execute-testworkflow.results.fallback-needed)
+        - name: TEST_ENV
+          value: $(params.env)
+        - name: TEST_NAME
+          value: $(params.test-name)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        if [[ "${FALLBACK_NEEDED}" != "true" ]]; then
+          exit 0
+        fi
+        if [[ ! -f ./integration-test.sh ]]; then
+          echo "warn: no platform/${TEST_NAME}.yaml and no ./integration-test.sh found at repo root - skipping, not failing" >&2
+          exit 0
+        fi
+        echo "running '${TEST_NAME}' against env '${TEST_ENV}', image ${IMAGE_REF}"
+        chmod +x ./integration-test.sh
+        ./integration-test.sh

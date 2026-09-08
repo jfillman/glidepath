@@ -1,0 +1,78 @@
+# catalog/pipelines/image-promotion-check.yaml
+#
+# The `image-promotion` gate (docs/admin/release-guardrails.md). By design (the user's
+# explicit requirement, not this platform's usual "independent, parallel gates" shape -
+# contrast governance-check.yaml/provenance-check.yaml's verify/verify-provenance, which
+# deliberately do NOT depend on each other) this one runs LAST: it waits for every other
+# release guardrail on this same PR to succeed before doing anything, so it's the final
+# thing standing between a green PR and merge.
+#
+# `wait-for-release-guardrails` is real, working dependency-ordering logic (see that
+# Task's own header for how it substitutes for the cross-PipelineRun `runAfter` Tekton
+# doesn't have). `promote` itself is still a loud stub (governance-gate-stub, same as any
+# other not-yet-real gate) - actually copying the image from this app's dev registry to
+# the target upper-env registry needs registry credentials per env and a real transfer
+# tool (crane/skopeo, likely a new step in the toolbox image) that hasn't been built yet.
+# Wiring the real promotion in later is a one-step swap, same pattern as
+# governance-stubs.md's "Landing a real implementation" - extract-promoted-image.yaml
+# (already used by sbom-check.yaml/image-scan-check.yaml) resolves the image ref to
+# promote when that day comes.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: image-promotion-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+    hangar.io/stub: "true"
+spec:
+  description: Waits for every other release guardrail on this PR to succeed, then (once implemented) promotes the image from the dev registry to the target upper-env registry. Promotion itself is still a stub.
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+    - name: pr-number
+      type: string
+      default: ""
+      description: "PaC's raw pull_request.number webhook body field - only used to post the PR comment in this Pipeline's finally block."
+  tasks:
+    - name: wait-for-guardrails
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: wait-for-release-guardrails }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+
+    - name: promote
+      runAfter: [wait-for-guardrails]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: governance-gate-stub }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: gate-name, value: image-promotion }
+
+  finally:
+    - name: comment-pr
+      when:
+        - { input: $(params.pr-number), operator: notin, values: [""] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: comment-pr-check-result }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: gate-name, value: image-promotion }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: status, value: $(tasks.status) }

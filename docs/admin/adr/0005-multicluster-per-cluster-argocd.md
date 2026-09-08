@@ -17,8 +17,8 @@ model exists to avoid, just relocated into ArgoCD's control plane instead of a T
 Task.
 
 Outcomes flow back to dev as an *event*, not a push: on the upstream cluster, two
-ArgoCD **sync hooks** (`PostSync`/`SyncFail` Jobs, rendered by `idp-service-catalog`'s
-`idp-application` chart alongside the app's own manifests) build a CDEvent themselves
+ArgoCD **sync hooks** (`PostSync`/`SyncFail` Jobs, rendered by `airframe`'s
+`airframe-application` chart alongside the app's own manifests) build a CDEvent themselves
 and POST it to dev's broker, authenticated with a shared secret per upstream cluster.
 A relay service (`argocd-outcome-relay`) in front of the existing broker consumes it -
 authenticating the shared secret and forwarding the CDEvent bytes on with its own
