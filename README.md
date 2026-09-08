@@ -1,4 +1,8 @@
-# Glidepath
+<div align="center">
+  <img src="docs/brand/glidepath-tile.svg" width="88" height="88" alt="Glidepath mark" />
+  <h1>Glidepath</h1>
+  <p><i>The guarded descent from a merged commit to a verified release.</i></p>
+</div>
 
 A CI/CD platform for Kubernetes, built on Tekton + Pipelines-as-Code. Installable
 standalone on any cluster, or as the CI/CD component of a larger internal developer
