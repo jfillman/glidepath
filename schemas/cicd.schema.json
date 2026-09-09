@@ -181,6 +181,17 @@
               "description": "Shift-left notifications from sast-scan/image-scan the moment each real scan produces a result, separate from the general build/test/deploy/release pass-fail notification above (which stays on whenever slack.enabled is true). Only takes effect when slack.enabled is also true. Defaults on (matching the pipeline's own default real-scan behavior), but an app that finds these too frequent/verbose can turn just this off without losing the general per-stage notifications."
             }
           }
+        },
+        "backstage": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Sends the same build/test/deploy/release pass-fail notification as notifications.slack into Backstage's own Notifications plugin (broadcast to every Backstage user, viewable in Tower's Notifications tab), instead of/in addition to Slack. Independent toggle - either target can be on, off, or both. Requires the cluster's glidepath-catalog chart to have backstageBaseUrl and a glidepath-backstage-notify token secret configured (see docs/admin/notifications.md); a cluster without that setup skips silently."
+            }
+          }
         }
       }
     },

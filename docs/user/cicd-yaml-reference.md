@@ -134,6 +134,19 @@ notifications:
                                    # (sast/imageScan) produces a result, independent
                                    # of the general per-stage notification above. Only
                                    # takes effect when slack.enabled is also true.
+  backstage:
+    enabled: false                # Optional, default false. Same general per-stage
+                                   # pass/fail notification as slack.enabled above, sent
+                                   # instead (or as well - independent toggles) into
+                                   # Backstage's own Notifications plugin, broadcast to
+                                   # every Backstage user and visible in Tower's
+                                   # Notifications tab. No channel/scanResults fields -
+                                   # broadcast-only, general per-stage notification only.
+                                   # Requires the cluster's glidepath-catalog chart to be
+                                   # configured with backstageBaseUrl and a
+                                   # glidepath-backstage-notify token Secret - see
+                                   # ../admin/notifications.md. Silently no-ops on a
+                                   # cluster where that isn't set up.
 
 # --- secrets: optional. Pulls keys from this app's own backend secret store. ---
 # See ../admin/app-secrets.md - open-ended by design, not just for Slack.

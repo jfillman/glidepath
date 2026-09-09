@@ -115,6 +115,26 @@ spec:
         - { name: pr-url, value: $(tasks.resolve-release-tracking.results.pr-url) }
         - { name: env, value: $(params.env) }
 
+    - name: notify-backstage
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: notify-backstage }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: config-json, value: $(params.config-json) }
+        # Same "release-outcome" stage-name reasoning as the notify-slack call above.
+        - { name: stage-name, value: "release-outcome" }
+        - { name: status, value: $(params.status) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: pr-url, value: $(tasks.resolve-release-tracking.results.pr-url) }
+        - { name: env, value: $(params.env) }
+
     # See release-outcome-span.yaml's own header for why this is a standalone span/
     # trace, not a child of the original flow's (already-closed) trace.
     - name: span

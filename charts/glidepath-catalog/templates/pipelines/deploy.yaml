@@ -235,6 +235,25 @@ spec:
         - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
         - { name: env, value: $(params.env) }
 
+    - name: notify-backstage
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: notify-backstage }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: config-json, value: $(tasks.resolve-notify-config.results.config-json) }
+        - { name: stage-name, value: deploy }
+        - { name: status, value: $(tasks.status) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
+        - { name: env, value: $(params.env) }
+
     - name: send-cdevent
       when:
         - { input: $(tasks.status), operator: in, values: ["Succeeded", "Completed"] }

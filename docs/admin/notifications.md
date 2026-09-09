@@ -1,3 +1,7 @@
+# Notifications
+
+Two independent targets, toggled separately per app in `cicd.yaml`: [Slack](#slack-notifications) and [Backstage](#backstage-notifications). Both fire from the same call sites - an app can run either, both, or neither.
+
 # Slack notifications
 
 Every stage's pipeline (`build`/`test`/`deploy`/`release`) calls
@@ -90,3 +94,80 @@ that file rather than assumed.
 - No-secret regression check: an Application without the Secret configured still completes a
   normal pipeline run with no error - the `optional: true` mount plus the script's
   existing skip path, not a new failure mode.
+
+# Backstage notifications
+
+Sibling to the Slack path above, sending the same general build/test/deploy/release
+pass-fail message (`charts/glidepath-catalog/templates/tasks/notify-backstage.yaml`,
+called from the same unconditional `finally` block as `notify-slack.yaml`, right next to
+it) into Backstage's own Notifications plugin (`@backstage/plugin-notifications-backend`,
+already installed and wired in the `backstage` repo - `packages/backend/src/index.ts`)
+instead of a Slack channel. Toggled independently via `notifications.backstage.enabled`
+in `cicd.yaml` - an app can run Slack, Backstage, both, or neither. Viewable in Tower's
+Notifications tab and via the stock Backstage sidebar bell icon
+(`NotificationsSidebarItem`, already present).
+
+Unlike Slack's per-Application webhook, there is exactly one Backstage instance per
+cluster, so the target URL and credential are **cluster-level chart values, not
+per-Application `cicd.yaml`/secrets entries**:
+
+1. **Configure the cluster's `glidepath-catalog` chart** (Helm values, not `cicd.yaml`):
+   ```yaml
+   backstageBaseUrl: http://backstage.backstage.svc.cluster.local:7007   # in-cluster backend URL
+   ```
+2. **Mint a Backstage static service token** scoped to the notifications plugin only
+   (`backend.auth.externalAccess`, `type: static`, `accessRestrictions: [{plugin:
+   notifications}]` - see Backstage's own [service-to-service auth
+   docs](https://backstage.io/docs/auth/service-to-service-auth/)), and create a
+   `glidepath-backstage-notify` Secret in the pipeline-execution namespace with that
+   token under the key `backstage-notify-token`. One shared credential platform-wide,
+   not one per Application (mirrors `backstageBaseUrl` above, not `slack-webhook-url`).
+3. **Enable it per app** in `cicd.yaml`:
+   ```yaml
+   notifications:
+     backstage:
+       enabled: true
+   ```
+
+Nothing else to apply - `notify-backstage.yaml`'s volume mount is already wired into
+every pipeline via the existing, unconditional `notify-backstage` finally task.
+
+## Message format
+
+- Same event coverage and stage vocabulary as Slack's (`Build`/`Test`/`Deploy`/`Release`
+  pass/fail, plus `release-outcome`), but mapped onto Backstage's own notification
+  fields rather than Slack's block-kit format: `title` (`<app> · <stage> <status>`),
+  `description` (app/repo/commit/image/environment/PR lines, plus a failure-log excerpt
+  on non-success, same as Slack's), `link` (the same Tekton Dashboard deep-link, with
+  the same "dead link unless port-forwarded locally" caveat), `severity` (`normal` on
+  success, `high` otherwise - Backstage renders this as its own icon/color, so no `⚠`
+  text is added the way Slack's header gets one), and `topic` (the stage name, letting a
+  Backstage user filter per-topic in their own per-user notification settings - a native
+  capability Slack's channel model doesn't have).
+- Always broadcast (`recipients: {type: "broadcast"}`) - visible to every Backstage user,
+  not targeted at a specific owner/team. No per-app recipient targeting today; a future
+  enhancement could resolve the app's catalog-info.yaml `spec.owner` instead, if the
+  broadcast-only model turns out too noisy at scale.
+
+## Descoped from this pass
+
+`sast-scan.yaml`/`image-scan.yaml`'s separate shift-left scan-result Slack messages
+(`notifications.slack.scanResults`) were **not** given a Backstage equivalent - those
+Tasks inline their own Slack-specific curl/formatting logic rather than calling
+`notify-slack.yaml`, so mirroring them means duplicating `notify-backstage.yaml`'s logic
+into both Tasks rather than reusing it. Left as a follow-up if per-scan Backstage
+notifications turn out to be wanted; the general per-stage notification above already
+covers the common case.
+
+## Verification
+
+- Static-token path, in isolation: create the `glidepath-backstage-notify` Secret and
+  configure `backstageBaseUrl` for a real cluster, enable `notifications.backstage` for a
+  real Application, run a real pipeline, confirm a real notification lands in Backstage
+  (sidebar bell unread count increments, Tower's Notifications tab shows it).
+- No-config regression check: an Application with `notifications.backstage.enabled` but
+  no cluster-level `backstageBaseUrl`/secret configured still completes a normal pipeline
+  run with no error - same `optional: true` mount plus graceful skip as the Slack path.
+- Both-targets check: an Application with both `notifications.slack.enabled` and
+  `notifications.backstage.enabled` true gets one message in each system per stage
+  completion, independently of each other.

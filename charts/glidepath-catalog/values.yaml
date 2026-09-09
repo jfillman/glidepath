@@ -23,6 +23,14 @@ rbac:
 # before. Bump this tag (not just the image content) whenever schema.json changes.
 toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-05-chain-slug
 
+# In-cluster base URL of the Backstage backend (e.g.
+# http://backstage.backstage.svc.cluster.local:7007) that notify-backstage.yaml POSTs to.
+# One Backstage instance per cluster, not one per Application, so this is a chart-level
+# value rather than a per-app cicd.yaml field. Empty by default - notify-backstage.yaml
+# treats an empty value the same as notifications.backstage.enabled being unset: skip
+# cleanly, don't fail the pipeline. See docs/admin/notifications.md.
+backstageBaseUrl: ""
+
 # Cluster-agnostic namespace derivation: which namespace Tekton Chains runs in -
 # matters here because verify-image-provenance.yaml/verify-sast-attestation.yaml
 # verify the Chains controller's own signing identity by SERVICE ACCOUNT NAMESPACE

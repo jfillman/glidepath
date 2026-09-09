@@ -1,0 +1,196 @@
+# catalog/tasks/notify-backstage.yaml
+#
+# Best-effort pipeline-result notification into Backstage's own Notifications plugin
+# (@backstage/plugin-notifications-backend, already installed/wired in the `backstage`
+# repo - packages/backend/src/index.ts, packages/app/src/modules/nav/Sidebar.tsx). Reads
+# notifications.backstage from cicd.yaml; no-ops cleanly if disabled/unconfigured. Sibling
+# to notify-slack.yaml - same params, same finally-block call sites, same
+# secret-missing/base-url-missing skip philosophy - so an Application can run either,
+# both, or neither notification target independently.
+#
+# POSTs straight to Backstage's REST endpoint (POST /api/notifications) using a shared,
+# platform-wide static service token (backend.auth.externalAccess, type: static, scoped
+# to the notifications plugin only via accessRestrictions - see
+# docs/admin/notifications.md) rather than a per-Application secret: there is exactly one
+# Backstage instance per cluster, not one per Application, so a single shared credential
+# (same shape as the toolbox image or the Tekton-dashboard base URL, not like the
+# per-Application slack-webhook-url) is the right level for this value. `optional: true`
+# on both the token Secret and an empty backstageBaseUrl Value make this cleanly inert
+# for any cluster that hasn't set it up yet.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: notify-backstage
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  params:
+    - name: config-json
+      type: string
+    - name: stage-name
+      type: string
+    - name: status
+      type: string
+      description: succeeded, failed, or completed - typically $(tasks.status)/$(context.pipelineRun.name) from the calling Pipeline's finally block.
+    - name: pipeline-run-name
+      type: string
+    - name: app-namespace
+      type: string
+    - name: app-name
+      type: string
+    - name: git-url
+      type: string
+    - name: git-revision
+      type: string
+    - name: image-ref
+      type: string
+      default: ""
+      description: Full image ref, when the calling Pipeline already has one as a plain param (test/deploy/release). Leave empty for build - resolved via a live TaskRun lookup instead, see the script's own comment.
+    - name: env
+      type: string
+      default: ""
+      description: Only meaningful on deploy - omitted from the message when empty.
+    - name: pr-url
+      type: string
+      default: ""
+      description: >-
+        Only meaningful on release-outcome, where the PR was opened in a DIFFERENT
+        PipelineRun than this one - passed directly instead of relying on this run's own
+        open-release-pr TaskRun lookup. Same reasoning as notify-slack.yaml's identical param.
+  volumes:
+    - name: backstage-notify-token
+      secret:
+        secretName: glidepath-backstage-notify
+        optional: true
+  steps:
+    - name: notify
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: backstage-notify-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+      env:
+        - name: BACKSTAGE_BASE_URL
+          value: {{ .Values.backstageBaseUrl | quote }}
+        - name: APP_NAMESPACE
+          value: $(params.app-namespace)
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: PIPELINE_RUN_NAME
+          value: $(params.pipeline-run-name)
+        - name: STAGE_NAME
+          value: $(params.stage-name)
+        - name: STATUS
+          value: $(params.status)
+        - name: GIT_URL
+          value: $(params.git-url)
+        - name: GIT_REVISION
+          value: $(params.git-revision)
+        - name: IMAGE_REF
+          value: $(params.image-ref)
+        - name: ENV_NAME
+          value: $(params.env)
+        - name: PR_URL_PARAM
+          value: $(params.pr-url)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        CFG='$(params.config-json)'
+        ENABLED="$(jq -r '.notifications.backstage.enabled // false' <<< "${CFG}")"
+        if [[ "${ENABLED}" != "true" ]]; then
+          echo "backstage notifications disabled in cicd.yaml, skipping"
+          exit 0
+        fi
+        if [[ -z "${BACKSTAGE_BASE_URL}" ]]; then
+          echo "warn: notifications.backstage.enabled=true but backstageBaseUrl is not set on the glidepath-catalog chart - skipping, not failing the pipeline" >&2
+          exit 0
+        fi
+        TOKEN="$(cat /var/run/secrets/platform/backstage-notify-token 2>/dev/null || true)"
+        if [[ -z "${TOKEN}" ]]; then
+          echo "warn: notifications.backstage.enabled=true but no glidepath-backstage-notify secret is mounted in this namespace - skipping, not failing the pipeline" >&2
+          exit 0
+        fi
+
+        # Same stage-display vocabulary as notify-slack.yaml - kept identical so the two
+        # targets read as the same event, not two different notification systems.
+        case "${STAGE_NAME}" in
+          build) STAGE_DISPLAY="Build" ;;
+          test) STAGE_DISPLAY="Test" ;;
+          deploy) STAGE_DISPLAY="Deploy" ;;
+          release) STAGE_DISPLAY="Release" ;;
+          *) STAGE_DISPLAY="${STAGE_NAME}" ;;
+        esac
+        if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
+          SEVERITY="normal"
+        else
+          SEVERITY="high"
+        fi
+        TITLE="${APP_NAME} · ${STAGE_DISPLAY} ${STATUS}"
+
+        REPO_SHORT="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/([^/.]+).*#\1/\2#')"
+        SHORT_SHA="${GIT_REVISION:0:12}"
+
+        # Tekton Dashboard deep-link - same undocumented HashRouter route and same
+        # "dead link unless port-forwarded locally" caveat as notify-slack.yaml.
+        DASHBOARD_URL="http://localhost:9097/#/namespaces/${APP_NAMESPACE}/pipelineruns/${PIPELINE_RUN_NAME}"
+
+        # build only - live TaskRun result lookup, not a Tekton result-reference param -
+        # see notify-slack.yaml's identical block for why (finally tasks are skipped if a
+        # param references a result from a task that failed/didn't run).
+        if [[ -z "${IMAGE_REF}" && "${STAGE_NAME}" == "build" ]]; then
+          IMAGE_REF="$(kubectl get taskrun -n "${APP_NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME},tekton.dev/pipelineTask=build-image" \
+            -o jsonpath='{.items[0].status.results[?(@.name=="image-ref")].value}' 2>/dev/null || true)"
+        fi
+
+        pr_url="${PR_URL_PARAM}"
+        if [[ -z "${pr_url}" && "${STAGE_NAME}" == "release" ]]; then
+          pr_url="$(kubectl get taskrun -n "${APP_NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME},tekton.dev/pipelineTask=open-release-pr" \
+            -o jsonpath='{.items[0].status.results[?(@.name=="pr-url")].value}' 2>/dev/null || true)"
+        fi
+
+        # Failure log excerpt - same non-"Succeeded"/"Completed" trigger and RBAC as
+        # notify-slack.yaml (pipeline-runner's existing Role already covers this).
+        log_excerpt=""
+        if [[ "${STATUS}" != "Succeeded" && "${STATUS}" != "Completed" ]]; then
+          failed_taskrun="$(kubectl get taskrun -n "${APP_NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json \
+            | jq -r '[.items[] | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
+          if [[ -n "${failed_taskrun}" ]]; then
+            pod_name="$(kubectl get taskrun "${failed_taskrun}" -n "${APP_NAMESPACE}" -o jsonpath='{.status.podName}' 2>/dev/null || true)"
+            if [[ -n "${pod_name}" ]]; then
+              log_excerpt="$(kubectl logs "${pod_name}" -n "${APP_NAMESPACE}" --all-containers --tail=15 2>/dev/null | tail -c 800 || true)"
+            fi
+            log_excerpt="Failed task: ${failed_taskrun}"$'\n'"${log_excerpt}"
+          fi
+        fi
+
+        description="$(printf 'App: %s (%s)\nRepo: %s @ %s\nRun: %s' \
+          "${APP_NAME}" "${APP_NAMESPACE}" "${REPO_SHORT}" "${SHORT_SHA}" "${PIPELINE_RUN_NAME}")"
+        [[ -n "${IMAGE_REF}" ]] && description="${description}"$'\n'"Image: ${IMAGE_REF}"
+        [[ -n "${ENV_NAME}" ]] && description="${description}"$'\n'"Environment: ${ENV_NAME}"
+        [[ -n "${pr_url}" ]] && description="${description}"$'\n'"PR: ${pr_url}"
+        [[ -n "${log_excerpt}" ]] && description="${description}"$'\n\n'"${log_excerpt}"
+
+        payload="$(jq -n \
+          --arg title "${TITLE}" \
+          --arg description "${description}" \
+          --arg link "${DASHBOARD_URL}" \
+          --arg severity "${SEVERITY}" \
+          --arg topic "${STAGE_NAME}" \
+          '{
+            recipients: { type: "broadcast" },
+            payload: {
+              title: $title,
+              description: $description,
+              link: $link,
+              severity: $severity,
+              topic: $topic
+            }
+          }')"
+
+        curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
+          -X POST "${BACKSTAGE_BASE_URL%/}/api/notifications" \
+          -H 'Content-Type: application/json' \
+          -H "Authorization: Bearer ${TOKEN}" \
+          -d "${payload}"

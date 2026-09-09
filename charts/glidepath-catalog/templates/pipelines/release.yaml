@@ -311,6 +311,24 @@ spec:
         - { name: git-revision, value: $(params.git-revision) }
         - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
 
+    - name: notify-backstage
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: notify-backstage }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: config-json, value: $(tasks.resolve-notify-config.results.config-json) }
+        - { name: stage-name, value: release }
+        - { name: status, value: $(tasks.status) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
+
     # Rounds out the CDEvents chain for trace/dashboard completeness (so "release" shows
     # up in Tempo/pipeline-detail the same way build/test/deploy already do) - NOT
     # load-bearing for DORA metrics, which are sourced from ArgoCD's own Application
