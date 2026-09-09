@@ -85,6 +85,19 @@ spec:
           - { name: finished-at, value: $(tt.params.finished-at) }
         taskRunTemplate:
           serviceAccountName: pipeline-runner
+        {{- /* Same cross-cluster DNS gap as flow-triggers.yaml's identical block - see
+        values.yaml's own backstageHostAliasIP comment. This PipelineRun also runs on
+        the dev cluster (fired by argocd-outcome-relay, itself dev-hosted), so
+        notify-backstage's Task pod here needs the same fix. */ -}}
+        {{- if .Values.backstageHostAliasIP }}
+        taskRunSpecs:
+          - pipelineTaskName: notify-backstage
+            podTemplate:
+              hostAliases:
+                - ip: {{ .Values.backstageHostAliasIP }}
+                  hostnames:
+                    - backstage.prod.kiac.local
+        {{- end }}
 ---
 apiVersion: triggers.tekton.dev/v1beta1
 kind: Trigger

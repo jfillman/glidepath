@@ -107,22 +107,40 @@ in `cicd.yaml` - an app can run Slack, Backstage, both, or neither. Viewable in 
 Notifications tab and via the stock Backstage sidebar bell icon
 (`NotificationsSidebarItem`, already present).
 
-Unlike Slack's per-Application webhook, there is exactly one Backstage instance per
-cluster, so the target URL and credential are **cluster-level chart values, not
-per-Application `cicd.yaml`/secrets entries**:
+Unlike Slack's per-Application webhook, there is exactly one Backstage instance
+platform-wide (not one per cluster) - every CI/CD Pipeline runs on the dev cluster
+(see `devClusterName`), but Backstage itself runs on a different cluster entirely. So
+the target URL and credential are **cluster-level chart values, not per-Application
+`cicd.yaml`/secrets entries**, and reaching Backstage at all is a real cross-cluster
+call, not an in-cluster one:
 
-1. **Configure the cluster's `glidepath-catalog` chart** (Helm values, not `cicd.yaml`):
-   ```yaml
-   backstageBaseUrl: http://backstage.backstage.svc.cluster.local:7007   # in-cluster backend URL
-   ```
-2. **Mint a Backstage static service token** scoped to the notifications plugin only
+1. **Configure `glidepath-catalog`'s `backstageBaseUrl`** (a cluster-config value, set
+   via the `platform-cicd-catalog` Application's `valuesObject` in `gitops-cluster-dev`
+   - not the chart's own tracked default) to Backstage's real externally-reachable
+   Gateway hostname, e.g. `http://backstage.prod.kiac.local:7007`. **Not** an in-cluster
+   Service DNS name (`backstage.<ns>.svc.cluster.local`) - that only resolves on
+   Backstage's own cluster, not the dev cluster the pipeline actually runs on.
+2. **Set `glidepath-app`'s `backstageHostAliasIP`** to that same hostname's current real
+   IP. `backstage.prod.kiac.local` isn't real DNS anywhere a pod's CoreDNS can see - it
+   only resolves on a developer's own laptop, via `refresh-kiac-hosts.sh` writing
+   `/etc/hosts` after a kiac VM restart. `notify-backstage`'s Task pod needs the same
+   hostname baked into its own `hostAliases` (`flow-triggers.yaml`/
+   `release-outcome-trigger.yaml`'s `taskRunSpecs`) to resolve it at build time. kiac's
+   `container` runtime hands out a fresh IP on every VM boot (no static-address option),
+   so - like Fulcio material and the Infisical IP elsewhere in this platform - this is a
+   manually-maintained value: bump it (`container list`, the target cluster's own
+   control-plane address) whenever that cluster restarts, in step with whatever value
+   step 1 above uses.
+3. **Mint a Backstage static service token** scoped to the notifications plugin only
    (`backend.auth.externalAccess`, `type: static`, `accessRestrictions: [{plugin:
    notifications}]` - see Backstage's own [service-to-service auth
-   docs](https://backstage.io/docs/auth/service-to-service-auth/)), and create a
-   `glidepath-backstage-notify` Secret in the pipeline-execution namespace with that
-   token under the key `backstage-notify-token`. One shared credential platform-wide,
-   not one per Application (mirrors `backstageBaseUrl` above, not `slack-webhook-url`).
-3. **Enable it per app** in `cicd.yaml`:
+   docs](https://backstage.io/docs/auth/service-to-service-auth/)). Populate it under the
+   `backstage-notify-token` key in the same backend secret store `glidepath-control-plane`'s
+   `secretStore` already reads from - `templates/secretstore/glidepath-backstage-notify-
+   cluster-external-secret.yaml` disseminates it into every managed namespace
+   automatically (same mechanism as `registry-credentials`, one shared credential
+   platform-wide, not one per Application).
+4. **Enable it per app** in `cicd.yaml`:
    ```yaml
    notifications:
      backstage:

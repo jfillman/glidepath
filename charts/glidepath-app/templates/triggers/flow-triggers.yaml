@@ -258,6 +258,22 @@ spec:
               spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: {{ include "glidepath-app.sourceVolumeSize" (dict "size" $.Values.build.sourceVolume.size) }} } } }
         {{- end }}
         taskRunTemplate: { serviceAccountName: pipeline-runner }
+        {{- /* backstage.prod.kiac.local isn't real DNS anywhere a pod's CoreDNS can see
+        (see values.yaml's own backstageHostAliasIP comment) - notify-backstage's Task
+        pod needs it baked in via hostAliases to resolve it at all. Scoped to just this
+        one pipelineTask (not taskRunTemplate.podTemplate, which would apply to every
+        Task in the run) since no other step needs it. Skipped entirely when
+        backstageHostAliasIP is empty, not rendered with a blank ip - Tekton would
+        reject that as an invalid hostAliases entry. */ -}}
+        {{- if $.Values.backstageHostAliasIP }}
+        taskRunSpecs:
+          - pipelineTaskName: notify-backstage
+            podTemplate:
+              hostAliases:
+                - ip: {{ $.Values.backstageHostAliasIP }}
+                  hostnames:
+                    - backstage.prod.kiac.local
+        {{- end }}
 ---
 apiVersion: triggers.tekton.dev/v1beta1
 kind: Trigger

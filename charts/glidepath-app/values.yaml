@@ -213,6 +213,26 @@ testkubeNamespace: testkube
 # points nowhere useful until overridden.
 platformCicdRepoUrl: https://github.com/jfillman/glidepath.git
 
+# Every PipelineRun in this platform executes on the dev cluster (see
+# devClusterName above), but Backstage runs on a different cluster (kiac-prod) -
+# backstage.prod.kiac.local isn't real DNS anywhere (it only resolves on a
+# developer's own laptop, via refresh-kiac-hosts.sh writing /etc/hosts after a
+# kiac VM restart - a pod's CoreDNS never sees that file, same root cause as
+# devClusterName/relayHostAliasIP's own cross-cluster DNS gap). notify-backstage
+# needs this IP baked into hostAliases (flow-triggers.yaml/release-outcome-
+# trigger.yaml's own taskRunSpecs) to resolve that hostname at all. kiac's
+# `container` runtime hands out a fresh IP on every VM boot (no static-address
+# option), so - like Fulcio material and the Infisical IP elsewhere in this
+# platform - this is a manually-maintained value, not something a Task can
+# discover live: bump it (`container list`, kiac-prod-control-plane's address)
+# whenever kiac-prod restarts. Same single-cluster-today simplification as
+# devClusterName above, not per-cluster-overridable yet. Set to empty (rather
+# than leaving the stale default in place) if kiac-prod is down/unreachable -
+# an empty value skips rendering the hostAliases entry entirely rather than
+# pointing pods at a wrong IP, and notify-backstage already no-ops cleanly
+# when it can't resolve BACKSTAGE_BASE_URL at all.
+backstageHostAliasIP: "192.168.64.6"
+
 # Placeholder only - a real install MUST override every field here via
 # `-f platform-identity.yaml`. Left empty rather than a fake example so an accidental
 # install without that file fails loudly instead of deploying to a plausible-looking
