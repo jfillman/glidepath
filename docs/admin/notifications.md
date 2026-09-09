@@ -117,9 +117,14 @@ call, not an in-cluster one:
 1. **Configure `glidepath-catalog`'s `backstageBaseUrl`** (a cluster-config value, set
    via the `platform-cicd-catalog` Application's `valuesObject` in `gitops-cluster-dev`
    - not the chart's own tracked default) to Backstage's real externally-reachable
-   Gateway hostname, e.g. `http://backstage.prod.kiac.local:7007`. **Not** an in-cluster
+   Gateway hostname, e.g. `http://backstage.prod.kiac.local`. **Not** an in-cluster
    Service DNS name (`backstage.<ns>.svc.cluster.local`) - that only resolves on
-   Backstage's own cluster, not the dev cluster the pipeline actually runs on.
+   Backstage's own cluster, not the dev cluster the pipeline actually runs on. **Port 80,
+   not 7007** - kiac's Gateway only has an HTTP listener on port 80 (see
+   `gitops-cluster-kind-prod/60-backstage/backstage/httproute.yaml`); 7007 is
+   Backstage's own Service port, never exposed on the node IP directly. Confirmed live:
+   `curl -H "Host: backstage.prod.kiac.local" http://<node-ip>:80/` returns 200, `:7007`
+   gets connection refused.
 2. **Set `glidepath-app`'s `backstageHostAliasIP`** to that same hostname's current real
    IP. `backstage.prod.kiac.local` isn't real DNS anywhere a pod's CoreDNS can see - it
    only resolves on a developer's own laptop, via `refresh-kiac-hosts.sh` writing
