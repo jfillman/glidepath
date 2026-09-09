@@ -160,7 +160,13 @@ chains:
 # swap is still a one-file change here, same reasoning as before, just already landed
 # on Infisical instead of still deferring to it.
 secretStore:
+  # Name of the ClusterSecretStore object rendered by
+  # templates/secretstore/cluster-secret-store.yaml - every downstream ExternalSecret
+  # in this platform references it by this exact name.
   name: platform-secret-store
+  # ESO store kind - ClusterSecretStore (cluster-scoped, not namespaced) since this
+  # control plane's own secrets span multiple namespaces (fulcio-system, tekton-
+  # pipelines, etc).
   kind: ClusterSecretStore
   infisical:
     # This control plane's own Infisical project slug - see infisical-project.yaml's
@@ -172,6 +178,9 @@ secretStore:
     # (gitops-cluster-dev/10-crds-operators/infisical) - only correct when this chart
     # runs on the same cluster that hosts Infisical, see cluster-secret-store.yaml.
     hostAPI: http://infisical-infisical-standalone-infisical.infisical.svc.cluster.local:8080/api
+    # Name of the Kubernetes Secret (in this chart's own namespace) holding the
+    # Infisical machine-identity client ID/secret ESO authenticates with - provisioned
+    # out-of-band (not by this chart), see docs/admin/app-secrets.md.
     credentialsSecretName: platform-cicd-infisical-creds
 
 # 2026-08-19: no per-Application ClusterSecretStore/appSecretStores list rendered by

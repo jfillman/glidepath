@@ -7,6 +7,10 @@
 # system:serviceaccounts instead of the cluster-wide default every Application already relies on.
 
 rbac:
+  # Which RBAC group gets read access to this catalog's Tasks/Pipelines/StepActions
+  # (templates/rbac/). Defaults to the cluster-wide system:serviceaccounts group every
+  # Application's pipelines already run as - narrow this for a canary install that
+  # shouldn't be resolvable by every tenant's PipelineRun yet.
   readOnlyGroup: system:serviceaccounts
 
 # The shared toolbox image (catalog/toolbox/Dockerfile) every bash-based catalog step
@@ -21,7 +25,7 @@ rbac:
 # rename. Every Task uses imagePullPolicy: IfNotPresent, so re-pushing :latest wouldn't
 # actually reach already-cached nodes - a real staleness class this platform has hit
 # before. Bump this tag (not just the image content) whenever schema.json changes.
-toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-05-chain-slug
+toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-08-backstage-notify
 
 # In-cluster base URL of the Backstage backend (e.g.
 # http://backstage.backstage.svc.cluster.local:7007) that notify-backstage.yaml POSTs to.

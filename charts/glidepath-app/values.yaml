@@ -14,40 +14,126 @@
 # docs/admin/catalog-versioning.md's fixture-matrix testing).
 
 build:
+  # Which Tekton buildpack/image family compiles+lints this Application - see
+  # templates/pipelines-as-code catalog wiring for the agent->Task mapping.
   agent: nodejs-20
+  # Path to a multi-stage Dockerfile kaniko builds directly - only consulted when
+  # build.script is omitted (whole build inside the Dockerfile, no separate
+  # build-source stage).
+  dockerfile: ./Dockerfile
   unitTest:
+    # Renders the unit-test step in the build stage. Set false for an Application whose
+    # build pipeline shouldn't fail on missing/red unit tests yet (e.g. mid-migration).
     enabled: true
+    # Command the unit-test step runs inside the agent image.
+    command: ./test.sh
+  # Renders a SonarQube scan step in the build stage. Off by default - requires a real
+  # SonarQube server + token wired up (see docs/admin) before an Application can turn
+  # this on.
   sonar: false
   cache:
+    # Renders a shared build-cache PVC (e.g. node_modules) mounted into the build step.
     enabled: false
+    # PVC size class for the build cache above - only meaningful when cache.enabled is
+    # true. One of the platform's standard size classes (small/medium/large), same
+    # convention as sourceVolume.size below.
     size: small
   sourceVolume:
+    # PVC size class for the workspace that holds the checked-out source across every
+    # step in a PipelineRun. Bump for an Application with a large checkout or big
+    # generated build artifacts that overflow the small default.
     size: small
 
 test:
+  # Renders the test stage's Task(s) for this Application.
   enabled: true
+  # Shared test name used to tell apart repeated test steps in one flow when a step
+  # doesn't set its own `testName` in pipelines.<flow>.steps[] (see _helpers.tpl's
+  # resolveFlowSteps/validateFlows and triggers/flow-triggers.yaml). Empty by default -
+  # a flow with more than one test step MUST set either this or each step's own
+  # `testName`, or template rendering fails loudly (_helpers.tpl:425).
+  name: ""
 
 deploy:
+  # Environments deployed to automatically as part of the standard build->deploy->test
+  # flow, e.g. on every push to main. Maps to real clusters via the control-plane
+  # chart's own `clusters` registry (see deploy.upperEnvironments below for the
+  # release-gated tier).
   lowerEnvironments: [dev]
+  # Environments only reachable through a release PR + guardrails (see
+  # docs/admin/release-guardrails.md), never auto-deployed on push. Empty by default -
+  # an Application with no upper tier stays lower-environments-only.
   upperEnvironments: []
+  # How this Application's workload is deployed - "deployment" (a plain Kubernetes
+  # Deployment via idp-application) is the only supported value today.
   strategy: deployment
+  # Optional, full ordered list of every env (lower AND upper) a release should pass
+  # through, e.g. [dev, test, rel, staging, pre-prod, prod]. Not enforced by
+  # glidepath's own automation - no Task or Trigger reads this today, and it does
+  # not need to equal what any single pipeline's own deploy/release steps cover. Exists
+  # as an explicit, authoritative declaration of the full intended promotion sequence
+  # for consumers that need it (Tower: it otherwise has to infer env order by finding
+  # whichever pipeline has the most deploy/release steps, which silently breaks once a
+  # pipeline legitimately covers only part of the sequence). Every entry should name an
+  # env declared in this app's own lowerEnvironments or upperEnvironments; a consumer
+  # encountering an unrecognized entry should treat the whole list as unusable and fall
+  # back to its own inference rather than trust a partial/stale list. Not
+  # cross-validated against lowerEnvironments/upperEnvironments by
+  # validate-cicd-config today.
+  promotionOrder: []
 
 ephemeralEnvironments:
   branch:
+    # Renders a per-branch ephemeral environment (not just per-PR) for this
+    # Application, deployed via Airframe's idp-application chart.
     enabled: false
+    # Branch-name glob patterns that trigger a branch-based ephemeral environment.
+    patterns: ["preview/*"]
   pullRequest:
+    # Renders a per-PR ephemeral environment (templates/env/ephemeral-envs.yaml),
+    # sourcing charts/glidepath-pr-preview-notify as a third Application source to post
+    # the preview's access instructions back to the PR.
     enabled: false
+    # A PR only gets an ephemeral environment once it carries ALL of these GitHub
+    # labels.
+    labels: ["preview"]
+  # How long an ephemeral environment survives after its branch/PR goes idle before the
+  # TTL sweep (glidepath-control-plane) tears it down. Accepts Go duration-like
+  # shorthand (e.g. "5d", "12h").
   ttl: 5d
 
 governance:
+  # Renders a Semgrep static-analysis gate on the promoted commit's source.
   sast: false
+  # Renders a Trivy vulnerability-scan gate on the promoted image.
   imageScan: false
+  # Renders a Gatekeeper/Kyverno admission-policy validation gate on the rendered
+  # manifest before promotion.
   policyCheck: false
+  # Renders a software-bill-of-materials generation+attestation gate on the promoted
+  # image.
   sbom: false
+  # GPG/Sigstore identities allowed to sign commits that reach a release PR -
+  # enforced by detect-bypass-merge.yaml's break-glass check. Empty means no
+  # commit-signer allowlist is enforced for this Application.
   allowedCommitSigners: []
 
 notifications:
   slack:
+    # Renders a Slack-webhook notification step (build/deploy/release outcomes) -
+    # requires a `slack-webhook-url` entry under `secrets:` below to actually deliver.
+    enabled: false
+    # Shift-left notifications from sast-scan/image-scan the moment each real scan
+    # produces a result, separate from the general build/test/deploy/release pass-fail
+    # notification above. Only takes effect when slack.enabled is also true. Defaults
+    # on; turn off just this if the per-scan notifications are too frequent/verbose.
+    scanResults: true
+  backstage:
+    # Same general per-stage pass/fail notification as slack.enabled above, sent into
+    # Backstage's own Notifications plugin (broadcast, visible in Tower's Notifications
+    # tab) instead - independent toggle, either/both/neither. Requires the cluster's
+    # glidepath-catalog chart to have backstageBaseUrl and a glidepath-backstage-notify
+    # token Secret configured (see docs/admin/notifications.md); no-ops otherwise.
     enabled: false
 
 # Optional named pipeline flows. Each entry defines a root trigger plus an ordered list
