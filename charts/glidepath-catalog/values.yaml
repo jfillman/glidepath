@@ -27,13 +27,33 @@ rbac:
 # before. Bump this tag (not just the image content) whenever schema.json changes.
 toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-08-backstage-notify
 
-# In-cluster base URL of the Backstage backend (e.g.
-# http://backstage.backstage.svc.cluster.local:7007) that notify-backstage.yaml POSTs to.
-# One Backstage instance per cluster, not one per Application, so this is a chart-level
-# value rather than a per-app cicd.yaml field. Empty by default - notify-backstage.yaml
-# treats an empty value the same as notifications.backstage.enabled being unset: skip
-# cleanly, don't fail the pipeline. See docs/admin/notifications.md.
+# Base URL of the Backstage backend that notify-backstage.yaml POSTs to. One Backstage
+# instance platform-wide (not one per cluster, not one per Application), so this is a
+# chart-level value rather than a per-app cicd.yaml field. Genuinely cross-cluster in
+# this platform - every Pipeline runs on the dev cluster, Backstage runs elsewhere - so
+# this is a real Gateway hostname (e.g. http://backstage.prod.kiac.local), NOT an
+# in-cluster Service DNS name, and NOT Backstage's own :7007 Service port (the Gateway's
+# only listener is port 80 - confirmed live, :7007 isn't reachable from outside
+# Backstage's own cluster at all). Empty by default - notify-backstage.yaml treats an
+# empty value the same as notifications.backstage.enabled being unset: skip cleanly,
+# don't fail the pipeline. See docs/admin/notifications.md.
 backstageBaseUrl: ""
+
+# Companion to backstageBaseUrl above - the hostname it names isn't real DNS anywhere a
+# pod's CoreDNS can see (only resolves on a developer's own laptop, via
+# refresh-kiac-hosts.sh writing /etc/hosts after a kiac VM restart), so reaching it from
+# a pod requires this IP baked into hostAliases. Read by deliver-onboarding-files.yaml
+# when generating a new/resynced app's git-rooted .tekton/*.yaml PipelineRuns, and
+# duplicated in glidepath-app/values.yaml (same value, same reasoning as
+# toolboxImage/testkubeNamespace's own cross-chart duplication - glidepath-app's own
+# flow-triggers.yaml/release-outcome-trigger.yaml need it too, for the CDEvents-chained
+# steps a flow's git-rooted first step doesn't cover). kiac's `container` runtime hands
+# out a fresh IP on every VM boot, so - like Fulcio material and the Infisical IP
+# elsewhere in this platform - this is a manually-maintained value: bump it (`container
+# list`, the target cluster's own control-plane address) whenever that cluster restarts,
+# in step with backstageBaseUrl above. Empty by default so a fresh/canary install
+# doesn't render a hostAliases entry pointed at a stale IP.
+backstageHostAliasIP: ""
 
 # Cluster-agnostic namespace derivation: which namespace Tekton Chains runs in -
 # matters here because verify-image-provenance.yaml/verify-sast-attestation.yaml
