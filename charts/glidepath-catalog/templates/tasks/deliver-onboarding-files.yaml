@@ -217,6 +217,7 @@ spec:
           xlarge) SOURCE_VOLUME_STORAGE="20Gi" ;;
           *) SOURCE_VOLUME_STORAGE="2Gi" ;;
         esac
+        BACKSTAGE_HOST_ALIAS_IP="{{ .Values.backstageHostAliasIP }}"
 
         # PaC's dynamic-variable syntax uses the same double-brace delimiter Helm renders
         # this file with, so writing it literally would make Helm try to parse it instead
@@ -234,7 +235,28 @@ spec:
           local flow_name="$1" event="$2" branch="$3" tag_pattern="$4" file_paths_json="$5" root_stage="$6"
           local root_env="$7" root_test_name="$8" root_cluster="$9" root_name="${10}" is_flow_terminal="${11}"
           local labels_json="${12:-[]}"
-          local on_event="" branch_line="" cel_line="" tag_param_line=""
+          local on_event="" branch_line="" cel_line="" tag_param_line="" task_run_specs_block=""
+          # Only build/test/deploy/release actually declare a notify-backstage task
+          # (see notify-backstage.yaml's own finally-block wiring) - gitops-image-bump
+          # and any other stage don't, and Tekton hard-rejects a PipelineRun at
+          # admission if taskRunSpecs names a pipelineTaskName the target Pipeline
+          # doesn't have ("does not exist in Pipeline") - a real live failure hit on
+          # gitops-image-bump as a flow's root stage. Keep this list in sync with
+          # flow-triggers.yaml's own identical guard.
+          case "${root_stage}" in
+            build|test|deploy|release)
+              if [[ -n "${BACKSTAGE_HOST_ALIAS_IP}" ]]; then
+                task_run_specs_block="
+          taskRunSpecs:
+            - pipelineTaskName: notify-backstage
+              podTemplate:
+                hostAliases:
+                  - ip: ${BACKSTAGE_HOST_ALIAS_IP}
+                    hostnames:
+                      - backstage.prod.kiac.local"
+              fi
+              ;;
+          esac
           # deploy/release/test can all be a flow's git-rooted first step (e.g. a tag push
           # deploying straight to prod). Their Pipelines read env/test-name/cluster/name as
           # regular params, only emitted when set. This quartet was previously missing
@@ -453,15 +475,7 @@ spec:
                       storage: ${SOURCE_VOLUME_STORAGE}
           taskRunTemplate:
             serviceAccountName: pipeline-runner
-        {{- if .Values.backstageHostAliasIP }}
-          taskRunSpecs:
-            - pipelineTaskName: notify-backstage
-              podTemplate:
-                hostAliases:
-                  - ip: {{ .Values.backstageHostAliasIP }}
-                    hostnames:
-                      - backstage.prod.kiac.local
-        {{- end }}
+        ${task_run_specs_block}
           timeouts:
             pipeline: "1h"
         YAMLEOF
