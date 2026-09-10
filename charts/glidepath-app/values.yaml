@@ -191,7 +191,7 @@ devClusterName: kind-dev
 # tenant-onboarding/applicationset.yaml, both clusters) the same day.
 idpServiceCatalog:
   repoUrl: https://github.com/jfillman/airframe.git
-  chartVersion: v0.3.40
+  chartVersion: v0.3.59
 
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
