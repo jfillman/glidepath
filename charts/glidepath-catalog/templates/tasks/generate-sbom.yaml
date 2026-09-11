@@ -117,7 +117,7 @@ spec:
           exit 0
         fi
 
-        trivy image --format cyclonedx --output /tmp/sbom.json "${IMAGE_REF}"
+        trivy image --timeout 15m --format cyclonedx --output /tmp/sbom.json "${IMAGE_REF}"
         if [[ $? -ne 0 ]]; then
           echo "generate-sbom: trivy SBOM generation failed" >&2
           echo -n "failed" | tee "$(results.outcome.path)"
