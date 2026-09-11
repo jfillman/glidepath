@@ -53,7 +53,7 @@ spec:
       default: ""
   results:
     - name: outcome
-      description: "'passed'/'failed' - a real result, never 'stub' (this is a real implementation, not governance-gate-stub)."
+      description: "'passed'/'failed'/'error' - a real result, never 'stub' (this is a real implementation, not governance-gate-stub). 'error' means trivy itself failed (timeout, registry/DB fetch error, ...) rather than finding a HIGH/CRITICAL vulnerability - see the scan step's own comment on why the two can't be told apart by exit code alone."
     - name: findings-summary
       description: 'Total finding count plus up to 8 real CVE entries (severity/ID/package), extracted from a second JSON-formatted trivy invocation for the shift-left Slack notification below - not just Trivy''s own "Total: N" count line, a real gap the user caught live in the first version of this Task.'
   volumes:
@@ -119,12 +119,34 @@ spec:
 
         if [[ -n "${FLOW_TRACEPARENT}" ]]; then
           otel_child_span "image-scan" "${FLOW_TRACEPARENT}" "${STAGE_SPAN_ID}" "image=${IMAGE_REF}" -- \
-            trivy image --severity HIGH,CRITICAL --exit-code 1 --scanners vuln "${IMAGE_REF}" 2>&1 | tee /tmp/scan-output.txt
+            trivy image --timeout 10m --severity HIGH,CRITICAL --exit-code 1 --scanners vuln "${IMAGE_REF}" 2>&1 | tee /tmp/scan-output.txt
           EXIT_CODE=${PIPESTATUS[0]}
         else
           echo "no flow-traceparent provided - skipping span emission (expected for PR-triggered GitOps-repo checks)" >&2
-          trivy image --severity HIGH,CRITICAL --exit-code 1 --scanners vuln "${IMAGE_REF}" 2>&1 | tee /tmp/scan-output.txt
+          trivy image --timeout 10m --severity HIGH,CRITICAL --exit-code 1 --scanners vuln "${IMAGE_REF}" 2>&1 | tee /tmp/scan-output.txt
           EXIT_CODE=${PIPESTATUS[0]}
+        fi
+
+        # Trivy exits 1 for two very different reasons: a real HIGH/CRITICAL finding
+        # (--exit-code 1 above) or trivy itself failing before it ever finished scanning
+        # (DB download error, registry timeout, context deadline exceeded, ...) - the
+        # process exit code alone can't tell these apart, and reporting the second case
+        # as "failed" is a security-gate false alarm for an infra flake. Trivy logs its
+        # own real errors at FATAL level, and a timeout specifically surfaces as "context
+        # deadline exceeded" - a genuine vulnerability finding never produces either, so
+        # grep the captured log instead of trusting the exit code.
+        SCAN_ERROR=false
+        if [[ "${EXIT_CODE}" -ne 0 ]] && grep -qiE 'FATAL|context deadline exceeded' /tmp/scan-output.txt; then
+          SCAN_ERROR=true
+        fi
+
+        if [[ "${SCAN_ERROR}" == "true" ]]; then
+          # Re-running the JSON-formatted scan below would just fail the same way, so
+          # skip it and report the error plainly instead of a misleading "0 findings".
+          echo "trivy scan error - no findings available, see the step log above" | tee "$(results.findings-summary.path)"
+          echo "image-scan: trivy itself failed before completing the scan (exit ${EXIT_CODE}) - not a vulnerability finding, see step log" >&2
+          echo -n "error" | tee "$(results.outcome.path)"
+          exit 1
         fi
 
         # Real findings, not just Trivy's "Total: N" summary count - a real gap the user
@@ -136,7 +158,7 @@ spec:
         # Confirmed live (not assumed) via `trivy image --format json`'s real schema:
         # .Results[].Vulnerabilities[] with VulnerabilityID/PkgName/InstalledVersion/
         # Severity/Title fields.
-        trivy image --severity HIGH,CRITICAL --scanners vuln --format json --output /tmp/scan-results.json "${IMAGE_REF}" || true
+        trivy image --timeout 10m --severity HIGH,CRITICAL --scanners vuln --format json --output /tmp/scan-results.json "${IMAGE_REF}" || true
         TOTAL_COUNT="$(jq -r '[.Results[]?.Vulnerabilities[]?] | length' /tmp/scan-results.json 2>/dev/null || echo 0)"
         TOP_FINDINGS="$(jq -r '
           [.Results[]?.Vulnerabilities[]?]
@@ -208,6 +230,12 @@ spec:
             if [[ "${OUTCOME_VALUE}" == "passed" ]]; then
               COLOR="#2563EB"
               HEADER_TEXT="${APP_NAME} · Image Scan Passed"
+            elif [[ "${OUTCOME_VALUE}" == "error" ]]; then
+              # trivy itself failed (timeout/FATAL) - an infra flake, not a security
+              # finding, so this deliberately does not reuse "Image Scan Failed"'s
+              # wording/color (see scan step's own comment above).
+              COLOR="#B45309"
+              HEADER_TEXT="⚠ ${APP_NAME} · Image Scan Error (infra, not a finding)"
             else
               COLOR="#B91C1C"
               HEADER_TEXT="⚠ ${APP_NAME} · Image Scan Failed"
