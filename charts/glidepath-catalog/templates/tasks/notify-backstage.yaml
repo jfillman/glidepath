@@ -132,9 +132,17 @@ spec:
         REPO_SHORT="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/([^/.]+).*#\1/\2#')"
         SHORT_SHA="${GIT_REVISION:0:12}"
 
-        # Tekton Dashboard deep-link - same undocumented HashRouter route and same
-        # "dead link unless port-forwarded locally" caveat as notify-slack.yaml.
-        DASHBOARD_URL="http://localhost:9097/#/namespaces/${APP_NAMESPACE}/pipelineruns/${PIPELINE_RUN_NAME}"
+        # Tower's own CI/CD tab, not the Tekton Dashboard (2026-09-12: "the
+        # notifications have a 'View pipeline' link that's currently broken...
+        # should this link to the CICD tab?") - the Dashboard link this used to
+        # be (still true of notify-slack.yaml's own identical link) only ever
+        # resolves with a local port-forward to localhost:9097, dead for
+        # anyone else viewing the notification. `run` is read by CiCdTab.tsx
+        # to auto-select this exact PipelineRun on load. Assumes this app's
+        # catalog Component is named APP_NAME in the default namespace - true
+        # everywhere onboarding has created one, per this platform's naming
+        # convention (see glidepathPromote.ts's identical assumption).
+        RUN_URL="${BACKSTAGE_BASE_URL%/}/tower?entity=component:default/${APP_NAME}&tab=ci-cd&run=${PIPELINE_RUN_NAME}"
 
         # build only - live TaskRun result lookup, not a Tekton result-reference param -
         # see notify-slack.yaml's identical block for why (finally tasks are skipped if a
@@ -175,7 +183,7 @@ spec:
         payload="$(jq -n \
           --arg title "${TITLE}" \
           --arg description "${description}" \
-          --arg link "${DASHBOARD_URL}" \
+          --arg link "${RUN_URL}" \
           --arg severity "${SEVERITY}" \
           --arg topic "${STAGE_NAME}" \
           '{
