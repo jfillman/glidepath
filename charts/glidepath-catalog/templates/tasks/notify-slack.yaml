@@ -226,7 +226,19 @@ spec:
           )
           ')"
 
-        curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
+        # --retry-all-errors (not just --retry-connrefused) because the connect
+        # failures actually seen live in this cluster ("Failed to connect ... after
+        # 3061 ms: Could not connect to server") are plain connect timeouts, not
+        # ECONNREFUSED - --retry-connrefused alone never retries those. Failure here
+        # is intentionally non-fatal to the step (if/then, not a bare command under
+        # set -e) - same "skip, don't fail the pipeline" stance as every other guard
+        # above in this script: this is a best-effort notification side-channel, not
+        # a pipeline gate, and this Task runs from a Pipeline `finally` block where a
+        # failed TaskRun fails the whole PipelineRun.
+        if ! curl --fail --silent --show-error --max-time 10 \
+          --retry 5 --retry-all-errors --retry-connrefused \
           -X POST "${WEBHOOK_URL}" \
           -H 'Content-Type: application/json' \
-          -d "${payload}"
+          -d "${payload}"; then
+          echo "warn: POST to Slack webhook failed after retries - skipping, not failing the pipeline" >&2
+        fi
