@@ -231,7 +231,7 @@ platformCicdRepoUrl: https://github.com/jfillman/glidepath.git
 # an empty value skips rendering the hostAliases entry entirely rather than
 # pointing pods at a wrong IP, and notify-backstage already no-ops cleanly
 # when it can't resolve BACKSTAGE_BASE_URL at all.
-backstageHostAliasIP: "192.168.64.6"
+backstageHostAliasIP: "192.168.64.3"
 
 # Placeholder only - a real install MUST override every field here via
 # `-f platform-identity.yaml`. Left empty rather than a fake example so an accidental
