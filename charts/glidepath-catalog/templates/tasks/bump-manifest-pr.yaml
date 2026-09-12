@@ -159,10 +159,15 @@ spec:
 
         repo_short="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/([^/.]+).*#\1/\2#')"
         commit_short="${GIT_REVISION:0:12}"
+        # Tag, not the raw 40-char sha (2026-09-12: "I'd like the tag name displayed
+        # in the PR title instead of the long commit hash") - matches the commit
+        # message above (line ~149), which already uses IMAGE_REF for the same
+        # reason; the PR title had just never been brought in line with it.
+        image_tag="${IMAGE_REF##*:}"
         pr_body_text="$(printf '**App**: %s\n**Manifest**: `%s`\n**Repo**: [%s](%s)\n**Commit**: [`%s`](%s/commit/%s)\n**Image**: `%s`\n\nMerging this PR triggers ArgoCD to roll out the new image (selfHeal Application). See that repo'"'"'s own README for this component'"'"'s manually-planted secrets/prerequisites, if any.' \
           "${APP_NAME}" "${MANIFEST_PATH}" "${repo_short}" "${GIT_URL}" "${commit_short}" "${GIT_URL}" "${GIT_REVISION}" "${IMAGE_REF}")"
         pr_body="$(jq -n \
-          --arg title "Bump ${APP_NAME} image to ${GIT_REVISION}" \
+          --arg title "Bump ${APP_NAME} image to ${image_tag}" \
           --arg body "${pr_body_text}" \
           --arg head "${branch}" \
           --arg base "main" \
