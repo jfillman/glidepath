@@ -44,7 +44,24 @@ set -euo pipefail
 # Shared per-cluster secret, hand-provisioned once per app namespace on THIS cluster -
 # never committed to git, never passed through open-release-pr.yaml (which runs on the
 # dev cluster and never sees it). See docs/admin/multi-cluster.md for provisioning.
-token="$(kubectl get secret platform-outcome-relay-token -n "${POD_NAMESPACE}" -o jsonpath='{.data.token}' | base64 -d)"
+# Bounded poll, not a single read: relay-token-external-secret.yaml's ExternalSecret
+# is a PreSync hook at an earlier wave than this Job (see that file's own 2026-09-14
+# header), which only guarantees the ExternalSecret OBJECT exists first - ESO's own
+# reconcile of that into this real Secret is a separate, asynchronous step this
+# cluster's ArgoCD has no health check to wait on. Confirmed live: a brand-new env's
+# very first PreSync run hit exactly this gap immediately after the RBAC ordering fix
+# landed. 30s/15 attempts is generous relative to ESO's typical reconcile latency
+# (seconds) without leaving a genuinely broken/missing Secret hanging indefinitely.
+token=""
+for _ in $(seq 1 15); do
+  token_b64="$(kubectl get secret platform-outcome-relay-token -n "${POD_NAMESPACE}" -o jsonpath='{.data.token}' 2>/dev/null || true)"
+  [[ -n "${token_b64}" ]] && { token="$(base64 -d <<<"${token_b64}")"; break; }
+  sleep 2
+done
+if [[ -z "${token}" ]]; then
+  echo "[argocd-outcome-hook] error: platform-outcome-relay-token Secret not ready after 30s" >&2
+  exit 1
+fi
 finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # Two vocabularies, both pre-computed here rather than left for a downstream consumer
