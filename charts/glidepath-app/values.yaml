@@ -231,7 +231,22 @@ platformCicdRepoUrl: https://github.com/jfillman/glidepath.git
 # an empty value skips rendering the hostAliases entry entirely rather than
 # pointing pods at a wrong IP, and notify-backstage already no-ops cleanly
 # when it can't resolve BACKSTAGE_BASE_URL at all.
-backstageHostAliasIP: "192.168.64.3"
+#
+# 2026-09-15: found stale live (curl: (7) Failed to connect to
+# backstage.prod.kiac.local port 80 - the release-outcome notification for
+# a real checkout-api staging release never reached Backstage). Root cause
+# wasn't just "kiac-prod restarted" - this value and platform-cicd-catalog's
+# own copy (gitops-cluster-dev/50-platform-cicd/platform-cicd-catalog/
+# application.yaml, used by a DIFFERENT chart, glidepath-catalog) had
+# drifted out of sync: that one was already correctly bumped to .6, this
+# one was never updated alongside it, and nothing overrides this value
+# per-app (tenant-onboarding-applicationset.yaml, which generates each
+# app's own glidepath-app Application, sets no backstageHostAliasIP at
+# all) - so every app's release-progress/release-outcome notifications
+# were silently failing, not just checkout-api's. Confirmed via `container
+# list` that kiac-prod's real current IP is .6, matching the already-
+# correct copy.
+backstageHostAliasIP: "192.168.64.6"
 
 # Placeholder only - a real install MUST override every field here via
 # `-f platform-identity.yaml`. Left empty rather than a fake example so an accidental
