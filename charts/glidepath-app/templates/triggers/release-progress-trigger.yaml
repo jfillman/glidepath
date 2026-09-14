@@ -1,0 +1,115 @@
+# 2026-09-14 release-flow redesign - consumes the environment.deploying CDEvent
+# argocd-outcome-hook.sh sends from a release's PreSync hook Job (ArgoCD just started
+# applying this sync). Sibling to release-outcome-trigger.yaml, not an edit to it - see
+# release-progress-notify.yaml's own header for why this needs its own Pipeline, and
+# a distinct CDEvent type (rather than a third status value on
+# dev.cdevents.environment.deployed.0.1.0) keeps that Trigger's CEL filter and
+# everything downstream of it completely untouched by this addition.
+{{- if eq (include "glidepath-app.hasClusterMappedUpperEnv" .) "true" }}
+{{- $appNamespace := include "glidepath-app.namespace" . }}
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  name: release-progress-binding
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "triggers"
+spec:
+  params:
+    - { name: pipeline-run-name, value: {{ printf "release-progress-$(body.context.id)" | quote }} }
+    - { name: app-namespace, value: "$(body.subject.content.appNamespace)" }
+    - { name: app-name, value: "$(body.subject.content.appName)" }
+    - { name: env, value: "$(body.subject.content.env)" }
+    - { name: status, value: "$(body.subject.content.status)" }
+    - { name: git-url, value: "$(body.subject.content.gitUrl)" }
+    - { name: git-revision, value: "$(body.subject.content.gitRevision)" }
+    - { name: config-json, value: "$(body.subject.content.configJson)" }
+    - { name: chain-id, value: "$(body.context.chainId)" }
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: release-progress-template
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "triggers"
+spec:
+  params:
+    - name: pipeline-run-name
+    - name: app-namespace
+    - name: app-name
+    - name: env
+    - name: status
+    - name: git-url
+    - name: git-revision
+    - name: config-json
+    - name: chain-id
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        name: $(tt.params.pipeline-run-name)
+        labels:
+          hangar.io/subcomponent: "release-progress"
+      spec:
+        pipelineRef:
+          resolver: cluster
+          params:
+            - { name: kind, value: pipeline }
+            - { name: name, value: release-progress-notify }
+            - { name: namespace, value: {{ .Values.platformIdentity.catalogNamespace }} }
+        params:
+          - { name: app-namespace, value: $(tt.params.app-namespace) }
+          - { name: app-name, value: $(tt.params.app-name) }
+          - { name: env, value: $(tt.params.env) }
+          # Already "Syncing" by the time it gets here - argocd-outcome-hook.sh
+          # precomputes this, same reasoning as release-outcome-template's identical
+          # comment on its own status param.
+          - { name: status, value: $(tt.params.status) }
+          - { name: git-url, value: $(tt.params.git-url) }
+          - { name: git-revision, value: $(tt.params.git-revision) }
+          - { name: config-json, value: $(tt.params.config-json) }
+          - { name: chain-id, value: $(tt.params.chain-id) }
+        taskRunTemplate:
+          serviceAccountName: pipeline-runner
+        {{- /* Same cross-cluster DNS gap as release-outcome-trigger.yaml's identical
+        block - this PipelineRun also runs on the dev cluster (fired by
+        argocd-outcome-relay, itself dev-hosted), so notify-backstage's Task pod here
+        needs the same fix. */ -}}
+        {{- if .Values.backstageHostAliasIP }}
+        taskRunSpecs:
+          - pipelineTaskName: notify-backstage
+            podTemplate:
+              hostAliases:
+                - ip: {{ .Values.backstageHostAliasIP }}
+                  hostnames:
+                    - backstage.prod.kiac.local
+        {{- end }}
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: Trigger
+metadata:
+  name: release-progress
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "triggers"
+spec:
+  serviceAccountName: pipeline-runner
+  interceptors:
+    - ref: { name: cdevents-broker-auth, kind: ClusterInterceptor }
+      params: [{ name: audience, value: cdevents-broker }]
+    - ref: { name: cel, kind: ClusterInterceptor }
+      params:
+        - name: filter
+          value: >-
+            body.context.type == 'dev.cdevents.environment.deploying.0.1.0' &&
+            body.subject.content.appNamespace == '{{ $appNamespace }}'
+  bindings:
+    - { ref: release-progress-binding }
+  template:
+    ref: release-progress-template
+{{- end }}

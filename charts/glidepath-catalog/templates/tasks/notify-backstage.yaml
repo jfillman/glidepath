@@ -58,6 +58,17 @@ spec:
         Only meaningful on release-outcome, where the PR was opened in a DIFFERENT
         PipelineRun than this one - passed directly instead of relying on this run's own
         open-release-pr TaskRun lookup. Same reasoning as notify-slack.yaml's identical param.
+    - name: chain-id
+      type: string
+      default: ""
+      description: >-
+        This release's chain-id, when known (the same id release-outcome-span.yaml/
+        release-log-emit.yaml correlate by). Accepted here now so every release/
+        deploying/release-outcome call site can start passing it; not yet surfaced in
+        the notification itself - that lands once Tower's frontend knows to
+        strip/group on it (2026-09-14 release-flow redesign, phase 3), so a real id
+        doesn't show up as raw text in a notification before there's anywhere for it
+        to go.
   volumes:
     - name: backstage-notify-token
       secret:
@@ -94,6 +105,8 @@ spec:
           value: $(params.env)
         - name: PR_URL_PARAM
           value: $(params.pr-url)
+        - name: CHAIN_ID
+          value: $(params.chain-id)
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -120,14 +133,39 @@ spec:
           test) STAGE_DISPLAY="Test" ;;
           deploy) STAGE_DISPLAY="Deploy" ;;
           release) STAGE_DISPLAY="Release" ;;
+          deploying) STAGE_DISPLAY="Deploying" ;;
+          release-outcome) STAGE_DISPLAY="Release" ;;
           *) STAGE_DISPLAY="${STAGE_NAME}" ;;
         esac
-        if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
+        # Syncing (the new release-progress-notify mid-flow stage) is routine, not a
+        # failure - without this it'd render as a "high" severity alert.
+        if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" || "${STATUS}" == "Syncing" ]]; then
           SEVERITY="normal"
         else
           SEVERITY="high"
         fi
-        TITLE="${APP_NAME} · ${STAGE_DISPLAY} ${STATUS}"
+
+        # The blind "${STAGE_DISPLAY} ${STATUS}" concatenation reads correctly for
+        # build/test/deploy (STATUS's own Succeeded/Failed vocabulary IS the right
+        # word there), but not for release's two distinct notification points
+        # (2026-09-14 release-flow redesign): `release` only ever confirms the PR was
+        # opened/committed, not that anything deployed - "Release Succeeded" there was
+        # actively misleading. `release-outcome` (this pipeline's own terminal call) is
+        # the one place "Release Succeeded/Failed" is actually true. `deploying`'s
+        # STATUS is always the single value "Syncing", which "Deploying Syncing" would
+        # render badly.
+        case "${STAGE_NAME}" in
+          release)
+            if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
+              TITLE="${APP_NAME} · Release Requested"
+            else
+              TITLE="${APP_NAME} · Release Request Failed"
+            fi
+            ;;
+          deploying) TITLE="${APP_NAME} · Deploying" ;;
+          release-outcome) TITLE="${APP_NAME} · Release ${STATUS}" ;;
+          *) TITLE="${APP_NAME} · ${STAGE_DISPLAY} ${STATUS}" ;;
+        esac
 
         REPO_SHORT="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/([^/.]+).*#\1/\2#')"
         SHORT_SHA="${GIT_REVISION:0:12}"
@@ -161,7 +199,7 @@ spec:
         # Failure log excerpt - same non-"Succeeded"/"Completed" trigger and RBAC as
         # notify-slack.yaml (pipeline-runner's existing Role already covers this).
         log_excerpt=""
-        if [[ "${STATUS}" != "Succeeded" && "${STATUS}" != "Completed" ]]; then
+        if [[ "${STATUS}" != "Succeeded" && "${STATUS}" != "Completed" && "${STATUS}" != "Syncing" ]]; then
           failed_taskrun="$(kubectl get taskrun -n "${APP_NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json \
             | jq -r '[.items[] | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
           if [[ -n "${failed_taskrun}" ]]; then

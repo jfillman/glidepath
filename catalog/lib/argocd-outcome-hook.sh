@@ -49,16 +49,28 @@ finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # Two vocabularies, both pre-computed here rather than left for a downstream consumer
 # to derive: "outcome" is CDEvents' success/failure convention, "status" is the
-# Succeeded/Failed vocabulary notify-slack.yaml expects. PHASE already tells us which
-# hook ran, so this is a plain case, not a live status read.
+# Succeeded/Failed(/Syncing) vocabulary notify-slack.yaml expects. PHASE already tells
+# us which hook ran, so this is a plain case, not a live status read.
+#
+# Syncing (PreSync, added 2026-09-14) gets its own CDEvent type
+# (environment.deploying), not a third value layered onto environment.deployed's
+# outcome/status pair - every other consumer of that type (release-outcome-notify's
+# Pipeline/Trigger, DORA lead-time/MTTR, the release log, the outcome span) hard-
+# assumes a TERMINAL result, so folding a non-terminal phase into the same type would
+# either need every one of those to grow a Syncing branch or risk one silently
+# mishandling it. A distinct type lets the Syncing case be consumed by its own
+# Trigger/Pipeline with none of the existing ones touched at all.
 outcome="failure"
 status="Failed"
+event_type="dev.cdevents.environment.deployed.0.1.0"
 if [[ "${PHASE}" == "Succeeded" ]]; then
   outcome="success"
   status="Succeeded"
+elif [[ "${PHASE}" == "Syncing" ]]; then
+  outcome="in_progress"
+  status="Syncing"
+  event_type="dev.cdevents.environment.deploying.0.1.0"
 fi
-
-event_type="dev.cdevents.environment.deployed.0.1.0"
 source="/platform-cicd/${APP_NAMESPACE}/${CLUSTER}-${APP_NAME}-${ENV}-outcome"
 
 # finishedAt is part of the id, not just source+eventType: source is a fixed string

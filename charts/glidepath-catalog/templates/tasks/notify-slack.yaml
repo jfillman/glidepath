@@ -112,15 +112,46 @@ spec:
           test) STAGE_DISPLAY="Test" ;;
           deploy) STAGE_DISPLAY="Deploy" ;;
           release) STAGE_DISPLAY="Release" ;;
+          deploying) STAGE_DISPLAY="Deploying" ;;
+          release-outcome) STAGE_DISPLAY="Release" ;;
           *) STAGE_DISPLAY="${STAGE_NAME}" ;;
         esac
-        if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
+        # Syncing (the new release-progress-notify mid-flow stage) is routine, not a
+        # failure - without this it'd render red with the ⚠ failure marker.
+        if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" || "${STATUS}" == "Syncing" ]]; then
           COLOR="#2563EB"
-          HEADER_TEXT="${APP_NAME} · ${STAGE_DISPLAY} ${STATUS}"
         else
           COLOR="#B91C1C"
-          HEADER_TEXT="⚠ ${APP_NAME} · ${STAGE_DISPLAY} ${STATUS}"
         fi
+
+        # Same per-stage wording fix as notify-backstage.yaml's identical switch (see
+        # that Task's own 2026-09-14 comment for the full reasoning) - the blind
+        # "${STAGE_DISPLAY} ${STATUS}" concatenation misrepresents release's two
+        # distinct notification points as a confirmed deploy outcome.
+        case "${STAGE_NAME}" in
+          release)
+            if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
+              HEADER_TEXT="${APP_NAME} · Release Requested"
+            else
+              HEADER_TEXT="⚠ ${APP_NAME} · Release Request Failed"
+            fi
+            ;;
+          deploying) HEADER_TEXT="${APP_NAME} · Deploying" ;;
+          release-outcome)
+            if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
+              HEADER_TEXT="${APP_NAME} · Release ${STATUS}"
+            else
+              HEADER_TEXT="⚠ ${APP_NAME} · Release ${STATUS}"
+            fi
+            ;;
+          *)
+            if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
+              HEADER_TEXT="${APP_NAME} · ${STAGE_DISPLAY} ${STATUS}"
+            else
+              HEADER_TEXT="⚠ ${APP_NAME} · ${STAGE_DISPLAY} ${STATUS}"
+            fi
+            ;;
+        esac
 
         # 12-char SHA for display only (matches sast-scan.yaml/image-scan.yaml) -
         # intentionally independent of build-image.yaml's own 7-char image-tag SHA.
@@ -161,7 +192,7 @@ spec:
         # Role already covers taskruns/pods/pods-log.
         failed_taskrun=""
         log_excerpt=""
-        if [[ "${STATUS}" != "Succeeded" && "${STATUS}" != "Completed" ]]; then
+        if [[ "${STATUS}" != "Succeeded" && "${STATUS}" != "Completed" && "${STATUS}" != "Syncing" ]]; then
           failed_taskrun="$(kubectl get taskrun -n "${APP_NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json \
             | jq -r '[.items[] | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
           if [[ -n "${failed_taskrun}" ]]; then

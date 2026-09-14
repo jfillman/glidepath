@@ -1,0 +1,93 @@
+# catalog/pipelines/release-progress-notify.yaml (2026-09-14 release-flow redesign)
+#
+# The downstream consumer of the environment.deploying CDEvent argocd-outcome-hook.sh
+# sends from a release's PreSync hook Job - ArgoCD has just started applying this
+# sync, nothing confirmed either way yet. Closes the gap between a release PR's own
+# "requested" notification (fires at PR-open/commit time - see release.yaml's/
+# glidepathPromote.ts's own notify calls) and release-outcome-notify's confirmed
+# Succeeded/Failed, which previously left "did my merged PR even start deploying?"
+# with no answer until the terminal one arrived, sometimes much later.
+#
+# Deliberately a SEPARATE, lightweight Pipeline from release-outcome-notify, not a
+# Syncing branch bolted onto it: every task in that Pipeline besides notify/
+# notify-backstage hard-assumes a TERMINAL outcome -
+# resolve-release-tracking.yaml self-deletes the chain-id-keyed ConfigMap on read
+# (meant to fire exactly once per release), update-dora-metrics.yaml's lead-time/MTTR
+# math and release-log-emit.yaml's release record both only make sense once, at the
+# real end. Reusing that Pipeline for a mid-flow event would either need every one of
+# those to grow a Syncing branch or risk one silently misfiring (e.g. consuming the
+# tracking ConfigMap before the real terminal event needs it). Routed here instead by
+# a distinct CDEvent type (release-progress-trigger.yaml), so release-outcome-notify's
+# own Trigger/Pipeline needed zero changes - purely additive, no regression risk to
+# the live terminal-outcome path.
+#
+# No resolve-release-tracking here, so pr-url is simply left empty on both notify
+# calls (they already render fine without one - same "PR: ..." line just omitted).
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: release-progress-notify
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  params:
+    - name: app-namespace
+      type: string
+    - name: app-name
+      type: string
+    - name: env
+      type: string
+    - name: status
+      type: string
+      description: "Always 'Syncing' today (the only phase argocd-outcome-hook.sh routes to this Pipeline's own CDEvent type) - passed through rather than hardcoded so a future intermediate phase doesn't need a schema change here."
+    - name: git-url
+      type: string
+      default: ""
+    - name: git-revision
+      type: string
+      default: ""
+    - name: config-json
+      type: string
+      default: "{}"
+    - name: chain-id
+      type: string
+      default: ""
+      description: This release's chain-id, for correlation with its requested/outcome notifications - see notify-backstage.yaml's own param.
+  tasks:
+    - name: notify
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: notify-slack }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: config-json, value: $(params.config-json) }
+        - { name: stage-name, value: "deploying" }
+        - { name: status, value: $(params.status) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: env, value: $(params.env) }
+
+    - name: notify-backstage
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: notify-backstage }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: config-json, value: $(params.config-json) }
+        - { name: stage-name, value: "deploying" }
+        - { name: status, value: $(params.status) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: env, value: $(params.env) }
+        - { name: chain-id, value: $(params.chain-id) }

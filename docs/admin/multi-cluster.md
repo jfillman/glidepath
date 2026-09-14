@@ -700,6 +700,25 @@ tenant-onboarding `ApplicationSet` that pins it (`gitops-cluster-dev`,
 `git show <tag>:...Chart.yaml`, stayed `0.3.0` across 36+ real tags) since these charts
 are consumed straight from a pinned git tag, not a packaged/published chart repo.
 
+**2026-09-14 update: a third hook (`PreSync`, `PHASE=Syncing`) and a new CDEvent type,
+`dev.cdevents.environment.deploying.0.1.0`, close the "PR merged, but is it actually
+deploying yet?" gap** - see `release-progress-notify.yaml`/`release-progress-
+trigger.yaml`'s own headers for the full design (deliberately a separate Pipeline/
+Trigger, not folded into `release-outcome-notify`/`release-outcome-trigger`, since
+every task there besides `notify`/`notify-backstage` hard-assumes a terminal
+Succeeded/Failed outcome). `catalog/lib/argocd-outcome-hook.sh` now branches
+outcome/status/event-type on `PHASE` three ways instead of two.
+
+**Same staleness class flagged in the Dockerfile's own comment (see "Onboarding
+boilerplate" note there) applies here**: `argocd-outcome-hook.sh` is `COPY`'d into
+`ghcr.io/jfillman/platform-cicd-toolbox:latest` at build time, and every hook Job
+(including the new `PreSync` one) references that image with `imagePullPolicy:
+IfNotPresent`. A git push alone does **not** get this fix onto a live cluster - the
+toolbox image needs an explicit `docker build -f catalog/toolbox/Dockerfile -t
+ghcr.io/jfillman/platform-cicd-toolbox:latest .` + push (repo-root build context, see
+that Dockerfile's own header), same manual step as any other toolbox-script change,
+and any node with an already-cached `:latest` layer won't re-pull on its own.
+
 **Still not done**: rebuild+push three images - `ghcr.io/jfillman/platform-cicd-toolbox`
 (bakes in the hook script AND `update-dora-metrics.yaml`'s step image),
 `ghcr.io/jfillman/platform-cicd-argocd-outcome-relay`, and

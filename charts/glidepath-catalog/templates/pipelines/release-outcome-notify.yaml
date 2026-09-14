@@ -102,9 +102,10 @@ spec:
         # A dedicated stage-name, not "release" - reusing that label would read as
         # "the release Pipeline itself ran again", which is misleading (this
         # PipelineRun never opens a PR or touches an image; it only relays a
-        # confirmation). notify-slack.yaml's own stage_display switch falls back to
-        # printing the raw value verbatim for anything it doesn't recognize - already
-        # exercised by every OTHER stage name, no change needed there.
+        # confirmation). notify-slack.yaml's own switch (2026-09-14) gives
+        # "release-outcome" its own explicit "Release Succeeded/Failed" wording - the
+        # one place that phrase is actually true, now that `release` itself no longer
+        # claims it prematurely at PR-open time.
         - { name: stage-name, value: "release-outcome" }
         - { name: status, value: $(params.status) }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
@@ -124,7 +125,9 @@ spec:
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
         - { name: config-json, value: $(params.config-json) }
-        # Same "release-outcome" stage-name reasoning as the notify-slack call above.
+        # Same "release-outcome" stage-name reasoning as the notify-slack call above -
+        # notify-backstage.yaml's own switch gives it the same "Release
+        # Succeeded/Failed" wording.
         - { name: stage-name, value: "release-outcome" }
         - { name: status, value: $(params.status) }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
@@ -134,6 +137,7 @@ spec:
         - { name: git-revision, value: $(params.git-revision) }
         - { name: pr-url, value: $(tasks.resolve-release-tracking.results.pr-url) }
         - { name: env, value: $(params.env) }
+        - { name: chain-id, value: $(params.chain-id) }
 
     # See release-outcome-span.yaml's own header for why this is a standalone span/
     # trace, not a child of the original flow's (already-closed) trace.
