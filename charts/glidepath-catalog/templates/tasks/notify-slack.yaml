@@ -126,22 +126,25 @@ spec:
 
         # Same per-stage wording fix as notify-backstage.yaml's identical switch (see
         # that Task's own 2026-09-14 comment for the full reasoning) - the blind
-        # "${STAGE_DISPLAY} ${STATUS}" concatenation misrepresents release's two
-        # distinct notification points as a confirmed deploy outcome.
+        # "${STAGE_DISPLAY} ${STATUS}" concatenation misrepresents release's three
+        # lifecycle notification points. Unlike notify-backstage.yaml's title (Tower's
+        # Recent Activity panel is already scoped to one app), APP_NAME stays here -
+        # #all-idp-lab is a shared channel across every app, so "Release triggered for
+        # prod" alone would be ambiguous about whose prod.
         case "${STAGE_NAME}" in
           release)
             if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
-              HEADER_TEXT="${APP_NAME} · Release Requested"
+              HEADER_TEXT="${APP_NAME} · Release triggered for ${ENV_NAME}"
             else
-              HEADER_TEXT="⚠ ${APP_NAME} · Release Request Failed"
+              HEADER_TEXT="⚠ ${APP_NAME} · Release trigger failed for ${ENV_NAME}"
             fi
             ;;
-          deploying) HEADER_TEXT="${APP_NAME} · Deploying" ;;
+          deploying) HEADER_TEXT="${APP_NAME} · Deploying release to ${ENV_NAME}" ;;
           release-outcome)
             if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
-              HEADER_TEXT="${APP_NAME} · Release ${STATUS}"
+              HEADER_TEXT="${APP_NAME} · Release succeeded in ${ENV_NAME}"
             else
-              HEADER_TEXT="⚠ ${APP_NAME} · Release ${STATUS}"
+              HEADER_TEXT="⚠ ${APP_NAME} · Release failed in ${ENV_NAME}"
             fi
             ;;
           *)

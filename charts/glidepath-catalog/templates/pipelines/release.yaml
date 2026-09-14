@@ -310,6 +310,7 @@ spec:
         - { name: git-url, value: $(params.git-url) }
         - { name: git-revision, value: $(params.git-revision) }
         - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
+        - { name: env, value: $(params.env) }
 
     - name: notify-backstage
       taskRef:
@@ -328,6 +329,7 @@ spec:
         - { name: git-url, value: $(params.git-url) }
         - { name: git-revision, value: $(params.git-revision) }
         - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
+        - { name: env, value: $(params.env) }
         - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
 
     # Rounds out the CDEvents chain for trace/dashboard completeness (so "release" shows

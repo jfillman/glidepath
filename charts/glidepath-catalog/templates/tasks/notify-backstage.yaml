@@ -147,23 +147,34 @@ spec:
 
         # The blind "${STAGE_DISPLAY} ${STATUS}" concatenation reads correctly for
         # build/test/deploy (STATUS's own Succeeded/Failed vocabulary IS the right
-        # word there), but not for release's two distinct notification points
+        # word there), but not for release's three lifecycle notification points
         # (2026-09-14 release-flow redesign): `release` only ever confirms the PR was
-        # opened/committed, not that anything deployed - "Release Succeeded" there was
+        # opened/committed, not that anything deployed - a bare "Succeeded" there was
         # actively misleading. `release-outcome` (this pipeline's own terminal call) is
-        # the one place "Release Succeeded/Failed" is actually true. `deploying`'s
-        # STATUS is always the single value "Syncing", which "Deploying Syncing" would
-        # render badly.
+        # the one place "Succeeded/Failed" is actually true. `deploying`'s STATUS is
+        # always the single value "Syncing", which "Deploying Syncing" would render
+        # badly. Env, not app name, leads every one of these three - RecentActivityPanel
+        # renders this same-app's feed already scoped to one app (Tower is per-app), so
+        # which ENVIRONMENT a release event is about is the higher-value word to lead
+        # with; app name stays in the `App:` description line below (still required
+        # there - useAppNotifications.ts's per-app filter is a free-text search over
+        # title+description, and this is the one place that still embeds it).
         case "${STAGE_NAME}" in
           release)
             if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
-              TITLE="${APP_NAME} · Release Requested"
+              TITLE="Release triggered for ${ENV_NAME}"
             else
-              TITLE="${APP_NAME} · Release Request Failed"
+              TITLE="Release trigger failed for ${ENV_NAME}"
             fi
             ;;
-          deploying) TITLE="${APP_NAME} · Deploying" ;;
-          release-outcome) TITLE="${APP_NAME} · Release ${STATUS}" ;;
+          deploying) TITLE="Deploying release to ${ENV_NAME}" ;;
+          release-outcome)
+            if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
+              TITLE="Release succeeded in ${ENV_NAME}"
+            else
+              TITLE="Release failed in ${ENV_NAME}"
+            fi
+            ;;
           *) TITLE="${APP_NAME} · ${STAGE_DISPLAY} ${STATUS}" ;;
         esac
 
@@ -216,6 +227,13 @@ spec:
         [[ -n "${IMAGE_REF}" ]] && description="${description}"$'\n'"Image: ${IMAGE_REF}"
         [[ -n "${ENV_NAME}" ]] && description="${description}"$'\n'"Environment: ${ENV_NAME}"
         [[ -n "${pr_url}" ]] && description="${description}"$'\n'"PR: ${pr_url}"
+        # Chain: correlates this notification with the other release/deploying/
+        # release-outcome events for the same release - Tower's Recent Activity panel
+        # parses and strips this line (RecentActivityPanel.tsx/notificationFormatting.tsx),
+        # it's never meant to be read as prose. Not emitted for non-release stages
+        # (CHAIN_ID is empty there today - build/test/deploy don't thread chain-id
+        # through to this Task).
+        [[ -n "${CHAIN_ID}" ]] && description="${description}"$'\n'"Chain: ${CHAIN_ID}"
         [[ -n "${log_excerpt}" ]] && description="${description}"$'\n\n'"${log_excerpt}"
 
         payload="$(jq -n \
