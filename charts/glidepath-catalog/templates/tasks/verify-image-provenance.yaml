@@ -53,6 +53,21 @@ spec:
               path: github-token-broker-token
               audience: github-installation-token
               expirationSeconds: 600
+    # Registry pull credentials for this Task's own hand-rolled GHCR digest-resolution
+    # curl calls AND for `cosign download attestation`/`cosign verify-blob-attestation`
+    # below (DOCKER_CONFIG is cosign's standard credential-resolution env var, same
+    # Secret/key mapping image-scan.yaml/generate-sbom.yaml already use). Missing until
+    # now: every request here was anonymous, which 401s the instant a package is
+    # private - GHCR's real default visibility for a freshly-pushed package (see
+    # generate-sbom.yaml/image-scan.yaml's own comments on this) - confirmed live as
+    # the actual cause of order-api's provenance-gate failure (its checkout-api sibling
+    # happens to have a public package, so this gap never got exercised before).
+    - name: registry-credentials
+      secret:
+        secretName: registry-credentials
+        items:
+          - key: .dockerconfigjson
+            path: config.json
   steps:
     - name: verify
       image: {{ .Values.toolboxImage }}
@@ -61,7 +76,12 @@ spec:
         - name: github-token-broker-token
           mountPath: /var/run/secrets/platform
           readOnly: true
+        - name: registry-credentials
+          mountPath: /var/run/secrets/registry
+          readOnly: true
       env:
+        - name: DOCKER_CONFIG
+          value: /var/run/secrets/registry
         - name: GITHUB_TOKEN_BROKER_URL
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
         - name: REPO_URL
@@ -114,7 +134,14 @@ spec:
         rest="${image_ref#*/}"
         repo="${rest%:*}"
         tag="${rest##*:}"
-        token="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 "https://${registry}/token?service=${registry}&scope=repository:${repo}:pull" | jq -r '.token')"
+        # Basic-auth the token request with the same creds DOCKER_CONFIG points cosign
+        # at below, instead of requesting an anonymous pull token - GHCR issues an
+        # anonymous token fine even for a private package, but that token carries no
+        # actual pull scope and every subsequent registry call 401s. `auth` in
+        # config.json is already `username:password` base64'd, exactly what `-u` wants
+        # decoded.
+        registry_auth="$(jq -r --arg r "${registry}" '.auths[$r].auth // empty' "${DOCKER_CONFIG}/config.json" | base64 -d)"
+        token="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 ${registry_auth:+-u "${registry_auth}"} "https://${registry}/token?service=${registry}&scope=repository:${repo}:pull" | jq -r '.token')"
         # Accept both Docker v2 and OCI manifest media types - kaniko pushes OCI-format
         # manifests, and requesting only the Docker v2 type 404s even though the manifest exists.
         digest="$(curl -fsSL -D - -o /dev/null --retry 3 --retry-connrefused --max-time 15 \
@@ -214,7 +241,7 @@ spec:
             sig_b64="$(jq -r '.dsseEnvelope.signatures[0].sig' <<<"${line}")"
           else
             if [[ -z "${att_token}" ]]; then
-              att_token="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 "https://${registry}/token?service=${registry}&scope=repository:${repo}:pull" | jq -r '.token')"
+              att_token="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 ${registry_auth:+-u "${registry_auth}"} "https://${registry}/token?service=${registry}&scope=repository:${repo}:pull" | jq -r '.token')"
             fi
             att_manifest="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 -H "Authorization: Bearer ${att_token}" \
               -H "Accept: application/vnd.oci.image.manifest.v1+json" \

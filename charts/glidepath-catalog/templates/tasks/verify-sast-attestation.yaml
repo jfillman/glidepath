@@ -36,13 +36,30 @@ spec:
     - name: image-ref
       type: string
       description: Full image reference (repo:tag) whose build attestation records the sast-scan outcome to check.
+  # Registry pull credentials for this Task's own hand-rolled GHCR digest-resolution
+  # curl calls AND for `cosign download attestation`/`cosign verify-blob-attestation`
+  # below - identical need and Secret/key mapping as verify-image-provenance.yaml's
+  # own identical block (see that file's comment for the live incident this fixes).
+  volumes:
+    - name: registry-credentials
+      secret:
+        secretName: registry-credentials
+        items:
+          - key: .dockerconfigjson
+            path: config.json
   steps:
     - name: verify
       image: {{ .Values.toolboxImage }}
       imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: registry-credentials
+          mountPath: /var/run/secrets/registry
+          readOnly: true
       env:
         - name: IMAGE_REF
           value: $(params.image-ref)
+        - name: DOCKER_CONFIG
+          value: /var/run/secrets/registry
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -56,7 +73,11 @@ spec:
         rest="${IMAGE_REF#*/}"
         repo="${rest%:*}"
         tag="${rest##*:}"
-        token="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 "https://${registry}/token?service=${registry}&scope=repository:${repo}:pull" | jq -r '.token')"
+        # Basic-auth the token request instead of requesting an anonymous pull token -
+        # see verify-image-provenance.yaml's identical block for why an anonymous
+        # token 401s the moment the package is private.
+        registry_auth="$(jq -r --arg r "${registry}" '.auths[$r].auth // empty' "${DOCKER_CONFIG}/config.json" | base64 -d)"
+        token="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 ${registry_auth:+-u "${registry_auth}"} "https://${registry}/token?service=${registry}&scope=repository:${repo}:pull" | jq -r '.token')"
         digest="$(curl -fsSL -D - -o /dev/null --retry 3 --retry-connrefused --max-time 15 \
           -H "Authorization: Bearer ${token}" \
           -H "Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
@@ -120,7 +141,7 @@ spec:
             sig_b64="$(jq -r '.dsseEnvelope.signatures[0].sig' <<<"${line}")"
           else
             if [[ -z "${att_token}" ]]; then
-              att_token="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 "https://${registry}/token?service=${registry}&scope=repository:${repo}:pull" | jq -r '.token')"
+              att_token="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 ${registry_auth:+-u "${registry_auth}"} "https://${registry}/token?service=${registry}&scope=repository:${repo}:pull" | jq -r '.token')"
             fi
             att_manifest="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 -H "Authorization: Bearer ${att_token}" \
               -H "Accept: application/vnd.oci.image.manifest.v1+json" \
