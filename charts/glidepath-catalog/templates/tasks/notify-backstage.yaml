@@ -126,6 +126,20 @@ spec:
           exit 0
         fi
 
+        # Tekton's own $(tasks.status) aggregate (what callers pass as STATUS) has no
+        # "Cancelled" value - a CancelledRunFinally run's finally block still sees
+        # "Completed" here, same as a normal mixed-result run, since Tekton only
+        # tracks Succeeded/Failed/Completed/None for that variable. Without this, a
+        # cancelled build produced a "Build Completed" notification instead of "Build
+        # Cancelled" (2026-09-16 bug). The PipelineRun's own spec.status is the one
+        # place cancellation is actually recorded, so read it directly - the same
+        # kubectl access this script already relies on for the failed-taskrun log
+        # excerpt below.
+        PR_SPEC_STATUS="$(kubectl get pipelinerun "${PIPELINE_RUN_NAME}" -n "${APP_NAMESPACE}" -o jsonpath='{.spec.status}' 2>/dev/null || true)"
+        if [[ "${PR_SPEC_STATUS}" == "Cancelled" || "${PR_SPEC_STATUS}" == "CancelledRunFinally" ]]; then
+          STATUS="Cancelled"
+        fi
+
         # Same stage-display vocabulary as notify-slack.yaml - kept identical so the two
         # targets read as the same event, not two different notification systems.
         case "${STAGE_NAME}" in
@@ -138,8 +152,9 @@ spec:
           *) STAGE_DISPLAY="${STAGE_NAME}" ;;
         esac
         # Syncing (the new release-progress-notify mid-flow stage) is routine, not a
-        # failure - without this it'd render as a "high" severity alert.
-        if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" || "${STATUS}" == "Syncing" ]]; then
+        # failure - without this it'd render as a "high" severity alert. Cancelled is a
+        # deliberate user action, not a failure either - it shouldn't read as a red alert.
+        if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" || "${STATUS}" == "Syncing" || "${STATUS}" == "Cancelled" ]]; then
           SEVERITY="normal"
         else
           SEVERITY="high"

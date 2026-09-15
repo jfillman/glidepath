@@ -107,7 +107,7 @@ otel_span_send() {
   local status_code="ok"
   [[ "${tekton_status}" != "Succeeded" && "${tekton_status}" != "Completed" ]] && status_code="error"
   local -a args=(
-    span --service "platform-cicd" --name "${name}"
+    span --service "glidepath" --name "${name}"
     --force-trace-id "${trace_id}" --force-span-id "${span_id}"
     --start "${start_time}" --end "${end_time}"
     --status-code "${status_code}"
@@ -134,7 +134,7 @@ otel_task_span_send() {
   local status_code="ok"
   [[ "${tekton_status}" != "Succeeded" && "${tekton_status}" != "Completed" ]] && status_code="error"
   local -a args=(
-    span --service "platform-cicd" --name "${name}"
+    span --service "glidepath" --name "${name}"
     --force-trace-id "${trace_id}" --force-span-id "${span_id}"
     --force-parent-span-id "${parent_span_id}"
     --start "${start_time}" --end "${end_time}"
@@ -167,7 +167,7 @@ otel_log_send() {
     --argjson attrs "${attrs_json}" \
     '{
       resourceLogs: [{
-        resource: { attributes: [{ key: "service.name", value: { stringValue: "platform-cicd" } }] },
+        resource: { attributes: [{ key: "service.name", value: { stringValue: "glidepath" } }] },
         scopeLogs: [{
           logRecords: [{
             timeUnixNano: $time,
@@ -207,7 +207,7 @@ otel_child_span() {
   trace_id="$(otel_traceparent_trace_id "${flow_traceparent}")"
   otel-cli exec \
     --name "${name}" \
-    --service "platform-cicd" \
+    --service "glidepath" \
     --force-trace-id "${trace_id}" \
     --force-parent-span-id "${parent_span_id}" \
     --attrs "${attrs}" \
