@@ -90,6 +90,7 @@ RUN set -euo pipefail; \
 COPY --from=yajsv-build /go/bin/yajsv /usr/local/bin/yajsv
 
 COPY catalog/lib/otel.sh /opt/platform/lib/otel.sh
+COPY catalog/lib/chain-slug.sh /opt/platform/lib/chain-slug.sh
 COPY catalog/lib/cdevents.sh /opt/platform/lib/cdevents.sh
 COPY catalog/lib/github-app.sh /opt/platform/lib/github-app.sh
 COPY catalog/lib/retry.sh /opt/platform/lib/retry.sh

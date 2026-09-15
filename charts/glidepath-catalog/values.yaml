@@ -25,7 +25,7 @@ rbac:
 # rename. Every Task uses imagePullPolicy: IfNotPresent, so re-pushing :latest wouldn't
 # actually reach already-cached nodes - a real staleness class this platform has hit
 # before. Bump this tag (not just the image content) whenever schema.json changes.
-toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-08-backstage-notify
+toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-15-build-chain-slug
 
 # Base URL of the Backstage backend that notify-backstage.yaml POSTs to. One Backstage
 # instance platform-wide (not one per cluster, not one per Application), so this is a

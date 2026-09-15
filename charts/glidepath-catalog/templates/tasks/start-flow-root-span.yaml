@@ -36,6 +36,23 @@ spec:
       value: $(steps.check-and-start.results.start-time)
     - name: chain-id
       value: $(steps.check-and-start.results.chain-id)
+    # Computed here, not just left for a downstream CDEvent-triggered stage's
+    # own PipelineRun name to carry (flow-triggers.yaml's pipeline-run-name) -
+    # a flow with no downstream stage at all (a cicd.yaml that only ever
+    # defines build) previously had no slug anywhere in the cluster for that
+    # chain-id, since chain_id_to_slug only ever ran as part of naming a
+    # *second* run. It's a pure function of chain-id (chain-slug.sh), so
+    # computing it here too is always consistent with whatever a sibling
+    # stage's name would independently derive - not a second source of truth,
+    # the same one computed one step earlier. Revisits the "label build's
+    # PipelineRun with chain-slug" idea deferred 2026-09-05
+    # (docs/admin/naming-conventions.md) via a different mechanism than the
+    # one considered there: a Task result (which this Task already writes as
+    # a normal part of running, no extra RBAC) instead of a post-creation
+    # `kubectl label ... --overwrite` patch (which would have needed
+    # confirming pipeline-runner's ServiceAccount can patch PipelineRuns).
+    - name: chain-slug
+      value: $(steps.check-and-start.results.chain-slug)
   steps:
     - name: check-and-start
       image: {{ .Values.toolboxImage }}
@@ -44,6 +61,7 @@ spec:
         - name: traceparent
         - name: start-time
         - name: chain-id
+        - name: chain-slug
       env:
         - name: INCOMING_CHAIN_ID
           value: $(params.chain-id)
@@ -55,14 +73,20 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         source "${PLATFORM_LIB}/otel.sh"
+        # Not cdevents.sh - this task never sends an event of its own, and that file
+        # hard-requires CDEVENTS_BROKER_URL/NAMESPACE/TEKTON_PIPELINE_RUN to even source
+        # (set -euo pipefail + `: "${VAR:?...}"`). chain-slug.sh is the same
+        # chain_id_to_slug function with no such requirement.
+        source "${PLATFORM_LIB}/chain-slug.sh"
 
         # Idempotency: if chain-id is provided (event-chained case), pass everything through.
         # Otherwise (git-rooted case), generate new tracing identifiers.
         if [[ -n "${INCOMING_CHAIN_ID}" ]]; then
           # Event-chained: use provided values
+          chain_id="${INCOMING_CHAIN_ID}"
           printf '%s' "${INCOMING_TRACEPARENT}" > "$(step.results.traceparent.path)"
           printf '%s' "${INCOMING_FLOW_START_TIME}" > "$(step.results.start-time.path)"
-          printf '%s' "${INCOMING_CHAIN_ID}" > "$(step.results.chain-id.path)"
+          printf '%s' "${chain_id}" > "$(step.results.chain-id.path)"
         else
           # Git-rooted: generate new identifiers
           read -r traceparent start_time <<< "$(otel_flow_root_begin)"
@@ -76,5 +100,13 @@ spec:
           # dropped everything after the newline (platform.stage never made it into the
           # span). Caught live by checking a real span's actual attributes in Tempo -
           # platform.chain_id was present, platform.stage silently wasn't.
-          printf '%s' "$(uuidgen)" > "$(step.results.chain-id.path)"
+          chain_id="$(uuidgen)"
+          printf '%s' "${chain_id}" > "$(step.results.chain-id.path)"
         fi
+
+        # Computed unconditionally, both branches: a pure function of chain-id
+        # (chain-slug.sh), so this is always the exact same word pair a
+        # downstream CDEvent-triggered stage's own PipelineRun name would
+        # independently derive for the same chain-id - just no longer only
+        # available when such a stage actually exists.
+        printf '%s' "$(chain_id_to_slug "${chain_id}")" > "$(step.results.chain-slug.path)"
