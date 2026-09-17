@@ -1,15 +1,31 @@
 # platform/argocd/pr-namespace-ttl-sweep-cronjob.yaml
 #
 # Shared, platform-level CronJob (not per-Application) - deletes any
-# hangar.io/ephemeral-env=true namespace older than 24h, across all Applications.
+# hangar.io/ephemeral-env=true namespace whose owning ArgoCD Application no longer
+# exists, across all Applications.
 #
 # Backstop, not the primary mechanism: ephemeral-envs.yaml's ArgoCD finalizer normally
 # cascade-deletes a PR's namespace when its Application goes away. This catches cases
-# where that fails - a namespace lingering 24h is far more likely stuck than a
-# legitimately open PR, so age + label is enough with no GitHub check needed.
+# where that fails.
+#
+# Previously used a flat 24h namespace age as the trigger instead of checking for an
+# owning Application. That's wrong for any PR that just stays open longer than a day
+# (common, not the exception) - it deleted the namespace out from under a still-live
+# preview env, forcing ArgoCD to recreate it on the next selfHeal. Usually that
+# recreation succeeded (invisibly redeploying the env), but it could also race ArgoCD's
+# own resource cache and leave the Application permanently stuck retrying a sync against
+# a namespace that no longer exists ("namespaces \"X\" not found", self-heal then gives
+# up retrying that revision) - found live 2026-09-16 via checkout-api-pr-26, open 8 days,
+# whose Application sat there with the namespace gone and no owning PR activity to blame.
+# Checking for the owning Application directly removes the false trigger at the source
+# and needs no GitHub API call: namespace app-<app>-pr-<n> maps to Application
+# <app>-pr-<n> in namespace app-<app>-cicd (ephemeral-envs.yaml's own naming), and while
+# a real cascade-delete is in progress the Application still exists (deletionTimestamp
+# set, finalizer present) until it actually finishes - so this only fires once the
+# Application is fully gone, exactly the "cascade failed" case this backstop exists for.
 #
 # RBAC is cluster-scoped by necessity (Namespace has no namespaced form) but narrow:
-# list/get/delete on namespaces only.
+# list/get/delete on namespaces, plus read-only get on Applications to check ownership.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -30,6 +46,9 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["list", "get", "delete"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -77,24 +96,23 @@ spec:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true
                 capabilities: { drop: ["ALL"] }
-              env:
-                - name: TTL_HOURS
-                  value: "24"
               command: ["/bin/bash", "-c"]
               args:
                 - |
                   set -euo pipefail
-                  now_epoch="$(date -u +%s)"
-                  ttl_seconds=$(( TTL_HOURS * 3600 ))
                   kubectl get namespaces -l hangar.io/ephemeral-env=true -o json \
-                    | jq -r '.items[] | "\(.metadata.name) \(.metadata.creationTimestamp)"' \
-                    | while read -r ns created; do
-                        created_epoch="$(date -u -d "${created}" +%s)"
-                        age=$(( now_epoch - created_epoch ))
-                        if [ "${age}" -gt "${ttl_seconds}" ]; then
-                          echo "[ttl-sweep] deleting orphaned ephemeral namespace ${ns} (age ${age}s > ${ttl_seconds}s)"
-                          kubectl delete namespace "${ns}" --wait=false
+                    | jq -r '.items[].metadata.name' \
+                    | while read -r ns; do
+                        if [[ ! "${ns}" =~ ^app-(.+)-pr-([0-9]+)$ ]]; then
+                          echo "[ttl-sweep] ${ns} doesn't match app-<app>-pr-<number>, skipping"
+                          continue
+                        fi
+                        app_name="${BASH_REMATCH[1]}-pr-${BASH_REMATCH[2]}"
+                        cicd_ns="app-${BASH_REMATCH[1]}-cicd"
+                        if kubectl get application "${app_name}" -n "${cicd_ns}" >/dev/null 2>&1; then
+                          echo "[ttl-sweep] ${ns} still owned by Application ${app_name} in ${cicd_ns}, leaving alone"
                         else
-                          echo "[ttl-sweep] ${ns} still within TTL (age ${age}s), leaving alone"
+                          echo "[ttl-sweep] deleting orphaned ephemeral namespace ${ns} (no Application ${app_name} in ${cicd_ns})"
+                          kubectl delete namespace "${ns}" --wait=false
                         fi
                       done
