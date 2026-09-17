@@ -61,16 +61,66 @@ itself unhealthy for a stretch), not removed.
 
 ## Querying archived runs
 
-No `HTTPRoute` exists for the Results API - see below. Use the `tkn` CLI or a
-port-forward:
+No `HTTPRoute` exists for the Results API (see below), and `tkn`'s built-in `results`
+subcommand doesn't exist in this platform's installed CLI version (0.45.1) - use the
+separate **`tkn-results`** plugin instead (not bundled with `tkn`; there are no prebuilt
+release binaries either, install via Go):
 
 ```
-kubectl port-forward -n tekton-pipelines svc/tekton-results-api-service 8080:8080
-tkn results list --insecure --addr localhost:8080 default
+go install github.com/tektoncd/results/tools/tkn-results@latest
 ```
 
-(`--insecure` skips TLS verification against the operator's self-signed cert for a
-local port-forward - not a statement that the connection itself is unencrypted.)
+### Access control
+
+The API authorizes every request against Kubernetes RBAC (`AUTH_MODE=token`) for the
+`results.tekton.dev` API group (`results`/`records`/`logs`/`summary`), scoped to the
+run's own namespace - it's aggregated into the built-in `view`/`admin` ClusterRoles
+(confirmed live: `kubectl get clusterrole view -o yaml` shows the aggregated rule), but
+**no namespace in this cluster currently has anything bound to `view` or `admin`** - every
+app namespace's existing RoleBindings are narrow, purpose-built ones (`pipeline-runner`,
+token-refreshers, etc.), none of which include this permission. So today, querying
+Results requires either a cluster-admin identity or a RoleBinding you create yourself.
+For regular use, bind a dedicated read-only identity per namespace you want to query
+(`view` is the least-privileged ClusterRole that has the aggregated rule):
+
+```
+kubectl create serviceaccount results-reader -n <namespace>
+kubectl create rolebinding results-reader --clusterrole=view \
+  --serviceaccount=<namespace>:results-reader -n <namespace>
+```
+
+Not created as a standing identity by this rollout - deliberately left as a decision for
+whoever actually needs regular query access, rather than adding a new persistent
+credential to the cluster as a side effect of enabling the feature.
+
+### Commands
+
+`tkn-results` auto-port-forwards to `tekton-results-api-service` and auto-mints a token
+for `--sa`/`--sa-ns` using your own kubeconfig's authority (no manual token handling,
+no `kubectl port-forward` needed) - `--insecure` skips verifying the operator's
+self-signed cert, same non-statement about wire encryption as any local port-forward:
+
+```
+# list PipelineRun results in a namespace
+tkn-results list --sa=results-reader --sa-ns=<namespace> --insecure <namespace>
+
+# list records (PipelineRun/TaskRun objects + Log pointers) for one result
+tkn-results records list --sa=results-reader --sa-ns=<namespace> --insecure \
+  <namespace>/results/<result-id>
+
+# fetch one step's actual log content - the "logs" path swaps in for "records"
+# using that record's own name, not its later-listed id/uid field
+tkn-results logs get --sa=results-reader --sa-ns=<namespace> --insecure -o textproto \
+  <namespace>/results/<result-id>/logs/<log-record-name>
+```
+
+Live-verified end to end against real `app-backstage-cicd`/`app-checkout-api-cicd`
+pipelines: `list` and `records list` both return real data immediately; `logs get`
+against a record created **before** the checksum fix above returns `rpc error: code =
+Internal desc = Error streaming log` (the DB record exists, but its S3 object was never
+actually written - that upload failed at the time) - this is expected for anything
+archived before the fix, not a sign it's still broken. Anything archived after the fix
+streams real log content correctly.
 
 ## Why there's no external route yet
 
