@@ -35,6 +35,18 @@ rationale comments.
   for PipelineRun/TaskRun objects archive fine and the first two flags look correctly
   set, but zero log objects ever reach the bucket - the watcher's own startup log prints
   `logs disable in watcher` verbatim when it's missing.
+- **A fourth flag was needed even with all three above correct**: every log upload still
+  failed live with `operation error S3: UploadPart, compute input header checksum
+  failed, unseekable stream is not supported without TLS and trailing checksum`. The API
+  server's S3 client (`aws-sdk-go-v2`) defaults to a trailing-checksum multipart upload
+  that requires TLS, and this MinIO instance is plain HTTP (same as Loki/Tempo/Thanos's
+  already-working connections to it) - a real upstream SDK behavior change
+  (config v1.27+/SDK v1.30+ default to `when_supported`), not a MinIO-specific bug.
+  Fixed via the operator's documented deployment-override mechanism
+  (`result.options.deployments.tekton-results-api`, `tektoncd/operator`'s own
+  `TektonConfig.md`), setting `AWS_REQUEST_CHECKSUM_CALCULATION` /
+  `AWS_RESPONSE_CHECKSUM_VALIDATION=when_required` on the API deployment's `api`
+  container.
 
 ## Retention and its interaction with the pruner
 
