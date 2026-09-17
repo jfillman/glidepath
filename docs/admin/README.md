@@ -41,6 +41,8 @@ architecture.md wherever relevant.
 **Observability**
 - [tracing.md](tracing.md) - OpenTelemetry span/trace stitching across stages
 - [dora-metrics.md](dora-metrics.md) - deployment frequency/lead time/CFR/MTTR
+- [tekton-results.md](tekton-results.md) - long-term PipelineRun/TaskRun archival (logs
+  + full run history)
 - [OTEL_AND_CDEVENTS_FLOW.md](OTEL_AND_CDEVENTS_FLOW.md),
   [OTEL_CDEVENTS_COMPLETE_EXAMPLE.md](OTEL_CDEVENTS_COMPLETE_EXAMPLE.md),
   [OTEL_CDEVENTS_DEBUGGING_GUIDE.md](OTEL_CDEVENTS_DEBUGGING_GUIDE.md) - deep debugging

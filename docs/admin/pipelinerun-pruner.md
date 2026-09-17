@@ -11,6 +11,12 @@ flow-testing session can leave 100+ completed PipelineRuns behind, and this clus
 single-node max-pods-per-node ceiling has already been hit by exactly that kind of
 accumulation more than once (see [installation.md](installation.md)).
 
+**Since [Tekton Results](tekton-results.md) was enabled**, its watcher now
+archives-then-deletes most completed runs about an hour after completion - well before
+this CronJob's `RETENTION_HOURS` (default 24) would otherwise select them. In practice
+this CronJob should rarely find anything left to prune; it's kept as a safety net for
+whatever Results doesn't catch, not removed.
+
 ## Retention rule
 
 PipelineRuns are grouped by `(namespace, tekton.dev/pipeline label)` - Tekton's own
