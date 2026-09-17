@@ -26,11 +26,15 @@ rationale comments.
   buckets - not an ExternalSecret).
 - **Only completed runs are archived** (`watcher.disable_storing_incomplete_runs: true`) - no
   in-progress-run noise.
-- **Step logs are queryable**, not just CR spec/status (`logs_api: true`) - **and**
-  actually land in the MinIO bucket, not just get archived to the DB
-  (`logs_type: S3`). `logs_api` alone does not select a storage backend - live-verified
-  during rollout: DB records archived correctly with only `logs_api: true` set, but zero
-  objects ever reached the bucket until `logs_type: S3` was added too.
+- **Step logs are queryable and land in the MinIO bucket** - this needs three separate
+  flags, confirmed the hard way during rollout: `result.logs_api: true` enables the API
+  server's log-retrieval endpoints, `result.logs_type: S3` picks the storage backend, and
+  `result.watcher.logs_api: true` - a **different** field on the watcher's own config,
+  not inherited from `result.logs_api` despite the identical name - is what actually
+  makes the watcher push step logs to the API at all. Without the third one, DB records
+  for PipelineRun/TaskRun objects archive fine and the first two flags look correctly
+  set, but zero log objects ever reach the bucket - the watcher's own startup log prints
+  `logs disable in watcher` verbatim when it's missing.
 
 ## Retention and its interaction with the pruner
 
