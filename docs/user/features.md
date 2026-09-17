@@ -125,8 +125,11 @@ Documented here so you don't spend time debugging a config that can't possibly d
 anything - these are accepted by the schema and reserved for known future work, not
 typos:
 
-- **`deploy.strategy: rollout`** - Argo Rollouts (canary/blue-green) isn't built yet;
-  every deploy is a plain Deployment regardless of this value.
+- **`deploy.strategy: deployment`** - a plain Deployment isn't rendered anymore;
+  every deploy provisions an Argo Rollout (canary/blue-green) regardless of this
+  value. `rollout` is now the real, default behavior - `deployment` is kept
+  schema-valid only so an existing cicd.yaml that sets it explicitly still
+  validates.
 - **`build.sonar`** - reserved, no current effect.
 
 Multi-cluster releases (`deploy.upperEnvironments`' `{name, cluster}` form,

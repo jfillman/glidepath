@@ -106,8 +106,8 @@
         "strategy": {
           "type": "string",
           "enum": ["deployment", "rollout"],
-          "default": "deployment",
-          "description": "deployment = native k8s Deployment rollout; rollout = Argo Rollouts (canary/blue-green). Schema-validated and reserved for future use, but rollout has NO effect yet - every deploy is a plain Deployment `set image` regardless of this value. Kept in the schema now, same as pipelines[].steps[].cluster, so today's cicd.yaml files don't need a breaking change once Argo Rollouts support lands."
+          "default": "rollout",
+          "description": "deployment = native k8s Deployment rollout; rollout = Argo Rollouts (canary/blue-green). Rollout support has since landed and is the only strategy actually implemented (deploy-manifests.yaml manages an Argo Rollout unconditionally via the airframe-application chart - confirmed live, 2026-09-17): `deployment` is schema-valid but has NO effect - nothing renders a plain Deployment anymore. This is the reverse of this field's original meaning when it was first added (rollout was the future, unimplemented option then); kept as a two-value enum, default flipped, so an existing cicd.yaml that explicitly sets `strategy: deployment` still validates rather than breaking, even though it no longer describes real behavior."
         },
         "promotionOrder": {
           "type": "array",

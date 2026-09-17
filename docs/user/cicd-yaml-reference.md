@@ -87,10 +87,11 @@ deploy:
                                  # either a plain name (same-cluster, e.g. "staging") or
                                  # {name, cluster} if that env is hosted on a different
                                  # physical cluster - see docs/multi-cluster.md.
-  strategy: deployment            # Optional, default "deployment". "rollout" (Argo
-                                 # Rollouts canary/blue-green) is accepted but has
-                                 # NO EFFECT YET - every deploy is a plain Deployment
-                                 # `set image` regardless of this value.
+  strategy: rollout               # Optional, default "rollout" (Argo Rollouts
+                                 # canary/blue-green) - the only strategy actually
+                                 # implemented. "deployment" is still schema-valid
+                                 # but has NO EFFECT - nothing renders a plain
+                                 # Deployment anymore.
 
 # --- ephemeralEnvironments: optional block. See features.md for the full writeup. ---
 ephemeralEnvironments:
@@ -390,10 +391,10 @@ without having tested anything, same as `enabled: false`.
 deploy:
   lowerEnvironments: [dev]      # default
   upperEnvironments: []         # default
-  strategy: deployment          # default; "rollout" is reserved for future
-                                 # Argo Rollouts support and has NO effect yet -
-                                 # every deploy is a plain Deployment `set image`
-                                 # regardless of this value today.
+  strategy: rollout             # default; the only strategy actually implemented -
+                                 # every deploy provisions an Argo Rollout.
+                                 # "deployment" is still schema-valid but has NO
+                                 # effect today.
   promotionOrder: []            # default; optional, see below
 ```
 
