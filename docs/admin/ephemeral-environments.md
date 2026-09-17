@@ -33,14 +33,15 @@ developer adds the `preview` label to a PR on nodejs-demo-app
      below) - nothing in the repo needs per-PR editing beyond that one cicd.yaml entry,
      added once at onboarding
   -> Application syncs into app-nodejs-demo-app-pr-<number>, created via
-     CreateNamespace=true (see "Namespace cleanup: TTL sweep, not cascade-delete" below -
-     this is a deliberate change from the old Kustomize-based design)
+     CreateNamespace=true (see "Namespace cleanup: cascade-delete, with a TTL backstop"
+     below - a deliberate change from the old Kustomize-based design)
   -> developer: kubectl port-forward -n app-nodejs-demo-app-pr-<number> svc/nodejs-demo-app <port>:80
   -> PR closed, or `preview` label removed
   -> generator stops returning that PR -> ArgoCD deletes the generated Application ->
-     resources-finalizer.argocd.argoproj.io cascade-deletes everything it tracks (the
-     Rollout/Service/etc, NOT the namespace itself) -> the namespace sits empty until the
-     TTL sweep removes it (up to 24h later)
+     resources-finalizer.argocd.argoproj.io cascade-deletes everything it tracks, namespace
+     included (see "Namespace cleanup: cascade-delete, with a TTL backstop" below - this
+     wasn't always true, and the fix matters) -> namespace is gone within the same ~180s
+     window, no separate sweep needed in the normal case
 ```
 
 ## Deploying through airframe-application, not raw Kustomize
@@ -91,26 +92,35 @@ independently via `{{ trunc 12 .head_sha }}`.
 "Onboarding" step 1 below. Nothing generates one automatically; `cicd.yaml`'s `pipelines:`
 map needs an explicit entry with `trigger.event: pull_request`.
 
-## Namespace cleanup: TTL sweep, not cascade-delete
+## Namespace cleanup: cascade-delete, with a TTL backstop
 
-Real, deliberate trade-off, not an oversight: `airframe-application`, like the lower-env
-tier, never renders a `Namespace` object of its own - it relies on
-`syncOptions: [CreateNamespace=true]`. `CreateNamespace=true` is a sync-time convenience,
-not something that adds the namespace to the Application's own tracked-resource set, so
-`resources-finalizer.argocd.argoproj.io`'s cascade-delete removes the
-`Rollout`/`Service`/etc. it actually tracks but leaves the now-empty namespace behind -
-confirmed live, and the exact bug the old cd-pipelines system hit (see below) and never
-fixed.
+**This used to be a real, accepted trade-off; it isn't anymore, and this section is
+kept updated rather than archived because the TTL sweep's own logic depended on which
+of these was true.** Originally (through 2026-08-24), `airframe-application`, like the
+lower-env tier, never rendered a `Namespace` object of its own - it relied on
+`syncOptions: [CreateNamespace=true]`, a sync-time convenience that doesn't add the
+namespace to the Application's own tracked-resource set. `resources-finalizer.argocd.
+argoproj.io`'s cascade-delete removed the `Rollout`/`Service`/etc. it actually tracked
+but left the now-empty namespace behind - confirmed live, and the exact bug the old
+cd-pipelines system hit (see below) and never fixed. The TTL sweep (below) was made the
+real cleanup path for that leftover namespace instead of reverting to a tracked
+`Namespace` object, which the shared chart didn't support at the time.
 
-Accepted here instead of reverting to a tracked `Namespace` object (which the shared
-`airframe-application` chart doesn't support): `ephemeral-envs.yaml`'s
-`managedNamespaceMetadata` stamps `hangar.io/ephemeral-env: "true"` on every PR
-namespace it creates, so `pr-namespace-ttl-sweep-cronjob.yaml`'s existing 24h sweep (see
-below) becomes the real cleanup path for the empty namespace left behind, not just a
-backstop for a stuck finalizer. Means a closed PR's namespace can sit empty for up to
-24h rather than disappearing the instant the PR closes - a real, visible difference from
-the old design, judged worth it for standardizing on the same chart every other tier
-uses.
+**`airframe-application` v0.3.40+ now renders an explicit, tracked `Namespace` manifest**
+(`templates/namespace/namespace.yaml`) - ArgoCD prunes it on cascade-delete same as any
+other resource it tracks, closing the original gap properly instead of routing around it.
+A closed PR's namespace is now gone within the same ~180s the generator takes to notice
+the PR closed, not "up to 24h later." `CreateNamespace=true` stays set (harmless no-op
+once the namespace is already a tracked manifest) and `hangar.io/ephemeral-env: "true"`
+moved from `managedNamespaceMetadata` (which an explicit `Namespace` manifest overwrites
+rather than merges with) to the chart's own `namespace.labels` value.
+
+This makes the TTL sweep (below) a backstop again, not the primary path - which matters
+because its trigger had to change to match: age-based deletion made sense when the sweep
+was catching *every* closed PR's namespace (all of them 24h+ orphaned, by construction,
+since nothing else ever removed them). Once cascade-delete does the normal case in ~180s,
+"namespace age" stops meaning "abandoned" and starts meaning "PR's been open a while" -
+see below.
 
 ## What's different from the old system
 
@@ -195,26 +205,49 @@ the app-repo name directly instead of requiring the `gitops-` prefix. Verified l
 token request succeeds, the existing gitops-repo path still works unchanged, and a
 request for an unrelated repo still gets rejected.
 
-## TTL backstop (now the real cleanup path, not just a backstop)
+## TTL backstop (a backstop again, not the primary cleanup path)
 
 `pr-namespace-ttl-sweep-cronjob.yaml` is a single shared, platform-level CronJob (applied
 once, not per Application) in `platform-system`, running every 30 minutes: lists every
 namespace labeled `hangar.io/ephemeral-env=true` across all Applications and deletes any
-older than `TTL_HOURS` (24) by `metadata.creationTimestamp`. Originally built purely as a
-backstop to the finalizer (a namespace surviving 24h despite the finalizer firing is far
-more likely to be something stuck than a still-legitimately-open PR, so no live GitHub
-check is needed here, just age + the label) - since the 2026-08-24 move to
-`airframe-application` (see "Namespace cleanup: TTL sweep, not cascade-delete" above), this is
-now the mechanism that actually removes every PR namespace, not just the rare stuck one.
-RBAC is cluster-scoped by necessity (`Namespace` has no namespaced form) but deliberately
-narrow: `list`/`get`/`delete` on `namespaces` only.
+whose owning ArgoCD Application no longer exists.
+
+**This used to key off `metadata.creationTimestamp` instead - delete anything older than
+`TTL_HOURS` (24), regardless of whether an Application still owned it.** That was correct
+back when cascade-delete couldn't remove the namespace at all (see "Namespace cleanup:
+cascade-delete, with a TTL backstop" above) - every closed PR's namespace was, by
+construction, an orphan sitting past 24h, so age alone was a fine proxy and no live
+GitHub check was needed. It stopped being correct once `airframe-application` v0.3.40+
+made the namespace a tracked, cascade-deleted resource: age no longer implies orphaned,
+it just means the PR has been open more than a day - completely normal. The sweep was
+still keying off age anyway, so it deleted the namespace of *any* preview environment
+whose PR outlived 24h, not just genuinely stuck ones. ArgoCD's own selfHeal usually
+recreated it on the next reconcile (invisible, but pointless churn - a live redeploy for
+no reason), but it could also lose that race against ArgoCD's own resource cache and get
+permanently stuck retrying a sync against a namespace that no longer existed - found live
+2026-09-16 via `checkout-api-pr-26` (open 8 days): its Application sat there `Healthy`
+turned `Missing`, endlessly failing to re-sync, while the PR itself was never closed.
+
+Fixed by checking Application ownership instead of age: namespace `app-<app>-pr-<n>`
+maps to Application `<app>-pr-<n>` in `app-<app>-cicd` (`ephemeral-envs.yaml`'s own naming
+convention). If that Application still exists, the sweep leaves the namespace alone,
+however old it is - a real cascade-delete in progress still shows the Application present
+(with a `deletionTimestamp` and the finalizer still attached) right up until it actually
+finishes, so this only ever fires once the Application is completely gone: exactly the
+"cascade-delete failed" case the backstop exists for, with no GitHub API call needed
+(same design goal as before, just a different, more accurate proxy). RBAC is
+cluster-scoped by necessity (`Namespace` has no namespaced form) but deliberately narrow:
+`list`/`get`/`delete` on `namespaces`, plus read-only `get` on `applications.argoproj.io`
+to check ownership.
 
 The label this sweep selects on (`hangar.io/ephemeral-env: "true"`) is stamped by
-`ephemeral-envs.yaml`'s own `managedNamespaceMetadata` at sync time, not by a manifest in
-the app's own repo (that was true only under the old Kustomize-based design, where
-`k8s/ephemeral/namespace.yaml` set it). The old cd-pipelines system had an equivalent
-sweep for its branch-based ephemeral envs but never extended it to PR-based ones - this
-platform's sweep has covered both since day one, specifically so that gap can't recur.
+`ephemeral-envs.yaml`'s own chart values (`namespace.labels`, now that an explicit
+`Namespace` manifest overwrites `managedNamespaceMetadata` rather than merging with it -
+see above) at sync time, not by a manifest in the app's own repo (that was true only
+under the old Kustomize-based design, where `k8s/ephemeral/namespace.yaml` set it). The
+old cd-pipelines system had an equivalent sweep for its branch-based ephemeral envs but
+never extended it to PR-based ones - this platform's sweep has covered both since day
+one, specifically so that gap can't recur.
 
 ## A real gap this surfaced: newly-created GHCR packages default to private
 
@@ -347,10 +380,14 @@ kubectl port-forward -n app-nodejs-demo-app-pr-<number> svc/nodejs-demo-app 8080
 - `kubectl port-forward` into it and confirm the PR's actual code is running (not just
   any deploy).
 - Close the PR (or remove the label) and confirm the `Application` is gone within the
-  poll interval, not just `Terminating`. The namespace itself is NOT expected to
-  disappear immediately - see "Namespace cleanup: TTL sweep, not cascade-delete" above -
-  confirm instead that it's empty (no `Rollout`/`Service`/etc left in it) and that it
-  actually gets swept within the TTL window, not orphaned forever.
+  poll interval, not just `Terminating`, and that `kubectl get ns
+  app-nodejs-demo-app-pr-<number>` is gone within the same window - cascade-delete now
+  prunes the namespace itself too (see "Namespace cleanup: cascade-delete, with a TTL
+  backstop" above), it shouldn't linger.
+- Confirm the TTL sweep leaves a still-open PR's namespace alone regardless of age: `kubectl
+  create job --from=cronjob/pr-namespace-ttl-sweep <name> -n platform-system`, then check
+  its logs show `still owned by Application ... leaving alone` for any open PR's namespace,
+  not a deletion.
 - Security check: from `platform-cicd-demo`'s SA, request a token for a repo the Application
   doesn't own via `/github-installation-token` - should still be rejected (403), same as
   the release-stage check.
