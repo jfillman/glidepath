@@ -26,7 +26,11 @@ rationale comments.
   buckets - not an ExternalSecret).
 - **Only completed runs are archived** (`watcher.disable_storing_incomplete_runs: true`) - no
   in-progress-run noise.
-- **Step logs are queryable**, not just CR spec/status (`logs_api: true`).
+- **Step logs are queryable**, not just CR spec/status (`logs_api: true`) - **and**
+  actually land in the MinIO bucket, not just get archived to the DB
+  (`logs_type: S3`). `logs_api` alone does not select a storage backend - live-verified
+  during rollout: DB records archived correctly with only `logs_api: true` set, but zero
+  objects ever reached the bucket until `logs_type: S3` was added too.
 
 ## Retention and its interaction with the pruner
 
