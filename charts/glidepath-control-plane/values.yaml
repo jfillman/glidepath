@@ -183,9 +183,13 @@ secretStore:
     # runs on the same cluster that hosts Infisical, see cluster-secret-store.yaml.
     hostAPI: http://infisical-infisical-standalone-infisical.infisical.svc.cluster.local:8080/api
     # Name of the Kubernetes Secret (in this chart's own namespace) holding the
-    # Infisical machine-identity client ID/secret ESO authenticates with - provisioned
-    # out-of-band (not by this chart), see docs/admin/app-secrets.md.
-    credentialsSecretName: platform-cicd-infisical-creds
+    # identityId ESO authenticates with - populated by the SecretStore Composition's
+    # own synthetic-secret step (infisical-project.yaml), named
+    # "<projectSlug>-infisical-creds" by that Composition's own convention. Was
+    # "platform-cicd-infisical-creds" under the old infisical-secretstore-operator;
+    # renamed 2026-09-18 to match provider-infisical's naming exactly rather than
+    # fighting it.
+    credentialsSecretName: platform-cicd-kind-dev-infisical-creds
 
 # 2026-08-19: no per-Application ClusterSecretStore/appSecretStores list rendered by
 # this chart any more - a real, live redundancy caught after the previous fix:

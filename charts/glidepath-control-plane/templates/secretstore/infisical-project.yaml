@@ -1,33 +1,63 @@
 # templates/secretstore/infisical-project.yaml (docs/admin/secrets-management.md)
 #
-# The control plane's own Infisical project - genuinely platform-wide operational
-# secrets ONLY (registry-credentials, github-app-creds, per-cluster relay tokens), never
-# any Application's own secrets (those come from that Application's own idp-managed
-# project instead - see docs/admin/app-secrets.md; a real, since-corrected mistake
-# briefly put them here too). Deliberately NOT one of airframe's own
-# per-(app,cluster) projects (slug <appName>-<cluster>, created by its SecretStore
-# XRD/Composition) - this control plane isn't an "app" in that sense, and reusing an
-# app's own project would tie this platform's operational secrets to whichever app
-# happened to be onboarded first. Same InfisicalProject CRD
-# (secrets.idp.io/v1alpha1) idp's Composition uses, reconciled by the same
-# infisical-secretstore-operator already running on this cluster - rendered directly
-# here instead of going through the SecretStore XRD/Crossplane Composition layer, which
-# is scoped for per-app, namespace-narrowed concerns this control plane's own secrets
-# don't need.
+# 2026-09-18: migrated off the hand-rolled infisical-secretstore-operator's
+# InfisicalProject CR (secrets.idp.io/v1alpha1) - that operator is being
+# decommissioned now that idp's own SecretStore Composition has already cut every
+# per-app project over to github.com/jfillman/provider-infisical's real resource
+# chain. This control plane's own project needed the same migration to unblock
+# removing the operator entirely.
 #
-# authMethod: kubernetes - see cluster-secret-store.yaml's own header for why this is
-# hardcoded rather than a live cluster-registry lookup.
-apiVersion: secrets.idp.io/v1alpha1
-kind: InfisicalProject
+# Rather than hand-render provider-infisical's Project/ProjectEnvironment/Identity/
+# IdentityKubernetesAuth/ProjectIdentity chain directly in this plain Helm chart (the
+# way idp's Composition does), this renders a `SecretStore` XR instead - reusing
+# catalog.idp.io's own XRD/Composition wholesale. That Composition already solves a
+# real problem a plain Helm template can't: IdentityKubernetesAuth needs a live
+# Kubernetes token-reviewer JWT + CA cert as LITERAL string fields (no SecretRef
+# alternative exists on that CRD, confirmed against its schema), and those can only
+# be sourced live, per-reconcile, via a Crossplane Function's `.observed.resources`
+# access - not at Helm template-render time, and ArgoCD renders this chart via
+# `helm template`, which has no live cluster access for a `lookup` call either.
+# Baking a real bearer token into values.yaml/git was rejected outright (this
+# platform's own standing "never persist credentials" posture).
+#
+# appRef.name: "platform-cicd" is NOT a real onboarded Application - the XRD's own
+# schema says this field is "Labeling/audit only - not a live lookup", so a
+# synthetic name here doesn't collide with or misrepresent any real app. cluster:
+# "kind-dev" (this chart is a true singleton, always installed on the cluster that
+# hosts Infisical - see cluster-secret-store.yaml). This computes the exact same
+# project slug ("platform-cicd-kind-dev") the old InfisicalProject CR already used,
+# so the cutover reuses the identical slug (after deleting the old CR to free it -
+# same one-at-a-time, backup-verified procedure used for every app-tier project).
+#
+# KNOWN, ACCEPTED SIDE EFFECT: this Composition also renders its OWN
+# ClusterSecretStore, named after the project slug ("platform-cicd-kind-dev") - a
+# second, unused ClusterSecretStore alongside this chart's own
+# cluster-secret-store.yaml (name: platform-secret-store, unchanged, still the ONLY
+# store any real ExternalSecret in this platform references - confirmed 40+
+# references across 5 repos, all by that fixed name, none renamed). Unlike the past
+# "real live redundancy" bug this file's own history already warns about (two
+# ACTIVELY-USED stores with inconsistent scope), this one is inert: nothing
+# references "platform-cicd-kind-dev" as a store name, so it carries no correctness
+# risk - just one harmless extra object. Removing it would mean forking this
+# Composition or adding a "skip ClusterSecretStore" toggle to catalog.idp.io's own
+# XRD, out of scope for this decommission.
+#
+# The synthetic identityId Secret this Composition produces is named
+# "<projectSlug>-infisical-creds" = "platform-cicd-kind-dev-infisical-creds" (NOT
+# the old operator's "platform-cicd-infisical-creds") - see values.yaml's own
+# secretStore.infisical.credentialsSecretName, updated to match. cluster-secret-
+# store.yaml itself needed no changes: it already sources credentialsSecretName from
+# .Values, not a hardcoded name.
+apiVersion: catalog.idp.io/v1alpha1
+kind: SecretStore
 metadata:
-  name: {{ .Values.secretStore.infisical.projectSlug }}
+  name: platform-cicd-kind-dev
   namespace: platform-system
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
     hangar.io/subcomponent: "secretstore"
 spec:
-  projectName: {{ .Values.secretStore.infisical.projectSlug }}
-  slug: {{ .Values.secretStore.infisical.projectSlug }}
+  appRef:
+    name: platform-cicd
+  cluster: kind-dev
   environmentSlug: shared
-  credentialsSecretName: {{ .Values.secretStore.infisical.credentialsSecretName }}
-  authMethod: kubernetes

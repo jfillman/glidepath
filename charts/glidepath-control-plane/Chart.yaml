@@ -18,5 +18,5 @@ description: >-
   would add a flexibility nobody needs at the cost of a real cross-chart-reference
   mismatch risk. Install with `--namespace platform-system --create-namespace`.
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "1.0.0"
