@@ -47,6 +47,10 @@ doraExporterImage: ghcr.io/jfillman/platform-cicd-dora-exporter:latest
 # "latest" tag caused here.
 interceptorImage: ghcr.io/jfillman/platform-cicd-token-review-interceptor:latest
 
+# templates/tekton/tekton-results-relay.yaml's own image - same reasoning as
+# doraExporterImage above (real registry-published tag, not a local-only build).
+tektonResultsRelayImage: ghcr.io/jfillman/platform-cicd-tekton-results-relay:latest
+
 # This platform's own repo - the tenant-onboarding ApplicationSet (templates/argocd/
 # tenant-onboarding-applicationset.yaml) reads tenants/*.yaml from here (its generator
 # source) AND renders the glidepath-app chart straight from here at main HEAD. Also

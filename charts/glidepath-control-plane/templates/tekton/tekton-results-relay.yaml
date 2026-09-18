@@ -1,0 +1,111 @@
+# templates/tekton/tekton-results-relay.yaml
+#
+# Fronts tekton-results-api-service so backstage-ingestor's existing services/proxy
+# grant (gitops-cluster-dev's 00-bootstrap/backstage-ingestor-rbac) can reach Tekton
+# Results at all - see platform/tekton-results-relay/cmd/tekton-results-relay/main.go's
+# own header for the full story (a real Kubernetes limitation: the generic
+# services/proxy subresource never forwards the caller's Authorization header to the
+# proxied backend, and Results' own API server requires one). This relay re-issues each
+# request to Results using its OWN identity instead - which is what the ClusterRole
+# below actually grants, not a passthrough of whatever RBAC the original caller has.
+#
+# Cluster-scoped ClusterRole (not namespaced to one app's app-<name>-cicd), same
+# reasoning as backstage-argo-rollouts-viewer/backstage-tekton-rerun in the RBAC repo:
+# onboarded apps each get their own -cicd namespace and this identity has no way to
+# know the full set up front. get+list only - this relay only ever reads.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tekton-results-relay
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "tekton-results-relay"
+  namespace: platform-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tekton-results-relay-reader
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "tekton-results-relay"
+rules:
+  - apiGroups: ["results.tekton.dev"]
+    resources: ["results", "records"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tekton-results-relay-reader
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "tekton-results-relay"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: tekton-results-relay-reader }
+subjects:
+  - kind: ServiceAccount
+    name: tekton-results-relay
+    namespace: platform-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tekton-results-relay
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "tekton-results-relay"
+  namespace: platform-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: tekton-results-relay }
+  template:
+    metadata:
+      labels: { app: tekton-results-relay }
+    spec:
+      serviceAccountName: tekton-results-relay
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532 # distroless "nonroot" - see cmd/tekton-results-relay/Dockerfile
+        seccompProfile: { type: RuntimeDefault }
+      # Own identity's token, re-read from disk each request (not cached) so kubelet's
+      # rotation just works with no pod restart - same pattern as
+      # templates/clusters/argocd-outcome-relay.yaml's broker-token volume. No custom
+      # `audience` set, unlike that one: Results does plain Kubernetes TokenReview with
+      # no custom audience requirement, confirmed live via `kubectl create token
+      # backstage-ingestor` (no --audience flag) succeeding against Results' ClusterIP
+      # directly during this integration's verification.
+      volumes:
+        - name: results-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+      containers:
+        - name: relay
+          image: {{ .Values.tektonResultsRelayImage }}
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080, name: http }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http, scheme: HTTP }
+          volumeMounts:
+            - name: results-token
+              mountPath: /var/run/secrets/results
+              readOnly: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tekton-results-relay
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "tekton-results-relay"
+  namespace: platform-system
+spec:
+  selector: { app: tekton-results-relay }
+  ports: [{ name: http, port: 8080, targetPort: http }]
