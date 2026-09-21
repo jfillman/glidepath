@@ -1,0 +1,16 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: glidepath
+  description: >-
+    Tekton/Pipelines-as-Code CI/CD platform underneath Hangar. See docs/user/
+    for the application-developer guide and docs/admin/ for architecture, ADRs,
+    and operations.
+  annotations:
+    github.com/project-slug: jfillman/glidepath
+    backstage.io/techdocs-ref: dir:.
+spec:
+  type: service
+  owner: crossfader@gmail.com
+  lifecycle: experimental
+  system: hangar

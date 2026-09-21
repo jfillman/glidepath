@@ -1,0 +1,48 @@
+site_name: 'Glidepath'
+site_description: 'Tekton/Pipelines-as-Code CI/CD platform underneath Hangar'
+
+nav:
+  - Home: index.md
+  - User guide:
+      - Overview: user/README.md
+      - Install guide: user/install-guide.md
+      - Quickstart: user/quickstart.md
+      - Features: user/features.md
+      - cicd.yaml reference: user/cicd-yaml-reference.md
+      - Examples: user/examples/README.md
+  - Admin guide:
+      - Overview: admin/README.md
+      - Architecture: admin/architecture.md
+      - Security: admin/security.md
+      - Installation: admin/installation.md
+      - Onboarding mechanics: admin/onboarding-mechanics.md
+      - Concepts: admin/concepts.md
+      - Chaining & multi-cluster:
+          - Chaining: admin/chaining.md
+          - Multi-cluster: admin/multi-cluster.md
+      - Governance & supply chain:
+          - Governance stubs: admin/governance-stubs.md
+          - Image signing: admin/image-signing.md
+          - Provenance policy: admin/provenance-policy.md
+          - Commit signing: admin/commit-signing.md
+          - Rootless builds: admin/rootless-builds.md
+      - Release & operations:
+          - Release flow: admin/release.md
+          - Release guardrails: admin/release-guardrails.md
+          - Catalog versioning: admin/catalog-versioning.md
+          - PipelineRun pruner: admin/pipelinerun-pruner.md
+          - Stalled pipeline detector: admin/stalled-pipeline-detector.md
+      - Observability:
+          - Tracing: admin/tracing.md
+          - DORA metrics: admin/dora-metrics.md
+          - Tekton Results: admin/tekton-results.md
+      - Notifications & secrets:
+          - Notifications: admin/notifications.md
+          - Secrets management: admin/secrets-management.md
+          - App secrets: admin/app-secrets.md
+          - Ephemeral environments: admin/ephemeral-environments.md
+          - Naming conventions: admin/naming-conventions.md
+      - Architecture decisions: admin/adr/README.md
+
+plugins:
+  - techdocs-core
