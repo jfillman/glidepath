@@ -17,7 +17,7 @@
       "properties": {
         "agent": {
           "type": "string",
-          "enum": ["nodejs-18", "nodejs-20", "nodejs-22", "openjdk-17", "openjdk-21", "python-3.11", "go-1.22"],
+          "enum": ["nodejs-18", "nodejs-20", "nodejs-22", "openjdk-17", "openjdk-21", "python-3.11", "python-3.12", "python-3.13", "go-1.22", "go-1.23", "go-1.24"],
           "description": "Named build agent image from the platform catalog. Not a raw image reference - keeps step code portable and centrally patchable. Still required even when `script` is omitted, since unit tests always run inside this image regardless of build strategy."
         },
         "script": {

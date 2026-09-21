@@ -22,6 +22,8 @@ distilled from.
 | [0013](0013-catalog-git-tag-pinned-distribution.md) | Shared catalog distributed as a git-tag-pinned Helm chart, not a bundle resolver |
 | [0014](0014-keyless-signing-two-trust-roots.md) | Keyless signing uses two separate trust roots - public Sigstore for humans, self-hosted Fulcio for workloads |
 | [0015](0015-provenance-policy-validates-attestation-input.md) | Provenance policy validates the attestation as input, additive to commit signing |
+| [0016](0016-tekton-results-archival.md) | Tekton Results for long-term PipelineRun/TaskRun archival |
+| [0017](0017-cicd-yaml-scaffolded-not-hand-authored.md) | `cicd.yaml` is scaffolded at onboarding, not hand-authored first |
 
 New decisions get a new numbered file here, not a paragraph buried in an unrelated doc.
 
