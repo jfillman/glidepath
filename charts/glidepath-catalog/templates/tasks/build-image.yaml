@@ -130,7 +130,19 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         CFG='$(params.config-json)'
-        DOCKERFILE_PATH="$(jq -r '.build.dockerfile' <<< "${CFG}")"
+        # schemas/cicd.schema.json documents build.dockerfile's default as
+        # "./Dockerfile" (optional field) - jq -r on a missing key returns
+        # the literal 4-character string "null", not empty/unset, so every
+        # app that (correctly, per that documented default) omits this field
+        # got a real path of ".../null" handed to kaniko instead, which
+        # kaniko can't resolve as a file and fails deep in its own dockerfile-
+        # resolution internals ("error resolving dockerfile path: copying
+        # dockerfile: copying file: write /kaniko/Dockerfile: copy_file_range:
+        # is a directory" - confirmed live, boarding-api's build-image
+        # TaskRun, 2026-09-22: resolve-build-config's own dockerfile-path
+        # result was the string "null"). Same `//` default pattern
+        # build.platforms already uses two blocks down.
+        DOCKERFILE_PATH="$(jq -r '.build.dockerfile // "./Dockerfile"' <<< "${CFG}")"
         SHORT_SHA="$(cut -c1-7 <<< "$(params.git-revision)")"
         SRC="$(workspaces.source.path)"
 
