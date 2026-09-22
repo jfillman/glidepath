@@ -21,6 +21,14 @@ build:
   # build.script is omitted (whole build inside the Dockerfile, no separate
   # build-source stage).
   dockerfile: ./Dockerfile
+  # Which architecture(s) kaniko builds+pushes, then crane assembles into one
+  # multi-arch manifest (build-image.yaml). Matches cicd.schema.json's own
+  # default - added here 2026-09-22 alongside build-image.yaml's own dockerfile-
+  # default fix, since this fixture file had drifted from the schema (platforms
+  # was added in a later schema/pipeline change than this file's last update,
+  # so `helm template`/`helm lint` against this file alone weren't exercising
+  # a real platforms value the way every other build.* field here is).
+  platforms: [arm64, amd64]
   unitTest:
     # Renders the unit-test step in the build stage. Set false for an Application whose
     # build pipeline shouldn't fail on missing/red unit tests yet (e.g. mid-migration).
