@@ -37,16 +37,19 @@
 # lfstack.push" - a real, upstream QEMU bug (bisected to commit 2d708164e0,
 # "linux-user: Define TASK_UNMAPPED_BASE in $guest/target_mman.h", still present
 # in the qemu-v10.2.3 tonistiigi/binfmt image 00-bootstrap/binfmt/ installs as of
-# 2026-09-22) that hands Go's GC addresses its lock-free stack can't pack
+# 2026-09-22) that hands Go's GC an address its lock-free stack can't pack
 # correctly. Confirmed live on boarding-api (arm64 leg built the identical source
-# fine, natively; amd64 crashed here). golang/go#69255 tracks a real fix for Go
-# 1.26; until then, this Task can't fix it - kaniko doesn't propagate its own
-# process environment into RUN steps (confirmed against kaniko's own behavior),
-# so there's no platform-side env var that reaches the crash. The workaround
-# (`ENV GODEBUG=asyncpreemptoff=1` before the build's RUN step, disabling the
-# async-preemption signal machinery most of these QEMU-emulation GC crashes
-# trace back to) has to go in the affected app's own Containerfile - see
-# boarding-api's for a real example.
+# fine, natively; amd64 crashed here). golang/go#69255 tracks a real runtime-side
+# fix, landing in Go 1.25.4; until the build agent offers that, this Task can't
+# fix it - kaniko doesn't propagate its own process environment into RUN steps
+# (confirmed against kaniko's own behavior), so there's no platform-side env var
+# that reaches the crash. The workaround has to go in the affected app's own
+# Containerfile - see boarding-api's for a real example - and specifically has to
+# be `ENV GOGC=off` before the build's RUN step, not the more commonly-cited
+# `GODEBUG=asyncpreemptoff=1`: that targets a *different* QEMU+Go crash class (a
+# signal-timing race) and was tried first here, live, without effect - this bug is
+# an address-layout defect, and GOGC=off works by never running the GC pass that
+# trips over the bad address, not by changing any timing.
 #
 # kaniko itself has no multi-arch/manifest-list capability (it only ever produces one
 # single-platform image per invocation, no equivalent of `docker buildx build --platform
