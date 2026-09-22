@@ -95,15 +95,25 @@ IMAGE_REF="ghcr.io/myorg/nodejs-demo-app:abc123def456"
 SPAN_START_TIME="2025-08-06T14:32:06.234567890Z"
 ```
 
-**Step 2: build-and-push**
+**Step 2: build-and-push-arm64 / build-and-push-amd64**
 ```bash
-# Kaniko runs (no bash/otel-cli available)
-# Builds & pushes image
-# Writes image-digest to /tekton/results/image-digest
-# Result: sha256:abc123def456789abcdef123456789abcdef
+# Two kaniko runs, one per arch (no bash/otel-cli available in either) - kaniko has no
+# multi-arch/manifest-list capability of its own, so each push goes to its own
+# throwaway -arm64/-amd64-suffixed tag:
+# ghcr.io/myorg/nodejs-demo-app:abc123def456-arm64
+# ghcr.io/myorg/nodejs-demo-app:abc123def456-amd64
 ```
 
-**Step 3: emit-image-ref-and-span**
+**Step 3: publish-multiarch-manifest**
+```bash
+# crane combines the two arch-suffixed images above into one real OCI image index
+# under the actual (unsuffixed) tag: ghcr.io/myorg/nodejs-demo-app:abc123def456
+# Writes image-digest to /tekton/results/image-digest
+# Result: sha256:abc123def456789abcdef123456789abcdef (the INDEX digest, not either
+# single-arch image's own digest)
+```
+
+**Step 4: emit-image-ref-and-span**
 ```bash
 # Executes:
 source "${PLATFORM_LIB}/otel.sh"

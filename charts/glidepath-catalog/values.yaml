@@ -30,7 +30,7 @@ rbac:
 # python-3.12/3.13 - see schemas/cicd.schema.json and catalog/lib/build-agents.env)
 # that Airframe's own GoApplication/PythonApplication XRDs needed to scaffold a
 # real, version-matched cicd.yaml at onboarding instead of a version-pinned stub.
-toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-21-go-python-agents
+toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-22-multiarch-platforms
 
 # Base URL of the Backstage backend that notify-backstage.yaml POSTs to. One Backstage
 # instance platform-wide (not one per cluster, not one per Application), so this is a

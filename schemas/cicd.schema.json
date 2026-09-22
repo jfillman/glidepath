@@ -25,6 +25,14 @@
           "description": "Build script the platform runs inside the agent image before packaging. Must be bash. Omit entirely for teams doing the whole build inside a multi-stage Dockerfile - the separate build-source stage is skipped and kaniko builds `dockerfile` directly. No default: presence/absence is the switch, so it can't silently mean 'skip' via an unrelated typo."
         },
         "dockerfile": { "type": "string", "default": "./Dockerfile" },
+        "platforms": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["arm64", "amd64"] },
+          "minItems": 1,
+          "uniqueItems": true,
+          "default": ["arm64", "amd64"],
+          "description": "Which architectures build-image.yaml builds and publishes as a real multi-arch image (via kaniko x N + a crane manifest-index combine - kaniko itself has no multi-arch capability). Defaults to both, since kiac-dev (arm64) and kind-prod (amd64) both run real workloads. Set to a single value only for an app that provably never deploys to the other cluster (e.g. backstage, a kind-prod-only singleton) - every kaniko run for an unrequested platform is skipped, not just unpublished, so this is a real build-time cost saving, not just a registry-tidiness knob."
+        },
         "unitTest": {
           "type": "object",
           "additionalProperties": false,

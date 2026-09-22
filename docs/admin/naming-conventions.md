@@ -95,8 +95,11 @@ visible.
 Other step-name patterns already consistent, keep using them: `resolve-*` for
 config/parameter-resolution steps that run before the real work (`resolve-build-config`,
 `resolve-test-command`, `resolve-build-script-path`), and a plain verb (or
-verb-noun) for the step doing the actual work (`scan`, `build-and-push`,
-`run-build-script`, `unit-test`, `generate-and-attest`).
+verb-noun) for the step doing the actual work (`scan`, `build-and-push-arm64`/
+`build-and-push-amd64`, `publish-multiarch-manifest`, `run-build-script`, `unit-test`,
+`generate-and-attest`). build-image.yaml's build-and-push split into two arch-suffixed
+steps + a manifest-combining step on 2026-09-22 (multi-arch build support) - kept the
+same verb-noun shape per-arch rather than inventing a new pattern.
 
 ## PipelineRun naming
 
