@@ -68,15 +68,59 @@ spec:
           exit 1
         fi
 
-        cp /tmp/cicd.json "$(results.config-json.path)"
+        # Applies every schemas/cicd.schema.json "default" the developer's cicd.yaml
+        # left unset, recursively, so config-json (what every downstream Task actually
+        # reads) is always a COMPLETE document - a Task never sees an absent key for a
+        # field the schema says has a default. Validation above only confirms what the
+        # developer wrote is schema-conformant; it doesn't fill anything in, so without
+        # this every Task reading config-json still had to know and duplicate each
+        # field's own default itself via jq's `// <default>` - easy to forget (build-
+        # image.yaml's build.dockerfile did, for months: a missing key jq -r prints as
+        # the literal string "null", not empty, so kaniko got handed a literal ".../null"
+        # path and failed deep in its own internals with a confusing, unrelated-looking
+        # error - confirmed live on boarding-api's build-image TaskRun, 2026-09-22).
+        # Applying every default once, centrally, here, closes that whole bug class for
+        # every current AND future schema-defaulted field, not just the one that already
+        # bit us. Only walks `properties` (plain object fields) - `pipelines`' dynamic
+        # per-flow-name keys (`additionalProperties`, not `properties`) have no schema
+        # defaults of their own and are deliberately left untouched.
+        cat > /tmp/apply-defaults.jq <<'JQ_PROGRAM'
+        def apply_defaults(schema):
+          if (schema.type == "object") and (schema.properties != null) then
+            . as $obj
+            | reduce (schema.properties | to_entries[]) as $e
+                ( $obj;
+                  ($e.key) as $k | ($e.value) as $s
+                  | (.[$k]) as $cur
+                  | if ($cur == null) then
+                      if ($s.type == "object" and $s.properties != null) then
+                        .[$k] = ({} | apply_defaults($s))
+                      elif ($s.default != null) then
+                        .[$k] = $s.default
+                      else
+                        .
+                      end
+                    else
+                      .[$k] = ($cur | apply_defaults($s))
+                    end
+                )
+          else
+            .
+          end;
+        apply_defaults($schema)
+        JQ_PROGRAM
+        jq --argjson schema "$(cat /opt/platform/schemas/cicd.schema.json)" \
+          -f /tmp/apply-defaults.jq /tmp/cicd.json > /tmp/cicd-defaulted.json
 
-        HAS_BUILD_SCRIPT="$(jq -r 'if .build.script != null and .build.script != "" then "true" else "false" end' /tmp/cicd.json)"
+        cp /tmp/cicd-defaulted.json "$(results.config-json.path)"
+
+        HAS_BUILD_SCRIPT="$(jq -r 'if .build.script != null and .build.script != "" then "true" else "false" end' /tmp/cicd-defaulted.json)"
         echo -n "${HAS_BUILD_SCRIPT}" | tee "$(results.has-build-script.path)" > /dev/null
 
         # Formerly resolve-build-agent-image.yaml's own step - same lookup, same error
         # message, just reading the config-json this Task already validated instead of
         # re-parsing it in a second Pod.
-        AGENT="$(jq -r '.build.agent' /tmp/cicd.json)"
+        AGENT="$(jq -r '.build.agent' /tmp/cicd-defaulted.json)"
         AGENT_IMAGE="$(grep -E "^${AGENT}=" /opt/platform/lib/build-agents.env | cut -d= -f2-)"
         if [[ -z "${AGENT_IMAGE}" ]]; then
           echo "error: build.agent '${AGENT}' has no entry in build-agents.env - this should be impossible if schema validation passed, file a platform bug." >&2
@@ -89,10 +133,11 @@ spec:
         # newline was once silently written into the result value, which broke Tekton's
         # exact-string `when: { operator: in, values: ["true"] }` gates - see
         # extract-governance-flags.yaml's own former header (git history) for the real,
-        # previously-live bug this comment is preserving the memory of.
-        echo -n "$(jq -r '.governance.sast // false' /tmp/cicd.json)" | tee "$(results.sast.path)" > /dev/null
-        echo -n "$(jq -r '.governance.imageScan // false' /tmp/cicd.json)" | tee "$(results.image-scan.path)" > /dev/null
-        echo -n "$(jq -r '.governance.policyCheck // false' /tmp/cicd.json)" | tee "$(results.policy-check.path)" > /dev/null
-        echo -n "$(jq -r '.governance.sbom // false' /tmp/cicd.json)" | tee "$(results.sbom.path)" > /dev/null
+        # previously-live bug this comment is preserving the memory of. No `// false`
+        # needed any more - apply-defaults above already guarantees these are present.
+        echo -n "$(jq -r '.governance.sast' /tmp/cicd-defaulted.json)" | tee "$(results.sast.path)" > /dev/null
+        echo -n "$(jq -r '.governance.imageScan' /tmp/cicd-defaulted.json)" | tee "$(results.image-scan.path)" > /dev/null
+        echo -n "$(jq -r '.governance.policyCheck' /tmp/cicd-defaulted.json)" | tee "$(results.policy-check.path)" > /dev/null
+        echo -n "$(jq -r '.governance.sbom' /tmp/cicd-defaulted.json)" | tee "$(results.sbom.path)" > /dev/null
 
         echo "cicd.yaml is valid."
