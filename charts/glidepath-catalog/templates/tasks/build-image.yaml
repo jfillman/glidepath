@@ -54,22 +54,15 @@
 # into RUN steps, so any GODEBUG/GOGC-style mitigation has to go in the affected
 # app's own Containerfile, not here.
 #
-# The actually-robust fix for a Go app is to stop running `go build` under QEMU
-# emulation at all - Go cross-compiles natively (GOARCH=amd64 GOOS=linux go build
-# on an arm64 host produces a valid amd64 binary with zero emulation involved;
-# unlike C/C++, no target-native toolchain execution is ever needed to compile).
-# kaniko does NOT auto-populate TARGETARCH/TARGETOS/BUILDPLATFORM as implicit
-# build-args the way real Docker buildx/BuildKit does (confirmed against kaniko's
-# own docs/issue tracker) - both --build-arg BUILDPLATFORM=linux/arm64 (kiac-dev's
-# real, always-native host platform, letting a Containerfile's own
-# `FROM --platform=$BUILDPLATFORM ... AS build` stage pull the NATIVE-arch base
-# image and never touch QEMU) and --build-arg TARGETARCH=<arm64|amd64> (what a
-# `RUN GOARCH=$TARGETARCH go build ...` step should actually produce) are passed
-# below, unconditionally, on both kaniko invocations - harmless (kaniko just warns
-# "unconsumed build-arg") for a Containerfile that doesn't declare either ARG, but
-# lets any Go app opt in to this pattern in its own Containerfile without any
-# platform-side change once it does. See boarding-api's Containerfile for a real
-# example.
+# Tried and confirmed NOT to work (2026-09-22, also live on boarding-api): avoiding
+# QEMU for the build stage entirely via `FROM --platform=$BUILDPLATFORM ... AS build`
+# + `RUN GOARCH=$TARGETARCH go build ...` (Go cross-compiles natively - no emulation
+# should be needed to just compile for a different arch). kaniko does NOT honor a
+# per-stage --platform override when --custom-platform is set on the invocation (as
+# it always is here, once per arch) - the "native" stage still pulled and ran under
+# the emulated target platform regardless, regressing straight back to bug 1. Not
+# pursuing this further - if kaniko ever adds real per-stage platform support, it's
+# worth revisiting, but there's no --build-arg/flag workaround for this today.
 #
 # kaniko itself has no multi-arch/manifest-list capability (it only ever produces one
 # single-platform image per invocation, no equivalent of `docker buildx build --platform
@@ -309,8 +302,6 @@ spec:
           --context=$(workspaces.source.path) \
           --destination=${IMAGE_REF}-arm64 \
           --custom-platform=linux/arm64 \
-          --build-arg BUILDPLATFORM=linux/arm64 \
-          --build-arg TARGETARCH=arm64 \
           --cache=true \
           --cache-ttl=336h
 
@@ -352,8 +343,6 @@ spec:
           --context=$(workspaces.source.path) \
           --destination=${IMAGE_REF}-amd64 \
           --custom-platform=linux/amd64 \
-          --build-arg BUILDPLATFORM=linux/arm64 \
-          --build-arg TARGETARCH=amd64 \
           --cache=true \
           --cache-ttl=336h
 
