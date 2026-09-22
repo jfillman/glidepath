@@ -15,7 +15,7 @@ real Helm chart as part of this repo's own checks - if it's in this folder, it w
 | 5 | [05-release-on-tag.yaml](05-release-on-tag.yaml) | Git-rooted release, triggered by a version tag |
 | 6 | [06-release-branch-fast-track.yaml](06-release-branch-fast-track.yaml) | A `release/*` branch skips dev entirely |
 | 7 | [07-multiple-tests.yaml](07-multiple-tests.yaml) | Two TestWorkflows against one build |
-| 8 | [08-dockerfile-only-build.yaml](08-dockerfile-only-build.yaml) | Whole build inside a multi-stage Dockerfile |
+| 8 | [08-containerfile-only-build.yaml](08-containerfile-only-build.yaml) | Whole build inside a multi-stage Containerfile |
 | 9 | [09-ephemeral-environments.yaml](09-ephemeral-environments.yaml) | A live preview environment per PR/branch |
 | 10 | [10-production-grade.yaml](10-production-grade.yaml) | Everything together - path filters, caching, governance, notifications |
 

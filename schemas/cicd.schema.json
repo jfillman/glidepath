@@ -22,9 +22,13 @@
         },
         "script": {
           "type": "string",
-          "description": "Build script the platform runs inside the agent image before packaging. Must be bash. Omit entirely for teams doing the whole build inside a multi-stage Dockerfile - the separate build-source stage is skipped and kaniko builds `dockerfile` directly. No default: presence/absence is the switch, so it can't silently mean 'skip' via an unrelated typo."
+          "description": "Build script the platform runs inside the agent image before packaging. Must be bash. Omit entirely for teams doing the whole build inside a multi-stage Containerfile - the separate build-source stage is skipped and kaniko builds `containerfile` directly. No default: presence/absence is the switch, so it can't silently mean 'skip' via an unrelated typo."
         },
-        "dockerfile": { "type": "string", "default": "./Dockerfile" },
+        "containerfile": {
+          "type": "string",
+          "default": "./Containerfile",
+          "description": "Path to a multi-stage Containerfile kaniko builds directly - only consulted when build.script is omitted. \"Containerfile\" (not \"Dockerfile\") is this platform's deliberate, vendor-neutral term for the same OCI-buildable file format - kaniko itself has no opinion on the name, and it's the same file whichever name your repo uses."
+        },
         "platforms": {
           "type": "array",
           "items": { "type": "string", "enum": ["arm64", "amd64"] },

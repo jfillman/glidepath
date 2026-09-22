@@ -15,8 +15,8 @@ build:
   agent: nodejs-20   # swap for openjdk-17/21, python-3.11, go-1.22, nodejs-18/22
   script: ./build.sh # runs `npm ci && npm run build` (or your own equivalent) inside
                       # the agent image; omit this key entirely if your whole build
-                      # lives inside a multi-stage Dockerfile instead - see
-                      # 08-dockerfile-only-build.yaml
+                      # lives inside a multi-stage Containerfile instead - see
+                      # 08-containerfile-only-build.yaml
 
 pipelines:
   ci:

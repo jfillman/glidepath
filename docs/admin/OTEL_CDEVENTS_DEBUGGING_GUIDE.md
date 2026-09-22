@@ -316,7 +316,7 @@ otel_task_span_send "test-span" "$traceparent" "$STAGE_SPAN_ID" \
 #   └─ [unit-test] 14:32:05 → 14:32:20 (15s, concurrent)
 
 # Action items:
-# - If build-image > 30s: optimize Dockerfile, cache layers
+# - If build-image > 30s: optimize Containerfile, cache layers
 # - If sast-scan > 15s: reduce rule complexity, exclude paths
 # - If unit-test > 10s: parallelize tests, reduce fixture data
 ```

@@ -20,7 +20,7 @@ kind: PipelineConfig
 build:
   agent: nodejs-20
   script: ./build.sh
-  dockerfile: ./Dockerfile
+  containerfile: ./Containerfile
   unitTest:
     enabled: true
     command: ./test.sh

@@ -1,15 +1,18 @@
 # catalog/tasks/build-image.yaml
 #
-# Resolves the Dockerfile path + image tag, then builds+pushes a real multi-arch
-# (linux/arm64 + linux/amd64) image with kaniko + crane.
+# Resolves the Containerfile path + image tag, then builds+pushes a real multi-arch
+# (linux/arm64 + linux/amd64) image with kaniko + crane. "Containerfile" (not
+# "Dockerfile") is this platform's deliberate, vendor-neutral term for the same
+# file - renamed from build.dockerfile 2026-09-22, see schemas/cicd.schema.json.
 # The architectural expectation for app repos is that build.sh (catalog/tasks/
 # build-source.yaml, a separate Task as of Phase 3 item 8.1) does the actual build (npm
-# ci, compiling, whatever the language needs) and the Dockerfile becomes a thin packaging
-# step that copies already-built artifacts rather than re-running the build itself - see
-# nodejs-demo-app's build.sh/Dockerfile for the reference shape. Teams doing the whole
-# build inside a multi-stage Dockerfile instead (no separate build.sh) skip build-source
-# entirely (see that file's own header) - this Task doesn't need to know which case it is,
-# kaniko just builds whatever Dockerfile it's given either way.
+# ci, compiling, whatever the language needs) and the Containerfile becomes a thin
+# packaging step that copies already-built artifacts rather than re-running the build
+# itself - see nodejs-demo-app's build.sh/Containerfile for the reference shape. Teams
+# doing the whole build inside a multi-stage Containerfile instead (no separate
+# build.sh) skip build-source entirely (see that file's own header) - this Task doesn't
+# need to know which case it is, kaniko just builds whatever Containerfile it's given
+# either way.
 #
 # The actual image-build steps still run on kaniko - a deliberate, narrow exception to
 # "pipeline step code is bash": kaniko's image has no shell by design (that's what makes
@@ -67,7 +70,7 @@ metadata:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
 spec:
-  description: Resolves the Dockerfile path + image tag, then builds+pushes a multi-arch (arm64+amd64) image with kaniko + crane.
+  description: Resolves the Containerfile path + image tag, then builds+pushes a multi-arch (arm64+amd64) image with kaniko + crane.
   workspaces:
     - name: source
   params:
@@ -118,7 +121,7 @@ spec:
       image: {{ .Values.toolboxImage }}
       imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
       results:
-        - name: dockerfile-path
+        - name: containerfile-path
         - name: image-ref
         - name: build-arm64
           description: "\"true\"/\"false\" - whether cicd.yaml's build.platforms includes arm64 (default: both platforms, so default is \"true\")."
@@ -130,19 +133,15 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         CFG='$(params.config-json)'
-        # schemas/cicd.schema.json documents build.dockerfile's default as
-        # "./Dockerfile" (optional field) - jq -r on a missing key returns
-        # the literal 4-character string "null", not empty/unset, so every
-        # app that (correctly, per that documented default) omits this field
-        # got a real path of ".../null" handed to kaniko instead, which
-        # kaniko can't resolve as a file and fails deep in its own dockerfile-
-        # resolution internals ("error resolving dockerfile path: copying
-        # dockerfile: copying file: write /kaniko/Dockerfile: copy_file_range:
-        # is a directory" - confirmed live, boarding-api's build-image
-        # TaskRun, 2026-09-22: resolve-build-config's own dockerfile-path
-        # result was the string "null"). Same `//` default pattern
-        # build.platforms already uses two blocks down.
-        DOCKERFILE_PATH="$(jq -r '.build.dockerfile // "./Dockerfile"' <<< "${CFG}")"
+        # build.dockerfile renamed build.containerfile 2026-09-22 (schemas/
+        # cicd.schema.json - "Containerfile" is this platform's deliberate,
+        # vendor-neutral term for the same file). The `// "./Containerfile"`
+        # here is defense-in-depth, not the only guard: validate-cicd-config
+        # now applies every schema default (including this one) onto
+        # config-json centrally before any Task sees it - see that Task's own
+        # comment for the real bug this used to be (a missing key handed
+        # kaniko a literal ".../null" path) before that central fix existed.
+        CONTAINERFILE_PATH="$(jq -r '.build.containerfile // "./Containerfile"' <<< "${CFG}")"
         SHORT_SHA="$(cut -c1-7 <<< "$(params.git-revision)")"
         SRC="$(workspaces.source.path)"
 
@@ -192,7 +191,7 @@ spec:
         jq -e '(.build.platforms // ["arm64","amd64"]) | index("arm64") != null' <<< "${CFG}" >/dev/null && BUILD_ARM64="true" || true
         jq -e '(.build.platforms // ["arm64","amd64"]) | index("amd64") != null' <<< "${CFG}" >/dev/null && BUILD_AMD64="true" || true
 
-        echo -n "${DOCKERFILE_PATH}" | tee "$(step.results.dockerfile-path.path)"
+        echo -n "${CONTAINERFILE_PATH}" | tee "$(step.results.containerfile-path.path)"
         echo -n "${IMAGE_REF}" | tee "$(step.results.image-ref.path)"
         echo -n "${BUILD_ARM64}" | tee "$(step.results.build-arm64.path)"
         echo -n "${BUILD_AMD64}" | tee "$(step.results.build-amd64.path)"
@@ -239,7 +238,7 @@ spec:
       env:
         - name: SSL_CERT_FILE
           value: /kaniko/ssl/certs/ca-certificates.crt
-        # BUILD_ARM64/DOCKERFILE_PATH/IMAGE_REF as env vars, not inline $(steps.*.results.*)
+        # BUILD_ARM64/CONTAINERFILE_PATH/IMAGE_REF as env vars, not inline $(steps.*.results.*)
         # in the script body below - Tekton's admission webhook rejects cross-step result
         # substitutions anywhere except env/command/args ("stepResult substitutions are
         # only allowed in env, command and args"), a real error hit live the first time
@@ -251,8 +250,8 @@ spec:
         # rejecting the whole Task outright.
         - name: BUILD_ARM64
           value: $(steps.resolve-build-config.results.build-arm64)
-        - name: DOCKERFILE_PATH
-          value: $(steps.resolve-build-config.results.dockerfile-path)
+        - name: CONTAINERFILE_PATH
+          value: $(steps.resolve-build-config.results.containerfile-path)
         - name: IMAGE_REF
           value: $(steps.resolve-build-config.results.image-ref)
       volumeMounts:
@@ -267,7 +266,7 @@ spec:
           exit 0
         fi
         exec /kaniko/executor \
-          --dockerfile=$(workspaces.source.path)/${DOCKERFILE_PATH} \
+          --dockerfile=$(workspaces.source.path)/${CONTAINERFILE_PATH} \
           --context=$(workspaces.source.path) \
           --destination=${IMAGE_REF}-arm64 \
           --custom-platform=linux/arm64 \
@@ -292,8 +291,8 @@ spec:
         # $(steps.*.results.*) in the script body.
         - name: BUILD_AMD64
           value: $(steps.resolve-build-config.results.build-amd64)
-        - name: DOCKERFILE_PATH
-          value: $(steps.resolve-build-config.results.dockerfile-path)
+        - name: CONTAINERFILE_PATH
+          value: $(steps.resolve-build-config.results.containerfile-path)
         - name: IMAGE_REF
           value: $(steps.resolve-build-config.results.image-ref)
       volumeMounts:
@@ -308,7 +307,7 @@ spec:
           exit 0
         fi
         exec /kaniko/executor \
-          --dockerfile=$(workspaces.source.path)/${DOCKERFILE_PATH} \
+          --dockerfile=$(workspaces.source.path)/${CONTAINERFILE_PATH} \
           --context=$(workspaces.source.path) \
           --destination=${IMAGE_REF}-amd64 \
           --custom-platform=linux/amd64 \

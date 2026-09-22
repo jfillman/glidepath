@@ -17,17 +17,21 @@ build:
   # Which Tekton buildpack/image family compiles+lints this Application - see
   # templates/pipelines-as-code catalog wiring for the agent->Task mapping.
   agent: nodejs-20
-  # Path to a multi-stage Dockerfile kaniko builds directly - only consulted when
-  # build.script is omitted (whole build inside the Dockerfile, no separate
-  # build-source stage).
-  dockerfile: ./Dockerfile
+  # Path to a multi-stage Containerfile kaniko builds directly - only consulted
+  # when build.script is omitted (whole build inside the Containerfile, no
+  # separate build-source stage). "Containerfile" is this platform's
+  # deliberate, vendor-neutral term for the same file Docker calls a
+  # Dockerfile - renamed from `dockerfile:` 2026-09-22, app repos migrate on
+  # their own schedule (each app renames its own Dockerfile -> Containerfile).
+  containerfile: ./Containerfile
   # Which architecture(s) kaniko builds+pushes, then crane assembles into one
   # multi-arch manifest (build-image.yaml). Matches cicd.schema.json's own
-  # default - added here 2026-09-22 alongside build-image.yaml's own dockerfile-
-  # default fix, since this fixture file had drifted from the schema (platforms
-  # was added in a later schema/pipeline change than this file's last update,
-  # so `helm template`/`helm lint` against this file alone weren't exercising
-  # a real platforms value the way every other build.* field here is).
+  # default - added here 2026-09-22 alongside build-image.yaml's own
+  # containerfile-default fix, since this fixture file had drifted from the
+  # schema (platforms was added in a later schema/pipeline change than this
+  # file's last update, so `helm template`/`helm lint` against this file
+  # alone weren't exercising a real platforms value the way every other
+  # build.* field here is).
   platforms: [arm64, amd64]
   unitTest:
     # Renders the unit-test step in the build stage. Set false for an Application whose

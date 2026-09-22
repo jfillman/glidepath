@@ -19,7 +19,7 @@ kind: PipelineConfig
 build:
   agent: nodejs-20
   script: ./build.sh
-  dockerfile: ./Dockerfile   # thin packaging Dockerfile - copies build.sh's output in
+  containerfile: ./Containerfile   # thin packaging Containerfile - copies build.sh's output in
 
 test:
   name: integration   # the TestWorkflow name this flow's `test` step inherits, since it

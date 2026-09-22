@@ -33,7 +33,7 @@ spec:
     - name: config-json
       description: cicd.yaml converted to JSON, so downstream Tasks read it with jq instead of re-parsing YAML.
     - name: has-build-script
-      description: "'true'/'false' - whether build.script is present in cicd.yaml. Drives build.yaml's when: gate on the build-source Task, for teams doing the whole build inside a multi-stage Dockerfile instead. See docs/user-guide/cicd-yaml-reference.md."
+      description: "'true'/'false' - whether build.script is present in cicd.yaml. Drives build.yaml's when: gate on the build-source Task, for teams doing the whole build inside a multi-stage Containerfile instead. See docs/user-guide/cicd-yaml-reference.md."
     - name: agent-image
       description: "build.agent resolved to a real image reference via build-agents.env - formerly resolve-build-agent-image.yaml's own result."
     - name: sast
@@ -75,7 +75,8 @@ spec:
         # developer wrote is schema-conformant; it doesn't fill anything in, so without
         # this every Task reading config-json still had to know and duplicate each
         # field's own default itself via jq's `// <default>` - easy to forget (build-
-        # image.yaml's build.dockerfile did, for months: a missing key jq -r prints as
+        # image.yaml's build.containerfile - build.dockerfile before its 2026-09-22
+        # rename - did, for months: a missing key jq -r prints as
         # the literal string "null", not empty, so kaniko got handed a literal ".../null"
         # path and failed deep in its own internals with a confusing, unrelated-looking
         # error - confirmed live on boarding-api's build-image TaskRun, 2026-09-22).

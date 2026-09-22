@@ -4,7 +4,7 @@
 # build-image.yaml packages the result with kaniko. Split into its own Task so it can run
 # concurrently with unit-test, host the dependency-cache workspace, and get its own
 # retry/observability separate from the image push. Optional - build.yaml's when: clause
-# skips it for apps building entirely inside a Dockerfile (see has-build-script result).
+# skips it for apps building entirely inside a Containerfile (see has-build-script result).
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:

@@ -30,13 +30,16 @@ build:
                                  # patchable. Used for unit tests regardless of which
                                  # build strategy (below) you pick.
   script: ./build.sh            # Optional. Omit entirely to build your whole app
-                                 # inside a multi-stage Dockerfile instead (kaniko
-                                 # builds `dockerfile` directly, build-source is
+                                 # inside a multi-stage Containerfile instead (kaniko
+                                 # builds `containerfile` directly, build-source is
                                  # skipped). Presence/absence is the switch - there's
                                  # no separate boolean, so a typo can't silently
                                  # disable it. Must be bash.
-  dockerfile: ./Dockerfile      # Optional, default "./Dockerfile". Packaging step if
-                                 # `script` is set; the whole build if it's not.
+  containerfile: ./Containerfile # Optional, default "./Containerfile" ("Containerfile"
+                                 # is this platform's vendor-neutral term for what
+                                 # Docker calls a Dockerfile - same file, same format).
+                                 # Packaging step if `script` is set; the whole build
+                                 # if it's not.
   unitTest:
     enabled: true                # Optional, default true. false skips the unit-test
                                   # command but the stage still runs (span, notify).
@@ -45,7 +48,7 @@ build:
                                   # features.md for current status.
   cache:
     enabled: false                # Optional, default false. Only applies to the
-                                   # `script` build path - the Dockerfile-only path
+                                   # `script` build path - the Containerfile-only path
                                    # gets kaniko's own layer cache instead, for free.
     size: small                   # Optional, default "small". One of small (1Gi),
                                    # medium (2.5Gi), large (5Gi), xlarge (8Gi). Not
@@ -251,34 +254,34 @@ pipelines:
   `governance.sast: true` runs a real Semgrep scan - see [features.md](features.md) and
   [../admin/governance-stubs.md](../admin/governance-stubs.md) for exactly what each gate verifies.
 
-## Two build strategies: `build.script`, or a multi-stage Dockerfile
+## Two build strategies: `build.script`, or a multi-stage Containerfile
 
 `build.script` (e.g. `./build.sh`) is **optional**, not required. Two ways to structure
 a build, pick whichever fits:
 
-- **Script + thin Dockerfile** (the common shape - see
+- **Script + thin Containerfile** (the common shape - see
   [examples/02-standard-ci.yaml](examples/02-standard-ci.yaml)): `build.script` does the
   actual build (`npm ci && npm run build`, `mvn package`, ...) inside the resolved
-  `build.agent` image, and `build.dockerfile` becomes a thin packaging step that just
+  `build.agent` image, and `build.containerfile` becomes a thin packaging step that just
   copies the already-built artifacts. This runs as its own Tekton Task (`build-source`),
   concurrently with unit tests.
-- **Everything in a multi-stage Dockerfile** (see
-  [examples/08-dockerfile-only-build.yaml](examples/08-dockerfile-only-build.yaml)):
-  omit `build.script` entirely and do the whole build inside `build.dockerfile`
+- **Everything in a multi-stage Containerfile** (see
+  [examples/08-containerfile-only-build.yaml](examples/08-containerfile-only-build.yaml)):
+  omit `build.script` entirely and do the whole build inside `build.containerfile`
   (`FROM ... AS builder` / `RUN npm ci && npm run build` / `COPY --from=builder`). The
-  `build-source` Task is skipped entirely and kaniko builds the Dockerfile directly.
+  `build-source` Task is skipped entirely and kaniko builds the Containerfile directly.
   Build caching in this path comes from kaniko's own layer cache, not `build.cache` -
-  order your Dockerfile's `COPY package*.json` / `RUN npm ci` *before* copying the rest
-  of the source, or the cache invalidates on every source change regardless of whether
-  dependencies changed.
+  order your Containerfile's `COPY package*.json` / `RUN npm ci` *before* copying the
+  rest of the source, or the cache invalidates on every source change regardless of
+  whether dependencies changed.
 
 `build.agent` is required either way - unit tests always run inside it, independent of
 which build strategy you pick.
 
 ## Build dependency caching (`build.cache`)
 
-Only applies to the `build.script` path above - the multi-stage-Dockerfile path caches
-via kaniko's own layers instead (see above). Opt in with:
+Only applies to the `build.script` path above - the multi-stage-Containerfile path
+caches via kaniko's own layers instead (see above). Opt in with:
 
 ```yaml
 build:

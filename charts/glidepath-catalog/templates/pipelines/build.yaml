@@ -180,7 +180,7 @@ spec:
 
     # Optional, runs concurrently with unit-test - the two are independent (run-tests.yaml
     # runs test.sh directly against checked-out source, sharing no output with this Task).
-    # Skipped entirely for teams building inside a multi-stage Dockerfile instead (see
+    # Skipped entirely for teams building inside a multi-stage Containerfile instead (see
     # validate-cicd-config.yaml's has-build-script result). build-image still waits for
     # both (real or skipped) before kaniko builds+pushes, so nothing publishes unless
     # tests pass - the compile step is just no longer serialized behind tests.

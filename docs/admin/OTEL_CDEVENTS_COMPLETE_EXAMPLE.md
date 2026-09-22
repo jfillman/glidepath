@@ -90,7 +90,7 @@ BUILD_STAGE_START_TIME="2025-08-06T14:32:05.123456789Z"
 **Step 1: resolve-build-config**
 ```bash
 # Resolves from config
-DOCKERFILE_PATH="Dockerfile"
+CONTAINERFILE_PATH="Containerfile"
 IMAGE_REF="ghcr.io/myorg/nodejs-demo-app:abc123def456"
 SPAN_START_TIME="2025-08-06T14:32:06.234567890Z"
 ```
