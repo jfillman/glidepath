@@ -1,8 +1,8 @@
-# Example 8: Whole build inside a multi-stage Dockerfile (no build.script)
+# Example 8: Whole build inside a multi-stage Containerfile (no build.script)
 #
 # The second of the two build strategies - see ../cicd-yaml-reference.md's "Two build
 # strategies". Omitting `build.script` entirely switches the whole build into your
-# Dockerfile: kaniko builds it directly, and the separate build-source Task (which
+# Containerfile: kaniko builds it directly, and the separate build-source Task (which
 # would otherwise run your build.sh) is skipped completely - there's presence/absence
 # of `script`, no separate boolean, so there's no way to have this silently mean the
 # wrong thing via an unrelated typo.
@@ -11,7 +11,7 @@
 # independent of which build strategy you pick.
 #
 # Build caching in this path comes from kaniko's own layer cache, not build.cache (that
-# field only applies to the build.script path) - order your Dockerfile so
+# field only applies to the build.script path) - order your Containerfile so
 # `COPY package*.json .` / `RUN npm ci` happens BEFORE copying the rest of your source,
 # standard Docker layer-caching practice, or the cache invalidates on every source
 # change regardless of whether dependencies actually changed.
@@ -27,8 +27,8 @@ kind: PipelineConfig
 
 build:
   agent: nodejs-20         # still required - unit tests run in this image regardless
-  # script: omitted on purpose - the whole build happens in Dockerfile below
-  dockerfile: ./Dockerfile  # expected to be a real multi-stage build, e.g.:
+  # script: omitted on purpose - the whole build happens in Containerfile below
+  containerfile: ./Containerfile  # expected to be a real multi-stage build, e.g.:
                             #   FROM node:20 AS builder
                             #   WORKDIR /app
                             #   COPY package*.json .
