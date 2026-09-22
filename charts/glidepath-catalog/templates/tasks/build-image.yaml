@@ -32,6 +32,22 @@
 # one cluster (kind-prod) and never the other - see gitops-cluster-kind-prod/60-backstage/
 # backstage/deployment.yaml's own image-tag history for the incident this solves.
 #
+# Known issue: a Go app's amd64 leg can crash go build itself under this QEMU
+# emulation with "runtime: lfstack.push invalid packing" / "fatal error:
+# lfstack.push" - a real, upstream QEMU bug (bisected to commit 2d708164e0,
+# "linux-user: Define TASK_UNMAPPED_BASE in $guest/target_mman.h", still present
+# in the qemu-v10.2.3 tonistiigi/binfmt image 00-bootstrap/binfmt/ installs as of
+# 2026-09-22) that hands Go's GC addresses its lock-free stack can't pack
+# correctly. Confirmed live on boarding-api (arm64 leg built the identical source
+# fine, natively; amd64 crashed here). golang/go#69255 tracks a real fix for Go
+# 1.26; until then, this Task can't fix it - kaniko doesn't propagate its own
+# process environment into RUN steps (confirmed against kaniko's own behavior),
+# so there's no platform-side env var that reaches the crash. The workaround
+# (`ENV GODEBUG=asyncpreemptoff=1` before the build's RUN step, disabling the
+# async-preemption signal machinery most of these QEMU-emulation GC crashes
+# trace back to) has to go in the affected app's own Containerfile - see
+# boarding-api's for a real example.
+#
 # kaniko itself has no multi-arch/manifest-list capability (it only ever produces one
 # single-platform image per invocation, no equivalent of `docker buildx build --platform
 # a,b` or a manifest-push command) - so this Task runs kaniko once per requested arch,
