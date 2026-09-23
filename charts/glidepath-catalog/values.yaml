@@ -30,7 +30,16 @@ rbac:
 # python-3.12/3.13 - see schemas/cicd.schema.json and catalog/lib/build-agents.env)
 # that Airframe's own GoApplication/PythonApplication XRDs needed to scaffold a
 # real, version-matched cicd.yaml at onboarding instead of a version-pinned stub.
-toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-22-multiarch-platforms
+#
+# 2026-09-22: bumped for the build.dockerfile -> build.containerfile schema rename.
+# The previous tag's baked-in schema.json still had additionalProperties: false on
+# `build` with no `containerfile` key, so any cicd.yaml using the new key name
+# failed validate-cicd-config outright ("Additional property containerfile is not
+# allowed") - found live on backstage right after Airframe's own scaffold templates
+# were bumped to write `containerfile:`, not `dockerfile:` (idp-service-catalog
+# v0.3.77). Same staleness class the comment above already describes: the schema
+# source was correct, only the baked image lagged.
+toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-22-containerfile-rename
 
 # Base URL of the Backstage backend that notify-backstage.yaml POSTs to. One Backstage
 # instance platform-wide (not one per cluster, not one per Application), so this is a
