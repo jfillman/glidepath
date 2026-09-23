@@ -69,6 +69,11 @@ spec:
       type: string
     - name: app-name
       type: string
+  results:
+    - name: outcome
+      description: "'passed'/'failed'/'timeout'/'skipped' - from the Testkube TestWorkflowExecution's own result.status (aborted-but-really-passed already corrected below), or the fallback script's exit code translated the same way. 'skipped' means the test stage is disabled or nothing to run was found - a legitimate no-op, not a missing result. Same outcome/findings-summary shape as catalog/tasks/sast-scan.yaml and image-scan.yaml, not a new convention."
+    - name: step-summary
+      description: "One line per Testkube step: '<step-name>: <status>' - empty for the fallback-script path (integration-test.sh has no per-step breakdown of its own) and for 'skipped'."
   steps:
     - name: resolve-enabled
       image: {{ .Values.toolboxImage }}
@@ -119,6 +124,7 @@ spec:
         if [[ "${TEST_ENABLED}" != "true" ]]; then
           echo "test stage disabled in cicd.yaml, skipping"
           echo -n "false" | tee "$(step.results.fallback-needed.path)"
+          echo -n "skipped" | tee "$(results.outcome.path)"
           exit 0
         fi
 
@@ -209,6 +215,16 @@ spec:
         fi
 
         echo "TestWorkflowExecution ${EXECUTION_ID} finished with status: ${STATUS:-timeout waiting 10m}"
+
+        # Real per-step breakdown for the Release Record - written unconditionally,
+        # before the exit below, so a real test failure still reports what actually
+        # happened rather than leaving this Task's own `outcome` result unset the way
+        # a `set -e` early-exit would (same reasoning as sast-scan.yaml's own
+        # onError: continue).
+        STEP_SUMMARY="$(jq -r '.result.steps // {} | to_entries | map("\(.key): \(.value.status)") | join("\n")' <<< "${RESULT_JSON}" 2>/dev/null || echo "")"
+        echo -n "${STATUS:-timeout}" | tee "$(results.outcome.path)"
+        echo "${STEP_SUMMARY}" | tee "$(results.step-summary.path)"
+
         if [[ "${STATUS}" != "passed" ]]; then
           echo "${RESULT_JSON}" >&2
           exit 1
@@ -234,8 +250,21 @@ spec:
         fi
         if [[ ! -f ./integration-test.sh ]]; then
           echo "warn: no platform/${TEST_NAME}.yaml and no ./integration-test.sh found at repo root - skipping, not failing" >&2
+          echo -n "skipped" | tee "$(results.outcome.path)"
           exit 0
         fi
         echo "running '${TEST_NAME}' against env '${TEST_ENV}', image ${IMAGE_REF}"
         chmod +x ./integration-test.sh
+        # set +e, not the whole script under set -e: `outcome` must still be written
+        # on a real failure - same reasoning as execute-testworkflow's own comment
+        # above on this Task's result contract.
+        set +e
         ./integration-test.sh
+        FALLBACK_EXIT_CODE=$?
+        set -e
+        if [[ "${FALLBACK_EXIT_CODE}" -eq 0 ]]; then
+          echo -n "passed" | tee "$(results.outcome.path)"
+        else
+          echo -n "failed" | tee "$(results.outcome.path)"
+        fi
+        exit "${FALLBACK_EXIT_CODE}"

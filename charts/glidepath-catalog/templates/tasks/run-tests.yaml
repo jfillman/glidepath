@@ -28,7 +28,9 @@ spec:
   results:
     - name: span-start-time
     - name: span-end-time
-      description: Set only if the unit-test step itself succeeded (or tests were disabled) - see emit-span's own header comment for the honest limit a real test failure implies.
+      description: Now written unconditionally, including on a real test failure (2026-09-22 fix - previously lost on failure because `set -e` killed the script before this line ever ran; see the unit-test step's own set +e/set -e comment) - see emit-span's own header comment for why a failed unit-test still emits no OTEL span despite this.
+    - name: outcome
+      description: "'passed'/'failed'/'skipped' - a real result, same outcome shape catalog/tasks/sast-scan.yaml and image-scan.yaml already use for the Release Record, not a new convention. Written unconditionally, including on a real test failure."
   steps:
     - name: resolve-test-command
       image: {{ .Values.toolboxImage }}
@@ -86,10 +88,27 @@ spec:
         date -u +"%Y-%m-%dT%H:%M:%S.%NZ" | tee "$(results.span-start-time.path)"
         if [[ "${TEST_ENABLED}" != "true" ]]; then
           echo "unit tests disabled in cicd.yaml, skipping"
+          echo -n "skipped" | tee "$(results.outcome.path)"
         else
+          # set +e here, not the whole script: `outcome`/span-end-time must still be
+          # written on a real test failure - same "onError: continue, capture the
+          # exit code, re-raise it explicitly at the end" pattern
+          # catalog/tasks/sast-scan.yaml/image-scan.yaml already use, applied at the
+          # script level here instead since this step has no onError of its own.
+          set +e
           bash -c "${TEST_COMMAND}"
+          TEST_EXIT_CODE=$?
+          set -e
+          if [[ "${TEST_EXIT_CODE}" -eq 0 ]]; then
+            echo -n "passed" | tee "$(results.outcome.path)"
+          else
+            echo -n "failed" | tee "$(results.outcome.path)"
+          fi
         fi
         date -u +"%Y-%m-%dT%H:%M:%S.%NZ" | tee "$(results.span-end-time.path)"
+        if [[ "${TEST_EXIT_CODE:-0}" -ne 0 ]]; then
+          exit "${TEST_EXIT_CODE}"
+        fi
 
     # Deliberately only reached on success - see build-source.yaml's own emit-span step
     # for the full rationale (a failing test halts the TaskRun before this step runs, so
