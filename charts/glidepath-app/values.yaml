@@ -76,9 +76,11 @@ deploy:
   # docs/admin/release-guardrails.md), never auto-deployed on push. Empty by default -
   # an Application with no upper tier stays lower-environments-only.
   upperEnvironments: []
-  # How this Application's workload is deployed - "deployment" (a plain Kubernetes
-  # Deployment via idp-application) is the only supported value today.
-  strategy: deployment
+  # How this Application's workload is deployed - "rollout" (an Argo Rollout via the
+  # airframe-application chart) is the only supported value today, and the default.
+  # (Reversed 2026-09-24: this used to read "deployment ... is the only supported
+  # value", from before Rollouts landed - nothing renders a plain Deployment anymore.)
+  strategy: rollout
   # Optional, full ordered list of every env (lower AND upper) a release should pass
   # through, e.g. [dev, test, rel, staging, pre-prod, prod]. Not enforced by
   # glidepath's own automation - no Task or Trigger reads this today, and it does
