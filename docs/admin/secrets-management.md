@@ -11,9 +11,10 @@ ESO was installed early in this platform's life but had zero configured backends
 Phase 3 item 7; the pragmatic bridge that followed (ESO's `kubernetes` provider,
 mirroring real `Secret`s out of one hand-managed namespace) was always documented as a
 stopgap pending "community Infisical, via Dream IDP" - that future step has arrived.
-`airframe` runs a self-hosted Infisical instance (kind-dev only) plus
-`infisical-secretstore-operator`, the same mechanism airframe-application-delivered apps
-already use for their own runtime secrets.
+`airframe` runs a self-hosted Infisical instance (kind-dev only) plus a `SecretStore` XR
+that provisions each project through `provider-infisical`, the same mechanism
+airframe-application-delivered apps already use for their own runtime secrets. (Until
+2026-09-23 this was a purpose-built `infisical-secretstore-operator`; it has been retired.)
 
 The control plane gets its **own** Infisical project (not an app's), one per cluster it
 runs on:
