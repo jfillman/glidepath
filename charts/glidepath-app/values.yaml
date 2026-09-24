@@ -203,7 +203,14 @@ devClusterName: kind-dev
 # tenant-onboarding/applicationset.yaml, both clusters) the same day.
 idpServiceCatalog:
   repoUrl: https://github.com/jfillman/airframe.git
-  chartVersion: v0.3.63
+  # 2026-09-23: v0.3.63 -> v0.3.83, in step with every other consumer (gitops-cluster-dev's
+  # lower-envs/tenant-onboarding, gitops-cluster-kind-prod, apron). Checked first: each onboarded
+  # app's preview environment (real platform/pr-env.yaml where the app has one) renders
+  # byte-identically under both chart versions, 7 objects each. Between v0.3.63 and v0.3.68 only
+  # the release-tracking RBAC/relay-token templates changed (a preview sets no releaseTracking),
+  # and v0.3.69 moved that identity into a separate airframe-identity chart, which previews do
+  # not need.
+  chartVersion: v0.3.83
 
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
