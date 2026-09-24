@@ -265,7 +265,12 @@ platformCicdRepoUrl: https://github.com/jfillman/glidepath.git
 # were silently failing, not just checkout-api's. Confirmed via `container
 # list` that kiac-prod's real current IP is .6, matching the already-
 # correct copy.
-backstageHostAliasIP: "192.168.64.6"
+# 2026-09-24: 192.168.64.6 was the decommissioned kiac-prod VM - every PipelineRun's
+# notify-backstage taskRunSpec was baking that dead IP in (checkout-api's
+# ci-0-build-mpsqr: "Failed to connect ... Could not connect to server"). Backstage now
+# runs on kind-prod, reachable directly on this host's port 80; must match
+# platform-cicd-catalog's own copy (gitops-cluster-dev).
+backstageHostAliasIP: "192.168.1.78"
 
 # Placeholder only - a real install MUST override every field here via
 # `-f platform-identity.yaml`. Left empty rather than a fake example so an accidental
