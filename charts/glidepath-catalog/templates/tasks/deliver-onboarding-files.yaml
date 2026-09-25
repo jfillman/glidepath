@@ -321,6 +321,25 @@ spec:
               # for deploy-manifests.yaml's own solo push (see its git config user.email,
               # same literal here - keep in sync).
               local loop_guard='(!has(body.head_commit) || body.head_commit.author.email != "deploy@platform-cicd.invalid")'
+              # Config-only pushes never build (2026-09-24: "when committing changes to the
+              # cicd.yaml file or any files under the platform/ folder, a build is
+              # triggered... we want to exempt those changes" - a regression of an earlier
+              # fix). cicd.yaml is pipeline config (its own change is handled by
+              # onboarding-resync.yaml, not a rebuild) and platform/ holds per-env deploy
+              # values (platform/envs/*.yaml, written by deploy-manifests.yaml and the
+              # Config tab), neither of which changes what gets built.
+              #
+              # Skips a push ONLY when EVERY changed file in it is exempt - `files.all` is
+              # the whole push's changed-file list, so it is range-safe in the direction
+              # that matters: a push whose range carries a developer's real code change
+              # alongside a bot/config commit still has a non-exempt file and still
+              # builds. (Contrast the pathChanged() form this file's history replaced -
+              # see the loop-guard comment above - which was any-file-matches, and
+              # silently dropped a developer's push when a bot commit shared its range.)
+              # size() > 0 keeps a push with an empty file list (nothing to classify)
+              # building as before rather than vacuously matching `all`.
+              local exempt_guard='!(size(files.all) > 0 && files.all.all(f, f == "cicd.yaml" || f.startsWith("platform/")))'
+              loop_guard="${loop_guard} && ${exempt_guard}"
               # Same on-cel-expression-drops-on-event/on-target-branch gap as the
               # pull_request case below, hit live 2026-08-24: this flow's on-target-branch
               # ([main]) was silently ignored once the loop-guard CEL line was added, so a
