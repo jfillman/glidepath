@@ -212,7 +212,7 @@ idpServiceCatalog:
   # the release-tracking RBAC/relay-token templates changed (a preview sets no releaseTracking),
   # and v0.3.69 moved that identity into a separate airframe-identity chart, which previews do
   # not need.
-  chartVersion: v0.3.87
+  chartVersion: v0.3.88
 
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
