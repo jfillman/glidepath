@@ -76,9 +76,11 @@ spec:
         git diff --name-only --diff-filter=AMR "${base}" HEAD | grep -E '(^|/)values\.yaml$' > /work/files.txt || true
         echo "values files changed in this PR: $(wc -l < /work/files.txt | tr -d ' ')"
         cat /work/files.txt
-        # the validator image runs as a non-root user; token-bearing .git config is not needed past this point
+        # The token-bearing .git config is not needed past this point. Do not chmod /work itself: it is the
+        # volume mount root, owned by root, and this step runs as a non-root user (it fails with "Operation not
+        # permitted"). Files this step creates are already world-readable; the validator image only reads them.
         rm -f .git/config
-        chmod -R a+rX /work
+        chmod -R a+rX /work/repo /work/files.txt 2>/dev/null || true
     - name: validate
       image: $(params.validator-image)
       imagePullPolicy: IfNotPresent
