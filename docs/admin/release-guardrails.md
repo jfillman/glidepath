@@ -110,6 +110,7 @@ template's own header for the exact chain of reasoning.
 | `image-scan` | Vulnerability scan (Trivy) of the promoted image | real |
 | `provenance` | Commit signature (gitsign) + SLSA provenance (Conforma) | real |
 | `sbom` | Software bill of materials | real |
+| `values` | Values-file validation by the validator image (Airframe's by default); check `Pipelines as Code CI / values-` | real |
 | `itsm` | ServiceNow Change Request | stub |
 | `qa` | Test-completion verification | stub |
 | `policy-validation` | Gatekeeper/Kyverno admission-policy validation of the rendered manifest | stub |
@@ -121,7 +122,7 @@ former is about the *commit*'s signer identity and the *image*'s provenance atte
 manifest*'s compliance with cluster admission policy. Different failure modes, different
 fixes, kept as independent required checks rather than folded together.
 
-## The values-validation gate (built, not yet registered)
+## The values gate (`values`, registered 2026-09-27)
 
 `values-validation` runs a **validator image** against every `values.yaml` a gitops PR changes (a release PR, or a
 human's or an agent's hand edit) and fails the check on a non-zero exit. Glidepath does not know what the files
@@ -137,7 +138,10 @@ Pieces: Task `validate-values`, Pipeline `values-check`, onboarding template
 check, so:
 1. Publish the validator image and make its package public.
 2. Let the onboarding-resync PR (which adds `.tekton/pull-request-values.yaml`) merge in every gitops repo.
-3. Only then add `values-validation` to `releaseGuardrails` (status `real`), which also makes it a required check.
+3. Only then add `values` to `releaseGuardrails` (status `real`; the name must match the PipelineRun's `generateName` prefix, `values-`, because `wait-for-release-guardrails` looks up the check `Pipelines as Code CI / values-`). That makes `image-promotion` wait for it,
+   so a release PR cannot promote past a failing values check. It does **not** make the check required on other PRs
+   (a human's or an agent's hand edit to a `values.yaml`): that is the GitHub ruleset's required-status-checks list,
+   a separate setting kept in sync by hand (see "Branch protection" below). Add `Pipelines as Code CI / values-` there.
 Before step 3 the check runs and reports but does not block.
 
 ## Removing a gate
@@ -159,6 +163,12 @@ references them. Two things this does **not** do automatically:
   future release PR from merging until removed.
 
 ## Branch protection
+
+> **Gap (2026-09-27):** in practice the enforcement is a **GitHub ruleset** on the gitops repos, and it is an integral,
+> mandatory part of a Glidepath install: without its required-status-checks list none of these gates block a merge.
+> This section still describes classic branch protection and does not document the ruleset (its scope, the required
+> check names, bypass actors, whether it applies to the app repos, how it is applied). It is to be audited against the
+> live ruleset's JSON export and rewritten. Until then, treat the list below as incomplete.
 
 Not IaC-managed by this platform (docs/release.md's own "Onboarding" section covers the
 one-time per-repo setup) - `releaseGuardrails` and branch protection's required-status-

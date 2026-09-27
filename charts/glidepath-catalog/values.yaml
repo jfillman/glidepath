@@ -109,6 +109,11 @@ releaseGuardrails:
   - name: sbom
     description: Software bill of materials
     status: real
+  # name must equal the PipelineRun generateName prefix (values-): wait-for-release-guardrails looks up the check
+  # "Pipelines as Code CI / <name>-".
+  - name: values
+    description: Values-file validation (strict keys, component XRD specs, helm template) by the validator image
+    status: real
   - name: itsm
     description: ServiceNow Change Request
     status: stub
