@@ -36,6 +36,13 @@
 # plugin - not bundled in the toolbox image (catalog/toolbox/Dockerfile only carries
 # plain kubectl). Needs its own RBAC now (rollouts.argoproj.io, not apps/deployments) -
 # see charts/glidepath-app/templates/env/deploy-rbac.yaml's matching update.
+#
+# release.image lands in cicd.yaml's deploy.releaseFile path (D9/AF-5,
+# release-file-split.md) once an app sets that field - its own machine-owned file,
+# `platform/envs/<env>.yaml` left untouched. Unset (every live app today) falls back to
+# writing release.image straight into platform/envs/<env>.yaml, exactly as before -
+# changing that default would break Ground sync for every app until the
+# lower-envs ApplicationSet's own D9 step 3 change (3 valueFiles) lands too.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -107,22 +114,49 @@ spec:
         with_retry 3 -- git clone --quiet "${clone_url}" "${workdir}/repo"
         cd "${workdir}/repo"
 
-        manifest="platform/envs/${ENV}.yaml"
         image_repo="${IMAGE_REF%:*}"
         image_tag="${IMAGE_REF##*:}"
-        yq -i -e "
-          .release.image.repository = \"${image_repo}\" |
-          .release.image.tag = \"${image_tag}\" |
-          del(.rollout.image) |
-          del(.rollout | select(. == null))
-        " "${manifest}"
-        # release.image (airframe-application v0.3.92+) replaces the deprecated rollout.image. A bootstrap
-        # "rollout: null" is dropped too: with a real image the chart needs its rollout defaults, and null
-        # means "no workload" to it.
+
+        # deploy.releaseFile (D9/AF-5, schemas/cicd.schema.json) opts an app into the
+        # release-file split: release.image lives in its own machine-owned file instead
+        # of platform/envs/${ENV}.yaml. Unset (the common case today - no live app has
+        # set it yet) means "not split yet", so this falls all the way back to the
+        # pre-split behavior of writing straight into the human env file - changing that
+        # default here would silently break every live app's Ground sync, since the
+        # lower-envs ApplicationSet doesn't read a separate release file until D9 step
+        # 3's ApplicationSet change lands too. See hangar/docs/autopilot/
+        # release-file-split.md.
+        release_file_template=""
+        if [[ -f cicd.yaml ]]; then
+          release_file_template="$(yq -r '.deploy.releaseFile // ""' cicd.yaml)"
+        fi
+
+        if [[ -z "${release_file_template}" ]]; then
+          manifest="platform/envs/${ENV}.yaml"
+          yq -i -e "
+            .release.image.repository = \"${image_repo}\" |
+            .release.image.tag = \"${image_tag}\" |
+            del(.rollout.image) |
+            del(.rollout | select(. == null))
+          " "${manifest}"
+          # release.image (airframe-application v0.3.92+) replaces the deprecated rollout.image. A bootstrap
+          # "rollout: null" is dropped too: with a real image the chart needs its rollout defaults, and null
+          # means "no workload" to it.
+          git add "${manifest}"
+        else
+          manifest="${release_file_template//\{env\}/${ENV}}"
+          mkdir -p "$(dirname "${manifest}")"
+          [[ -f "${manifest}" ]] || printf '# machine-owned: written by deploy-manifests.yaml (D9/AF-5) - do not hand-edit\n' > "${manifest}"
+          yq -i -e "
+            .release.image.repository = \"${image_repo}\" |
+            .release.image.tag = \"${image_tag}\"
+          " "${manifest}"
+          git add "${manifest}"
+        fi
 
         git config user.name "platform-cicd deploy automation"
         git config user.email "deploy@platform-cicd.invalid"
-        git commit --quiet -am "Deploy ${APP_NAME} to ${ENV}: ${IMAGE_REF}"
+        git commit --quiet -m "Deploy ${APP_NAME} to ${ENV}: ${IMAGE_REF}"
         with_retry 3 -- git push --quiet "${clone_url}" main
 
         NAMESPACE="${APP_TYPE}-${APP_NAME}-${ENV}"

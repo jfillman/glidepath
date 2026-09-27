@@ -15,6 +15,10 @@
 # scaffolded by airframe's ApplicationEnvironment + tenant-onboarding
 # ApplicationSet, which also owns that path's ArgoCD Application) - so `cluster` is a
 # required param, not optional; this Task's own scope is just patch-the-image/open-the-PR.
+# Once cicd.yaml sets deploy.releaseFile (D9/AF-5, release-file-split.md), the target
+# becomes a sibling <cluster>/<env>/release.yaml instead - release.image/releaseTracking
+# only, values.yaml untouched. Unset (every live app today) keeps the pre-split
+# behavior of writing straight into values.yaml.
 #
 # Exactly ONE commit per release PR. releaseTracking data (relay URL, chain-id, etc.)
 # that airframe-application's own PostSync/SyncFail hook Jobs read to report DORA/Slack
@@ -229,9 +233,26 @@ spec:
         # airframe), not a raw Deployment manifest. repository/tag are split
         # fields in that schema, not a single image: string - same split
         # deploy-manifests.yaml uses for platform/envs/<env>.yaml.
-        manifest="${CLUSTER}/${ENV}/values.yaml"
         image_repo="${IMAGE_REF%:*}"
         image_tag="${IMAGE_REF##*:}"
+
+        # deploy.releaseFile (D9/AF-5) opt-in, same signal deploy-manifests.yaml reads
+        # off the app repo's cicd.yaml - here read from CONFIG_JSON instead (already
+        # resolved and forwarded, avoiding a second clone of the app repo just for this
+        # field). Unset means "not split yet": fall back to writing everything into
+        # values.yaml exactly as before. Set means this Flight env has adopted the split
+        # - write release.image and releaseTracking into a sibling release.yaml (fixed
+        # name, not the {env}-templated form: this path already has cluster and env in
+        # its directory segments, see release-file-split.md's "Layout") and leave
+        # values.yaml untouched.
+        release_file_template="$(jq -r '.deploy.releaseFile // ""' <<<"${CONFIG_JSON}")"
+        if [[ -z "${release_file_template}" ]]; then
+          manifest="${CLUSTER}/${ENV}/values.yaml"
+        else
+          manifest="${CLUSTER}/${ENV}/release.yaml"
+          mkdir -p "$(dirname "${manifest}")"
+          [[ -f "${manifest}" ]] || printf '# machine-owned: written by open-release-pr.yaml (D9/AF-5) - do not hand-edit\n' > "${manifest}"
+        fi
 
         # Release-tracking fields resolved up front, before the (only) commit - every
         # one of these is known without the PR existing. outcomeRelayURL is resolved
@@ -268,6 +289,7 @@ spec:
           .releaseTracking.chainId = \"${CHAIN_ID}\" |
           .releaseTracking.configJsonB64 = \"${config_json_b64}\"
         " "${manifest}"
+        git add "${manifest}"
 
         git config user.name "platform-cicd release automation"
         git config user.email "release@platform-cicd.invalid"
@@ -280,7 +302,7 @@ spec:
         # with printf + \n escapes, not a raw multi-line string, which breaks YAML parsing.
         commit_message="$(printf 'Release: promote %s to %s @ %s\n\nX-App-Repo: %s\nX-App-Commit: %s' \
           "${APP_NAME}" "${ENV}" "${IMAGE_REF}" "${GIT_URL}" "${GIT_REVISION}")"
-        git commit --quiet -am "${commit_message}"
+        git commit --quiet -m "${commit_message}"
         # --force is safe/correct here, not just convenient: this branch name is
         # deterministic and exclusively owned by this automation (see above), so the
         # only way a remote branch with this exact name already exists is a stale
