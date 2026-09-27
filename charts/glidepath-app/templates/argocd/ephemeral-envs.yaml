@@ -78,7 +78,7 @@ spec:
               appName: {{ .Values.platformIdentity.appName }}
               cluster: {{ .Values.devClusterName }}
               envName: "pr-{{ "{{" }}.number{{ "}}" }}"
-              rollout:
+              release:
                 image:
                   repository: ghcr.io/{{ .Values.platformIdentity.githubOwner }}/{{ .Values.platformIdentity.appName }}-pr
                   # trunc 12 matches build-image.yaml's own <app>-pr:<12-char-sha> tag.

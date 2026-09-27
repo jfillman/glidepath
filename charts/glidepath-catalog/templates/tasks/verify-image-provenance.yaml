@@ -118,10 +118,10 @@ spec:
           echo "FAIL: no */values.yaml changed between HEAD~1 and ${REVISION} - expected open-release-pr.yaml's single surgical image-tag commit" >&2
           exit 1
         fi
-        image_repo="$(yq -r '.rollout.image.repository' "${manifest}")"
-        image_tag="$(yq -r '.rollout.image.tag' "${manifest}")"
+        image_repo="$(yq -r '.release.image.repository // .rollout.image.repository' "${manifest}")"
+        image_tag="$(yq -r '.release.image.tag // .rollout.image.tag' "${manifest}")"
         if [[ -z "${image_repo}" || "${image_repo}" == "null" || -z "${image_tag}" || "${image_tag}" == "null" ]]; then
-          echo "FAIL: could not read rollout.image.repository/tag from ${manifest}" >&2
+          echo "FAIL: could not read release.image.repository/tag (or the deprecated rollout.image) from ${manifest}" >&2
           exit 1
         fi
         image_ref="${image_repo}:${image_tag}"

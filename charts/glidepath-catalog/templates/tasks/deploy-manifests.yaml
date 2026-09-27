@@ -111,9 +111,14 @@ spec:
         image_repo="${IMAGE_REF%:*}"
         image_tag="${IMAGE_REF##*:}"
         yq -i -e "
-          .rollout.image.repository = \"${image_repo}\" |
-          .rollout.image.tag = \"${image_tag}\"
+          .release.image.repository = \"${image_repo}\" |
+          .release.image.tag = \"${image_tag}\" |
+          del(.rollout.image) |
+          del(.rollout | select(. == null))
         " "${manifest}"
+        # release.image (airframe-application v0.3.92+) replaces the deprecated rollout.image. A bootstrap
+        # "rollout: null" is dropped too: with a real image the chart needs its rollout defaults, and null
+        # means "no workload" to it.
 
         git config user.name "platform-cicd deploy automation"
         git config user.email "deploy@platform-cicd.invalid"

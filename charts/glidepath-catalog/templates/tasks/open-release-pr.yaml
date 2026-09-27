@@ -254,8 +254,10 @@ spec:
         config_json_b64="$(printf '%s' "${CONFIG_JSON}" | base64 | tr -d '\n')"
 
         yq -i -e "
-          .rollout.image.repository = \"${image_repo}\" |
-          .rollout.image.tag = \"${image_tag}\" |
+          .release.image.repository = \"${image_repo}\" |
+          .release.image.tag = \"${image_tag}\" |
+          del(.rollout.image) |
+          del(.rollout | select(. == null)) |
           .releaseTracking.relayUrl = \"${registry_relay_url}\" |
           .releaseTracking.relayHostAliasIP = \"${RELAY_HOST_ALIAS_IP}\" |
           .releaseTracking.cluster = \"${CLUSTER}\" |
