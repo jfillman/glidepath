@@ -1,0 +1,32 @@
+# BOILERPLATE - real. The values-validation gate: runs the validator image (default: Airframe's
+# airframe-validate) against the values files this PR changes. See pull-request-sbom.yaml for the shared pattern.
+#
+# Unlike the release-branch-only gates, this runs on EVERY pull request to main that touches a values.yaml, so a
+# human's or an agent's hand edit is checked the same as a release PR. `files.all` is PaC's changed-file list.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: values-
+  labels:
+    hangar.io/app: "<APP_NAME>"
+  annotations:
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main" && files.all.exists(f, f.endsWith("values.yaml"))'
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+spec:
+  pipelineRef:
+    resolver: cluster
+    params:
+      - { name: kind, value: pipeline }
+      - { name: name, value: values-check }
+      - { name: namespace, value: platform-catalog }
+  params:
+    - { name: repo-url, value: "{{ repo_url }}" }
+    - { name: revision, value: "{{ revision }}" }
+    - { name: app-name, value: "<APP_NAME>" }
+    - { name: pr-number, value: "{{ body.pull_request.number }}" }
+  taskRunTemplate:
+    serviceAccountName: pipeline-runner
+  timeouts:
+    tasks: "6m"
+    finally: "4m"
+    pipeline: "10m"

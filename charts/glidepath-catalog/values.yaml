@@ -41,6 +41,12 @@ rbac:
 # source was correct, only the baked image lagged.
 toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-22-containerfile-rename
 
+# The image the values-validation gate (tasks/validate-values.yaml) runs against a gitops PR's values files.
+# It must provide `validate-values [--app NAME] FILE...` on its PATH, exit 0 = valid. The default is Airframe's own validator, published from an
+# Airframe release tag (workflow airframe-validate-image); it carries the chart of that tag, so keep it in step
+# with the airframe-application chartVersion pinned in glidepath-app. Public, like the toolbox image.
+valuesValidatorImage: ghcr.io/jfillman/airframe-validate:v0.3.93
+
 # Base URL of the Backstage backend that notify-backstage.yaml POSTs to. One Backstage
 # instance platform-wide (not one per cluster, not one per Application), so this is a
 # chart-level value rather than a per-app cicd.yaml field. Genuinely cross-cluster in

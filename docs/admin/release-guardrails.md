@@ -121,6 +121,25 @@ former is about the *commit*'s signer identity and the *image*'s provenance atte
 manifest*'s compliance with cluster admission policy. Different failure modes, different
 fixes, kept as independent required checks rather than folded together.
 
+## The values-validation gate (built, not yet registered)
+
+`values-validation` runs a **validator image** against every `values.yaml` a gitops PR changes (a release PR, or a
+human's or an agent's hand edit) and fails the check on a non-zero exit. Glidepath does not know what the files
+mean: the image is `valuesValidatorImage` in the catalog values, and it must provide
+`validate-values [--app NAME] FILE...` on its PATH. The Hangar default is Airframe's `airframe-validate` image
+(strict keys, component XRD specs, `helm template`), so Glidepath stays installable without Airframe: use another
+image, or never register the gate.
+
+Pieces: Task `validate-values`, Pipeline `values-check`, onboarding template
+`gitops-repo/pull-request-values.yaml` (runs on every PR to `main` that touches a `values.yaml`).
+
+**Rollout order matters.** Registering the gate in `releaseGuardrails` makes `image-promotion` wait for its
+check, so:
+1. Publish the validator image and make its package public.
+2. Let the onboarding-resync PR (which adds `.tekton/pull-request-values.yaml`) merge in every gitops repo.
+3. Only then add `values-validation` to `releaseGuardrails` (status `real`), which also makes it a required check.
+Before step 3 the check runs and reports but does not block.
+
 ## Removing a gate
 
 Delete its onboarding template file

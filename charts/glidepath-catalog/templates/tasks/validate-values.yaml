@@ -1,0 +1,102 @@
+# catalog/tasks/validate-values.yaml
+#
+# Runs a VALIDATOR IMAGE against the values files a gitops-repo PR changes, and fails the check when it exits
+# non-zero. Generic on purpose: Glidepath does not know what the files mean. The image is a parameter
+# (values.valuesValidatorImage); the Hangar default is Airframe's `airframe-validate` image, which checks each
+# file against a strict form of the chart schema (unknown keys such as `rolout:`), the component XRD schemas,
+# and `helm template`. Someone running Glidepath without Airframe points it at another image or leaves the
+# gate unregistered (see docs/admin/release-guardrails.md).
+#
+# Contract with the image: it provides `validate-values [--app NAME] FILE...` on its PATH, run in the cloned repo
+# (files are relative to it), exit 0 = valid, non-zero = invalid, output shown in the check.
+# Which files: every `*values.yaml` this PR changes relative to main (merge-base), not just HEAD~1, so a human
+# or agent PR with several commits is fully covered. No matching file = the check passes with a note.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: validate-values
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Clones a gitops-repo PR head and runs a validator image against the values files the PR changes.
+  params:
+    - name: repo-url
+      type: string
+      description: The gitops repo's own URL - PaC's repo_url.
+    - name: revision
+      type: string
+      description: The PR head commit - PaC's revision.
+    - name: validator-image
+      type: string
+      default: {{ .Values.valuesValidatorImage | quote }}
+      description: The validator image. Must provide `validate-values [--app NAME] FILE...` on its PATH.
+    - name: app-name
+      type: string
+      default: ""
+      description: The application name, passed to the validator as --app when set.
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+    - name: work
+      emptyDir: {}
+  steps:
+    - name: clone-and-list
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - { name: github-token-broker-token, mountPath: /var/run/secrets/platform, readOnly: true }
+        - { name: work, mountPath: /work }
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: REVISION
+          value: $(params.revision)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        source "${PLATFORM_LIB}/retry.sh"
+
+        owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+        with_retry 3 -- git clone --quiet "https://x-access-token:${token}@github.com/${owner}/${repo}.git" /work/repo
+        cd /work/repo
+        git checkout --quiet "${REVISION}"
+
+        base="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1)"
+        git diff --name-only --diff-filter=AMR "${base}" HEAD | grep -E '(^|/)values\.yaml$' > /work/files.txt || true
+        echo "values files changed in this PR: $(wc -l < /work/files.txt | tr -d ' ')"
+        cat /work/files.txt
+        # the validator image runs as a non-root user; token-bearing .git config is not needed past this point
+        rm -f .git/config
+        chmod -R a+rX /work
+    - name: validate
+      image: $(params.validator-image)
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work, readOnly: true }
+      workingDir: /work/repo
+      env:
+        - name: APP_NAME
+          value: $(params.app-name)
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        if [[ ! -s /work/files.txt ]]; then
+          echo "No values files changed: nothing to validate."
+          exit 0
+        fi
+        args=()
+        [[ -n "${APP_NAME}" ]] && args+=(--app "${APP_NAME}")
+        mapfile -t files < /work/files.txt
+        # The contract: the image provides an executable `validate-values` on its PATH.
+        exec validate-values "${args[@]}" "${files[@]}"

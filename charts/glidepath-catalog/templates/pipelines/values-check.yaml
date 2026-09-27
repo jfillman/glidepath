@@ -1,0 +1,57 @@
+# catalog/pipelines/values-check.yaml
+#
+# The values-validation gate (decision D10, "enforce now"): runs a validator image against the values files a
+# gitops-repo PR changes. Referenced from the gitops repo's .tekton/pull-request-values.yaml (an onboarding
+# template). Like the other gates it is its own PaC PipelineRun, so it is its own GitHub Check. It only becomes
+# REQUIRED once `values-validation` is in `releaseGuardrails` (see docs/admin/release-guardrails.md); register it
+# only after every gitops repo has the .tekton file, or image-promotion will wait on a check that never reports.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: values-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Runs the validator image against the values files a gitops PR changes.
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+    - name: app-name
+      type: string
+      default: ""
+    - name: pr-number
+      type: string
+      default: ""
+      description: "PaC's pull_request.number - only used to post the PR comment in the finally block."
+  tasks:
+    - name: validate
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: validate-values }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: app-name, value: $(params.app-name) }
+  finally:
+    - name: comment-pr
+      when:
+        - { input: $(params.pr-number), operator: notin, values: [""] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: comment-pr-check-result }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: gate-name, value: values-validation }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: status, value: $(tasks.status) }
