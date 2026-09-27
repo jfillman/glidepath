@@ -113,9 +113,12 @@ spec:
         # rather than a hardcoded path since this Task runs off the gitops repo's own PR
         # webhook with no env/cluster param, and the target is a scaffolded
         # <cluster>/<env>/values.yaml (airframe-application Helm values), not a fixed Deployment path.
-        manifest="$(git diff --name-only HEAD~1 HEAD -- '*/values.yaml' | head -1)"
+        # D9/AF-5: an app with deploy.releaseFile gets its release in a sibling release.yaml, not values.yaml -
+        # prefer that file, fall back to values.yaml for apps that haven't opted in.
+        manifest="$(git diff --name-only HEAD~1 HEAD -- '*/release.yaml' | head -1)"
+        [[ -n "${manifest}" ]] || manifest="$(git diff --name-only HEAD~1 HEAD -- '*/values.yaml' | head -1)"
         if [[ -z "${manifest}" ]]; then
-          echo "FAIL: no */values.yaml changed between HEAD~1 and ${REVISION} - expected open-release-pr.yaml's single surgical image-tag commit" >&2
+          echo "FAIL: no */release.yaml or */values.yaml changed between HEAD~1 and ${REVISION} - expected open-release-pr.yaml's single surgical image-tag commit" >&2
           exit 1
         fi
         image_repo="$(yq -r '.release.image.repository // .rollout.image.repository' "${manifest}")"
