@@ -84,15 +84,17 @@ spec:
     - name: validate
       image: $(params.validator-image)
       imagePullPolicy: IfNotPresent
+      # Not readOnly and no workingDir: the runtime tries to mkdir workingDir on the mount and fails with
+      # "read-only file system" even when it already exists. The script cd's instead.
       volumeMounts:
-        - { name: work, mountPath: /work, readOnly: true }
-      workingDir: /work/repo
+        - { name: work, mountPath: /work }
       env:
         - name: APP_NAME
           value: $(params.app-name)
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
+        cd /work/repo
         if [[ ! -s /work/files.txt ]]; then
           echo "No values files changed: nothing to validate."
           exit 0
