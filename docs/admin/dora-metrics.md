@@ -177,7 +177,7 @@ used to be dead for cluster-mapped apps entirely).
 
 Path 2's `/argocd-outcome` handler used to pass an empty `lastFailureTimeStr` into
 `recordOutcome` unconditionally - MTTR was a known, dead gap for every cluster-mapped
-app (`checkout-api`/`kind-prod` included), because `dora-exporter` runs on the dev
+app (`checkout-api`/`prod` included), because `dora-exporter` runs on the dev
 cluster and has no live API access to a remote cluster's `Application` object to patch
 a `dora-last-failure-time` annotation onto, the way path 1 does.
 
@@ -248,7 +248,7 @@ ConfigMap's own comment (`charts/glidepath-control-plane/templates/dora-exporter
 for why declaring the field, even empty, would let a later sync prune every key this
 service's own PATCH calls have added since.
 
-Live-verified on `kind-dev`: posted a synthetic outcome at `/argocd-outcome`, confirmed
+Live-verified on `dev`: posted a synthetic outcome at `/argocd-outcome`, confirmed
 it landed in both `/metrics` and `dora-metrics-state`, restarted the exporter pod
 (`kubectl rollout restart deployment dora-exporter`), and confirmed `/metrics` showed
 the full pre-restart counts intact - deployment count, release outcome, and the lead
@@ -331,7 +331,7 @@ Application's ArgoCD Application object, no other resource type.
 - The above all cover the same-cluster path (Phase F's original scope). For the
   cluster-mapped path (`update-dora-metrics.yaml`'s Task, fed by
   `argocd-outcome-relay` via the broker/Trigger), see `multi-cluster.md`'s
-  "Live-verified end to end, 2026-08-17" section - a real `checkout-api`/`kind-prod`
+  "Live-verified end to end, 2026-08-17" section - a real `checkout-api`/`prod`
   release confirmed both `dora_deployments_total` and
   `dora_releases_total{outcome="succeeded"|"failed"}` incrementing via that path too
   (predates the 2026-08-22 MTTR fix above; not yet re-verified live against the new

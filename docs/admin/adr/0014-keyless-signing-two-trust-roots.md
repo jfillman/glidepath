@@ -25,7 +25,7 @@ unneeded infrastructure for a problem Fulcio's own Kubernetes issuer mode alread
 solves natively, confirmed against Fulcio's own upstream CI test rather than assumed.
 
 Self-hosted Rekor + Trillian was added later (2026-09-05, after four earlier attempts
-were destabilized by unrelated podman-emulation artifacts on the older stack - see
+were destabilized by unrelated emulation artifacts of the older local cluster runtime - see
 `docs/provenance-policy.md`) so that image signatures get a real transparency-log
 timestamp to verify against, the same role the public Rekor plays for commit signing.
 

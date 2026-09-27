@@ -46,22 +46,16 @@ causes:
    clean across every later attempt in this session.
 2. **MySQL + Trillian's simultaneous first-boot initialization causing severe, repeated
    memory/CPU/I/O pressure**, even after the PID fix. `docker stats --no-stream` during one
-   storm showed genuine memory exhaustion (41.04GB/41.96GB, 97.81%) and heavy block I/O
-   (337.8GB) - pointing at I/O contention on this Mac's virtualized virtio-fs disk path as
-   the likely root cause. This recurred even after removing MySQL's own memory limit
-   entirely (trusting 30GB+ of real spare VM memory), which rules out a simple
+   storm showed near-total memory exhaustion and heavy block I/O - pointing at I/O
+   contention on the local VM's virtualized disk path as the likely root cause. This
+   recurred even after removing MySQL's own memory limit entirely, which rules out a simple
    memory-sizing fix. Not conclusively root-caused - this was worked around, not solved.
 
-Recovery each time required forceful intervention: `podman machine stop`/`start`, and when
-the podman API itself became unresponsive, `kill -TERM` on the underlying `krunkit`
-hypervisor process directly (orphaned `gvproxy` companion processes don't die
-automatically and had to be killed manually - they hold stale port bindings). The kind
-node container does **not** restart automatically when the podman VM restarts - it needs a
-manual `docker start` every time, and the cgroup `pids.max` fix is a live edit on the
-running container's cgroup, not persisted, so it had to be reapplied after every restart
-too. `kubectl delete pods -A --field-selector=status.phase=Succeeded/Failed` cleanup of
-289+ pods accumulated over the session produced a real, measured improvement (35Gi→7.1Gi
-memory used) - not just cosmetic.
+Recovery each time required forcefully restarting the local VM and the kind node
+container, and the cgroup `pids.max` fix is a live edit on the running container's cgroup,
+not persisted, so it had to be reapplied after every restart too. `kubectl delete pods -A --field-selector=status.phase=Succeeded/Failed` cleanup of
+289+ pods accumulated over the session produced a real, measured memory improvement -
+not just cosmetic.
 
 **Decision, made with the user after the fourth incident: defer Rekor, finish Conforma
 without it.** `ec` (like `cosign`) has a real, first-class `--ignore-rekor`-equivalent mode
@@ -73,9 +67,10 @@ chain has no transparency log to check against. Rekor is not abandoned, just out
 for this pass; `platform/sigstore/rekor-helm-values.yaml` is left in the repo as a
 ready-to-retry reference rather than deleted.
 
-**2026-09-05: deployed for real, fifth attempt, on kiac-dev (Apple `container` runtime,
-not podman/kind).** Both of the above root causes turned out to be podman-specific: the
-cgroup PID limit doesn't exist on kiac's per-VM node isolation, and the "I/O storm" is
+**2026-09-05: deployed for real, fifth attempt, on the dev cluster, after it moved to
+an arm64-native local runtime with per-VM node isolation.** Both of the above root causes
+turned out to be specific to the old runtime: the cgroup PID limit doesn't exist with
+per-VM node isolation, and the "I/O storm" is
 now understood to almost certainly have been qemu-user binfmt emulation overhead, not a
 real capacity limit - the chart's pinned MySQL image and its netcat init-container image
 are genuinely single-arch (amd64-only, confirmed live via `docker manifest inspect`
@@ -375,8 +370,8 @@ That digest belonged to this platform's own shared toolbox image, not the app im
 Root cause: `kubectl get taskrun ... -o json | jq '.status.steps[].imageID'` showed every
 step running a registry-pulled image (kaniko, `node`, `git-clone`) reports a
 properly-qualified `repo@sha256:digest` imageID, but every step running the toolbox image
-- at the time only `kind load docker-image`d (or, working around that command's known
-podman-provider bug on this machine, `ctr images import`ed) rather than pulled from a real
+- at the time only `kind load docker-image`d (or
+`ctr images import`ed) rather than pulled from a real
 registry - reported a **bare** `sha256:digest` with no registry name to combine with an
 `@`. Tekton Chains' PipelineRun-level SLSA materials-gathering walks every constituent
 TaskRun's step imageIDs, and a single unqualified one fails the *entire* PipelineRun's
@@ -549,7 +544,7 @@ independently from `rekor-server`'s own API, and `cosign verify-blob
 
 While re-verifying the two gap-closure fixes, a `deploy` PipelineRun died mid-run with
 `no space left on device` writing a Tekton init binary - nothing to do with this platform's
-own code. `df -h` on the kind node showed the root filesystem at 100% (453MB free of 93GB).
+own code. `df -h` on the node showed the root filesystem at 100%.
 
 Root cause, found by checking what was actually consuming space: **MinIO's PVC in the
 pre-existing `observability` namespace was using 27GB** (`du -sh
@@ -558,14 +553,11 @@ on this cluster, not anything from platform-cicd's own churn. A safe, reversible
 `crictl rmi --prune` (removing unused container image layers) reclaimed a little space but
 wasn't the real fix.
 
-The actual root cause, one layer deeper: the podman VM's own virtual disk was already
-379GB (`podman machine inspect`), but the VM's root **partition** had only ever been sized
-to 93GB (`lsblk` inside the VM showed `vda` at 379G with `vda4` - the root partition - at
-only 92.5G) - roughly 286GB of already-available disk was simply never allocated to the
-partition. Fixed live, no VM restart needed: `growpart /dev/vda 4` to extend the partition
-into the unallocated space, then `xfs_growfs /` to grow the filesystem to match (XFS
-supports online/live growth of a mounted root filesystem). Went from 93GB/94% full to
-379GB/25% full in under a minute.
+The actual root cause, one layer deeper: the host VM's virtual disk was already far
+larger than its root **partition** - most of the already-available disk had simply never
+been allocated to the partition. Fixed live, no restart needed: `growpart` to extend the
+partition into the unallocated space, then `xfs_growfs /` to grow the filesystem to match
+(XFS supports online/live growth of a mounted root filesystem).
 
 Separately, at the user's explicit direction, MinIO's old 27GB of accumulated data was
 also cleared for a genuinely fresh start: scale the `minio` Deployment to 0 (release the
@@ -574,7 +566,7 @@ hidden `.minio.sys` metadata directory** (a plain shell glob `*` doesn't match d
 confirmed live it left `.minio.sys` behind on the first pass), then scale back to 1. MinIO
 came back up healthy against empty storage.
 
-Net result: 379GB/18% used, 314GB free - real, lasting headroom, not just a one-time
+Net result: real, lasting headroom, not just a one-time
 reclaim. Worth remembering for future sessions: if a pod fails with `no space left on
 device` on this cluster again, check `lsblk`/lsblk-equivalent partition sizing before
 assuming the VM itself needs a bigger disk allocation - the disk may already be big enough.

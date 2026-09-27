@@ -10,7 +10,7 @@ Application's TestWorkflows inside that Application's own `<type>-<appName>-cicd
 namespace, so a workflow could read that namespace's `app-secrets` directly with zero
 new secret plumbing - the same trust boundary `pipeline-runner` already lives in.
 
-That design didn't survive contact with the real chart. Live on kind-dev, 2026-08-24:
+That design didn't survive contact with the real chart. Live on the dev cluster, 2026-08-24:
 Testkube's `executionNamespaces`/`multinamespace` config - the feature that lets a
 workflow run outside Testkube's own install namespace - is gated in Testkube's own
 source as Pro/Enterprise-only. `cmd/api-server/main.go`'s own comment reads
