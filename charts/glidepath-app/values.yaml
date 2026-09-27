@@ -212,7 +212,10 @@ idpServiceCatalog:
   # the release-tracking RBAC/relay-token templates changed (a preview sets no releaseTracking),
   # and v0.3.69 moved that identity into a separate airframe-identity chart, which previews do
   # not need.
-  chartVersion: v0.3.92
+  # 2026-09-27: v0.3.92 -> v0.3.94, in step with apron/gitops-cluster-dev (known-gap #1's
+  # pip VERSION scaffold lives in compositions/pythonapplication, not this chart - bumped
+  # anyway to keep one pin across every consumer, matching the v0.3.83 precedent above).
+  chartVersion: v0.3.94
 
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
