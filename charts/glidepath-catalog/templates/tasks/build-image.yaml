@@ -199,6 +199,19 @@ spec:
             VERSION="$(xmllint --xpath '/*[local-name()="project"]/*[local-name()="properties"]/*[local-name()="revision"]/text()' "${SRC}/pom.xml" 2>/dev/null || true)"
           fi
           VERSION="${VERSION%%-*}"
+        elif [[ -f "${SRC}/pyproject.toml" ]]; then
+          # A Python app had no manifest this precedence chain read at all - every image
+          # came out "0.0.0-<sha>" regardless of what pyproject.toml actually declared
+          # (found live on baggage-api/boarding-api/flight-api - known-gap #1). yq (already
+          # in the toolbox, v4.44.3) reads TOML natively via -p toml; "null" is yq's own
+          # string for a genuinely absent key (not the possibly-templated `${revision}`
+          # placeholder pom.xml's block guards against - PEP 621's [project.version] is a
+          # plain literal, no dynamic-version convention to special-case here).
+          VERSION="$(yq -p toml -r '.project.version // ""' "${SRC}/pyproject.toml" 2>/dev/null || true)"
+        elif [[ -f "${SRC}/VERSION" ]]; then
+          # Generic escape hatch for a repo using none of the three manifests above -
+          # a single line, no key to extract, just trim whitespace/newline.
+          VERSION="$(tr -d '[:space:]' < "${SRC}/VERSION")"
         fi
         [[ -z "${VERSION:-}" ]] && VERSION="0.0.0"
 
