@@ -63,35 +63,32 @@ this platform's broker/impersonation model was built to avoid elsewhere (see
 and the only thing that ever crosses from dev to an upper cluster is a reviewed, merged
 git commit - never a live API call in that direction.
 
-## The first upper cluster: `kind-prod`
+## The first upper cluster: `prod`
 
-A kind cluster literally named `prod` (podman container `prod-control-plane`), created
+A cluster literally named `prod`, created
 2026-08-03 during this feature's own design exploration. Its **name** is `prod`; the
 **env** it currently hosts is `staging` (matching every existing hardcoded reference in
 the codebase before this work - see the Phase C section below) - don't read the cluster's
 name as which env lives on it, that mapping lives entirely in the `clusters:` registry.
 
 Bootstrapped via [hack/bootstrap-upper-cluster.sh](../../hack/bootstrap-upper-cluster.sh):
-pinned ArgoCD (`argo/argo-cd` chart `10.3.2`, app `v3.5.0` - unlike kind-observe's
-reused ArgoCD, which has no version recorded anywhere in this repo) with the
+pinned ArgoCD (`argo/argo-cd` chart `10.3.2`, app `v3.5.0` - unlike the earlier
+observability cluster's reused ArgoCD, which has no version recorded anywhere in this repo) with the
 Notifications controller enabled (`argocd-notifications-controller`, confirmed live,
 `1/1 Ready`).
 
-**Cross-cluster reachability, confirmed live (2026-08-10)**: podman's `kind` provider
-puts every kind cluster's node container on one shared `kind` bridge network by default
-(`podman network ls` - unlike Docker Desktop's kind provider, which gives each cluster
-its own isolated network). No `podman network connect` step was needed - verified with a
-direct container-to-container call:
+**Cross-cluster reachability, confirmed live (2026-08-10)**: both clusters' nodes sit on
+one shared host network, so no extra network-connect step was needed - verified with a
+direct node-to-node call to each other's apiserver:
 
 ```
-podman exec prod-control-plane curl -sk https://10.89.0.2:6443/healthz    # kind-observe's apiserver -> ok
-podman exec observe-control-plane curl -sk https://10.89.0.3:6443/healthz # kind-prod's apiserver -> ok
+curl -sk https://<other-cluster-node-ip>:6443/healthz    # other cluster's apiserver -> ok
 ```
 
 Practical implication: a NodePort Service on either cluster is reachable from the other
 cluster's pods at `<node-container-ip>:<nodePort>` with no extra networking setup. This
 is what the relay service (see the feedback-path section, added once Phase E lands)
-exposes itself through - same-host podman reachability is enough for this pass; a
+exposes itself through - same-host network reachability is enough for this pass; a
 genuinely remote upper cluster would need real ingress/DNS instead (see
 [installation.md](installation.md)'s "What's different on a real cluster" section for the
 equivalent caveat already documented for the dev cluster).
@@ -107,7 +104,7 @@ deploy:
   lowerEnvironments: [dev]
   upperEnvironments:
     - staging                          # same-cluster (today's only previous behavior)
-    - { name: prod, cluster: kind-prod-2 }  # hosted on a different cluster
+    - { name: prod, cluster: prod-2 }  # hosted on a different cluster
 ```
 
 A release step's own `env:` must name one of these; its optional `cluster:` (if set)
@@ -225,7 +222,7 @@ trigger on `operationState.phase`) to call the relay. Live testing (deliberately
 adversarial, at the user's request before committing to either direction) found a real,
 already-shipped bug: **Notifications fired on ANY completed sync operation, including
 pure selfHeal drift-correction with zero release involved.** Manually scaling a
-Deployment on `kind-prod` (bypassing git entirely) triggered a genuine, real call to the
+Deployment on `prod` (bypassing git entirely) triggered a genuine, real call to the
 relay for an app that had never actually been released - confirmed via the relay's own
 logs, not inferred. `oncePer: app.status.operationState.finishedAt` dedupes *redelivery
 of the same finishedAt*; it does not distinguish *why* a new finishedAt happened, and
@@ -385,9 +382,9 @@ its own hand-provisioned `platform-outcome-relay-token` Secret (`hack/
 bootstrap-upper-cluster.sh`'s old per-app step) - the same shared per-cluster token
 value, copied by hand into every app's namespace on that cluster.
 
-Now: the upper cluster (kind-prod) has its own Infisical-backed `platform-secret-store`
-(`gitops-cluster-kind-prod/10-crds-operators/external-secrets/`, mirroring
-platform-cicd's own on kind-dev - see [secrets-management.md](secrets-management.md)),
+Now: the upper cluster (prod) has its own Infisical-backed `platform-secret-store`
+(`gitops-cluster-prod/10-crds-operators/external-secrets/`, mirroring
+platform-cicd's own on dev - see [secrets-management.md](secrets-management.md)),
 and `airframe-application`'s own `templates/release-tracking/
 relay-token-external-secret.yaml` syncs `platform-outcome-relay-token` from it
 automatically, gated on `releaseTracking` exactly like the hook Jobs/RBAC it
@@ -427,10 +424,10 @@ first" above) - the plumbing downstream of the relay (CDEvent shape, the broker,
 Trigger, DORA) is identical either way, so this run is still real evidence for that half
 of the path.
 
-Ran the complete loop for real against `kind-prod` and the `cicd-flow-test-app` tenant:
-a real `release` PipelineRun (`env: staging`, `cluster: kind-prod`) opened a real PR
+Ran the complete loop for real against `prod` and the `cicd-flow-test-app` tenant:
+a real `release` PipelineRun (`env: staging`, `cluster: prod`) opened a real PR
 against `gitops-cicd-flow-test-app` containing both the image-tag patch and the new
-Application manifest; merged; the app-of-apps root on `kind-prod` picked it up; ArgoCD
+Application manifest; merged; the app-of-apps root on `prod` picked it up; ArgoCD
 synced it; ArgoCD Notifications fired with a correctly-shaped payload; the relay
 authenticated and forwarded to both the broker and `dora-exporter`; the new per-app
 Trigger fired `release-outcome-notify`, which completed successfully; `dora_deployments_total`/
@@ -471,7 +468,7 @@ catalog chart after editing it (every `helm template`/`lint` check had been dry-
 only) meant the first live test ran against the OLD `release`/`open-release-pr`
 definitions with none of this feature's params - caught by the promotion silently
 missing the Application-manifest file entirely. And re-`kubectl apply`-ing
-`platform/argocd-notifications/kind-prod.yaml` (which, in its first version, declared
+`platform/argocd-notifications/prod.yaml` (which, in its first version, declared
 `argocd-notifications-secret` inline with a `REPLACE_ME` placeholder) silently
 overwrote an already-correctly-set real token back to the placeholder - the manifest no
 longer declares that Secret at all, see its own header for the fix and the general
@@ -507,7 +504,7 @@ an isolated, throwaway test (a standalone Application + Deployment with an artif
 
 ## Live end-to-end verification, v2 - ArgoCD sync hooks (2026-08-11)
 
-Decommissioned the v1 (ArgoCD Notifications) config on `kind-prod` for real - removed
+Decommissioned the v1 (ArgoCD Notifications) config on `prod` for real - removed
 the `service.webhook.*`/`subscriptions`/`template.*`/`trigger.*` keys from
 `argocd-notifications-cm` and deleted `argocd-notifications-secret` outright (confirmed
 the notifications controller stayed healthy and picked up both changes via its own
@@ -559,19 +556,19 @@ though the whole expression is double-quoted.
 ## Status
 
 Phases A through F are done, live-deployed, and live-verified end to end against the
-real `kind-prod` cluster and the `cicd-flow-test-app` tenant - not just code-complete.
+real `prod` cluster and the `cicd-flow-test-app` tenant - not just code-complete.
 The design went through two full live-verified iterations: v1 (ArgoCD Notifications,
 2026-08-10) found and fixed the root/child sync race; v2 (ArgoCD sync hooks, 2026-08-11,
 current) replaced Notifications entirely after live testing showed it also fired on
 selfHeal drift-correction with no release involved, and confirmed hooks don't share that
-flaw. v1's config is fully decommissioned from the live `kind-prod` cluster, not just
+flaw. v1's config is fully decommissioned from the live `prod` cluster, not just
 superseded in the repo.
 
 A follow-up increment the same day added the deployment.yaml tracking annotations and
 the Slack PR-link (both above), which needed the two-commit restructuring of
 `open-release-pr.yaml`. Also live-verified: a real release produced a PR with the
 expected two commits in order (release change, then outcome-reporting artifacts once the
-PR URL was known), the live Deployment on `kind-prod` carried all four
+PR URL was known), the live Deployment on `prod` carried all four
 `hangar.io/dora-*` annotations with correct values including the real PR URL, and
 `release-outcome-notify`'s own `notify-slack` TaskRun actually posted (not skipped) with
 `pr-url` resolved correctly through the full relay/CDEvent/Trigger chain.
@@ -585,7 +582,7 @@ resolves correctly through `notify-slack`/`release-log-emit`, just via a ConfigM
 not a second commit.
 
 Remaining, explicitly deferred: self-service onboarding tooling for additional
-tenants/clusters, real TLS/ingress hardening for the relay (same-host podman
+tenants/clusters, real TLS/ingress hardening for the relay (same-host network
 reachability is what's actually verified), and a real second env/cluster beyond this one
 proof. Relay-token distribution onto External Secrets Operator - deferred at the time
 this section was written - is now built, see "Relay-token distribution via External
@@ -648,13 +645,13 @@ nothing writes an Application manifest from it any more.
 
 **Also fixed while rebuilding this**: the control-plane's own `clusters:` registry
 (`charts/glidepath-control-plane/values.yaml`) had gone back to empty (`[]`) at some
-point after platform-cicd's control plane moved onto `kind-dev` as its own, independent
+point after platform-cicd's control plane moved onto `dev` as its own, independent
 instance - confirmed live, not assumed
 (`clusters: []`, `data: null` on the real ConfigMap). Since `argocd-outcome-relay`'s own
 Deployment/RBAC/Service are all gated behind `if .Values.clusters`
 (`templates/clusters/argocd-outcome-relay.yaml`), the relay wasn't even deployed on
-`kind-dev` at all - a second, independent reason cluster-mapped outcome reporting had no
-working path, on top of the hook-Job removal. Re-populated with a real `kind-prod` entry
+`dev` at all - a second, independent reason cluster-mapped outcome reporting had no
+working path, on top of the hook-Job removal. Re-populated with a real `prod` entry
 to fix both at once.
 
 **2026-08-19 update**: `platform-outcome-relay-token` no longer needs hand-provisioning
@@ -695,7 +692,7 @@ in [dora-metrics.md](dora-metrics.md) for the full mechanism.
 **Deploy steps for this change**: git-side is done - `platform-cicd`/`idp-service-
 catalog` (tagged `v0.3.37`) both committed+pushed, `targetRevision` repointed in every
 tenant-onboarding `ApplicationSet` that pins it (`gitops-cluster-dev`,
-`gitops-cluster-kind-prod`, and `gitops-cluster-template` for future clusters) -
+`gitops-cluster-prod`, and `gitops-cluster-template` for future clusters) -
 `airframe-application`'s own `Chart.yaml` `version:` field is decorative here (confirmed via
 `git show <tag>:...Chart.yaml`, stayed `0.3.0` across 36+ real tags) since these charts
 are consumed straight from a pinned git tag, not a packaged/published chart repo.
@@ -732,13 +729,13 @@ call still works against the old dora-exporter binary - nothing breaks until all
 images are rebuilt, and nothing new activates until they are.
 
 **Live-verified end to end, 2026-08-17**, against the real `checkout-api` tenant on the
-real `kind-prod` cluster - not just `helm template`. A real commit to `checkout-api`
+real `prod` cluster - not just `helm template`. A real commit to `checkout-api`
 (`main`) ran the full `build -> test -> deploy(dev) -> release(prod)` chain;
 `open-release-pr.yaml` opened a real two-commit PR against `gitops-checkout-api`
 (image-tag patch, then `releaseTracking:`) - confirmed via `gh pr diff` that the second
 commit's `releaseTracking:` block held real, non-placeholder values (`chainId`,
 `flowStartTime`, `prCreatedAt`, and `configJsonB64` decoding to the real `cicd.yaml`).
-Merging it synced on `kind-prod`; both hook variants fired for real:
+Merging it synced on `prod`; both hook variants fired for real:
 
 - **`SyncFail`** fired repeatedly while `checkout-api`'s own container crash-looped
   (unrelated app-level liveness-probe issue, not this mechanism - see below) - 8
@@ -757,29 +754,29 @@ PipelineRuns/Slack/metrics above, plus a manual debug-pod run of the exact hook 
 path works in isolation too.
 
 **Three separate, real infra gaps found and fixed getting here** (none caused by this
-session's code changes, all pre-existing on `kind-prod`):
+session's code changes, all pre-existing on `prod`):
 
-1. `kind-prod` had no `rollouts.argoproj.io` or `monitoring.coreos.com/v1` (ServiceMonitor)
+1. `prod` had no `rollouts.argoproj.io` or `monitoring.coreos.com/v1` (ServiceMonitor)
    CRDs at all - `hack/bootstrap-upper-cluster.sh` only ever installed ArgoCD there.
    Installed Argo Rollouts (the exact pinned manifest `gitops-cluster-dev/
    10-crds-operators/argo-rollouts/install.yaml` already vendors) and just the
    ServiceMonitor CRD (extracted from the same `kube-prometheus-stack` chart
-   version `40-observability` pins, not the full stack - `kind-prod` still has no
+   version `40-observability` pins, not the full stack - `prod` still has no
    Prometheus of its own).
 2. The control-plane's own `clusters:` registry had gone back to `[]` (and
    `argocd-outcome-relay` - gated behind `if .Values.clusters` - wasn't even deployed)
    at some point after platform-cicd's control plane moved onto its own, independent
-   `kind-dev` instance. Re-populated with a real `kind-prod` entry (see this doc's own
+   `dev` instance. Re-populated with a real `prod` entry (see this doc's own
    "Outcome reporting, rebuilt" section above).
-3. `ghcr.io/jfillman/checkout-api` is a private package and `kind-prod` has no
+3. `ghcr.io/jfillman/checkout-api` is a private package and `prod` has no
    ExternalSecret mechanism (no ESO installed) - fixed with a hand-provisioned
    `ghcr-pull-secret` `docker-registry` Secret, referenced via
-   `serviceAccount.imagePullSecrets` directly in `kind-prod/prod/values.yaml` (committed,
+   `serviceAccount.imagePullSecrets` directly in `prod/prod/values.yaml` (committed,
    not live-patched - see the comment there).
 
 **Separate, NOT fixed here**: `checkout-api`'s own container genuinely crash-loops on
-`kind-prod` (exit 137, liveness probe on `/` never passes) - an application-level issue
+`prod` (exit 137, liveness probe on `/` never passes) - an application-level issue
 in the `checkout-api` repo itself, unrelated to any of the above. Scaled to 0 in
-`kind-prod/prod/values.yaml` as a stopgap so ArgoCD's periodic retry doesn't keep
+`prod/prod/values.yaml` as a stopgap so ArgoCD's periodic retry doesn't keep
 generating real-but-redundant `SyncFail` Slack messages/DORA `failed` counts - remove
 that override once the app side is fixed.

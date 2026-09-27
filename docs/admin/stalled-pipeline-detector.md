@@ -3,7 +3,7 @@
 Detects a stage that completed successfully but whose expected next-stage PipelineRun
 never appeared - meaning a CDEvent got lost somewhere between that stage's `finally`
 block and the broker's Trigger actually firing. This session hit exactly this failure
-class repeatedly and manually (the recurring cloudflared tunnel dying with nothing
+class repeatedly and manually (the recurring webhook tunnel dying with nothing
 downstream to notice a PR sat unbuilt) - this closes that gap with an automated check.
 
 ## What this is not

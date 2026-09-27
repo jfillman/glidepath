@@ -11,7 +11,7 @@ ESO was installed early in this platform's life but had zero configured backends
 Phase 3 item 7; the pragmatic bridge that followed (ESO's `kubernetes` provider,
 mirroring real `Secret`s out of one hand-managed namespace) was always documented as a
 stopgap pending "community Infisical, via Dream IDP" - that future step has arrived.
-`airframe` runs a self-hosted Infisical instance (kind-dev only) plus a `SecretStore` XR
+`airframe` runs a self-hosted Infisical instance (dev cluster only) plus a `SecretStore` XR
 that provisions each project through `provider-infisical`, the same mechanism
 airframe-application-delivered apps already use for their own runtime secrets. (Until
 2026-09-23 this was a purpose-built `infisical-secretstore-operator`; it has been retired.)
@@ -23,10 +23,10 @@ runs on:
 apiVersion: secrets.idp.io/v1alpha1
 kind: InfisicalProject
 metadata:
-  name: platform-cicd-kind-dev
+  name: platform-cicd-dev
 spec:
-  projectName: platform-cicd-kind-dev
-  slug: platform-cicd-kind-dev
+  projectName: platform-cicd-dev
+  slug: platform-cicd-dev
   environmentSlug: shared
   credentialsSecretName: platform-cicd-infisical-creds
   authMethod: kubernetes
@@ -34,11 +34,11 @@ spec:
 
 (`charts/glidepath-control-plane/templates/secretstore/infisical-project.yaml`).
 `authMethod: kubernetes` (zero-persisted-credential, ESO's controller SA token verified
-live against this cluster's own TokenReview API) is correct here because kind-dev is
+live against this cluster's own TokenReview API) is correct here because the dev cluster is
 also the Infisical host - see `infisicalHost`/Kubernetes-vs-Universal-Auth in
 `idp/docs/service-catalog-design.md` Item 8 for the underlying mechanism this reuses. A
 cluster that runs this control plane but does NOT host Infisical would need
-`authMethod: universal` instead - not built, since kind-dev is currently the only
+`authMethod: universal` instead - not built, since the dev cluster is currently the only
 glidepath-control-plane install.
 
 The resulting `ClusterSecretStore` (`platform-secret-store`, name unchanged from the old
@@ -55,7 +55,7 @@ lives and how every chart consumes it.
 
 An Application's own secrets (Slack webhook, SAST scan credentials, ...) - see
 [app-secrets.md](app-secrets.md) - come from THAT Application's own idp-managed
-`ClusterSecretStore` (`<appName>-<devClusterName>`, e.g. `checkout-api-kind-dev`,
+`ClusterSecretStore` (`<appName>-<devClusterName>`, e.g. `checkout-api-dev`,
 provisioned by idp's `NodeJSApplication` XR) - referenced **directly, by name**, from
 `glidepath-app`'s own `app-secrets-external-secret.yaml`. No platform-cicd-rendered
 store in between. Never a platform-cicd-owned project either - app secrets are the app
@@ -65,13 +65,13 @@ owner's to manage, once, in the one place idp already gives every onboarded app.
 migration**:
 
 1. The first pass put every Application's secrets in a platform-cicd-owned
-   `platform-cicd-kind-dev` project instead, path-scoped per app
+   `platform-cicd-dev` project instead, path-scoped per app
    (`/<type>/<appName>/`) - a real design mistake. It meant `slack-webhook-url`
    specifically needed planting TWICE: once there, and once in the app's own project,
    where `airframe-application`'s own AI-triage Slack notifications already read it from.
 2. The immediate fix still rendered a platform-cicd-owned `ClusterSecretStore`
    (`<type>-<appName>-secret-store`) per app, just repointed at the app's own project -
-   a real, live-caught redundancy: `kubectl get clustersecretstore checkout-api-kind-dev
+   a real, live-caught redundancy: `kubectl get clustersecretstore checkout-api-dev
    app-checkout-api-secret-store -o yaml` showed byte-identical `spec.provider`
    blocks, except idp's own store also carried a `namespaceRegexes` scope the mirror
    never had - the mirror was strictly WIDER than the original, a real least-privilege
@@ -79,7 +79,7 @@ migration**:
    (`app-secret-stores.yaml`, and the `appSecretStores` values list) and referencing
    idp's object directly.
 
-`platform-cicd-kind-dev` now holds only genuinely platform-wide material
+`platform-cicd-dev` now holds only genuinely platform-wide material
 (`registry-credentials`, `github-app-creds`, relay tokens) - never any app's own
 secret, and never a second copy of an object idp already owns.
 
@@ -100,8 +100,8 @@ deploy infrastructure doubling as a secret backend. That's gone too.
 or, for airframe-application-delivered workloads, gated behind a `registryCredentials.enabled`
 values flag. Both are gone, replaced by ONE `ClusterExternalSecret`
 (`charts/glidepath-control-plane/templates/secretstore/
-registry-credentials-cluster-external-secret.yaml`, mirrored hand-authored on kind-prod
-in `gitops-cluster-kind-prod/10-crds-operators/external-secrets/`), which generates the
+registry-credentials-cluster-external-secret.yaml`, mirrored hand-authored on the prod cluster
+in `gitops-cluster-prod/10-crds-operators/external-secrets/`), which generates the
 `registry-credentials` `Secret` automatically in every namespace labeled
 `hangar.io/managed-secrets: "true"` - applied by ArgoCD's own
 `syncPolicy.managedNamespaceMetadata` on every namespace this platform's
@@ -131,7 +131,7 @@ app's namespace on the upper cluster (`hack/bootstrap-upper-cluster.sh`). Now:
 
 - The dev-cluster (verifier) side - `cluster-<name>-relay-token` `Secret`s in
   `platform-system`, which `argocd-outcome-relay` compares bearer tokens against - sync
-  from `platform-cicd-kind-dev`'s Infisical project (`relay-token-<cluster>` key per
+  from `platform-cicd-dev`'s Infisical project (`relay-token-<cluster>` key per
   registered cluster), via `charts/glidepath-control-plane/templates/clusters/
   relay-token-external-secret.yaml`.
 - The upper-cluster (caller) side - `platform-outcome-relay-token`, read by the
@@ -175,11 +175,11 @@ Infisical, since this is lower-stakes than anything else this doc catalogs and a
 real secrets-manager round trip for it wouldn't buy much.
 
 **2026-08-23: `pipelines-as-code-secret` is no longer excluded.** It's still PaC's own
-third-party Secret, outside this platform's *chart* boundary - but after kind-dev's full
+third-party Secret, outside this platform's *chart* boundary - but after the dev cluster's full
 etcd-WAL-corruption rebuild required hand-recreating it from scratch, the "outside our
 chart" argument didn't justify the repeated manual-recreate-on-every-cluster-rebuild
 cost, especially since the values it needs (`github-application-id`/`github-private-key`)
-already sit in `platform-cicd-kind-dev`'s Infisical project for `github-app-creds`'s
+already sit in `platform-cicd-dev`'s Infisical project for `github-app-creds`'s
 sake. Now a second, independent `ExternalSecret` synced from the same Infisical keys,
 living in PaC's own install boundary instead of this chart:
 `gitops-cluster-dev/50-platform-cicd/tekton-operator/
@@ -199,7 +199,7 @@ completed"`) until this was added. Exact key name confirmed against
 in Infisical at all (confirmed by listing every key already there) - not something lost
 in the rebuild, since GitHub Apps make a webhook secret write-only after creation
 anyway. Plant a freshly-generated value as `github-webhook-secret` in
-`platform-cicd-kind-dev`'s Infisical project AND set the same value on the GitHub App's
+`platform-cicd-dev`'s Infisical project AND set the same value on the GitHub App's
 own Settings > Webhook secret field - same "manual by design" posture as the id/private
 key above, and the two sides (Infisical, GitHub) have to actually agree.
 
@@ -234,12 +234,12 @@ above, and none currently ESO-managed except where noted:
 | `provider-github-creds` (`crossplane-system`) | `repo` + `delete_repo` | Crossplane `provider-upjet-github` - repo create/delete for the Bootstrap-tier XRDs. A GitHub App can't create repos on a personal account, hence a raw PAT specifically here | Yes |
 | `registry-credentials-dockerconfigjson` (Infisical key) | `read:packages`/`write:packages` | GHCR image pull, every tenant namespace, every cluster - see the dedicated section above | Yes |
 | `<app>-pr-generator-token` (one per onboarded app, `app-<name>-cicd`) | undocumented upstream, presumed `repo` + PR-write | ArgoCD `ApplicationSet`'s `pullRequest.github.tokenRef` for PR-based ephemeral environments | No - hand-minted per app, deliberately (see below) |
-| `argocd-repo-creds-<you>` (upper clusters, e.g. kind-prod) | classic PAT, username+password shape | ArgoCD's private-repo git sync, on any cluster not reusing the shared App above | No |
+| `argocd-repo-creds-<you>` (upper clusters, e.g. prod) | classic PAT, username+password shape | ArgoCD's private-repo git sync, on any cluster not reusing the shared App above | No |
 | `backstage-github-token` | `repo` only (no `delete_repo`) | Backstage scaffolder's `publish:github:pull-request` action | No |
 | `github-mcp-token` (`holmesgpt`) | undocumented | GitHub MCP server token for HolmesGPT AI-triage | No |
 
 **Known gap, not yet closed**: only dev-hosted clusters reuse the shared GitHub App for
-ArgoCD repo access. Upper clusters (kind-prod) still carry their own standalone
+ArgoCD repo access. Upper clusters (the prod cluster) still carry their own standalone
 `argocd-repo-creds-<you>` PAT instead - real drift between the two mechanisms doing the
 same job, not an intentional design split. Migrating upper clusters onto the shared App
 would let them drop this PAT entirely.

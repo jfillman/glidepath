@@ -9,7 +9,7 @@ motivated building this generically instead of one-off per secret).
 
 **2026-08-19: every Application secret comes directly from that Application's own
 idp-managed Infisical `ClusterSecretStore`** - `<appName>-<devClusterName>` (e.g.
-`checkout-api-kind-dev`), the exact same object airframe's
+`checkout-api-dev`), the exact same object airframe's
 `NodeJSApplication` XR provisions and `airframe-application`'s own
 `external-secret.yaml`/`notify-external-secret.yaml` already reference. `platform-cicd-
 app`'s own `app-secrets-external-secret.yaml` references it **by name, directly** - no
@@ -18,7 +18,7 @@ platform-cicd-rendered store in between any more.
 **This is the second correction in this mechanism's history, both made the same day**:
 
 1. The first pass at this migration created a platform-cicd-owned
-   `platform-cicd-kind-dev` Infisical project and expected every Application's
+   `platform-cicd-dev` Infisical project and expected every Application's
    secrets - including `slack-webhook-url`, already managed in the app's own project
    for `airframe-application`'s AI-triage notifications - to be planted there too, under a
    `/<type>/<appName>/` path. Two copies of the same credential, two places to keep in
@@ -26,7 +26,7 @@ platform-cicd-rendered store in between any more.
 2. The immediate fix kept a platform-cicd-rendered `<type>-<appName>-secret-store`
    `ClusterSecretStore`, but repointed it at the app's own project instead - still a
    second, redundant object. Caught live: `kubectl get clustersecretstore
-   checkout-api-kind-dev app-checkout-api-secret-store -o yaml` showed byte-identical
+   checkout-api-dev app-checkout-api-secret-store -o yaml` showed byte-identical
    `spec.provider` blocks - except idp's own store also carries a `namespaceRegexes`
    scope the platform-cicd mirror never had. Not just redundant: the mirror was
    strictly WIDER than the original, a real least-privilege gap. Fixed by deleting the
@@ -112,7 +112,7 @@ what `notify-slack.yaml` already does for `slack-webhook-url`, sourced from
 ## Enabling Slack notifications for an Application
 
 1. Onboard the Application through idp's `NodeJSApplication` XR first, if it hasn't
-   been already - that's what actually provisions `<appName>-kind-dev`, the
+   been already - that's what actually provisions `<appName>-dev`, the
    `ClusterSecretStore` everything below reads from.
 2. Declare the secret in the Application's own `cicd.yaml`:
    ```yaml

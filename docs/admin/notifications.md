@@ -117,23 +117,22 @@ call, not an in-cluster one:
 1. **Configure `glidepath-catalog`'s `backstageBaseUrl`** (a cluster-config value, set
    via the `platform-cicd-catalog` Application's `valuesObject` in `gitops-cluster-dev`
    - not the chart's own tracked default) to Backstage's real externally-reachable
-   Gateway hostname, e.g. `http://backstage.prod.kiac.local`. **Not** an in-cluster
+   Gateway hostname, e.g. `http://backstage.prod.example.internal`. **Not** an in-cluster
    Service DNS name (`backstage.<ns>.svc.cluster.local`) - that only resolves on
    Backstage's own cluster, not the dev cluster the pipeline actually runs on. **Port 80,
-   not 7007** - kiac's Gateway only has an HTTP listener on port 80 (see
-   `gitops-cluster-kind-prod/60-backstage/backstage/httproute.yaml`); 7007 is
+   not 7007** - the prod cluster's Gateway only has an HTTP listener on port 80 (see
+   `gitops-cluster-prod/60-backstage/backstage/httproute.yaml`); 7007 is
    Backstage's own Service port, never exposed on the node IP directly. Confirmed live:
-   `curl -H "Host: backstage.prod.kiac.local" http://<node-ip>:80/` returns 200, `:7007`
+   `curl -H "Host: backstage.prod.example.internal" http://<node-ip>:80/` returns 200, `:7007`
    gets connection refused.
 2. **Set `glidepath-app`'s `backstageHostAliasIP`** to that same hostname's current real
-   IP. `backstage.prod.kiac.local` isn't real DNS anywhere a pod's CoreDNS can see - it
-   only resolves on a developer's own laptop, via `refresh-kiac-hosts.sh` writing
-   `/etc/hosts` after a kiac VM restart. `notify-backstage`'s Task pod needs the same
+   IP. `backstage.prod.example.internal` isn't real DNS anywhere a pod's CoreDNS can see - it
+   only resolves on a developer's own workstation, via a local hosts-file entry. `notify-backstage`'s Task pod needs the same
    hostname baked into its own `hostAliases` (`flow-triggers.yaml`/
-   `release-outcome-trigger.yaml`'s `taskRunSpecs`) to resolve it at build time. kiac's
-   `container` runtime hands out a fresh IP on every VM boot (no static-address option),
+   `release-outcome-trigger.yaml`'s `taskRunSpecs`) to resolve it at build time. The
+   cluster's node gets a fresh IP on every restart (no static-address option),
    so - like Fulcio material and the Infisical IP elsewhere in this platform - this is a
-   manually-maintained value: bump it (`container list`, the target cluster's own
+   manually-maintained value: bump it (the target cluster's own
    control-plane address) whenever that cluster restarts, in step with whatever value
    step 1 above uses.
 3. **Mint a Backstage static service token** scoped to the notifications plugin only

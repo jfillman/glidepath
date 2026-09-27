@@ -227,7 +227,7 @@ the guardrails," and one of them was already tried and deliberately shelved:
 
 - **Enable Rekor** (the sigstore-native fix - a tlog entry lets a later verification
   check cert validity *at signing time* instead of *now*). Previously attempted and
-  abandoned after repeated live failures caused by this cluster's podman-VM instability,
+  abandoned after repeated live failures caused by the dev cluster's then-unstable local runtime,
   not a design objection - see the prior Rekor-install session notes. Would need to be
   re-attempted deliberately, not as a side effect of this work.
 - **Run a Timestamp Authority (RFC3161)** as a lighter-weight alternative to full Rekor -

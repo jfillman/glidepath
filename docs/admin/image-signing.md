@@ -54,11 +54,11 @@ hook Job** (`hooks/fulcio-bootstrap-job.yaml`), not a script an operator runs by
 see `docs/admin/adr/0006-cluster-agnostic-bootstrap.md`'s "Update".
 
 **Also deployed as of 2026-09-05**: Rekor + Trillian + MySQL (`rekor-system`/
-`trillian-system`), after four earlier attempts destabilized the cluster under the old
-podman/kind stack - see `docs/provenance-policy.md`'s full incident writeup for what
-those root causes turned out to actually be (largely podman-emulation artifacts, not
-real capacity limits) and the real bugs found bringing it up for real on kiac's
-arm64-native runtime. Tekton Chains now uploads to it
+`trillian-system`), after four earlier attempts destabilized the cluster under its earlier
+local runtime - see `docs/provenance-policy.md`'s full incident writeup for what
+those root causes turned out to actually be (largely artifacts of that runtime's emulation, not
+real capacity limits) and the real bugs found bringing it up for real on the
+arm64-native dev cluster. Tekton Chains now uploads to it
 (`transparency.enabled: "true"`), and verification uses real tlog checking
 (`--insecure-ignore-tlog=false`) instead of the flags described below.
 
@@ -280,8 +280,8 @@ clear once every step's `containerStatus.imageID` was inspected directly
 (`kubectl get taskrun ... -o json | jq '.status.steps[].imageID'`): steps running a
 registry-pulled image (kaniko, `node`, `git-clone`) report a properly-qualified
 `repo@sha256:digest` imageID, but steps running the toolbox image - at the time
-`kind load docker-image`d (or, working around that command's known podman-provider bug,
-`ctr images import`ed) rather than pulled from a real registry - reported a **bare**
+side-loaded onto the node (`kind load docker-image` or
+`ctr images import`) rather than pulled from a real registry - reported a **bare**
 `sha256:digest` with no registry name to combine with an `@`. Tekton Chains'
 PipelineRun-level SLSA materials-gathering walks every constituent TaskRun's step
 imageIDs, and chokes hard on the unqualified one, failing the *entire* PipelineRun's

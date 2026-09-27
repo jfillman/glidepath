@@ -74,7 +74,7 @@ dev-cluster node's already-cached `:latest` kept being reused even after a fresh
 was pushed to the registry - the same class of staleness already flagged as a risk in
 `docs/admin/multi-cluster.md`'s "Still not done" section for this exact image. Fixed by
 rebuilding (`docker build -f catalog/toolbox/Dockerfile -t
-ghcr.io/jfillman/platform-cicd-toolbox:latest .`, arm64 to match the kind-dev node),
+ghcr.io/jfillman/platform-cicd-toolbox:latest .`, arm64 to match the dev cluster's node),
 pushing, then explicitly evicting the stale image from the node
 (`crictl rmi ghcr.io/jfillman/platform-cicd-toolbox:latest` inside the node container -
 `IfNotPresent` won't re-pull on its own). A second real TaskRun, fed

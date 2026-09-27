@@ -168,7 +168,7 @@ This is all one-time setup per app, same spirit as onboarding the app repo itsel
    `pipelines-as-code-secret`.** `github-app-creds` in `platform-system` is now a real
    `ExternalSecret` (`charts/glidepath-control-plane/templates/secretstore/
    github-app-creds-external-secret.yaml`), synced from the control plane's own
-   Infisical project (`platform-cicd-kind-dev`) - see
+   Infisical project (`platform-cicd-dev`) - see
    [secrets-management.md](secrets-management.md). Read the GitHub App's id/private key
    off the GitHub App itself (App settings page - the `.pem` you download when
    generating a private key, plus the App ID shown there) and plant them as
