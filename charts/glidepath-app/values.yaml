@@ -212,10 +212,11 @@ idpServiceCatalog:
   # the release-tracking RBAC/relay-token templates changed (a preview sets no releaseTracking),
   # and v0.3.69 moved that identity into a separate airframe-identity chart, which previews do
   # not need.
-  # 2026-09-27: v0.3.92 -> v0.3.94, in step with apron/gitops-cluster-dev (known-gap #1's
-  # pip VERSION scaffold lives in compositions/pythonapplication, not this chart - bumped
-  # anyway to keep one pin across every consumer, matching the v0.3.83 precedent above).
-  chartVersion: v0.3.94
+  # 2026-09-27: v0.3.94 -> v0.3.95, M1's AF-2/AF-3/AF-4b/AF-1b batch (strict generated schema,
+  # fromComponent, dead-end validate rules, contract bundle) - chart-render-affecting only in that
+  # values.yaml is now generated rather than hand-authored; no live env file's rendered output
+  # changed (verified: byte-identical helm output across all 8 live fleet files before/after).
+  chartVersion: v0.3.95
 
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
