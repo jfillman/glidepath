@@ -126,6 +126,12 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Optional, full ordered list of every env (lower AND upper) a release should pass through, e.g. [dev, test, rel, staging, pre-prod, prod]. Not enforced by platform-cicd's own automation - no Task or Trigger reads this today, and it does not need to equal what any single pipeline's own deploy/release steps cover. It exists as an explicit, authoritative declaration of the full intended promotion sequence for consumers that need it (Backstage's Glidepath plugin: it otherwise has to infer env order by finding whichever pipeline has the most deploy/release steps, which silently breaks once a pipeline legitimately covers only part of the sequence - e.g. build/test/deploy-to-dev only, leaving every later stage to a manual promotion path). Every entry should name an env declared in this app's own lowerEnvironments or upperEnvironments; a consumer encountering an unrecognized entry should treat the whole list as unusable and fall back to its own inference rather than trust a partial/stale list. Not cross-validated against lowerEnvironments/upperEnvironments by validate-cicd-config today."
+        },
+        "releaseFile": {
+          "type": "string",
+          "default": "glidepath/releases/{env}.yaml",
+          "pattern": "\\{env\\}",
+          "description": "Where the deploy/release stages write the machine-owned release record (release.image, releaseTracking) - see hangar/docs/autopilot/release-file-split.md (D9/AF-5). Exactly one `{env}` placeholder, substituted with the target environment name, matching deploy-manifests.yaml's own `${ENV}` variable. Schema-only today: no Task reads this field yet - deploy-manifests.yaml and open-release-pr.yaml still hardcode `platform/envs/${ENV}.yaml`/the gitops repo's `values.yaml`. The field exists now so the Airframe onboarding scaffold can start setting it (`airframe/envs/{env}.release.yaml`, once that directory exists) without a second wave of per-app cicd.yaml edits later. Default names a new, not-yet-existing Glidepath-owned path (`glidepath/`, distinct from Airframe's `platform/`/`airframe/` directory) for an app onboarded without an Airframe chart to layer a release file over - per the design doc's own default-path decision, not an existing convention anywhere else in this repo."
         }
       }
     },
