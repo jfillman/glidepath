@@ -1,0 +1,92 @@
+{
+  "id": 24061799,
+  "name": "Glidepath Guardrail Checks",
+  "target": "branch",
+  "source_type": "Repository",
+  "source": "jfillman/gitops-flight-api",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": [
+        "~DEFAULT_BRANCH"
+      ]
+    }
+  },
+  "rules": [
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "type": "creation"
+    },
+    {
+      "type": "update"
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "required_reviewers": [],
+        "require_last_push_approval": true,
+        "required_review_thread_resolution": false,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": [
+          "merge",
+          "squash",
+          "rebase"
+        ]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": true,
+        "required_status_checks": [
+          {
+            "context": "Pipelines as Code CI / image-promotion-",
+            "integration_id": 4461953
+          },
+          {
+            "context": "Pipelines as Code CI / image-scan-",
+            "integration_id": 4461953
+          },
+          {
+            "context": "Pipelines as Code CI / itsm-",
+            "integration_id": 4461953
+          },
+          {
+            "context": "Pipelines as Code CI / policy-validation-",
+            "integration_id": 4461953
+          },
+          {
+            "context": "Pipelines as Code CI / provenance-",
+            "integration_id": 4461953
+          },
+          {
+            "context": "Pipelines as Code CI / qa-",
+            "integration_id": 4461953
+          },
+          {
+            "context": "Pipelines as Code CI / sast-",
+            "integration_id": 4461953
+          },
+          {
+            "context": "Pipelines as Code CI / sbom-",
+            "integration_id": 4461953
+          },
+          {
+            "context": "Pipelines as Code CI / values-",
+            "integration_id": 4461953
+          }
+        ]
+      }
+    }
+  ],
+  "bypass_actors": []
+}

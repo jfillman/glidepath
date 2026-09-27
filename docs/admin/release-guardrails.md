@@ -166,9 +166,8 @@ references them. Two things this does **not** do automatically:
 
 > **Gap (2026-09-27):** in practice the enforcement is a **GitHub ruleset** on the gitops repos, and it is an integral,
 > mandatory part of a Glidepath install: without its required-status-checks list none of these gates block a merge.
-> This section still describes classic branch protection and does not document the ruleset (its scope, the required
-> check names, bypass actors, whether it applies to the app repos, how it is applied). It is to be audited against the
-> live ruleset's JSON export and rewritten. Until then, treat the list below as incomplete.
+> This section still describes classic branch protection. The ruleset is documented, and audited against a real export, in
+> [github-ruleset.md](github-ruleset.md); generate and apply it with `hack/apply-guardrail-ruleset.sh`. Read that first.
 
 Not IaC-managed by this platform (docs/release.md's own "Onboarding" section covers the
 one-time per-repo setup) - `releaseGuardrails` and branch protection's required-status-
