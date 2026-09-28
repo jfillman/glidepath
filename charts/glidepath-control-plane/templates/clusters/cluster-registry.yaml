@@ -16,5 +16,6 @@ data:
   {{- range .Values.clusters }}
   {{ .name }}: |
     {{- $entry := dict "relaySecretName" .relaySecretName "outcomeRelayURL" .outcomeRelayURL }}
+    {{- if .relayHostAliasIP }}{{- $_ := set $entry "relayHostAliasIP" .relayHostAliasIP }}{{- end }}
     {{ $entry | toJson }}
   {{- end }}

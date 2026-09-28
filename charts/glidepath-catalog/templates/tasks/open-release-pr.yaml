@@ -268,6 +268,10 @@ spec:
           exit 1
         fi
         registry_relay_url="$(jq -r '.outcomeRelayURL' <<<"${registry_entry}")"
+        # The address the upper cluster's hook Jobs map the relay hostname to. The registry entry wins when it sets
+        # one: the dev node's own hostIP is only reachable from a cluster that shares its network (known-gaps #12).
+        relay_host_alias_ip="$(jq -r '.relayHostAliasIP // empty' <<<"${registry_entry}")"
+        relay_host_alias_ip="${relay_host_alias_ip:-${RELAY_HOST_ALIAS_IP}}"
 
         # Base64, not raw JSON - the one field here that can contain quotes/braces;
         # sidesteps yq mis-escaping it into the surrounding YAML. Decoded only at the
@@ -280,7 +284,7 @@ spec:
           del(.rollout.image) |
           del(.rollout | select(. == null)) |
           .releaseTracking.relayUrl = \"${registry_relay_url}\" |
-          .releaseTracking.relayHostAliasIP = \"${RELAY_HOST_ALIAS_IP}\" |
+          .releaseTracking.relayHostAliasIP = \"${relay_host_alias_ip}\" |
           .releaseTracking.cluster = \"${CLUSTER}\" |
           .releaseTracking.appNamespace = \"${APP_NAMESPACE}\" |
           .releaseTracking.gitUrl = \"${GIT_URL}\" |

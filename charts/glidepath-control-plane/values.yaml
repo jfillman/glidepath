@@ -228,6 +228,11 @@ secretStore:
 # shared-host dev setup (see docs/admin/multi-cluster.md's cross-cluster-reachability
 # section); a genuinely remote cluster needs a real ingress/DNS name here instead.
 #
+# relayHostAliasIP (optional): the address THAT cluster's hook Jobs should map outcomeRelayURL's hostname to
+# (their hostAliases entry). Set it whenever the dev node's own address isn't reachable from that cluster, for
+# example a cluster on another machine that reaches dev through the host's LAN address. Unset, open-release-pr
+# falls back to the dev node's status.hostIP, which only works when both clusters share a network.
+#
 # Empty by default - this is cluster state (which real upper clusters are registered),
 # not chart source, so real entries live in each cluster's own gitops-cluster-<name>
 # repo. Rendering .Values.clusters non-empty is also what turns on argocd-outcome-relay
@@ -236,4 +241,5 @@ secretStore:
 # - name: kind-prod
 #   relaySecretName: cluster-kind-prod-relay-token
 #   outcomeRelayURL: http://<dev-cluster-node-ip>:30880/outcome/kind-prod
+#   relayHostAliasIP: 192.168.1.10   # optional, see above
 clusters: []
