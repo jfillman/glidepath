@@ -74,7 +74,7 @@ cdevent_send() {
   payload="$(jq -n \
     --arg id "${event_id}" \
     --arg type "${event_type}" \
-    --arg source "/platform-cicd/${NAMESPACE}/${TEKTON_PIPELINE_RUN}" \
+    --arg source "/glidepath/${NAMESPACE}/${TEKTON_PIPELINE_RUN}" \
     --arg subjectType "${subject_type}" \
     --arg subjectId "${subject_id}" \
     --arg chainId "${chain_id}" \

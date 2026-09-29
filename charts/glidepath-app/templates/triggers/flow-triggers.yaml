@@ -77,7 +77,21 @@ flow, so no sibling to disambiguate from.
 {{- if $prevStepIsGitRoot -}}
   {{- $sourcePrefix = printf "%s-" $flowName -}}
 {{- end -}}
-{{- $celFilter := printf "body.context.type == 'dev.cdevents.%s.0.3.0' && extensions.app_namespace == '%s' && body.context.source.startsWith('/platform-cicd/%s/%s')" $eventType $appNamespace $appNamespace $sourcePrefix -}}
+{{- /*
+CDEvent source prefix rename in progress (2026-09-29, docs/admin/known-gaps.md #28):
+catalog/lib/cdevents.sh now emits "/glidepath/..." instead of the old
+"/platform-cicd/..." (branding cleanup). Matching BOTH prefixes here, not just the
+new one, deliberately - a toolbox image rollout and a Trigger-template resync
+(this file) are two independent, uncoordinated rollout mechanisms (image pull vs.
+Helm/ArgoCD sync), so there's a real window where a build running under an
+already-cached old toolbox image emits the old prefix while this Application's
+Trigger has already synced the new template, or vice versa. A single-prefix match
+during that window means an otherwise-successful build silently fails to chain to
+its next stage - exactly the failure mode docs/admin/chaining.md worries about.
+Drop the /platform-cicd/ branch once every node's toolbox image cache is confirmed
+rolled over (no fixed date - depends on real cluster pull behavior, not a schedule).
+*/ -}}
+{{- $celFilter := printf "body.context.type == 'dev.cdevents.%s.0.3.0' && extensions.app_namespace == '%s' && (body.context.source.startsWith('/platform-cicd/%s/%s') || body.context.source.startsWith('/glidepath/%s/%s'))" $eventType $appNamespace $appNamespace $sourcePrefix $appNamespace $sourcePrefix -}}
 {{- /*
 Only chaining from TEST needs an explicit outcome check: testcaserun.finished fires
 unconditionally (pass or fail) by design. build/deploy/release's events are already
