@@ -1,7 +1,7 @@
 {
   "title": "CI/CD Platform - Release Log",
   "uid": "platform-cicd-release-log",
-  "tags": ["platform-cicd"],
+  "tags": ["glidepath"],
   "schemaVersion": 39,
   "editable": true,
   "time": { "from": "now-30d", "to": "now" },

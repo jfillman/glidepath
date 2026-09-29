@@ -2,7 +2,7 @@
     "title": "CI/CD Variant 2 - Reliability & Health",
     "uid": "platform-cicd-reliability",
     "description": "Is the platform trustworthy? Success-rate gauges per stage, a flaky-task leaderboard, controller error trends, and a per-app/per-pipeline reliability table. Built to answer 'what's breaking and for whom' as more apps get onboarded.",
-    "tags": ["platform-cicd", "cicd-variant"],
+    "tags": ["glidepath", "cicd-variant"],
     "schemaVersion": 39,
     "editable": true,
     "time": { "from": "now-24h", "to": "now" },

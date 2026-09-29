@@ -2,7 +2,7 @@
     "title": "CI/CD Variant 5 - Fleet Overview",
     "uid": "platform-cicd-fleet-overview",
     "description": "One board, every app. Built specifically for the many-applications future: as more app repos get onboarded, each one gets a row here automatically (driven by label_values, no per-app panel edits ever needed) rather than a dashboard that only reads well for a single demo app.",
-    "tags": ["platform-cicd", "cicd-variant"],
+    "tags": ["glidepath", "cicd-variant"],
     "schemaVersion": 39,
     "editable": true,
     "time": { "from": "now-24h", "to": "now" },

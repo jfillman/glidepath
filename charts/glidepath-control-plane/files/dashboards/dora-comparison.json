@@ -2,7 +2,7 @@
     "title": "DORA Variant 4 - App Comparison",
     "uid": "platform-cicd-dora-comparison",
     "description": "All four DORA metrics, one row per app, across every Application - built for the moment this platform has dozens of onboarded apps and the question becomes 'which teams are elite/high/medium/low' rather than 'how is the one demo app doing'. Sortable, gradient-gauge cells double as inline bars.",
-    "tags": ["platform-cicd", "dora", "dora-variant"],
+    "tags": ["glidepath", "dora", "dora-variant"],
     "schemaVersion": 39,
     "editable": true,
     "time": { "from": "now-30d", "to": "now" },

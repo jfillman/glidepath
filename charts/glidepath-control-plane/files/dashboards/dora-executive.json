@@ -2,7 +2,7 @@
     "title": "DORA Variant 2 - Executive Summary",
     "uid": "platform-cicd-dora-executive",
     "description": "For a five-second glance, not a drill-down session. Four numbers, one sentence of context each, nothing else - deliberately the sparsest of the five DORA variants.",
-    "tags": ["platform-cicd", "dora", "dora-variant"],
+    "tags": ["glidepath", "dora", "dora-variant"],
     "schemaVersion": 39,
     "editable": true,
     "time": { "from": "now-30d", "to": "now" },

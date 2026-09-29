@@ -2,7 +2,7 @@
     "title": "DORA Variant 3 - Trends & Timeline",
     "uid": "platform-cicd-dora-trends",
     "description": "Is engineering performance improving? A 90-day window with daily bars for every metric, so a slow drift (not just a single bad day) is visible. Built for a retro/quarterly-review conversation rather than a live wallboard.",
-    "tags": ["platform-cicd", "dora", "dora-variant"],
+    "tags": ["glidepath", "dora", "dora-variant"],
     "schemaVersion": 39,
     "editable": true,
     "time": { "from": "now-90d", "to": "now" },

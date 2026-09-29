@@ -91,7 +91,7 @@ spec:
                 labels:
                   # Selected by pr-namespace-ttl-sweep-cronjob.yaml's 24h backstop sweep.
                   hangar.io/ephemeral-env: "true"
-                  # Lets platform-cicd's registry-credentials ClusterExternalSecret select
+                  # Lets glidepath's registry-credentials ClusterExternalSecret select
                   # this namespace so the private ghcr.io/<owner>/<app>-pr image can
                   # actually be pulled.
                   hangar.io/managed-secrets: "true"

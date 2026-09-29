@@ -29,7 +29,7 @@
 # to carry them, but that meant every governance gate on the gitops repo re-ran in full a
 # second time on every single release (found live 2026-08-31: doubled Check Runs,
 # doubled Trivy re-scans, for zero informational gain - the two commits never differed in
-# anything those gates inspect). outcomeRelayURL is looked up live from platform-cicd's
+# anything those gates inspect). outcomeRelayURL is looked up live from glidepath's
 # own cluster-registry ConfigMap via a narrow get-only Role; this Task still never calls
 # the upper cluster's API directly, preserving the "only a reviewed git commit crosses
 # from dev to an upper cluster" boundary. releaseTracking.relayHostAliasIP rides in the
@@ -58,7 +58,7 @@ spec:
       type: string
       default: ""
       description: >-
-        This app's dev-cluster platform-cicd namespace - rides into airframe-application's
+        This app's dev-cluster glidepath namespace - rides into airframe-application's
         releaseTracking.appNamespace so release-outcome-trigger.yaml can match the
         outcome CDEvent back to the right app's Trigger. Not the upper-env namespace
         (the hook Job reads that itself via the downward API).
@@ -79,7 +79,7 @@ spec:
         layout is <cluster>/<env>/values.yaml, so there's no manifest path without it.
         Threaded through from cicd.yaml's deploy.upperEnvironments object form, not
         derived - this Task doesn't read idp's own cluster registry (a deliberately
-        separate source of truth). It does read platform-cicd's own cluster registry
+        separate source of truth). It does read glidepath's own cluster registry
         live, but only for outcomeRelayURL.
     - name: chain-id
       type: string
@@ -256,7 +256,7 @@ spec:
 
         # Release-tracking fields resolved up front, before the (only) commit - every
         # one of these is known without the PR existing. outcomeRelayURL is resolved
-        # live from platform-cicd's own cluster-registry ConfigMap (platform-system) via
+        # live from glidepath's own cluster-registry ConfigMap (platform-system) via
         # a get-only Role scoped to this ConfigMap only. A hard failure here (not
         # best-effort) is deliberate: CLUSTER is already required/validated above, so a
         # missing registry entry means this app's cluster mapping is genuinely
@@ -264,7 +264,7 @@ spec:
         # broken outcome reporting.
         registry_entry="$(kubectl get configmap cluster-registry -n platform-system -o jsonpath="{.data.${CLUSTER}}")"
         if [[ -z "${registry_entry}" ]]; then
-          echo "error: cluster '${CLUSTER}' has no entry in the platform-cicd cluster-registry ConfigMap (platform-system, charts/glidepath-control-plane's clusters:) - can't resolve outcomeRelayURL, so release-tracking can't be wired up for this release. A platform admin needs to add it before this app can release to ${ENV}." >&2
+          echo "error: cluster '${CLUSTER}' has no entry in the glidepath cluster-registry ConfigMap (platform-system, charts/glidepath-control-plane's clusters:) - can't resolve outcomeRelayURL, so release-tracking can't be wired up for this release. A platform admin needs to add it before this app can release to ${ENV}." >&2
           exit 1
         fi
         registry_relay_url="$(jq -r '.outcomeRelayURL' <<<"${registry_entry}")"

@@ -133,9 +133,9 @@ spec:
         curl -fsSL --max-time 10 http://rekor-server.rekor-system.svc/api/v1/log/publicKey > /tmp/rekor.pub
 
         cosign signing-config create \
-          --fulcio="url=http://fulcio-server.fulcio-system.svc,api-version=1,start-time=2020-01-01T00:00:00Z,operator=platform-cicd" \
-          --oidc-provider="url=https://kubernetes.default.svc.cluster.local,api-version=1,start-time=2020-01-01T00:00:00Z,operator=platform-cicd" \
-          --rekor="url=http://rekor-server.rekor-system.svc,api-version=1,start-time=2020-01-01T00:00:00Z,operator=platform-cicd" \
+          --fulcio="url=http://fulcio-server.fulcio-system.svc,api-version=1,start-time=2020-01-01T00:00:00Z,operator=glidepath" \
+          --oidc-provider="url=https://kubernetes.default.svc.cluster.local,api-version=1,start-time=2020-01-01T00:00:00Z,operator=glidepath" \
+          --rekor="url=http://rekor-server.rekor-system.svc,api-version=1,start-time=2020-01-01T00:00:00Z,operator=glidepath" \
           --rekor-config="ANY" \
           --no-default-tsa \
           --out /tmp/signing-config.json

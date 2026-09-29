@@ -2,7 +2,7 @@
     "title": "DORA Variant 5 - Deep Dive",
     "uid": "platform-cicd-dora-deepdive",
     "description": "For someone who doesn't trust a single p50 number. Full percentile spreads, a raw lead-time heatmap (the underlying distribution, not just a quantile line), and deploys-vs-failure-rate plotted together to eyeball whether shipping faster is correlated with more breakage on this platform.",
-    "tags": ["platform-cicd", "dora", "dora-variant"],
+    "tags": ["glidepath", "dora", "dora-variant"],
     "schemaVersion": 39,
     "editable": true,
     "time": { "from": "now-30d", "to": "now" },

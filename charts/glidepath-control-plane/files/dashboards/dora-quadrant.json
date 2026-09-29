@@ -2,7 +2,7 @@
     "title": "DORA Variant 1 - Classic Quadrant",
     "uid": "platform-cicd-dora-quadrant",
     "description": "The four DORA metrics as a literal 2x2 quadrant, each with a big headline number colored by the DORA performance band (elite/high/medium/low) and a small trend line underneath. MTTR's whole quadrant is visually marked experimental per its own caveat.",
-    "tags": ["platform-cicd", "dora", "dora-variant"],
+    "tags": ["glidepath", "dora", "dora-variant"],
     "schemaVersion": 39,
     "editable": true,
     "time": { "from": "now-30d", "to": "now" },

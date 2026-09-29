@@ -3,7 +3,7 @@
   "uid": "platform-cicd-mission-control",
   "description": "Real-time NOC-style view of the whole platform: what's running right now, which apps are active, and controller health. Designed for a wallboard - big numbers, bar-gauge leaderboards, short time windows. All queries are scoped by the $app_namespace variable so this stays readable as the number of onboarded apps grows.",
   "tags": [
-    "platform-cicd",
+    "glidepath",
     "cicd-variant"
   ],
   "schemaVersion": 39,
@@ -253,7 +253,7 @@
       "targets": [
         {
           "queryType": "traceql",
-          "query": "{ .service.name = \"platform-cicd\" && name =~ \"^stage:.*\" } | select(status)",
+          "query": "{ .service.name = \"glidepath\" && name =~ \"^stage:.*\" } | select(status)",
           "limit": 20
         }
       ],
@@ -328,7 +328,7 @@
                   {
                     "type": "value",
                     "options": {
-                      "platform-cicd": {
+                      "glidepath": {
                         "text": "\u2713 complete",
                         "color": "green"
                       }

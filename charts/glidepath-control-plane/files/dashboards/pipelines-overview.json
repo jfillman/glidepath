@@ -1,7 +1,7 @@
 {
   "title": "CI/CD Platform - Pipelines Overview",
   "uid": "platform-cicd-pipelines-overview",
-  "tags": ["platform-cicd"],
+  "tags": ["glidepath"],
   "schemaVersion": 39,
   "editable": true,
   "time": { "from": "now-24h", "to": "now" },
@@ -73,8 +73,8 @@
       "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "expr": "histogram_quantile(0.5, sum(traces_span_metrics_duration_milliseconds_bucket{service_name=\"platform-cicd\", span_name=~\"^stage:.*\"}) by (le, span_name))", "legendFormat": "p50 {{span_name}}" },
-        { "expr": "histogram_quantile(0.95, sum(traces_span_metrics_duration_milliseconds_bucket{service_name=\"platform-cicd\", span_name=~\"^stage:.*\"}) by (le, span_name))", "legendFormat": "p95 {{span_name}}" }
+        { "expr": "histogram_quantile(0.5, sum(traces_span_metrics_duration_milliseconds_bucket{service_name=\"glidepath\", span_name=~\"^stage:.*\"}) by (le, span_name))", "legendFormat": "p50 {{span_name}}" },
+        { "expr": "histogram_quantile(0.95, sum(traces_span_metrics_duration_milliseconds_bucket{service_name=\"glidepath\", span_name=~\"^stage:.*\"}) by (le, span_name))", "legendFormat": "p95 {{span_name}}" }
       ]
     },
     {
@@ -87,7 +87,7 @@
       "targets": [
         {
           "queryType": "traceql",
-          "query": "{ .service.name = \"platform-cicd\" && name =~ \"^stage:.*\" }"
+          "query": "{ .service.name = \"glidepath\" && name =~ \"^stage:.*\" }"
         }
       ],
       "fieldConfig": {

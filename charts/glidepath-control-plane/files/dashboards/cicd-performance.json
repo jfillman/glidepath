@@ -2,7 +2,7 @@
     "title": "CI/CD Variant 3 - Performance & Bottlenecks",
     "uid": "platform-cicd-performance",
     "description": "Where does pipeline time actually go? Per-stage percentile durations, a task-level bottleneck leaderboard, duration trends, and a per-app/task drill-down table. Useful for judging the payoff of 8.1's build-source/unit-test parallelization and 8.3's dependency caching.",
-    "tags": ["platform-cicd", "cicd-variant"],
+    "tags": ["glidepath", "cicd-variant"],
     "schemaVersion": 39,
     "editable": true,
     "time": { "from": "now-24h", "to": "now" },
