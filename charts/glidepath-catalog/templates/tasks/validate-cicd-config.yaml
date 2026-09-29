@@ -44,6 +44,10 @@ spec:
       description: "governance.policyCheck - 'true'/'false'."
     - name: sbom
       description: "governance.sbom - 'true'/'false'."
+    - name: artifacts-python-wheel
+      description: "'true'/'false' - whether build.artifacts includes \"python-wheel\". Drives build.yaml's when: gate on the build-python-wheel-artifact Task."
+    - name: artifacts-go-binary
+      description: "'true'/'false' - whether build.artifacts includes \"go-binary\". Drives build.yaml's when: gate on the build-go-binary-artifact Task."
   steps:
     - name: validate
       image: {{ .Values.toolboxImage }}
@@ -140,5 +144,8 @@ spec:
         echo -n "$(jq -r '.governance.imageScan' /tmp/cicd-defaulted.json)" | tee "$(results.image-scan.path)" > /dev/null
         echo -n "$(jq -r '.governance.policyCheck' /tmp/cicd-defaulted.json)" | tee "$(results.policy-check.path)" > /dev/null
         echo -n "$(jq -r '.governance.sbom' /tmp/cicd-defaulted.json)" | tee "$(results.sbom.path)" > /dev/null
+
+        echo -n "$(jq -r '(.build.artifacts // []) | index("python-wheel") != null' /tmp/cicd-defaulted.json)" | tee "$(results.artifacts-python-wheel.path)" > /dev/null
+        echo -n "$(jq -r '(.build.artifacts // []) | index("go-binary") != null' /tmp/cicd-defaulted.json)" | tee "$(results.artifacts-go-binary.path)" > /dev/null
 
         echo "cicd.yaml is valid."

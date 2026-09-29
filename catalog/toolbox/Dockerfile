@@ -22,6 +22,9 @@
 #     distribution needed (which ec's own built-in verification would require).
 #   - libxml2-utils (xmllint): pulls a Maven app's <version> from pom.xml for untagged
 #     builds (package.json's version needs only jq, already present).
+#   - oras: pushes build.artifacts' non-container outputs (python-wheel/go-binary) as
+#     real OCI artifacts to the same registry/credentials the image itself uses - see
+#     build-artifact.yaml. Respects DOCKER_CONFIG the same way crane does.
 #
 # Build context MUST be the repo root (paths below are repo-root-relative):
 #   docker build -f catalog/toolbox/Dockerfile -t ghcr.io/jfillman/platform-cicd-toolbox:latest .
@@ -44,6 +47,7 @@ ARG EC_VERSION=0.9.88
 ARG COSIGN_VERSION=3.1.2
 ARG TRIVY_VERSION=0.73.0
 ARG TESTKUBE_VERSION=2.13.1
+ARG ORAS_VERSION=1.2.0
 
 RUN apk add --no-cache bash curl jq git openssl ca-certificates util-linux coreutils libxml2-utils
 
@@ -85,7 +89,12 @@ RUN set -euo pipefail; \
     && tar -xzf /tmp/testkube.tar.gz -C /tmp kubectl-testkube \
     && mv /tmp/kubectl-testkube /usr/local/bin/testkube \
     && chmod +x /usr/local/bin/testkube \
-    && rm /tmp/testkube.tar.gz
+    && rm /tmp/testkube.tar.gz \
+    && curl -fsSL -o /tmp/oras.tar.gz \
+      "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_${ARCH}.tar.gz" \
+    && tar -xzf /tmp/oras.tar.gz -C /usr/local/bin oras \
+    && chmod +x /usr/local/bin/oras \
+    && rm /tmp/oras.tar.gz
 
 COPY --from=yajsv-build /go/bin/yajsv /usr/local/bin/yajsv
 

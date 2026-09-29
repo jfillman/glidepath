@@ -135,6 +135,8 @@ spec:
   results:
     - name: image-digest
     - name: image-ref
+    - name: version
+      description: "Task-level copy of resolve-build-config's own version step-result - exists so a downstream Task (e.g. build-artifact.yaml, publishing a wheel/binary from the same build) can reference $(tasks.build-image.results.version) directly instead of re-deriving VERSION itself and risking drift from the image tag."
     - name: image-repo
       description: Bare repo name, no tag - only exists so build.yaml's Pipeline-level IMAGE_URL result (Tekton Chains' type-hinting convention, see docs/image-signing.md) has a task-result expression to reference; Tekton's admission webhook rejects a Pipeline result whose value is a plain $(params.*) reference, it must be $(tasks.*.results.*).
     - name: IMAGE_URL
@@ -490,6 +492,8 @@ spec:
           value: $(steps.resolve-build-config.results.image-ref)
         - name: IMAGE_REPO
           value: $(params.image-repo)
+        - name: VERSION
+          value: $(steps.resolve-build-config.results.version)
         - name: SPAN_START
           value: $(steps.resolve-build-config.results.span-start-time)
         - name: FLOW_TRACEPARENT
@@ -504,6 +508,7 @@ spec:
         source "${PLATFORM_LIB}/otel.sh"
         echo -n "${IMAGE_REF}" | tee "$(results.image-ref.path)"
         echo -n "${IMAGE_REPO}" | tee "$(results.image-repo.path)"
+        echo -n "${VERSION}" | tee "$(results.version.path)"
         echo -n "${IMAGE_REPO}" | tee "$(results.IMAGE_URL.path)"
         # image-digest is a TASK-level result (publish-multiarch-manifest writes it via
         # `crane digest`, now that this Task builds multi-arch - see that step's own

@@ -1,0 +1,133 @@
+# catalog/tasks/build-artifact.yaml
+#
+# Builds and publishes one additional non-container artifact (a Python wheel or a Go
+# binary) declared in cicd.yaml's build.artifacts, as a real pullable OCI artifact
+# (oras push) at <image-repo>:<version>-<artifact-type> - same registry/credentials the
+# container image uses (registry-credentials Secret, same mount pattern as build-image's
+# crane step), no separate publish target. See docs/user/cicd-yaml-reference.md.
+#
+# build.yaml carries TWO Pipeline task entries against this one Task name
+# (build-python-wheel-artifact / build-go-binary-artifact), each with its own fixed
+# artifact-type param and its own when: gate (validate-config's artifacts-python-wheel/
+# artifacts-go-binary results) - not a single task entry branching on a runtime-computed
+# type, since Tekton's when: only gates a whole PipelineTask and a Pipeline author needs
+# one entry per independent gate anyway. Both runAfter build-image - not because either
+# needs the built image itself, but because both need build-image's already-resolved
+# `version` result, so this artifact's tag always agrees exactly with the image tag
+# instead of re-deriving VERSION a second time and risking drift.
+#
+# go-binary builds linux/amd64 only today, not the full build.platforms matrix the
+# container image gets - the container image is this platform's primary distribution
+# form for a Go app; this is a secondary artifact (e.g. a standalone CLI a team also
+# wants to hand out directly). Revisit if a real app needs more than one architecture
+# published this way.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: build-artifact
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Builds one additional artifact (python-wheel or go-binary) and publishes it as a real OCI artifact alongside the container image.
+  workspaces:
+    - name: source
+  params:
+    - name: artifact-type
+      type: string
+      description: "\"python-wheel\" or \"go-binary\" - fixed per Pipeline task entry, not read from config-json (both entries share this one Task, gated independently - see header comment)."
+    - name: agent-image
+      type: string
+      description: Resolved build-agent image (validate-cicd-config's agent-image result) - the build step runs inside this, same image build-source.yaml/run-tests.yaml use.
+    - name: image-repo
+      type: string
+      description: Destination registry/repo, e.g. ghcr.io/<org>/<app> - same repo the container image publishes to.
+    - name: version
+      type: string
+      description: build-image's own resolved version (its Task-level `version` result) - this artifact's tag is <image-repo>:<version>-<artifact-type>, always in lockstep with the image tag.
+    - name: app-name
+      type: string
+      description: Used only to name the output binary for go-binary (<app-name>-linux-amd64).
+    - name: flow-traceparent
+      type: string
+    - name: stage-span-id
+      type: string
+  results:
+    - name: artifact-ref
+      description: The published artifact's full reference, e.g. ghcr.io/acme/payment-api:1.8.3-go-binary.
+  # Same Secret/key mapping build-image.yaml's kaniko steps use, mounted the way
+  # publish-multiarch-manifest's crane step consumes it (DOCKER_CONFIG env pointing at a
+  # config.json-containing directory) - oras is docker-credential-compatible the same way
+  # crane is.
+  volumes:
+    - name: registry-credentials
+      secret:
+        secretName: registry-credentials
+        items:
+          - key: .dockerconfigjson
+            path: config.json
+  steps:
+    - name: build
+      image: $(params.agent-image)
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: ARTIFACT_TYPE
+          value: $(params.artifact-type)
+        - name: APP_NAME
+          value: $(params.app-name)
+      results:
+        - name: artifact-file
+          description: Path (inside the source workspace) to the built artifact file, handed to the publish step.
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        OUT_DIR="$(workspaces.source.path)/.hangar-artifact-out"
+        mkdir -p "${OUT_DIR}"
+        case "${ARTIFACT_TYPE}" in
+          python-wheel)
+            pip install --quiet --disable-pip-version-check build
+            python -m build --wheel --outdir "${OUT_DIR}" "$(workspaces.source.path)"
+            ARTIFACT_FILE="$(ls "${OUT_DIR}"/*.whl | head -1)"
+            ;;
+          go-binary)
+            GOOS=linux GOARCH=amd64 go build -trimpath \
+              -o "${OUT_DIR}/${APP_NAME}-linux-amd64" ./...
+            ARTIFACT_FILE="${OUT_DIR}/${APP_NAME}-linux-amd64"
+            ;;
+          *)
+            echo "error: unknown artifact-type '${ARTIFACT_TYPE}' - schema's enum should have caught this at validate-cicd-config. File a platform bug." >&2
+            exit 1
+            ;;
+        esac
+        if [[ -z "${ARTIFACT_FILE}" || ! -f "${ARTIFACT_FILE}" ]]; then
+          echo "error: ${ARTIFACT_TYPE} build produced no output file in ${OUT_DIR}." >&2
+          exit 1
+        fi
+        echo -n "${ARTIFACT_FILE}" | tee "$(step.results.artifact-file.path)"
+
+    - name: publish
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      env:
+        - name: DOCKER_CONFIG
+          value: /oras/.docker
+        - name: ARTIFACT_FILE
+          value: $(steps.build.results.artifact-file)
+        - name: ARTIFACT_TYPE
+          value: $(params.artifact-type)
+        - name: IMAGE_REPO
+          value: $(params.image-repo)
+        - name: VERSION
+          value: $(params.version)
+      volumeMounts:
+        - name: registry-credentials
+          mountPath: /oras/.docker
+          readOnly: true
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        ARTIFACT_REF="${IMAGE_REPO}:${VERSION}-${ARTIFACT_TYPE}"
+        oras push "${ARTIFACT_REF}" \
+          "${ARTIFACT_FILE}:application/octet-stream" \
+          --artifact-type "application/vnd.hangar.artifact.${ARTIFACT_TYPE}"
+        echo -n "${ARTIFACT_REF}" | tee "$(results.artifact-ref.path)"

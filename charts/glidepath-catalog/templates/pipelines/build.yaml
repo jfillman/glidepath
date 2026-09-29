@@ -250,6 +250,53 @@ spec:
         - { name: git-url, value: $(params.git-url) }
         - { name: git-revision, value: $(params.git-revision) }
 
+    # Two independent task entries against the same build-artifact Task, each gated on
+    # its own cicd.yaml build.artifacts entry - see build-artifact.yaml's header comment
+    # for why this is two entries rather than one type-branching entry. runAfter
+    # build-image for its resolved `version` result, not the image itself - see that
+    # comment.
+    - name: build-python-wheel-artifact
+      runAfter: [build-image]
+      when:
+        - { input: $(tasks.validate-config.results.artifacts-python-wheel), operator: in, values: ["true"] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: build-artifact }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      workspaces:
+        - { name: source, workspace: source }
+      params:
+        - { name: artifact-type, value: "python-wheel" }
+        - { name: agent-image, value: $(tasks.validate-config.results.agent-image) }
+        - { name: image-repo, value: $(params.image-repo) }
+        - { name: version, value: $(tasks.build-image.results.version) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: flow-traceparent, value: $(tasks.start-flow.results.traceparent) }
+        - { name: stage-span-id, value: $(tasks.start-build-stage-span.results.span-id) }
+
+    - name: build-go-binary-artifact
+      runAfter: [build-image]
+      when:
+        - { input: $(tasks.validate-config.results.artifacts-go-binary), operator: in, values: ["true"] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: build-artifact }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      workspaces:
+        - { name: source, workspace: source }
+      params:
+        - { name: artifact-type, value: "go-binary" }
+        - { name: agent-image, value: $(tasks.validate-config.results.agent-image) }
+        - { name: image-repo, value: $(params.image-repo) }
+        - { name: version, value: $(tasks.build-image.results.version) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: flow-traceparent, value: $(tasks.start-flow.results.traceparent) }
+        - { name: stage-span-id, value: $(tasks.start-build-stage-span.results.span-id) }
+
     # Real (not stub) as of Phase 3 item 8.7. runAfter stays build-image, same reasoning
     # as image-scan - nothing to attest until the image is pushed.
     - name: generate-sbom

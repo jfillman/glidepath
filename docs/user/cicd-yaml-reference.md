@@ -309,6 +309,36 @@ The same two args are also set as this image's `org.opencontainers.image.version
 inspect` with no Containerfile changes needed) - the build-arg path is only for baking
 version info *inside* the binary itself, which the OCI labels alone can't do.
 
+## Additional artifacts (`build.artifacts`)
+
+Optional, empty by default - most apps don't need this. Publishes one or more
+*additional* non-container artifacts from the same build, alongside (not instead of)
+the primary container image:
+
+```yaml
+build:
+  agent: go-1.24
+  artifacts: [go-binary]
+```
+
+```yaml
+build:
+  agent: python-3.12
+  artifacts: [python-wheel]
+```
+
+Each declared type builds inside your resolved `build.agent` image (`python -m build
+--wheel` for `python-wheel`, `go build` for `go-binary`, `linux/amd64` only today) and
+publishes as a real, pullable OCI artifact - not a container image, but a real object in
+the same registry - at `<image-repo>:<version>-<type>` (e.g.
+`ghcr.io/acme/payment-api:1.8.3-go-binary`), using the same `registry-credentials` your
+container image already pushes with. No separate publish target or credential to
+configure. Pull it with `oras pull <ref>`.
+
+The version always matches the container image's own resolved version exactly (both are
+read from the same `build-image` result) - there's no separate version-resolution path
+to drift out of sync.
+
 ## Build dependency caching (`build.cache`)
 
 Only applies to the `build.script` path above - the multi-stage-Containerfile path

@@ -37,6 +37,13 @@
           "default": ["arm64", "amd64"],
           "description": "Which architectures build-image.yaml builds and publishes as a real multi-arch image (via kaniko x N + a crane manifest-index combine - kaniko itself has no multi-arch capability). Defaults to both, since kiac-dev (arm64) and kind-prod (amd64) both run real workloads. Set to a single value only for an app that provably never deploys to the other cluster (e.g. backstage, a kind-prod-only singleton) - every kaniko run for an unrequested platform is skipped, not just unpublished, so this is a real build-time cost saving, not just a registry-tidiness knob."
         },
+        "artifacts": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["python-wheel", "go-binary"] },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Additional non-container artifacts to build and publish alongside the primary container image, as real pullable OCI artifacts (oras push, not a container image) to <image-repo>:<version>-<type> - same registry and registry-credentials the image itself uses, no separate publish target. Independent of build.platforms/the image build: a service can publish both a container image AND a client-library wheel from the same source checkout. Empty by default - existing apps are unaffected. See build-artifact.yaml and docs/user/cicd-yaml-reference.md."
+        },
         "unitTest": {
           "type": "object",
           "additionalProperties": false,
