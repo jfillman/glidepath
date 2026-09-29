@@ -48,7 +48,7 @@ toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-27-release-file-sch
 # It must provide `validate-values [--app NAME] FILE...` on its PATH, exit 0 = valid. The default is Airframe's own validator, published from an
 # Airframe release tag (workflow airframe-validate-image); it carries the chart of that tag, so keep it in step
 # with the airframe-application chartVersion pinned in glidepath-app. Public, like the toolbox image.
-valuesValidatorImage: ghcr.io/jfillman/airframe-validate:v0.3.96
+valuesValidatorImage: ghcr.io/jfillman/airframe-validate:v0.3.97
 
 # Base URL of the Backstage backend that notify-backstage.yaml POSTs to. One Backstage
 # instance platform-wide (not one per cluster, not one per Application), so this is a
