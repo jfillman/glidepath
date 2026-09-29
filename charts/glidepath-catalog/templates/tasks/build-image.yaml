@@ -118,6 +118,10 @@ spec:
       type: string
       default: ""
       description: "Git tag from PaC (e.g., refs/tags/v1.2.3). Used to extract version for image tag. Empty for branch-based triggers."
+    - name: git-url
+      type: string
+      default: ""
+      description: "App repo URL, already threaded through build.yaml's own git-url param - only consumed here for the org.opencontainers.image.source label below. Defaulted (not required) so this Task doesn't newly reject a hand-built TaskRun that omits it; an empty source label is harmless."
     - name: pr-tag-only
       type: string
       default: "false"
@@ -155,6 +159,8 @@ spec:
       results:
         - name: containerfile-path
         - name: image-ref
+        - name: version
+          description: "Resolved VERSION alone (no -<sha> suffix) - exists so build-and-push-{arm64,amd64} can set org.opencontainers.image.version without re-parsing it back out of image-ref."
         - name: build-arm64
           description: "\"true\"/\"false\" - whether cicd.yaml's build.platforms includes arm64 (default: both platforms, so default is \"true\")."
         - name: build-amd64
@@ -238,6 +244,7 @@ spec:
 
         echo -n "${CONTAINERFILE_PATH}" | tee "$(step.results.containerfile-path.path)"
         echo -n "${IMAGE_REF}" | tee "$(step.results.image-ref.path)"
+        echo -n "${VERSION}" | tee "$(step.results.version.path)"
         echo -n "${BUILD_ARM64}" | tee "$(step.results.build-arm64.path)"
         echo -n "${BUILD_AMD64}" | tee "$(step.results.build-amd64.path)"
         # -n here matters, unlike the two lines above it's not just style: this result is
@@ -299,6 +306,22 @@ spec:
           value: $(steps.resolve-build-config.results.containerfile-path)
         - name: IMAGE_REF
           value: $(steps.resolve-build-config.results.image-ref)
+        # OCI annotations (docs/admin/known-gaps.md gap: "no image-signing.md
+        # revision/version labels") - kaniko's --label applies unconditionally,
+        # regardless of what the app's own Containerfile declares, so this needs no
+        # opt-in from app teams. See docs/provenance-policy.md/docs/image-signing.md
+        # for how Chains' own attestations relate to these (complementary, not
+        # redundant - Chains proves what built it, these labels are the image's own
+        # inspectable self-description, e.g. `crane config`/`docker inspect` with no
+        # attestation store involved).
+        - name: OCI_VERSION
+          value: $(steps.resolve-build-config.results.version)
+        - name: OCI_REVISION
+          value: $(params.git-revision)
+        - name: OCI_SOURCE
+          value: $(params.git-url)
+        - name: OCI_CREATED
+          value: $(steps.resolve-build-config.results.span-start-time)
       volumeMounts:
         - name: registry-credentials
           mountPath: /kaniko/.docker
@@ -316,7 +339,11 @@ spec:
           --destination=${IMAGE_REF}-arm64 \
           --custom-platform=linux/arm64 \
           --cache=true \
-          --cache-ttl=336h
+          --cache-ttl=336h \
+          --label=org.opencontainers.image.version=${OCI_VERSION} \
+          --label=org.opencontainers.image.revision=${OCI_REVISION} \
+          --label=org.opencontainers.image.source=${OCI_SOURCE} \
+          --label=org.opencontainers.image.created=${OCI_CREATED}
 
     - name: build-and-push-amd64
       # Same image/flags as build-and-push-arm64 above (see that step's comments for
@@ -340,6 +367,15 @@ spec:
           value: $(steps.resolve-build-config.results.containerfile-path)
         - name: IMAGE_REF
           value: $(steps.resolve-build-config.results.image-ref)
+        # See build-and-push-arm64's own comment on these OCI label env vars.
+        - name: OCI_VERSION
+          value: $(steps.resolve-build-config.results.version)
+        - name: OCI_REVISION
+          value: $(params.git-revision)
+        - name: OCI_SOURCE
+          value: $(params.git-url)
+        - name: OCI_CREATED
+          value: $(steps.resolve-build-config.results.span-start-time)
       volumeMounts:
         - name: registry-credentials
           mountPath: /kaniko/.docker
@@ -357,7 +393,11 @@ spec:
           --destination=${IMAGE_REF}-amd64 \
           --custom-platform=linux/amd64 \
           --cache=true \
-          --cache-ttl=336h
+          --cache-ttl=336h \
+          --label=org.opencontainers.image.version=${OCI_VERSION} \
+          --label=org.opencontainers.image.revision=${OCI_REVISION} \
+          --label=org.opencontainers.image.source=${OCI_SOURCE} \
+          --label=org.opencontainers.image.created=${OCI_CREATED}
 
     - name: publish-multiarch-manifest
       # Combines whichever single-arch image(s) got pushed above into the real,

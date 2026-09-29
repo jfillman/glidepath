@@ -11,9 +11,16 @@
 #     ref that was never pushed. Correct because PaC's tag-event revision is the same
 #     commit build-image.yaml originally built from. See docs/release.md.
 #
-# The git-rooted-without-a-tag branch below still falls back to a fixed "0.0.0" instead
-# of reading the manifest - no `source` workspace wired in yet, and every real git-rooted
-# deploy/release use case is tag-triggered anyway. Revisit if that changes.
+# Git-rooted-without-a-tag now fails loudly (2026-09-29) instead of guessing "0.0.0" -
+# it used to fall back to a fixed "0.0.0-<sha>" placeholder, but build-image.yaml never
+# actually publishes under that tag for a manifest-carrying app (it derives a real
+# version from package.json/pyproject.toml/pom.xml/VERSION for the same commit), so the
+# reconstructed ref was frequently a real, un-pushed tag - a deploy/release would then
+# fail far downstream (ImagePullBackOff) with no clue this Task's guess was the actual
+# root cause. The comment this replaced already asserted "every real git-rooted use case
+# is tag-triggered anyway" - this just makes that an enforced invariant instead of an
+# assumption. No `source` workspace wired in here to read the manifest as a real
+# fallback - revisit only if a genuine git-rooted-without-a-tag use case shows up.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -58,10 +65,16 @@ spec:
         GIT_TAG='$(params.git-tag)'
         SHORT_SHA="$(cut -c1-7 <<< "$(params.git-revision)")"
 
-        VERSION="0.0.0"
-        if [[ -n "${GIT_TAG}" ]]; then
-          # Same extraction as build-image.yaml: strip refs/tags/ and an optional 'v'.
-          VERSION=$(echo "${GIT_TAG}" | sed -E 's|^refs/tags/v?||')
+        if [[ -z "${GIT_TAG}" ]]; then
+          echo "error: resolve-image-ref reached the git-rooted path (no event-chained" \
+               "image-ref) with no git-tag either. Every git-rooted deploy/release is" \
+               "expected to be tag-triggered - reconstructing a guessed 0.0.0-<sha> ref" \
+               "here would very likely name an image build-image.yaml never actually" \
+               "pushed. Refusing to guess; check the Pipeline's trigger config." >&2
+          exit 1
         fi
+
+        # Same extraction as build-image.yaml: strip refs/tags/ and an optional 'v'.
+        VERSION=$(echo "${GIT_TAG}" | sed -E 's|^refs/tags/v?||')
 
         echo -n "${IMAGE_REPO}:${VERSION}-${SHORT_SHA}" | tee "$(results.image-ref.path)"

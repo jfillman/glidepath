@@ -222,6 +222,7 @@ spec:
         - { name: image-repo, value: $(params.image-repo) }
         - { name: git-revision, value: $(params.git-revision) }
         - { name: git-tag, value: $(params.git-tag) }
+        - { name: git-url, value: $(params.git-url) }
         - { name: pr-tag-only, value: $(params.pr-tag-only) }
         - { name: flow-traceparent, value: $(tasks.start-flow.results.traceparent) }
         - { name: stage-span-id, value: $(tasks.start-build-stage-span.results.span-id) }
