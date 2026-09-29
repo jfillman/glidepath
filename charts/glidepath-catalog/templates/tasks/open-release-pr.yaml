@@ -295,8 +295,8 @@ spec:
         " "${manifest}"
         git add "${manifest}"
 
-        git config user.name "platform-cicd release automation"
-        git config user.email "release@platform-cicd.invalid"
+        git config user.name "glidepath release automation"
+        git config user.email "release@glidepath.invalid"
 
         # X-App-Repo/X-App-Commit trailers let verify-commit-signature.yaml, running as a
         # check on THIS gitops PR, find its way back to the app-repo commit that actually

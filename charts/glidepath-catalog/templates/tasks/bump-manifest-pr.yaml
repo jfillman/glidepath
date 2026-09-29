@@ -143,8 +143,8 @@ spec:
         # all three documents, and that this scoped form touches only the Deployment.
         yq -i -e "(select(.kind == \"Deployment\") | .spec.template.spec.containers[0].image) = \"${IMAGE_REF}\"" "${MANIFEST_PATH}"
 
-        git config user.name "platform-cicd release automation"
-        git config user.email "release@platform-cicd.invalid"
+        git config user.name "glidepath release automation"
+        git config user.email "release@glidepath.invalid"
 
         commit_message="$(printf 'Bump %s image to %s\n\nX-App-Repo: %s\nX-App-Commit: %s' \
           "${APP_NAME}" "${IMAGE_REF}" "${GIT_URL}" "${GIT_REVISION}")"

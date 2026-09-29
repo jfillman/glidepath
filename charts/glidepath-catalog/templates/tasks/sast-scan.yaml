@@ -213,7 +213,7 @@ spec:
               --arg commitUrl "${COMMIT_URL}" \
               --arg scanParams "${SCAN_PARAMS}" \
               --arg findings "${FINDINGS:-no summary available}" \
-              --arg footer "platform-cicd · $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --arg footer "glidepath · $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '
               def field(fieldLabel; fieldValue): {type: "mrkdwn", text: ("*" + fieldLabel + "*\n" + fieldValue)};
               {

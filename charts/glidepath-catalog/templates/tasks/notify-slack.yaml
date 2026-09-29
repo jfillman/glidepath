@@ -223,7 +223,7 @@ spec:
           --arg prUrl "${pr_url}" \
           --arg failedTask "${failed_taskrun}" \
           --arg logExcerpt "${log_excerpt}" \
-          --arg footer "platform-cicd · $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --arg footer "glidepath · $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
           '
           def field(fieldLabel; fieldValue): {type: "mrkdwn", text: ("*" + fieldLabel + "*\n" + fieldValue)};
           (

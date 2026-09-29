@@ -355,7 +355,7 @@ spec:
               # asks "did the bot itself produce this push's tip", which is only ever true
               # for deploy-manifests.yaml's own solo push (see its git config user.email,
               # same literal here - keep in sync).
-              local loop_guard='(!has(body.head_commit) || body.head_commit.author.email != "deploy@platform-cicd.invalid")'
+              local loop_guard='(!has(body.head_commit) || body.head_commit.author.email != "deploy@glidepath.invalid")'
               # Config-only pushes never build (2026-09-24: "when committing changes to the
               # cicd.yaml file or any files under the platform/ folder, a build is
               # triggered... we want to exempt those changes" - a regression of an earlier
@@ -577,8 +577,8 @@ spec:
         done <<< "${flow_names}"
 
         if git status --porcelain | grep -q .; then
-          git config user.name "platform-cicd onboarding automation"
-          git config user.email "onboarding@platform-cicd.invalid"
+          git config user.name "glidepath onboarding automation"
+          git config user.email "onboarding@glidepath.invalid"
           # Static, not timestamped: unlike bump-manifest-pr.yaml/open-release-pr.yaml
           # (one branch per specific revision, safe to skip entirely on retry), there's
           # no natural revision to key this branch on - it's regenerated fresh from
@@ -678,8 +678,8 @@ spec:
         done
 
         if git status --porcelain | grep -q .; then
-          git config user.name "platform-cicd onboarding automation"
-          git config user.email "onboarding@platform-cicd.invalid"
+          git config user.name "glidepath onboarding automation"
+          git config user.email "onboarding@glidepath.invalid"
           # Static, not timestamped - same reasoning as deliver-app-repo-files' own
           # branch_name above: no natural revision to key this on, and a timestamped
           # name meant every trigger opened a brand new PR even with an earlier resync

@@ -154,8 +154,8 @@ spec:
           git add "${manifest}"
         fi
 
-        git config user.name "platform-cicd deploy automation"
-        git config user.email "deploy@platform-cicd.invalid"
+        git config user.name "glidepath deploy automation"
+        git config user.email "deploy@glidepath.invalid"
         git commit --quiet -m "Deploy ${APP_NAME} to ${ENV}: ${IMAGE_REF}"
         with_retry 3 -- git push --quiet "${clone_url}" main
 
