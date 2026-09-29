@@ -326,6 +326,15 @@ spec:
         - name: registry-credentials
           mountPath: /kaniko/.docker
           readOnly: true
+      # --build-arg=HANGAR_VERSION/HANGAR_GIT_REVISION below (docs/admin/known-gaps.md
+      # gap #24: Go apps have no version-injection path) - unlike the OCI --label flags
+      # above, --build-arg only takes effect for a Containerfile that declares a matching
+      # `ARG`, so it's a true no-op (not even a warning) for every existing app that
+      # doesn't. Deliberately generic (not Go-specific): a Go app's Containerfile does
+      # `ARG HANGAR_VERSION` + `ARG HANGAR_GIT_REVISION` then
+      # `go build -ldflags "-X <pkg>.Version=$HANGAR_VERSION -X <pkg>.Commit=$HANGAR_GIT_REVISION"`,
+      # but nothing here assumes Go - any language's Containerfile can consume the same
+      # two args however it needs to. See docs/user/cicd-yaml-reference.md.
       script: |
         #!/busybox/sh
         set -eu
@@ -343,7 +352,9 @@ spec:
           --label=org.opencontainers.image.version=${OCI_VERSION} \
           --label=org.opencontainers.image.revision=${OCI_REVISION} \
           --label=org.opencontainers.image.source=${OCI_SOURCE} \
-          --label=org.opencontainers.image.created=${OCI_CREATED}
+          --label=org.opencontainers.image.created=${OCI_CREATED} \
+          --build-arg=HANGAR_VERSION=${OCI_VERSION} \
+          --build-arg=HANGAR_GIT_REVISION=${OCI_REVISION}
 
     - name: build-and-push-amd64
       # Same image/flags as build-and-push-arm64 above (see that step's comments for
@@ -397,7 +408,9 @@ spec:
           --label=org.opencontainers.image.version=${OCI_VERSION} \
           --label=org.opencontainers.image.revision=${OCI_REVISION} \
           --label=org.opencontainers.image.source=${OCI_SOURCE} \
-          --label=org.opencontainers.image.created=${OCI_CREATED}
+          --label=org.opencontainers.image.created=${OCI_CREATED} \
+          --build-arg=HANGAR_VERSION=${OCI_VERSION} \
+          --build-arg=HANGAR_GIT_REVISION=${OCI_REVISION}
 
     - name: publish-multiarch-manifest
       # Combines whichever single-arch image(s) got pushed above into the real,

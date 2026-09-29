@@ -278,6 +278,37 @@ a build, pick whichever fits:
 `build.agent` is required either way - unit tests always run inside it, independent of
 which build strategy you pick.
 
+## Version metadata inside the image (`HANGAR_VERSION`/`HANGAR_GIT_REVISION`)
+
+Every `build-image` invocation passes two build args to your Containerfile automatically,
+regardless of build strategy - no `cicd.yaml` field turns this on, it's always available:
+
+- `HANGAR_VERSION` - the same version `build-image` resolved for the image tag (from a
+  git tag, `package.json`, `pom.xml`, `pyproject.toml`, or a `VERSION` file, in that
+  order - see "How the image tag is resolved" below).
+- `HANGAR_GIT_REVISION` - the full git commit SHA being built.
+
+Declare an `ARG` for whichever one you want and use it however your language needs -
+nothing consumes these automatically, so an app that doesn't declare the `ARG` sees no
+effect at all (kaniko silently ignores a `--build-arg` with no matching `ARG`). The
+motivating case is Go, which has no manifest-embedded version convention the way
+Node/Python/Maven do:
+
+```dockerfile
+FROM golang:1.24-alpine AS build
+ARG HANGAR_VERSION
+ARG HANGAR_GIT_REVISION
+RUN go build -ldflags "\
+      -X example.com/payment-api/version.Version=${HANGAR_VERSION} \
+      -X example.com/payment-api/version.Commit=${HANGAR_GIT_REVISION}" \
+      -o /out/payment-api ./cmd/payment-api
+```
+
+The same two args are also set as this image's `org.opencontainers.image.version` and
+`org.opencontainers.image.revision` OCI labels (readable via `crane config`/`docker
+inspect` with no Containerfile changes needed) - the build-arg path is only for baking
+version info *inside* the binary itself, which the OCI labels alone can't do.
+
 ## Build dependency caching (`build.cache`)
 
 Only applies to the `build.script` path above - the multi-stage-Containerfile path
