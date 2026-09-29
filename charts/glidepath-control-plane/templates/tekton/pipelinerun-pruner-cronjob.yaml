@@ -79,7 +79,7 @@ spec:
             seccompProfile: { type: RuntimeDefault }
           containers:
             - name: prune
-              image: ghcr.io/jfillman/platform-cicd-toolbox:latest
+              image: ghcr.io/jfillman/glidepath-toolbox:latest
               imagePullPolicy: IfNotPresent  # published to ghcr.io/jfillman, not kind-loaded
               securityContext:
                 allowPrivilegeEscalation: false

@@ -269,7 +269,7 @@ otel_task_span_send "build-image" "${FLOW_TRACEPARENT}" "${STAGE_SPAN_ID}" \
 
 ```bash
 # Manually test in a pod:
-kubectl run -it --image=ghcr.io/jfillman/platform-cicd-toolbox:latest debug-otel-cli -- bash
+kubectl run -it --image=ghcr.io/jfillman/glidepath-toolbox:latest debug-otel-cli -- bash
 
 # Inside pod:
 source /opt/platform/lib/otel.sh

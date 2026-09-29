@@ -7,7 +7,7 @@
 # own toolboxImage - kept in sync deliberately, not duplicated by accident. Defaults to
 # this repo's own published image (real, public, working) - override if you've built
 # and published your own copy.
-toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:2026-09-29-oras-artifacts
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-09-29-oras-artifacts
 
 # The single shared namespace Testkube CE installs into on this cluster (see
 # gitops-cluster-dev/50-platform-cicd/testkube/application.yaml's own header for why
@@ -33,7 +33,7 @@ selfManageNamespace: false
 
 # Real registry-published image, same reasoning as toolboxImage above - see
 # templates/dora-exporter/deployment.yaml's own comment for the gap this closes.
-doraExporterImage: ghcr.io/jfillman/platform-cicd-dora-exporter:latest
+doraExporterImage: ghcr.io/jfillman/glidepath-dora-exporter:latest
 
 # The cdevents-broker-auth Deployment's own image (templates/broker/interceptor.yaml).
 # Unlike toolboxImage/doraExporterImage above, this is NOT hand-bumped - .github/
@@ -45,11 +45,11 @@ doraExporterImage: ghcr.io/jfillman/platform-cicd-dora-exporter:latest
 # pull-based model as every app deploy on this platform. See interceptor.yaml's own
 # comment on this value for the real live bug (stale image, 2026-09-06) a floating
 # "latest" tag caused here.
-interceptorImage: ghcr.io/jfillman/platform-cicd-token-review-interceptor:latest
+interceptorImage: ghcr.io/jfillman/glidepath-token-review-interceptor:latest
 
 # templates/tekton/tekton-results-relay.yaml's own image - same reasoning as
 # doraExporterImage above (real registry-published tag, not a local-only build).
-tektonResultsRelayImage: ghcr.io/jfillman/platform-cicd-tekton-results-relay:latest
+tektonResultsRelayImage: ghcr.io/jfillman/glidepath-tekton-results-relay:latest
 
 # This platform's own repo - the tenant-onboarding ApplicationSet (templates/argocd/
 # tenant-onboarding-applicationset.yaml) reads tenants/*.yaml from here (its generator

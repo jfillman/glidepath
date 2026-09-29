@@ -27,7 +27,7 @@
 #     build-artifact.yaml. Respects DOCKER_CONFIG the same way crane does.
 #
 # Build context MUST be the repo root (paths below are repo-root-relative):
-#   docker build -f catalog/toolbox/Dockerfile -t ghcr.io/jfillman/platform-cicd-toolbox:latest .
+#   docker build -f catalog/toolbox/Dockerfile -t ghcr.io/jfillman/glidepath-toolbox:latest .
 #
 # schemas/cicd.schema.json is baked in rather than mounted from a ConfigMap, so a
 # schema change requires an image rebuild + version bump, not a silent live update -

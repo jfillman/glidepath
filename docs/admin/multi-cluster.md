@@ -708,17 +708,17 @@ outcome/status/event-type on `PHASE` three ways instead of two.
 
 **Same staleness class flagged in the Dockerfile's own comment (see "Onboarding
 boilerplate" note there) applies here**: `argocd-outcome-hook.sh` is `COPY`'d into
-`ghcr.io/jfillman/platform-cicd-toolbox:latest` at build time, and every hook Job
+`ghcr.io/jfillman/glidepath-toolbox:latest` at build time, and every hook Job
 (including the new `PreSync` one) references that image with `imagePullPolicy:
 IfNotPresent`. A git push alone does **not** get this fix onto a live cluster - the
 toolbox image needs an explicit `docker build -f catalog/toolbox/Dockerfile -t
-ghcr.io/jfillman/platform-cicd-toolbox:latest .` + push (repo-root build context, see
+ghcr.io/jfillman/glidepath-toolbox:latest .` + push (repo-root build context, see
 that Dockerfile's own header), same manual step as any other toolbox-script change,
 and any node with an already-cached `:latest` layer won't re-pull on its own.
 
-**Still not done**: rebuild+push three images - `ghcr.io/jfillman/platform-cicd-toolbox`
+**Still not done**: rebuild+push three images - `ghcr.io/jfillman/glidepath-toolbox`
 (bakes in the hook script AND `update-dora-metrics.yaml`'s step image),
-`ghcr.io/jfillman/platform-cicd-argocd-outcome-relay`, and
+`ghcr.io/jfillman/glidepath-argocd-outcome-relay`, and
 `ghcr.io/jfillman/dora-exporter` (all `:latest`, all `imagePullPolicy: IfNotPresent` -
 a stale node-cached image has bitten this exact relay before, see the
 "ghcr.io/jfillman" comment in `argocd-outcome-relay.yaml`) - and a rollout restart of

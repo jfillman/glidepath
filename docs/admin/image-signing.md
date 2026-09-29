@@ -275,7 +275,7 @@ expected imageID sha256:f531d4eda8c7... to be separable by @
 ```
 
 That digest belonged to this platform's own shared toolbox image
-(`ghcr.io/jfillman/platform-cicd-toolbox`), not the app image - and the reason became
+(`ghcr.io/jfillman/glidepath-toolbox`), not the app image - and the reason became
 clear once every step's `containerStatus.imageID` was inspected directly
 (`kubectl get taskrun ... -o json | jq '.status.steps[].imageID'`): steps running a
 registry-pulled image (kaniko, `node`, `git-clone`) report a properly-qualified
@@ -291,7 +291,7 @@ nearly every step in every pipeline, this broke signing for every real build.
 **Fix, applied in two parts:**
 
 1. **Root cause**: the toolbox image is now actually `docker push`ed to
-   `ghcr.io/jfillman/platform-cicd-toolbox` (the toolbox publish step) instead of
+   `ghcr.io/jfillman/glidepath-toolbox` (the toolbox publish step) instead of
    `kind load`ed - so its imageID is always a real, registry-qualified reference. This
    also simplifies onboarding a new toolbox version going forward: a normal push, no
    `docker save`/`ctr images import` dance. (A freshly-pushed GHCR package defaults to

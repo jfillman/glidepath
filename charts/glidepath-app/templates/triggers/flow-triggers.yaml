@@ -123,7 +123,7 @@ spec:
     to spot as belonging together without needing the full chain-id.
 
     NOTE: chain_slug is emitted by cdevents.sh, which lives inside the pinned
-    platform-cicd-toolbox image (values.yaml's toolboxImage), not this chart. A
+    glidepath-toolbox image (values.yaml's toolboxImage), not this chart. A
     TriggerBinding's $(body...) JSONPath hard-errors on a missing field (not an empty
     value - same failure mode as the "outcome" bug above), so requiring chain_slug here
     ever again before a published image actually emits it would break EVERY chained

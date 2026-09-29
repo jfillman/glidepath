@@ -9,7 +9,7 @@ metadata:
     hangar.io/subcomponent: "identity"
   namespace: {{ $appNamespace }}
 # Reuses kaniko's registry-credentials Secret so TaskRun pods can pull the private
-# platform-cicd-toolbox image from this deployment's own registry.
+# glidepath-toolbox image from this deployment's own registry.
 imagePullSecrets:
   - name: registry-credentials
 ---

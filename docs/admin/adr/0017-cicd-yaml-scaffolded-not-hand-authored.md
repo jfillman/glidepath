@@ -37,7 +37,7 @@ the stack's own version field (`nodeVersion`/`javaVersion`/`goVersion`/
 `schemas/cicd.schema.json`'s `build.agent` enum is widened to
 `go-1.23`/`go-1.24`/`python-3.12`/`python-3.13` to make that mapping valid,
 with matching entries added to `catalog/lib/build-agents.env`.
-`platform-cicd-toolbox` rebuilt and tag-bumped to
+`glidepath-toolbox` rebuilt and tag-bumped to
 `2026-09-21-go-python-agents` for this, per this repo's own standing rule
 (`charts/glidepath-catalog/values.yaml`'s own comment on `toolboxImage`) -
 unconditional even though the schema edit itself is a two-line array append,

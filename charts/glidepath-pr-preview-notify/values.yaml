@@ -28,4 +28,4 @@ serviceName: ""
 ingressBaseDomain: ""
 argocdUIBaseURL: ""
 
-toolboxImage: ghcr.io/jfillman/platform-cicd-toolbox:latest
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:latest

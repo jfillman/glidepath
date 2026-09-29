@@ -382,7 +382,7 @@ Fixed in two parts (see `docs/image-signing.md` for the full writeup and the upd
 `chains-config-patch.yaml`):
 
 1. The toolbox image is now actually `docker push`ed to
-   `ghcr.io/jfillman/platform-cicd-toolbox`  instead of
+   `ghcr.io/jfillman/glidepath-toolbox`  instead of
    `kind load`ed, so its imageID is always registry-qualified. A freshly-pushed GHCR
    package defaults to private, so `pipeline-runner` now carries `imagePullSecrets:
    [{name: registry-credentials}]` (reusing the Secret kaniko already pushes with) rather

@@ -65,7 +65,7 @@ same as its siblings). On a confirmed outcome, it:
 
 ## Real gap hit live: `otel_log_send` didn't exist in the running toolbox image
 
-`catalog/lib/otel.sh` is baked into `ghcr.io/jfillman/platform-cicd-toolbox` at build
+`catalog/lib/otel.sh` is baked into `ghcr.io/jfillman/glidepath-toolbox` at build
 time (`catalog/toolbox/Dockerfile`'s `COPY catalog/lib/otel.sh ...`), not mounted live
 from git - adding `otel_log_send` to the source file alone doesn't reach a running
 cluster. First real `release-log-emit` TaskRun failed with `otel_log_send: command not
@@ -74,9 +74,9 @@ dev-cluster node's already-cached `:latest` kept being reused even after a fresh
 was pushed to the registry - the same class of staleness already flagged as a risk in
 `docs/admin/multi-cluster.md`'s "Still not done" section for this exact image. Fixed by
 rebuilding (`docker build -f catalog/toolbox/Dockerfile -t
-ghcr.io/jfillman/platform-cicd-toolbox:latest .`, arm64 to match the dev cluster's node),
+ghcr.io/jfillman/glidepath-toolbox:latest .`, arm64 to match the dev cluster's node),
 pushing, then explicitly evicting the stale image from the node
-(`crictl rmi ghcr.io/jfillman/platform-cicd-toolbox:latest` inside the node container -
+(`crictl rmi ghcr.io/jfillman/glidepath-toolbox:latest` inside the node container -
 `IfNotPresent` won't re-pull on its own). A second real TaskRun, fed
 `gitops-checkout-api`'s actual PR #14, then succeeded and correctly reported real data
 (`bypass=true`, `approvers=none`, `gate_provenance=missing` - that last one is real too:
