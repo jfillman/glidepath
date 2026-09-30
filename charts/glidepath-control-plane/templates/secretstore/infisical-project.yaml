@@ -48,7 +48,11 @@
 # secretStore.infisical.credentialsSecretName, updated to match. cluster-secret-
 # store.yaml itself needed no changes: it already sources credentialsSecretName from
 # .Values, not a hardcoded name.
-apiVersion: catalog.idp.io/v1alpha1
+# Tier 2 domain-rename migration (see memory project_tier2_domain_rename_plan.md): adopted by id
+# via the secretstore-provisioner ConfigMap - the real Infisical project/secrets are untouched,
+# only this wrapper XR's group and its Identity (which platform-secret-store's own
+# credentialsSecretName picks up automatically, unchanged) are affected.
+apiVersion: catalog.hangar.io/v1alpha1
 kind: SecretStore
 metadata:
   name: platform-cicd-kind-dev
