@@ -220,7 +220,7 @@ idpServiceCatalog:
   # component) - both land in the XRD/Composition layer, not the airframe-application chart, so
   # no chart-rendered manifest changes either (verified: byte-identical helm output across all 8
   # live fleet files before/after).
-  chartVersion: v0.3.97
+  chartVersion: v0.3.110
 
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
