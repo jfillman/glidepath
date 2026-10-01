@@ -17,9 +17,9 @@ the same pattern**, not a base-plus-suffix hierarchy - a deploy namespace has no
 do with "cicd" conceptually (it's where the Application *runs*, not where its pipeline
 runs), so it is never `<type>-<app-name>-cicd-<env>`.
 
-Examples, all structurally identical 3-part names: `app-nodejs-demo-app-cicd` (pipeline
-execution), `app-nodejs-demo-app-dev` (deploy target), `app-nodejs-demo-app-staging`
-(release staging), `app-nodejs-demo-app-pr-42` (PR ephemeral env),
+Examples, all structurally identical 3-part names: `app-boarding-api-cicd` (pipeline
+execution), `app-boarding-api-dev` (deploy target), `app-boarding-api-staging`
+(release staging), `app-boarding-api-pr-42` (PR ephemeral env),
 `infra-payments-db-cicd` (an `infra`-type Application's own pipeline execution).
 
 `charts/glidepath-app`'s `glidepath-app.envNamespace` helper computes any of

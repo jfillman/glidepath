@@ -25,8 +25,8 @@ routine message being cluttered with a different icon per stage. No per-stage ic
 
 ## Header
 
-`"<App> · <Stage> <Status>"` - e.g. `"nodejs-demo-app · Build Succeeded"`,
-`"⚠ nodejs-demo-app · Release Failed"`. Plain text, no emoji baked into the stage name
+`"<App> · <Stage> <Status>"` - e.g. `"boarding-api · Build Succeeded"`,
+`"⚠ boarding-api · Release Failed"`. Plain text, no emoji baked into the stage name
 itself.
 
 ## Field vocabulary

@@ -93,7 +93,7 @@ The `finally` block calls `send-cdevent` task with:
 PLATFORM_CHAIN_ID="550e8400-e29b-41d4-a716-446655440000"
 PLATFORM_TRACEPARENT="00-2f8d7a4c3b1e9f6d2a8c5e7b3f1d9a4c-a7e3f2d8c1b5e9a2-01"
 PLATFORM_FLOW_START_TIME="2025-08-06T14:32:15.123456789Z"
-TEKTON_PIPELINE_RUN="build-nodejs-demo-app-abc123"
+TEKTON_PIPELINE_RUN="build-boarding-api-abc123"
 NAMESPACE="app-myapp-cicd"
 ```
 
@@ -103,14 +103,14 @@ NAMESPACE="app-myapp-cicd"
   "context": {
     "version": "0.4.1",
     "id": "a1b2c3d4e5f6g7h8",
-    "source": "/platform-cicd/app-myapp-cicd/build-nodejs-demo-app-abc123",
+    "source": "/platform-cicd/app-myapp-cicd/build-boarding-api-abc123",
     "type": "dev.cdevents.artifact.published.0.3.0",
     "timestamp": "2025-08-06T14:33:12.123456Z",
     "chainId": "550e8400-e29b-41d4-a716-446655440000"
   },
   "subject": {
-    "id": "build-nodejs-demo-app-abc123",
-    "source": "/platform-cicd/app-myapp-cicd/build-nodejs-demo-app-abc123",
+    "id": "build-boarding-api-abc123",
+    "source": "/platform-cicd/app-myapp-cicd/build-boarding-api-abc123",
     "type": "artifact",
     "content": {
       "name": "myapp",
@@ -265,7 +265,7 @@ otel_span_send \
     "type": "testCaseRun",
     "content": {
       "outcome": "success",
-      "testSuite": "nodejs-demo-app",
+      "testSuite": "boarding-api",
       "testName": "unit-tests"
     }
   },
