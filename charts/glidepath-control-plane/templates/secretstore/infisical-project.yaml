@@ -10,7 +10,7 @@
 # Rather than hand-render provider-infisical's Project/ProjectEnvironment/Identity/
 # IdentityKubernetesAuth/ProjectIdentity chain directly in this plain Helm chart (the
 # way idp's Composition does), this renders a `SecretStore` XR instead - reusing
-# catalog.idp.io's own XRD/Composition wholesale. That Composition already solves a
+# catalog.hangar.io's own XRD/Composition wholesale. That Composition already solves a
 # real problem a plain Helm template can't: IdentityKubernetesAuth needs a live
 # Kubernetes token-reviewer JWT + CA cert as LITERAL string fields (no SecretRef
 # alternative exists on that CRD, confirmed against its schema), and those can only
@@ -39,7 +39,7 @@
 # ACTIVELY-USED stores with inconsistent scope), this one is inert: nothing
 # references "platform-cicd-kind-dev" as a store name, so it carries no correctness
 # risk - just one harmless extra object. Removing it would mean forking this
-# Composition or adding a "skip ClusterSecretStore" toggle to catalog.idp.io's own
+# Composition or adding a "skip ClusterSecretStore" toggle to catalog.hangar.io's own
 # XRD, out of scope for this decommission.
 #
 # The synthetic identityId Secret this Composition produces is named
