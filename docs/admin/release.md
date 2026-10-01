@@ -184,7 +184,7 @@ This is all one-time setup per app, same spirit as onboarding the app repo itsel
    section. A cluster rebuild no longer needs either Secret hand-recreated - just this
    one Infisical plant, once per cluster.
 
-2. **Create the `gitops-<app-name>` repo on GitHub** (e.g. `gitops-nodejs-demo-app`) and
+2. **Create the `gitops-<app-name>` repo on GitHub** (e.g. `gitops-boarding-api`) and
    push `<app-name>/staging/deployment.yaml` + `service.yaml` (adapted from the app's own
    dev manifests) to it - this is the one part of the gitops repo's content the platform
    has no way to generate for you (it doesn't know your Deployment's shape).
@@ -224,8 +224,8 @@ This is all one-time setup per app, same spirit as onboarding the app repo itsel
 5. **Apply the ArgoCD template**, with `<APP_NAMESPACE>`, `<APP_NAME>`, `<GITOPS_REPO_URL>`
    substituted:
    ```
-   sed -e 's#<APP_NAMESPACE>#app-nodejs-demo-app-cicd#g' -e 's#<APP_NAME>#nodejs-demo-app#g' \
-       -e 's#<GITOPS_REPO_URL>#https://github.com/<org>/gitops-nodejs-demo-app#g' \
+   sed -e 's#<APP_NAMESPACE>#app-boarding-api-cicd#g' -e 's#<APP_NAME>#boarding-api#g' \
+       -e 's#<GITOPS_REPO_URL>#https://github.com/<org>/gitops-boarding-api#g' \
      charts/glidepath-app/templates/argocd/release-application.yaml | kubectl apply -f -
    ```
 

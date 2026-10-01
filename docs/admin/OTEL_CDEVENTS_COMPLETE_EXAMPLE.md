@@ -1,16 +1,16 @@
 # Real-World Example: Complete Build→Test→Deploy→Release Flow
 
-This example traces a single `nodejs-demo-app` commit through a complete CI/CD flow, showing exact OTEL spans and CDEvents at each stage.
+This example traces a single `boarding-api` commit through a complete CI/CD flow, showing exact OTEL spans and CDEvents at each stage.
 
 ---
 
 ## Scenario
 
-- **Application:** nodejs-demo-app
+- **Application:** boarding-api
 - **Git Event:** Push to `main` branch at `2025-08-06T14:32:00Z`
 - **Git SHA:** `abc123def456789` (first 12 chars: `abc123def456`)
 - **App Namespace:** `app-demo-cicd`
-- **Image Repo:** `ghcr.io/myorg/nodejs-demo-app`
+- **Image Repo:** `ghcr.io/myorg/boarding-api`
 
 ---
 
@@ -38,7 +38,7 @@ TRACEPARENT="00-7f2e4a8c1d6b5f3e2c9a4d8f1b6e3a7c-4c9e2a7d1f3b8e5c-01"
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  name: build-nodejs-demo-app-8xk2j
+  name: build-boarding-api-8xk2j
   namespace: app-demo-cicd
 spec:
   pipelineRef:
@@ -48,11 +48,11 @@ spec:
         value: build
   params:
     - name: git-url
-      value: "https://github.com/myorg/nodejs-demo-app.git"
+      value: "https://github.com/myorg/boarding-api.git"
     - name: git-revision
       value: "abc123def456789"
     - name: image-repo
-      value: "ghcr.io/myorg/nodejs-demo-app"
+      value: "ghcr.io/myorg/boarding-api"
 ```
 
 ### Task: start-flow-root-span
@@ -91,7 +91,7 @@ BUILD_STAGE_START_TIME="2025-08-06T14:32:05.123456789Z"
 ```bash
 # Resolves from config
 CONTAINERFILE_PATH="Containerfile"
-IMAGE_REF="ghcr.io/myorg/nodejs-demo-app:abc123def456"
+IMAGE_REF="ghcr.io/myorg/boarding-api:abc123def456"
 SPAN_START_TIME="2025-08-06T14:32:06.234567890Z"
 ```
 
@@ -100,14 +100,14 @@ SPAN_START_TIME="2025-08-06T14:32:06.234567890Z"
 # Two kaniko runs, one per arch (no bash/otel-cli available in either) - kaniko has no
 # multi-arch/manifest-list capability of its own, so each push goes to its own
 # throwaway -arm64/-amd64-suffixed tag:
-# ghcr.io/myorg/nodejs-demo-app:abc123def456-arm64
-# ghcr.io/myorg/nodejs-demo-app:abc123def456-amd64
+# ghcr.io/myorg/boarding-api:abc123def456-arm64
+# ghcr.io/myorg/boarding-api:abc123def456-amd64
 ```
 
 **Step 3: publish-multiarch-manifest**
 ```bash
 # crane combines the two arch-suffixed images above into one real OCI image index
-# under the actual (unsuffixed) tag: ghcr.io/myorg/nodejs-demo-app:abc123def456
+# under the actual (unsuffixed) tag: ghcr.io/myorg/boarding-api:abc123def456
 # Writes image-digest to /tekton/results/image-digest
 # Result: sha256:abc123def456789abcdef123456789abcdef (the INDEX digest, not either
 # single-arch image's own digest)
@@ -209,7 +209,7 @@ Environment variables set:
 ```bash
 CDEVENTS_BROKER_URL="http://el-cdevents-broker.platform-system.svc.cluster.local:8080"
 NAMESPACE="app-demo-cicd"
-TEKTON_PIPELINE_RUN="build-nodejs-demo-app-8xk2j"
+TEKTON_PIPELINE_RUN="build-boarding-api-8xk2j"
 PLATFORM_CHAIN_ID="c4b8e2f5-7d1a-4c9f-b3e6-2a8d5f1c9e4b"
 PLATFORM_TRACEPARENT="00-7f2e4a8c1d6b5f3e2c9a4d8f1b6e3a7c-4c9e2a7d1f3b8e5c-01"
 PLATFORM_FLOW_START_TIME="2025-08-06T14:32:00.000000000Z"
@@ -217,7 +217,7 @@ PLATFORM_FLOW_START_TIME="2025-08-06T14:32:00.000000000Z"
 
 CDEvent ID calculation:
 ```bash
-event_id=$(printf '%s' "build-nodejs-demo-app-8xk2j:dev.cdevents.artifact.published.0.3.0" \
+event_id=$(printf '%s' "build-boarding-api-8xk2j:dev.cdevents.artifact.published.0.3.0" \
   | sha256sum | cut -d' ' -f1 | cut -c1-20)
 # Result: "a2f8c3e1d5b9e7a2"
 ```
@@ -228,19 +228,19 @@ event_id=$(printf '%s' "build-nodejs-demo-app-8xk2j:dev.cdevents.artifact.publis
   "context": {
     "version": "0.4.1",
     "id": "a2f8c3e1d5b9e7a2",
-    "source": "/platform-cicd/app-demo-cicd/build-nodejs-demo-app-8xk2j",
+    "source": "/platform-cicd/app-demo-cicd/build-boarding-api-8xk2j",
     "type": "dev.cdevents.artifact.published.0.3.0",
     "timestamp": "2025-08-06T14:32:52.000000Z",
     "chainId": "c4b8e2f5-7d1a-4c9f-b3e6-2a8d5f1c9e4b"
   },
   "subject": {
-    "id": "build-nodejs-demo-app-8xk2j",
-    "source": "/platform-cicd/app-demo-cicd/build-nodejs-demo-app-8xk2j",
+    "id": "build-boarding-api-8xk2j",
+    "source": "/platform-cicd/app-demo-cicd/build-boarding-api-8xk2j",
     "type": "artifact",
     "content": {
-      "name": "nodejs-demo-app",
+      "name": "boarding-api",
       "version": "abc123def456",
-      "uri": "ghcr.io/myorg/nodejs-demo-app@sha256:abc123def456789abcdef123456789abcdef"
+      "uri": "ghcr.io/myorg/boarding-api@sha256:abc123def456789abcdef123456789abcdef"
     }
   },
   "customData": {
@@ -331,11 +331,11 @@ spec:
     - name: flow-start-time
       value: "2025-08-06T14:32:00.000000000Z"
     - name: git-url
-      value: "https://github.com/myorg/nodejs-demo-app.git"
+      value: "https://github.com/myorg/boarding-api.git"
     - name: git-revision
       value: "abc123def456789"
     - name: image-ref
-      value: "ghcr.io/myorg/nodejs-demo-app@sha256:abc123def456789abcdef123456789abcdef"
+      value: "ghcr.io/myorg/boarding-api@sha256:abc123def456789abcdef123456789abcdef"
 ```
 
 ### Task: start-stage-span
@@ -444,7 +444,7 @@ event_id=$(printf '%s' "test-a2f8c3e1d5b9e7a2:dev.cdevents.testcaserun.finished.
     "type": "testCaseRun",
     "content": {
       "outcome": "success",
-      "testSuite": "nodejs-demo-app",
+      "testSuite": "boarding-api",
       "testName": "unit-tests",
       "testResult": {
         "passes": 42,
@@ -539,9 +539,9 @@ otel_span_send \
     "source": "/platform-cicd/app-demo-cicd/deploy-b3e9d7a2c8f1e5b4",
     "type": "service",
     "content": {
-      "service": "nodejs-demo-app",
+      "service": "boarding-api",
       "environment": "dev",
-      "deployment": "nodejs-demo-app",
+      "deployment": "boarding-api",
       "namespace": "app-demo-dev",
       "imageSha": "sha256:abc123def456789abcdef123456789abcdef"
     }

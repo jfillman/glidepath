@@ -64,7 +64,7 @@ Returns: Stages that took longer than 60 seconds
 {status.code="ERROR"} && {span.duration > 30s}
 
 # Find chains by app name
-{attributes.app="nodejs-demo-app"}
+{attributes.app="boarding-api"}
 ```
 
 ---
