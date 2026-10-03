@@ -202,7 +202,13 @@ spec:
         # and flight-api were missing it for the same reason. Written once, comment-only
         # (a human customizes it per docs/admin/ephemeral-environments.md) - never
         # overwritten on a later resync, since by then it may be developer-owned content.
-        if [[ "${pr_enabled:-false}" == "true" ]] && [[ ! -f platform/pr-env.yaml ]]; then
+        #
+        # Now scaffolded for EVERY onboarded app, not just ones with pullRequest enabled
+        # (2026-10-03, found end-to-end on sky-marshall): the starter cicd.yaml enables no
+        # ephemeralEnvironments, so the file was never created, and a developer who turns
+        # previews on later hit exactly the ComparisonError above. A comment-only file
+        # costs nothing when previews are off.
+        if [[ ! -f platform/pr-env.yaml ]]; then
           mkdir -p platform
           cat > platform/pr-env.yaml <<'PRENVEOF'
         # platform/pr-env.yaml
@@ -218,12 +224,59 @@ spec:
         # envName and rollout.image are NOT set here - the ApplicationSet template stamps both
         # per-PR via its own valuesObject, which wins over this valueFiles-sourced content.
         #
-        # Scaffolded once by the onboarding mechanism because ephemeralEnvironments.pullRequest
-        # is enabled in cicd.yaml - never regenerated after this, so any edit below is yours.
+        # Scaffolded once by the onboarding mechanism - never regenerated after this, so any
+        # edit below is yours.
         # If your rollout.ports don't already match airframe-application's chart default
         # (8080/http), set rollout.ports here explicitly.
         PRENVEOF
-          echo "app repo: scaffolded platform/pr-env.yaml (ephemeralEnvironments.pullRequest.enabled=true, file was missing)"
+          echo "app repo: scaffolded platform/pr-env.yaml (file was missing)"
+        fi
+
+        # platform/base.yaml: values shared by every environment, the lowest-precedence
+        # file in the D9/AF-5 merge order (base < platform/envs/<env>.yaml < release file,
+        # see hangar/docs/autopilot/release-file-split.md). Optional to the ApplicationSets
+        # (ignoreMissingValueFiles), scaffolded so the layout is discoverable.
+        if [[ ! -f platform/base.yaml ]]; then
+          mkdir -p platform
+          cat > platform/base.yaml <<'BASEEOF'
+        # platform/base.yaml
+        #
+        # Helm values shared by EVERY environment of this app (airframe-application chart).
+        # Merge order, last wins: this file < platform/envs/<env>.yaml < the release file
+        # (machine-owned, written by Glidepath's deploy stage). Put anything that is the same
+        # in every environment here - ports, probes, resources, shared env vars - and only the
+        # differences in platform/envs/<env>.yaml.
+        #
+        # Scaffolded once by the onboarding mechanism - never regenerated after this, so any
+        # edit below is yours.
+        {}
+        BASEEOF
+          echo "app repo: scaffolded platform/base.yaml (file was missing)"
+        fi
+
+        # platform/envs/<env>.yaml for every Ground (lower) environment cicd.yaml declares.
+        # The lower-envs ApplicationSet creates one Application per file under
+        # platform/envs/, so without this a freshly onboarded app has a pipeline that
+        # deploys to "dev" and no dev environment to deploy into - the first deploy stage
+        # had nothing to write to and the app never reached "running healthy" until a
+        # developer hand-authored the file (found end-to-end on sky-marshall, 2026-10-03;
+        # the hand-copied file also carried another app's image). The chart renders no
+        # workload until release.image is set, so this is just a namespace until the first
+        # build deploys. Never overwritten.
+        if [[ -f cicd.yaml ]]; then
+          while IFS= read -r lower_env; do
+            [[ -z "${lower_env}" ]] && continue
+            [[ -f "platform/envs/${lower_env}.yaml" ]] && continue
+            mkdir -p platform/envs
+            cat > "platform/envs/${lower_env}.yaml" <<ENVEOF
+        # platform/envs/${lower_env}.yaml - human-owned values for this environment.
+        # Scaffolded once by the onboarding mechanism; the first successful build's deploy
+        # stage adds a release.image block below (or in the release file, if deploy.releaseFile
+        # is set). Overrides platform/base.yaml.
+        envName: ${lower_env}
+        ENVEOF
+            echo "app repo: scaffolded platform/envs/${lower_env}.yaml (file was missing)"
+          done < <(yq -r '.deploy.lowerEnvironments // ["dev"] | .[]' cicd.yaml)
         fi
 
         # onboarding-resync.yaml is the only file delivered unconditionally among
@@ -591,14 +644,15 @@ spec:
           branch_name="onboarding-resync"
           git checkout -b "${branch_name}"
           git add .tekton/
-          # platform/pr-env.yaml (see the scaffold block above) is untracked, one-time
-          # content outside .tekton/ - added here only when this run actually created it,
-          # so an app with no ephemeralEnvironments.pullRequest never picks up a stray add.
+          # platform/ (see the scaffold block above) holds untracked, one-time content outside
+          # .tekton/ - `git add platform` only stages what this run created or what a human
+          # already changed there (nothing, in a fresh clone), since existing files are never
+          # rewritten.
           # `|| true` at the end: same reasoning as every `jq -e ... || true` elsewhere in
           # this file - a legitimate "nothing to add" (file absent, or already tracked and
           # unchanged) exits this chain non-zero, which set -e would otherwise abort on.
-          { [[ -f platform/pr-env.yaml ]] && git status --porcelain platform/pr-env.yaml | grep -q '^??' && git add platform/pr-env.yaml; } || true
-          git commit --quiet -m "$(printf 'Onboarding: re-sync .tekton boilerplate from the platform catalog\n\nRegenerated onboarding-resync.yaml plus one .tekton/flow-<name>.yaml per git-rooted flow declared under cicd.yaml'"'"'s pipelines: - see docs/onboarding.md. Also scaffolds platform/pr-env.yaml, once, the first time ephemeralEnvironments.pullRequest.enabled is true and the file is missing (known-gap #17). No developer action needed beyond merging.')"
+          { [[ -d platform ]] && git add platform; } || true
+          git commit --quiet -m "$(printf 'Onboarding: re-sync .tekton boilerplate from the platform catalog\n\nRegenerated onboarding-resync.yaml plus one .tekton/flow-<name>.yaml per git-rooted flow declared under cicd.yaml'"'"'s pipelines: - see docs/onboarding.md. Also scaffolds platform/base.yaml, platform/pr-env.yaml and platform/envs/<lower-env>.yaml once each, only when missing (known-gap #17). No developer action needed beyond merging.')"
           # --force: the only way this exact branch name already exists remotely is a
           # still-open resync PR from an earlier trigger - this run's freshly
           # regenerated content should replace it outright, not be rejected as a
