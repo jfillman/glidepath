@@ -24,6 +24,7 @@ distilled from.
 | [0015](0015-provenance-policy-validates-attestation-input.md) | Provenance policy validates the attestation as input, additive to commit signing |
 | [0016](0016-tekton-results-archival.md) | Tekton Results for long-term PipelineRun/TaskRun archival |
 | [0017](0017-cicd-yaml-scaffolded-not-hand-authored.md) | `cicd.yaml` is scaffolded at onboarding, not hand-authored first |
+| [0018](0018-glidepath-owns-envs-folder-and-chart-contract.md) | Glidepath owns the per-app environments folder (`glidepath/`) and defines the chart contract |
 
 New decisions get a new numbered file here, not a paragraph buried in an unrelated doc.
 
