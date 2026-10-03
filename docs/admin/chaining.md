@@ -29,7 +29,7 @@ approach doesn't already provide.
 ServiceAccount token (`audience: cdevents-broker`, minted fresh per Task run, 10-minute
 expiry - see the `volumes:` block in `charts/glidepath-catalog/templates/tasks/send-cdevent.yaml`), verified by a
 small custom `ClusterInterceptor`
-(`platform/broker/cmd/token-review-interceptor`) calling the Kubernetes `TokenReview`
+(`glidepath/broker/cmd/token-review-interceptor`) calling the Kubernetes `TokenReview`
 API. There is no platform-minted credential anywhere in this path - no key material,
 minting server, or rotation job to operate.
 
@@ -66,7 +66,7 @@ pipeline-runner --as=system:serviceaccount:platform-system:cdevents-broker -n
 <app-namespace>` returns `yes`, and a real CDEvent correctly produces a PipelineRun
 running as that Application's own `pipeline-runner`, not the broker's identity.
 
-**A rebuild trap worth knowing**: `platform/broker/cmd/token-review-interceptor` is
+**A rebuild trap worth knowing**: `glidepath/broker/cmd/token-review-interceptor` is
 `kind load`-only (see [installation.md](installation.md)'s own section on this) - a source
 change there does nothing live until it's rebuilt, reloaded, and the Deployment is
 restarted. Confirmed live as a real incident, not a hypothetical: a rename of the

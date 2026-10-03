@@ -1,5 +1,5 @@
 # Build context is platform/broker/:
-#   docker build -f cmd/token-review-interceptor/Dockerfile -t ghcr.io/jfillman/platform-cicd-token-review-interceptor:latest .
+#   docker build -f cmd/token-review-interceptor/Dockerfile -t ghcr.io/jfillman/glidepath-token-review-interceptor:latest .
 FROM golang:1.22-alpine AS build
 WORKDIR /src
 COPY go.mod ./

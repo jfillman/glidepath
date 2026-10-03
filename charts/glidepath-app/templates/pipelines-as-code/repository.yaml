@@ -5,7 +5,7 @@
 # is installed on the repo - an external GitHub-side prerequisite.
 #
 # Also load-bearing for token minting: the broker's verifyAppOwnsRepo
-# (platform/broker/cmd/token-review-interceptor/main.go) authorizes a GitHub App
+# (glidepath/broker/cmd/token-review-interceptor/main.go) authorizes a GitHub App
 # installation-token request by checking for a Repository CR in the caller's own
 # namespace matching the requested repo name, not by Kubernetes RBAC. Without this CR,
 # ephemeral-envs.yaml's token refresher and open-release-pr.yaml both fail with a 403.

@@ -64,7 +64,7 @@ transparency-log inclusion checking. The public Rekor is still real and in use e
 on this platform (gitsign's own commit signatures, sub-item 1, verify against
 `rekor.sigstore.dev`) - only this platform's own self-hosted image/provenance signing
 chain has no transparency log to check against. Rekor is not abandoned, just out of scope
-for this pass; `platform/sigstore/rekor-helm-values.yaml` is left in the repo as a
+for this pass; `glidepath/sigstore/rekor-helm-values.yaml` is left in the repo as a
 ready-to-retry reference rather than deleted.
 
 **2026-09-05: deployed for real, fifth attempt, on the dev cluster, after it moved to

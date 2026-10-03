@@ -1,4 +1,4 @@
-# platform/broker/manifests/interceptor.yaml
+# glidepath/broker/manifests/interceptor.yaml
 #
 # Deploys the TokenReview-based interceptor, registered as ClusterInterceptor
 # "cdevents-broker-auth". RBAC is narrow: create TokenReviews (cluster-scoped by

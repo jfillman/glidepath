@@ -1,7 +1,7 @@
 # DORA metrics
 
 Deployment Frequency, Lead Time for Changes, Change Failure Rate, and MTTR, computed by
-`platform/dora-exporter` from ArgoCD's own confirmed release outcomes, exposed as
+`glidepath/dora-exporter` from ArgoCD's own confirmed release outcomes, exposed as
 Prometheus metrics, and visualized in Grafana's `dora.json` dashboard.
 
 ## Why this reads ArgoCD, not the CDEvents stream
@@ -85,7 +85,7 @@ sitting there, finished, before this particular promotion even started. Stamping
 once a *strictly newer* `startedAt` appears with a terminal phase, makes this precise
 regardless of how many unrelated syncs happen in between.
 
-On each Application watch event (`platform/dora-exporter/cmd/dora-exporter/main.go`'s
+On each Application watch event (`glidepath/dora-exporter/cmd/dora-exporter/main.go`'s
 `reconcile()`), if `hangar.io/dora-pending: "true"` is present and
 `status.operationState.startedAt` is after `dora-baseline-started-at` and `phase` is
 terminal:

@@ -1,4 +1,4 @@
-# platform/sigstore/fulcio-root-configmap.yaml
+# glidepath/sigstore/fulcio-root-configmap.yaml
 #
 # Public half of fulcio-secret, split out deliberately: fulcio-secret holds cert.pem AND
 # key.pem together, and RBAC can't scope access to one key within a Secret - granting

@@ -2,7 +2,7 @@
 #
 # Thin wrapper Task around catalog/lib/cdevents.sh. Every Pipeline's `finally` block
 # calls this once to announce stage completion to the shared broker, which is what
-# drives the next stage's PipelineRun (see platform/broker/). PLATFORM_CHAIN_ID and
+# drives the next stage's PipelineRun (see glidepath/broker/). PLATFORM_CHAIN_ID and
 # PLATFORM_TRACEPARENT are passed as params, not discovered inside this Task, so a
 # single flow's identifiers stay consistent across every independently-triggered
 # PipelineRun in the chain.
@@ -66,7 +66,7 @@ spec:
         Every other call site (pipelinerun.started/finished) still leaves the default;
         nothing reads it downstream of those.
   # Audience-bound projected ServiceAccount token, verified by the broker's TokenReview
-  # interceptor (platform/broker/cmd/token-review-interceptor) - there is no platform-
+  # interceptor (glidepath/broker/cmd/token-review-interceptor) - there is no platform-
   # minted credential anywhere in this Task. Declared here, not via any cluster-wide
   # default, because Tekton has no mechanism to auto-mount a volume into every Task's
   # containers - only the one Task that actually calls the broker needs it.
@@ -89,7 +89,7 @@ spec:
       env:
         - name: CDEVENTS_BROKER_URL
           # el-<eventlistener-name> is the Service Tekton Triggers auto-creates for the
-          # EventListener in platform/broker/manifests/eventlistener.yaml.
+          # EventListener in glidepath/broker/manifests/eventlistener.yaml.
           value: http://el-cdevents-broker.platform-system.svc.cluster.local:8080
         - name: NAMESPACE
           value: $(params.namespace)

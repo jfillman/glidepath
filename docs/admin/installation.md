@@ -54,7 +54,7 @@ platform's PaaS/RBAC posture.
   can't reach a local/private cluster directly - front the PaC controller with a
   tunnel (`cloudflared`, `ngrok`) for local dev, or real ingress/DNS for anything else.
 - **`token-review-interceptor`/`argocd-outcome-relay` images are `IfNotPresent` +
-  `:latest`.** A source change under `platform/broker/cmd/` does nothing to a running
+  `:latest`.** A source change under `glidepath/broker/cmd/` does nothing to a running
   cluster until you rebuild, push, and `kubectl rollout restart` the affected
   Deployment - there's no CI wired to a private cluster to do this automatically.
 - **Pod Security Standards `restricted` + kaniko**: validate this combination against

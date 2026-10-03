@@ -1,7 +1,7 @@
 # templates/clusters/argocd-outcome-relay.yaml
 #
 # Sibling entry point into the shared broker, deployed in platform-system alongside it -
-# see platform/broker/cmd/argocd-outcome-relay/main.go for the full design
+# see glidepath/broker/cmd/argocd-outcome-relay/main.go for the full design
 # (docs/admin/multi-cluster.md).
 #
 # RBAC is narrow and enumerated, not wildcard get-on-secrets: resourceNames lists exactly

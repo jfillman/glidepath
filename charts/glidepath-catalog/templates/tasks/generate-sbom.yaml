@@ -58,7 +58,7 @@ spec:
         items:
           - key: .dockerconfigjson
             path: config.json
-    # Audience "sigstore" matches Fulcio's configured client-id (platform/sigstore/
+    # Audience "sigstore" matches Fulcio's configured client-id (glidepath/sigstore/
     # fulcio-config.yaml) - same audience Tekton Chains' controller uses, requested here
     # for pipeline-runner's identity instead.
     - name: sigstore-identity-token

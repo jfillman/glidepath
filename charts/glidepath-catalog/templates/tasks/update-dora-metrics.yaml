@@ -17,7 +17,7 @@
 #      Task changes nothing about that constraint by itself, but it's what motivated
 #      giving dora-exporter its OWN state store on ITS OWN cluster instead
 #      (dora-cluster-mapped-state ConfigMap, platform-system) - see
-#      platform/dora-exporter/cmd/dora-exporter/main.go's handleArgoCDOutcome.
+#      glidepath/dora-exporter/cmd/dora-exporter/main.go's handleArgoCDOutcome.
 #
 # No runAfter against notify/span - all three are independent consumers of the same
 # confirmed outcome, exactly like notify and span already were.

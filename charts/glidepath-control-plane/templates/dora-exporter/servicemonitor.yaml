@@ -1,4 +1,4 @@
-# platform/dora-exporter/manifests/servicemonitor.yaml
+# glidepath/dora-exporter/manifests/servicemonitor.yaml
 #
 # Standalone ServiceMonitor - relies on the cluster's Prometheus CR having empty
 # serviceMonitorSelector/serviceMonitorNamespaceSelector (matches everything

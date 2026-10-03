@@ -1,5 +1,5 @@
 # Build context is platform/broker/:
-#   docker build -f cmd/argocd-outcome-relay/Dockerfile -t ghcr.io/jfillman/platform-cicd-argocd-outcome-relay:latest .
+#   docker build -f cmd/argocd-outcome-relay/Dockerfile -t ghcr.io/jfillman/glidepath-argocd-outcome-relay:latest .
 FROM golang:1.22-alpine AS build
 WORKDIR /src
 COPY go.mod ./

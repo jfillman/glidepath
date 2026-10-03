@@ -38,7 +38,7 @@ doraExporterImage: ghcr.io/jfillman/glidepath-dora-exporter:latest
 # The cdevents-broker-auth Deployment's own image (templates/broker/interceptor.yaml).
 # Unlike toolboxImage/doraExporterImage above, this is NOT hand-bumped - .github/
 # workflows/broker-image-ci.yaml builds+pushes a new `sha-<short-sha>` tag on every push
-# to main touching platform/broker/**, then commits the bump to this exact line right
+# to main touching glidepath/broker/**, then commits the bump to this exact line right
 # back into this file. ArgoCD's existing auto-sync (this chart's own Application, ADR-
 # free - ArgoCD's ordinary git polling, ~3min) picks up that commit and rolls the
 # Deployment - no direct access from CI into the (private, local) cluster needed, same

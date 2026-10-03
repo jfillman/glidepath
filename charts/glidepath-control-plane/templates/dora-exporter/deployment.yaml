@@ -1,4 +1,4 @@
-# platform/dora-exporter/manifests/deployment.yaml
+# glidepath/dora-exporter/manifests/deployment.yaml
 #
 # Deploys the DORA exporter - a plain metrics Deployment (not Tekton-specific), only
 # watching ArgoCD Applications and serving /metrics. See docs/dora-metrics.md.

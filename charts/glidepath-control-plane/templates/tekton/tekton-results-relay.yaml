@@ -2,7 +2,7 @@
 #
 # Fronts tekton-results-api-service so backstage-ingestor's existing services/proxy
 # grant (gitops-cluster-dev's 00-bootstrap/backstage-ingestor-rbac) can reach Tekton
-# Results at all - see platform/tekton-results-relay/cmd/tekton-results-relay/main.go's
+# Results at all - see glidepath/tekton-results-relay/cmd/tekton-results-relay/main.go's
 # own header for the full story (a real Kubernetes limitation: the generic
 # services/proxy subresource never forwards the caller's Authorization header to the
 # proxied backend, and Results' own API server requires one). This relay re-issues each

@@ -187,7 +187,7 @@ scoping (`appproject.yaml`) isn't replicated there yet.
 
 ## The feedback relay (Phase E)
 
-`platform/broker/cmd/argocd-outcome-relay` - a small Go HTTP service in
+`glidepath/broker/cmd/argocd-outcome-relay` - a small Go HTTP service in
 `platform-system`, sibling to `token-review-interceptor`, exposed via a fixed NodePort
 (`30880`) Service since it's the one endpoint in this platform genuinely called from
 outside the cluster. `POST /outcome/<cluster>` with `Authorization: Bearer <token>`:
@@ -394,7 +394,7 @@ manual Secret copy `hack/bootstrap-upper-cluster.sh` used to require.
 
 ## The DORA exporter (Phase F)
 
-`platform/dora-exporter` gained a second input path, **not a replacement** for its
+`glidepath/dora-exporter` gained a second input path, **not a replacement** for its
 original one (an earlier draft of this plan said "replace" - wrong, caught while
 implementing: same-cluster Applications still live on THIS cluster and the informer is
 still the right, working mechanism for them). Both paths now funnel into one shared

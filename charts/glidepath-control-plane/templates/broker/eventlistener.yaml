@@ -1,4 +1,4 @@
-# platform/broker/manifests/eventlistener.yaml
+# glidepath/broker/manifests/eventlistener.yaml
 #
 # Shared internal broker EventListener for inter-stage chaining (build->test->deploy->
 # release) - discovers per-Application Trigger CRs via namespaceSelector, rather than one

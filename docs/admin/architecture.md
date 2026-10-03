@@ -14,7 +14,7 @@ file - never hand-written.
 
 **Inter-stage chaining** (build finished → start test; test passed → start deploy)
 isn't a git event, so PaC doesn't cover it. A shared internal broker
-(`platform/broker/`) relays CDEvents between independently-triggered PipelineRuns,
+(`glidepath/broker/`) relays CDEvents between independently-triggered PipelineRuns,
 authenticated via each pod's own Kubernetes-issued ServiceAccount token (TokenReview)
 rather than a platform-minted credential - see [chaining.md](chaining.md) and
 ADR-0002.

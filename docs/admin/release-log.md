@@ -165,7 +165,7 @@ direct `Application` watch handles DORA metrics for that path instead, with no
 Tekton Pipeline involved at all.
 
 Deliberately not closed here rather than papered over. The natural place to add it would
-be `dora-exporter` itself (`platform/dora-exporter`) - it already receives confirmed
+be `dora-exporter` itself (`glidepath/dora-exporter`) - it already receives confirmed
 terminal outcomes for *both* paths (same-cluster via its own watch, cluster-mapped via
 `update-dora-metrics.yaml`'s call into `/argocd-outcome`), so it's the one place both
 paths already converge. But `dora-exporter` is a cluster-wide singleton with no

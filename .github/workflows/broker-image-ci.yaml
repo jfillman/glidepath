@@ -3,7 +3,7 @@ name: broker-image-ci
 # Closes a real, live gap (found 2026-09-06, see charts/glidepath-control-plane/
 # templates/broker/interceptor.yaml's own comment on interceptorImage): docs/admin/
 # installation.md already documented "no CI wired to a private cluster" for
-# platform/broker/cmd/* images, meaning a source fix could sit merged on main for over
+# glidepath/broker/cmd/* images, meaning a source fix could sit merged on main for over
 # two weeks with the running cdevents-broker-auth Deployment never actually rebuilt -
 # exactly what happened to the PR-preview-notify fallback fix (verifyAppOwnsRepo,
 # 2026-08-23). GitHub-hosted runners still can't reach this platform's private local
@@ -24,10 +24,10 @@ on:
   push:
     branches: [main]
     paths:
-      - "platform/broker/cmd/token-review-interceptor/**"
-      - "platform/broker/internal/**"
-      - "platform/broker/go.mod"
-      - "platform/broker/go.sum"
+      - "glidepath/broker/cmd/token-review-interceptor/**"
+      - "glidepath/broker/internal/**"
+      - "glidepath/broker/go.mod"
+      - "glidepath/broker/go.sum"
 
 jobs:
   build-and-deploy:
@@ -40,13 +40,13 @@ jobs:
 
       - name: Build and push interceptor image
         id: image
-        working-directory: platform/broker
+        working-directory: glidepath/broker
         run: |
           set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
           sha_tag="sha-$(git rev-parse --short HEAD)"
-          image="ghcr.io/jfillman/platform-cicd-token-review-interceptor:${sha_tag}"
+          image="ghcr.io/jfillman/glidepath-token-review-interceptor:${sha_tag}"
 
           docker build -f cmd/token-review-interceptor/Dockerfile -t "${image}" .
           docker push "${image}"

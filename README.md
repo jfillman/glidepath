@@ -29,7 +29,7 @@ Two distinct triggering mechanisms, because they have genuinely different trust 
   [docs/admin/onboarding-mechanics.md](docs/admin/onboarding-mechanics.md).
 - **Inter-stage chaining** (build finished → start test; test passed → start deploy)
   isn't a git event, so PaC doesn't cover it. A shared internal broker
-  ([`platform/broker/`](platform/broker/)) relays CDEvents between independently-
+  ([`glidepath/broker/`](glidepath/broker/)) relays CDEvents between independently-
   triggered PipelineRuns, authenticated via each pod's own Kubernetes-issued
   ServiceAccount token (TokenReview) instead of a platform-minted credential. See
   [docs/admin/chaining.md](docs/admin/chaining.md).
@@ -58,7 +58,7 @@ RBAC, supply chain signing, secrets, multi-cluster trust boundaries - see
 
 ```
 catalog/          shared Tekton catalog - Pipelines, Tasks, StepActions, bash lib, toolbox image
-platform/broker/   the internal CDEvents relay: EventListener + TokenReview interceptor (Go)
+glidepath/broker/   the internal CDEvents relay: EventListener + TokenReview interceptor (Go)
 schemas/           cicd.schema.json - the developer-facing config contract
 charts/            glidepath-control-plane, glidepath-catalog, glidepath-app
 hack/              cluster bootstrap - see docs/admin/installation.md

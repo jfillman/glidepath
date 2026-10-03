@@ -1,4 +1,4 @@
-# platform/sigstore/fulcio-deployment.yaml
+# glidepath/sigstore/fulcio-deployment.yaml
 #
 # Self-hosted Fulcio (docs/image-signing.md) - plain Deployment/Service, not Knative:
 # every caller here is in-cluster via plain Service DNS, unlike sigstore-scaffolding's

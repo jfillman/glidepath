@@ -1,5 +1,5 @@
 # Build context is platform/dora-exporter/:
-#   docker build -f cmd/dora-exporter/Dockerfile -t ghcr.io/jfillman/platform-cicd-dora-exporter:latest .
+#   docker build -f cmd/dora-exporter/Dockerfile -t ghcr.io/jfillman/glidepath-dora-exporter:latest .
 FROM golang:1.22-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./

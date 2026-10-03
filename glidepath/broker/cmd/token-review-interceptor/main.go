@@ -25,7 +25,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/platform-cicd/broker/token-review-interceptor/internal/githubapp"
+	"github.com/glidepath/broker/token-review-interceptor/internal/githubapp"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

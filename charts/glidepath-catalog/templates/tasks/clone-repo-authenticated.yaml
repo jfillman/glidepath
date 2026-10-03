@@ -5,7 +5,7 @@
 # git-clone's basic-auth workspace only ever gets real credentials via Pipelines-as-
 # Code's own mutating webhook, which auto-injects a pac-gitauth-* Secret into any
 # workspace literally named basic-auth on a PipelineRun IT creates. test is normally
-# event-chained off build's artifact.published CDEvent (see platform/broker/) -
+# event-chained off build's artifact.published CDEvent (see glidepath/broker/) -
 # created by the CDEvents broker's TriggerTemplate, not PaC - so there's no webhook in
 # play to inject anything, and the workspace was always going to stay unbound for that
 # (the common) case, only actually working for a git-rooted test-only flow PaC

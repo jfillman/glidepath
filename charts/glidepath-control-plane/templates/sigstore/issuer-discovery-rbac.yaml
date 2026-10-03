@@ -1,4 +1,4 @@
-# platform/sigstore/issuer-discovery-rbac.yaml
+# glidepath/sigstore/issuer-discovery-rbac.yaml
 #
 # Fulcio's self-hosted `type: kubernetes` issuer needs to fetch this cluster's own
 # /.well-known/openid-configuration and /openid/v1/jwks - both read-only, public-by-design

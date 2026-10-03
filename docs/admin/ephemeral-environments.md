@@ -354,7 +354,7 @@ switch the comment over to real clickable links with no template change once rea
 ingress exists.
 
 Needs the broker's `verifyAppOwnsRepo` to recognize a PR namespace as authorized for its
-own app's repo (`platform/broker/cmd/token-review-interceptor/main.go`) - a PR namespace
+own app's repo (`glidepath/broker/cmd/token-review-interceptor/main.go`) - a PR namespace
 has no `Repository` CR of its own, only the app's shared `-cicd` namespace does.
 
 ## Access

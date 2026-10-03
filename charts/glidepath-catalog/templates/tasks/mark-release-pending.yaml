@@ -2,7 +2,7 @@
 #
 # Stamps tracking annotations on the Application's own ArgoCD Application object
 # (<app-name>-<env>, in the argocd namespace) right after open-release-pr successfully
-# opens a promotion PR - the hand-off mechanism the DORA exporter (platform/dora-exporter)
+# opens a promotion PR - the hand-off mechanism the DORA exporter (glidepath/dora-exporter)
 # reads back to know a release is in flight, and to compute Deployment Frequency / Lead
 # Time / Change Failure Rate / MTTR once ArgoCD actually confirms the sync succeeded or
 # failed. See docs/dora-metrics.md for the full mechanism and why this is

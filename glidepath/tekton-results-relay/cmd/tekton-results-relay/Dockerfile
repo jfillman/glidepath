@@ -1,5 +1,5 @@
 # Build context is platform/tekton-results-relay/:
-#   docker build -f cmd/tekton-results-relay/Dockerfile -t ghcr.io/jfillman/platform-cicd-tekton-results-relay:latest .
+#   docker build -f cmd/tekton-results-relay/Dockerfile -t ghcr.io/jfillman/glidepath-tekton-results-relay:latest .
 FROM golang:1.22-alpine AS build
 WORKDIR /src
 COPY go.mod ./

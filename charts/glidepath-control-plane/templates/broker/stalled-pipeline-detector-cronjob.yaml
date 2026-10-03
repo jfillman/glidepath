@@ -1,4 +1,4 @@
-# platform/broker/manifests/stalled-pipeline-detector-cronjob.yaml
+# glidepath/broker/manifests/stalled-pipeline-detector-cronjob.yaml
 #
 # Shared, platform-level CronJob (not per-Application) - detects a stage that completed
 # successfully but whose expected next-stage PipelineRun never appeared, meaning a

@@ -1,7 +1,7 @@
 # catalog/pipelines/release-outcome-notify.yaml (Phase 3 item 4, docs/multi-cluster.md)
 #
 # The downstream consumer of the environment.deployed CDEvent the argocd-outcome-relay
-# forwards (platform/broker/cmd/argocd-outcome-relay) once a cluster-mapped release
+# forwards (glidepath/broker/cmd/argocd-outcome-relay) once a cluster-mapped release
 # actually confirms success/failure on its own upper-env cluster - this is what "closes
 # the loop" in a way a human notices, not just a CDEvent landing unseen. Four tasks:
 # `resolve-release-tracking` reads pr-url/pr-created-at back out of the dev-cluster

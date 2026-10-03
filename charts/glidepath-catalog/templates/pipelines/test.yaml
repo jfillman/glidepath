@@ -1,7 +1,7 @@
 # catalog/pipelines/test.yaml
 #
 # Second stage of the flow, normally event-chained off build's artifact.published
-# event (see platform/broker/), but can also be git-rooted directly (e.g. a
+# event (see glidepath/broker/), but can also be git-rooted directly (e.g. a
 # test-only flow on a scratch branch). start-flow's generate-or-pass-through behavior
 # (start-flow-root-span.yaml) makes both cases uniform - every downstream task reads
 # start-flow's results, never the incoming params directly. See docs/tracing.md.
