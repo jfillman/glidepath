@@ -1,0 +1,132 @@
+# catalog/tasks/deploy-ecs.yaml
+#
+# Alternative to deploy-manifests.yaml for apps whose cicd.yaml sets
+# deploy.target: aws-ecs - registers a new ECS task-definition revision with the
+# built image, updates the service to it, and waits for ECS's own stability check
+# (aws ecs wait services-stable) instead of polling an Argo Rollout's .status.phase.
+#
+# Deliberately does NOT replicate deploy-manifests.yaml's app-repo git-commit step
+# (platform/envs/<env>.yaml / deploy.releaseFile) - that file exists so ArgoCD/
+# airframe-application's chart knows what image to render into a Rollout. There is no
+# equivalent GitOps-pull reconciler for ECS here; the ECS API call below IS the
+# deployment, so writing a release-tracking file nothing reads would be misleading, not
+# useful. deploy.yaml's own `finally:` block already emits the dev.cdevents.
+# service.deployed event (and Slack/Backstage notify) off resolve-image-ref's result
+# unconditionally, regardless of which deploy Task ran - that's this target's real
+# release-tracking signal, same as the k8s-rollout path's.
+#
+# Uses the official public.ecr.aws/aws-cli/aws-cli image (real multi-arch, confirmed
+# via `container image pull` - both linux/amd64 and linux/arm64 manifests present, and
+# jq is already bundled in it, confirmed live) rather than adding the aws CLI to
+# toolboxImage - AWS CLI v2's official installer targets glibc, and toolboxImage is
+# Alpine/musl; a dedicated step image is the same pattern kaniko/crane already use here
+# for a heavy, single-purpose tool rather than bloating the shared bash-tools image.
+# Pinned by version tag (not :latest), matching every other tool pin in this platform -
+# confirmed this tag's digest matches :latest's at pin time.
+#
+# NOT live-verified against a real AWS account/ECS cluster - no AWS credentials exist
+# in this environment to test against. Render-verified only (helm template) - see
+# docs/admin/known-gaps.md.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-ecs
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Registers a new ECS task-definition revision with the built image, updates the target service, and waits for it to stabilize.
+  params:
+    - name: image-ref
+      type: string
+    - name: config-json
+      type: string
+      description: validate-cicd-config's config-json result - this Task reads .deploy.ecs.{cluster,service,containerName,region,taskDefinitionFamily} from it directly rather than taking 5 separate params.
+    - name: env
+      type: string
+    - name: app-name
+      type: string
+  # AWS credentials come from this app's own secrets: list (docs/admin/app-secrets.md),
+  # NOT a platform-wide credential - same optional, mount-as-files pattern every other
+  # app-secrets consumer uses (notify-slack.yaml, sast-scan.yaml, etc). An app using
+  # deploy.target: aws-ecs is expected to declare:
+  #   secrets:
+  #     - name: aws-access-key-id
+  #     - name: aws-secret-access-key
+  # See docs/user/cicd-yaml-reference.md's "Additional artifacts" neighbor section for
+  # where this is documented. Deliberately reuses existing secrets infrastructure
+  # instead of inventing a new ECS-specific credential mechanism.
+  volumes:
+    - name: app-secrets
+      secret:
+        secretName: app-secrets
+        optional: true
+  steps:
+    - name: update-service
+      image: public.ecr.aws/aws-cli/aws-cli:2.37.9
+      volumeMounts:
+        - name: app-secrets
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+      env:
+        - name: IMAGE_REF
+          value: $(params.image-ref)
+        - name: CONFIG_JSON
+          value: $(params.config-json)
+        - name: ENV
+          value: $(params.env)
+        - name: APP_NAME
+          value: $(params.app-name)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        CLUSTER="$(jq -r '.deploy.ecs.cluster // ""' <<<"${CONFIG_JSON}")"
+        SERVICE="$(jq -r '.deploy.ecs.service // ""' <<<"${CONFIG_JSON}")"
+        CONTAINER_NAME="$(jq -r '.deploy.ecs.containerName // ""' <<<"${CONFIG_JSON}")"
+        REGION="$(jq -r '.deploy.ecs.region // "us-east-1"' <<<"${CONFIG_JSON}")"
+        FAMILY="$(jq -r '.deploy.ecs.taskDefinitionFamily // ""' <<<"${CONFIG_JSON}")"
+        [[ -z "${FAMILY}" ]] && FAMILY="${APP_NAME}-${ENV}"
+
+        if [[ -z "${CLUSTER}" || -z "${SERVICE}" || -z "${CONTAINER_NAME}" ]]; then
+          echo "error: deploy.target is aws-ecs but deploy.ecs.{cluster,service,containerName} is incomplete in cicd.yaml - all three are required." >&2
+          exit 1
+        fi
+
+        export AWS_DEFAULT_REGION="${REGION}"
+
+        if [[ -f /var/run/secrets/platform/aws-access-key-id && -f /var/run/secrets/platform/aws-secret-access-key ]]; then
+          export AWS_ACCESS_KEY_ID="$(cat /var/run/secrets/platform/aws-access-key-id)"
+          export AWS_SECRET_ACCESS_KEY="$(cat /var/run/secrets/platform/aws-secret-access-key)"
+        else
+          echo "error: deploy.target is aws-ecs but this app has no aws-access-key-id/aws-secret-access-key in its secrets: list - see docs/admin/app-secrets.md." >&2
+          exit 1
+        fi
+
+        echo "resolving current task definition for family ${FAMILY}..."
+        # Strips the read-only fields (taskDefinitionArn, revision, status, registeredAt,
+        # registeredBy, requiresAttributes, compatibilities) register-task-definition
+        # itself rejects as input - a plain describe's output can't be re-registered
+        # as-is.
+        aws ecs describe-task-definition --task-definition "${FAMILY}" \
+          --query 'taskDefinition.{family:family,containerDefinitions:containerDefinitions,requiresCompatibilities:requiresCompatibilities,networkMode:networkMode,cpu:cpu,memory:memory,executionRoleArn:executionRoleArn,taskRoleArn:taskRoleArn,volumes:volumes}' \
+          --output json > /tmp/current-def.json
+
+        jq --arg img "${IMAGE_REF}" --arg name "${CONTAINER_NAME}" '
+          .containerDefinitions = [.containerDefinitions[] | if .name == $name then .image = $img else . end]
+        ' /tmp/current-def.json > /tmp/new-def.json
+
+        if ! jq -e --arg name "${CONTAINER_NAME}" '.containerDefinitions[] | select(.name == $name)' /tmp/new-def.json >/dev/null; then
+          echo "error: no container named '${CONTAINER_NAME}' in task definition family '${FAMILY}' - check deploy.ecs.containerName against the real task definition." >&2
+          exit 1
+        fi
+
+        new_revision_arn="$(aws ecs register-task-definition --cli-input-json file:///tmp/new-def.json \
+          --query 'taskDefinition.taskDefinitionArn' --output text)"
+        echo "registered new task definition revision: ${new_revision_arn}"
+
+        aws ecs update-service --cluster "${CLUSTER}" --service "${SERVICE}" --task-definition "${new_revision_arn}" >/dev/null
+        echo "updated service ${SERVICE} in cluster ${CLUSTER} to ${new_revision_arn} - waiting for stability..."
+
+        aws ecs wait services-stable --cluster "${CLUSTER}" --services "${SERVICE}"
+        echo "service ${SERVICE} is stable on ${new_revision_arn}"

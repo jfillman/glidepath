@@ -148,8 +148,25 @@ spec:
         - { name: image-repo, value: $(params.image-repo) }
         - { name: git-tag, value: $(params.git-tag) }
         - { name: git-revision, value: $(params.git-revision) }
+
+    # Drives the when: gates on the two deploy-task entries below - see this Task's own
+    # header for why it exists separately from validate-cicd-config.
+    - name: resolve-deploy-target
+      runAfter: [start-deploy-stage-span]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: resolve-deploy-target }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: config-json, value: $(params.config-json) }
+
+    # Default/common path - see docs/user/cicd-yaml-reference.md's deploy.target.
     - name: deploy
-      runAfter: [resolve-image-ref]
+      runAfter: [resolve-image-ref, resolve-deploy-target]
+      when:
+        - { input: $(tasks.resolve-deploy-target.results.target), operator: in, values: ["k8s-rollout"] }
       taskRef:
         resolver: cluster
         params:
@@ -162,6 +179,25 @@ spec:
         - { name: app-name, value: $(params.app-name) }
         - { name: app-type, value: $(params.app-type) }
         - { name: git-url, value: $(params.git-url) }
+
+    # Phase 6 (2026-10-03) - render-verified only, no AWS account in this environment
+    # to live-verify against. See deploy-ecs.yaml's own header for what it does and
+    # doesn't replicate from deploy-manifests.yaml.
+    - name: deploy-aws-ecs
+      runAfter: [resolve-image-ref, resolve-deploy-target]
+      when:
+        - { input: $(tasks.resolve-deploy-target.results.target), operator: in, values: ["aws-ecs"] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: deploy-ecs }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
+        - { name: config-json, value: $(params.config-json) }
+        - { name: env, value: $(params.env) }
+        - { name: app-name, value: $(params.app-name) }
 
     # Never when-gated/skipped and has no result-dependency on clone-repo - see this
     # Task's own header for why that's load-bearing (notify below must always be able

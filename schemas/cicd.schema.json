@@ -139,6 +139,24 @@
           "default": "glidepath/releases/{env}.yaml",
           "pattern": "\\{env\\}",
           "description": "Where the deploy/release stages write the machine-owned release record (release.image, releaseTracking) - see hangar/docs/autopilot/release-file-split.md (D9/AF-5). Exactly one `{env}` placeholder, substituted with the target environment name, matching deploy-manifests.yaml's own `${ENV}` variable. Schema-only today: no Task reads this field yet - deploy-manifests.yaml and open-release-pr.yaml still hardcode `platform/envs/${ENV}.yaml`/the gitops repo's `values.yaml`. The field exists now so the Airframe onboarding scaffold can start setting it (`airframe/envs/{env}.release.yaml`, once that directory exists) without a second wave of per-app cicd.yaml edits later. Default names a new, not-yet-existing Glidepath-owned path (`glidepath/`, distinct from Airframe's `platform/`/`airframe/` directory) for an app onboarded without an Airframe chart to layer a release file over - per the design doc's own default-path decision, not an existing convention anywhere else in this repo."
+        },
+        "target": {
+          "type": "string",
+          "enum": ["k8s-rollout", "aws-ecs"],
+          "default": "k8s-rollout",
+          "description": "Where deploy.yaml's `deploy` stage actually deploys to. k8s-rollout (default) is the only target every existing app uses - deploy-manifests.yaml, Argo Rollouts via airframe-application, zero behavior change for an app that doesn't set this. aws-ecs (added 2026-10-03, see deploy-ecs.yaml) registers a new ECS task-definition revision and updates the named service instead - requires deploy.ecs below, and this app's own `secrets:` list must include `aws-access-key-id`/`aws-secret-access-key` (see docs/admin/app-secrets.md). NOT live-verified against a real AWS account - see docs/admin/known-gaps.md. A git-rooted deploy (no build/test in that run) always resolves to k8s-rollout regardless of this setting - see resolve-deploy-target.yaml's own known-limitation comment."
+        },
+        "ecs": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Required when deploy.target is aws-ecs; ignored otherwise.",
+          "properties": {
+            "cluster": { "type": "string", "description": "ECS cluster name (not ARN)." },
+            "service": { "type": "string", "description": "ECS service name within that cluster." },
+            "containerName": { "type": "string", "description": "Name of the container (within the task definition's containerDefinitions) whose image gets updated. Must match a real container name in the current task definition, or deploy-ecs.yaml fails loudly rather than silently updating nothing." },
+            "region": { "type": "string", "default": "us-east-1" },
+            "taskDefinitionFamily": { "type": "string", "description": "Defaults to `<app-name>-<env>` if omitted - set this only when the real family name doesn't follow that convention." }
+          }
         }
       }
     },

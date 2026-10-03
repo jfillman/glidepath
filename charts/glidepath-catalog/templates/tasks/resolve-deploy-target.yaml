@@ -1,0 +1,45 @@
+# catalog/tasks/resolve-deploy-target.yaml
+#
+# Extracts deploy.target from config-json as a plain string result, so deploy.yaml's
+# two deploy-task entries (deploy-manifests for k8s-rollout, deploy-ecs for aws-ecs) can
+# be gated with Tekton's native when: - which only compares plain strings/params, not
+# inline JSON. A new Task rather than folding this into validate-cicd-config: this
+# result is only needed by deploy.yaml, not build.yaml/test.yaml, and deploy.yaml never
+# runs validate-cicd-config itself (it receives already-validated config-json forwarded
+# from test's event, or "{}" for a git-rooted deploy - see that Pipeline's own header).
+#
+# Known limitation: a git-rooted deploy (no source workspace, config-json is literally
+# "{}") always resolves to the k8s-rollout default here, even if the app's real
+# cicd.yaml sets deploy.target: aws-ecs - there's no cheap way to read the real
+# cicd.yaml without a clone, which this Pipeline deliberately avoids for the common
+# event-chained case (see deploy.yaml's own header on the optional source workspace).
+# Only matters for an aws-ecs app that ALSO triggers a git-rooted deploy (e.g. a tag
+# push with no build/test in that run) - every event-chained deploy (the common case)
+# resolves correctly, since config-json is real by then.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: resolve-deploy-target
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Extracts deploy.target ("k8s-rollout"/"aws-ecs") from config-json as a plain string result.
+  params:
+    - name: config-json
+      type: string
+  results:
+    - name: target
+  steps:
+    - name: resolve
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        CFG='$(params.config-json)'
+        # "{}" (a git-rooted deploy with no app-side validate-cicd-config run yet) and
+        # an absent key both mean the same thing here: default to k8s-rollout, same
+        # default schemas/cicd.schema.json itself declares for deploy.target.
+        TARGET="$(jq -r '.deploy.target // "k8s-rollout"' <<< "${CFG}" 2>/dev/null || echo "k8s-rollout")"
+        echo -n "${TARGET}" | tee "$(results.target.path)"

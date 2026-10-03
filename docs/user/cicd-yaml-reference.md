@@ -505,6 +505,41 @@ leave it empty (the default) for an app where every env really is covered by pip
 automation - a consumer with no `promotionOrder` to go on falls back to inferring order
 from `pipelines:` the same way it always has.
 
+### `target` - deploying somewhere other than this cluster (ECS)
+
+Optional, defaults to `k8s-rollout` - every existing app is unaffected. Set
+`deploy.target: aws-ecs` to have the `deploy` stage update an ECS service directly
+instead of provisioning an Argo Rollout on this cluster:
+
+```yaml
+deploy:
+  target: aws-ecs
+  ecs:
+    cluster: my-ecs-cluster
+    service: my-service
+    containerName: my-app        # must match a real container name in the current
+                                  # task definition - checked, not assumed
+    region: us-east-1            # default
+    # taskDefinitionFamily: ""   # defaults to "<app-name>-<env>"
+
+secrets:
+  - name: aws-access-key-id
+  - name: aws-secret-access-key
+```
+
+The two `secrets:` entries are required for `aws-ecs` - credentials come from this
+app's own secret store (see [app-secrets.md](../admin/app-secrets.md)), the same
+mechanism every other per-app credential already uses, not a new platform-wide AWS
+account. `deploy-ecs.yaml` registers a new task-definition revision with the built
+image, updates the named service to it, and waits for ECS's own stability check -
+nothing is deployed via this cluster's ArgoCD/Rollout machinery for this target.
+
+**Known limitation:** a git-rooted deploy (a tag push with no build/test in that same
+run) always uses `k8s-rollout` regardless of this setting - only an event-chained
+deploy (the normal build → test → deploy flow) resolves `aws-ecs` correctly. Also not
+yet live-verified against a real AWS account - see
+[known-gaps.md](../admin/known-gaps.md).
+
 ## Multi-stage pipeline flows
 
 The `pipelines:` field enables declarative control of multi-stage, self-chaining
