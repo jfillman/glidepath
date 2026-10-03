@@ -505,7 +505,7 @@ leave it empty (the default) for an app where every env really is covered by pip
 automation - a consumer with no `promotionOrder` to go on falls back to inferring order
 from `pipelines:` the same way it always has.
 
-### `target` - deploying somewhere other than this cluster (ECS)
+### `target` - deploying somewhere other than this cluster
 
 Optional, defaults to `k8s-rollout` - every existing app is unaffected. Set
 `deploy.target: aws-ecs` to have the `deploy` stage update an ECS service directly
@@ -534,10 +534,59 @@ account. `deploy-ecs.yaml` registers a new task-definition revision with the bui
 image, updates the named service to it, and waits for ECS's own stability check -
 nothing is deployed via this cluster's ArgoCD/Rollout machinery for this target.
 
-A git-rooted deploy (a tag push with no build/test in that same run) resolves this
-correctly too, not just the normal build → test → deploy flow - `resolve-deploy-target`
-clones just `cicd.yaml` directly when it has no upstream config to inherit. Not yet
-live-verified against a real AWS account - see [known-gaps.md](../admin/known-gaps.md).
+#### `aws-lambda`
+
+```yaml
+deploy:
+  target: aws-lambda
+  lambda:
+    functionName: my-function
+    region: us-east-1           # default
+
+secrets:
+  - name: aws-access-key-id
+  - name: aws-secret-access-key
+```
+
+Updates an existing Lambda function's container image and waits for the update to
+complete. The function must already exist with `PackageType: Image` - this never
+creates a function. **Hard AWS constraint, not a Glidepath one:** Lambda can only pull
+a container image from Amazon ECR, never an external registry like `ghcr.io` - your
+`image-repo` must resolve to an ECR URI for this target to work at all.
+`deploy-lambda.yaml` checks for this and fails with a clear error rather than letting
+Lambda's own image-pull failure surface.
+
+#### `azure-container-apps`
+
+```yaml
+deploy:
+  target: azure-container-apps
+  azureContainerApps:
+    resourceGroup: my-resource-group
+    appName: my-container-app
+
+secrets:
+  - name: azure-client-id
+  - name: azure-client-secret
+  - name: azure-tenant-id
+```
+
+Updates an existing Container App's image to a new revision and polls it for a
+healthy state. The three `secrets:` entries are an Azure AD service principal
+(`az login --service-principal`) - scope its role to just this Container App if
+possible. The Container App must already exist, including any private-registry pull
+credentials it needs (configured on the resource itself, out of band) - this never
+creates the app.
+
+---
+
+All three cloud targets resolve correctly even for a git-rooted deploy (a tag push
+with no build/test in that same run), not just the normal build → test → deploy flow -
+`resolve-deploy-target` clones just `cicd.yaml` directly when it has no upstream
+config to inherit, and every cloud-target Task reads that same resolved config rather
+than re-deriving it. **None of the three are live-verified** - no AWS or Azure account
+exists in the environment this was built in. See
+[known-gaps.md](../admin/known-gaps.md).
 
 ## Multi-stage pipeline flows
 

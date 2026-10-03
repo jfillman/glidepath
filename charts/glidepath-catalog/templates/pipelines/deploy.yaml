@@ -183,9 +183,13 @@ spec:
         - { name: app-type, value: $(params.app-type) }
         - { name: git-url, value: $(params.git-url) }
 
-    # Phase 6 (2026-10-03) - render-verified only, no AWS account in this environment
-    # to live-verify against. See deploy-ecs.yaml's own header for what it does and
-    # doesn't replicate from deploy-manifests.yaml.
+    # Phase 6 (2026-10-03/04) - render-verified only, no cloud account in this
+    # environment to live-verify any of the three against. See each Task's own header
+    # for what it does and doesn't replicate from deploy-manifests.yaml. All three
+    # source config-json from resolve-deploy-target's OWN resolved result, not
+    # $(params.config-json) directly - that param is "{}" for a git-rooted deploy, the
+    # exact problem resolve-deploy-target already solved once; reusing its resolution
+    # here instead of re-deriving (and re-breaking) it per Task.
     - name: deploy-aws-ecs
       runAfter: [resolve-image-ref, resolve-deploy-target]
       when:
@@ -198,9 +202,37 @@ spec:
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
         - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
-        - { name: config-json, value: $(params.config-json) }
+        - { name: config-json, value: $(tasks.resolve-deploy-target.results.config-json) }
         - { name: env, value: $(params.env) }
         - { name: app-name, value: $(params.app-name) }
+
+    - name: deploy-aws-lambda
+      runAfter: [resolve-image-ref, resolve-deploy-target]
+      when:
+        - { input: $(tasks.resolve-deploy-target.results.target), operator: in, values: ["aws-lambda"] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: deploy-lambda }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
+        - { name: config-json, value: $(tasks.resolve-deploy-target.results.config-json) }
+
+    - name: deploy-azure-container-apps
+      runAfter: [resolve-image-ref, resolve-deploy-target]
+      when:
+        - { input: $(tasks.resolve-deploy-target.results.target), operator: in, values: ["azure-container-apps"] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: deploy-azure-container-apps }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
+        - { name: config-json, value: $(tasks.resolve-deploy-target.results.config-json) }
 
     # Never when-gated/skipped and has no result-dependency on clone-repo - see this
     # Task's own header for why that's load-bearing (notify below must always be able

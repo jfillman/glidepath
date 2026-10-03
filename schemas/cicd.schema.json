@@ -142,9 +142,9 @@
         },
         "target": {
           "type": "string",
-          "enum": ["k8s-rollout", "aws-ecs"],
+          "enum": ["k8s-rollout", "aws-ecs", "aws-lambda", "azure-container-apps"],
           "default": "k8s-rollout",
-          "description": "Where deploy.yaml's `deploy` stage actually deploys to. k8s-rollout (default) is the only target every existing app uses - deploy-manifests.yaml, Argo Rollouts via airframe-application, zero behavior change for an app that doesn't set this. aws-ecs (added 2026-10-03, see deploy-ecs.yaml) registers a new ECS task-definition revision and updates the named service instead - requires deploy.ecs below, and this app's own `secrets:` list must include `aws-access-key-id`/`aws-secret-access-key` (see docs/admin/app-secrets.md). NOT live-verified against a real AWS account - see docs/admin/known-gaps.md. Resolved correctly even for a git-rooted deploy (no build/test in that run) - resolve-deploy-target.yaml clones cicd.yaml directly via the GitHub App token broker in that case, rather than trusting an unpopulated config-json."
+          "description": "Where deploy.yaml's `deploy` stage actually deploys to. k8s-rollout (default) is the only target every existing app uses - deploy-manifests.yaml, Argo Rollouts via airframe-application, zero behavior change for an app that doesn't set this. The three cloud targets (added 2026-10-03/04) each require a matching config block below plus this app's own `secrets:` entries for cloud credentials (see docs/admin/app-secrets.md) - none are live-verified against a real account, see docs/admin/known-gaps.md. All three resolve correctly even for a git-rooted deploy (no build/test in that run) - resolve-deploy-target.yaml clones cicd.yaml directly via the GitHub App token broker in that case, rather than trusting an unpopulated config-json. - aws-ecs (deploy-ecs.yaml): registers a new ECS task-definition revision and updates the named service. Requires `deploy.ecs` and secrets `aws-access-key-id`/`aws-secret-access-key`. - aws-lambda (deploy-lambda.yaml): updates an existing function's container image. Requires `deploy.lambda` and the same AWS secrets as aws-ecs. Hard AWS constraint: image-repo must resolve to an Amazon ECR URI - Lambda cannot pull from an external registry like ghcr.io. - azure-container-apps (deploy-azure-container-apps.yaml): updates an existing Container App's image to a new revision. Requires `deploy.azureContainerApps` and secrets `azure-client-id`/`azure-client-secret`/`azure-tenant-id`."
         },
         "ecs": {
           "type": "object",
@@ -156,6 +156,24 @@
             "containerName": { "type": "string", "description": "Name of the container (within the task definition's containerDefinitions) whose image gets updated. Must match a real container name in the current task definition, or deploy-ecs.yaml fails loudly rather than silently updating nothing." },
             "region": { "type": "string", "default": "us-east-1" },
             "taskDefinitionFamily": { "type": "string", "description": "Defaults to `<app-name>-<env>` if omitted - set this only when the real family name doesn't follow that convention." }
+          }
+        },
+        "lambda": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Required when deploy.target is aws-lambda; ignored otherwise. The function must already exist (PackageType: Image) - deploy-lambda.yaml only updates its code, never creates it.",
+          "properties": {
+            "functionName": { "type": "string" },
+            "region": { "type": "string", "default": "us-east-1" }
+          }
+        },
+        "azureContainerApps": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Required when deploy.target is azure-container-apps; ignored otherwise. The Container App must already exist (environment, ingress, scale rules, and any private-registry pull credentials already configured on it) - deploy-azure-container-apps.yaml only updates its image, never creates it.",
+          "properties": {
+            "resourceGroup": { "type": "string" },
+            "appName": { "type": "string", "description": "The Container App's own name, not this platform's app-name - name only when they differ." }
           }
         }
       }

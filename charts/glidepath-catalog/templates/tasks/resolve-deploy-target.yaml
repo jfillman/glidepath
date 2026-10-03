@@ -1,25 +1,34 @@
 # catalog/tasks/resolve-deploy-target.yaml
 #
 # Extracts deploy.target from config-json as a plain string result, so deploy.yaml's
-# two deploy-task entries (deploy-manifests for k8s-rollout, deploy-ecs for aws-ecs) can
-# be gated with Tekton's native when: - which only compares plain strings/params, not
-# inline JSON. A new Task rather than folding this into validate-cicd-config: this
-# result is only needed by deploy.yaml, not build.yaml/test.yaml, and deploy.yaml never
-# runs validate-cicd-config itself (it receives already-validated config-json forwarded
-# from test's event, or "{}" for a git-rooted deploy - see that Pipeline's own header).
+# deploy-task entries (deploy-manifests for k8s-rollout, deploy-ecs/deploy-lambda/
+# deploy-azure-container-apps for the cloud targets) can be gated with Tekton's native
+# when: - which only compares plain strings/params, not inline JSON. A new Task rather
+# than folding this into validate-cicd-config: this result is only needed by
+# deploy.yaml, not build.yaml/test.yaml, and deploy.yaml never runs
+# validate-cicd-config itself (it receives already-validated config-json forwarded from
+# test's event, or "{}" for a git-rooted deploy - see that Pipeline's own header).
 #
 # Git-rooted handling (2026-10-03, closes the gap this file originally shipped with):
 # config-json is literally "{}" for a git-rooted deploy (a tag push with no build/test
 # in that run), so reading .deploy.target from it would always silently fall back to
-# k8s-rollout even for an app whose real cicd.yaml sets aws-ecs. Fixed by cloning just
-# cicd.yaml and reading it directly in that case - same shape resolve-notify-config.yaml
-# already uses for its own git-rooted fallback, but AUTHENTICATED via the GitHub App
-# token broker (catalog/lib/github-app.sh), matching deploy-manifests.yaml's pattern,
-# rather than resolve-notify-config's unauthenticated `git clone $(params.git-url)` -
-# that Task's result only feeds a Slack message (best-effort is an acceptable
-# trade-off there, and it only works at all for a public repo in the first place); this
-# Task's result decides which deploy Task actually runs, so a silent clone failure
-# against a private repo isn't an acceptable way to reach that decision.
+# k8s-rollout even for an app whose real cicd.yaml sets a cloud target. Fixed by
+# cloning just cicd.yaml and reading it directly in that case - same shape
+# resolve-notify-config.yaml already uses for its own git-rooted fallback, but
+# AUTHENTICATED via the GitHub App token broker (catalog/lib/github-app.sh), matching
+# deploy-manifests.yaml's pattern, rather than resolve-notify-config's unauthenticated
+# `git clone $(params.git-url)` - that Task's result only feeds a Slack message
+# (best-effort is an acceptable trade-off there, and it only works at all for a public
+# repo in the first place); this Task's result decides which deploy Task actually
+# runs, so a silent clone failure against a private repo isn't an acceptable way to
+# reach that decision.
+#
+# ALSO outputs the resolved config-json itself (not just target) - the cloud-target
+# deploy Tasks (deploy-ecs.yaml etc) each read their own deploy.{ecs,lambda,
+# azureContainerApps}.* fields out of config-json too, and would hit the exact same
+# "{}" problem a second time if deploy.yaml kept wiring them to $(params.config-json)
+# directly instead of this Task's own already-resolved copy. One resolution, reused by
+# every consumer - not re-derived per Task.
 #
 # No Pipeline workspace needed for this - mktemp's own ephemeral clone (same approach
 # deploy-manifests.yaml already uses) avoids the optional-workspace admission-webhook
@@ -33,7 +42,7 @@ metadata:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
 spec:
-  description: Extracts deploy.target ("k8s-rollout"/"aws-ecs") from config-json, cloning cicd.yaml directly for a git-rooted deploy where config-json is "{}".
+  description: Extracts deploy.target from config-json (and the resolved config-json itself) for deploy.yaml's when:-gated deploy-task entries, cloning cicd.yaml directly for a git-rooted deploy where config-json is "{}".
   params:
     - name: config-json
       type: string
@@ -52,6 +61,8 @@ spec:
       description: Only used for the git-rooted case - the GitHub token broker scopes the minted token to this repo by name (assumed == app-name, same assumption deploy-manifests.yaml already makes).
   results:
     - name: target
+    - name: config-json
+      description: The config-json this Task actually resolved - the incoming param unchanged (event-chained), or the freshly-cloned-and-parsed cicd.yaml as JSON (git-rooted). Downstream cloud-target deploy Tasks should read THIS, not the Pipeline's own config-json param directly, or they inherit the same "{}" problem this Task exists to fix.
   # Audience-bound projected ServiceAccount token for the shared broker's GitHub
   # token-minting endpoint - identical volume to deploy-manifests.yaml's own, needed
   # only for the git-rooted clone below.
@@ -87,10 +98,11 @@ spec:
         set -euo pipefail
 
         # Event-chained (the common case): config-json is already real and
-        # already-defaulted - no clone needed.
+        # already-defaulted - no clone needed, pass it straight through as both results.
         if [[ "${CONFIG_JSON}" != "{}" && -n "${CONFIG_JSON}" ]]; then
           TARGET="$(jq -r '.deploy.target // "k8s-rollout"' <<< "${CONFIG_JSON}" 2>/dev/null || echo "k8s-rollout")"
           echo -n "${TARGET}" | tee "$(results.target.path)"
+          echo -n "${CONFIG_JSON}" | tee "$(results.config-json.path)" > /dev/null
           exit 0
         fi
 
@@ -99,6 +111,7 @@ spec:
         # error, same philosophy as the event-chained branch's own fallback above).
         if [[ -z "${GIT_URL}" ]]; then
           echo -n "k8s-rollout" | tee "$(results.target.path)"
+          echo -n "{}" | tee "$(results.config-json.path)" > /dev/null
           exit 0
         fi
 
@@ -115,7 +128,10 @@ spec:
         fi
 
         TARGET="k8s-rollout"
+        RESOLVED_CONFIG="{}"
         if [[ -f "${workdir}/cicd.yaml" ]]; then
-          TARGET="$(yq -r '.deploy.target // "k8s-rollout"' "${workdir}/cicd.yaml" 2>/dev/null || echo "k8s-rollout")"
+          RESOLVED_CONFIG="$(yq -o=json '.' "${workdir}/cicd.yaml" 2>/dev/null || echo "{}")"
+          TARGET="$(jq -r '.deploy.target // "k8s-rollout"' <<< "${RESOLVED_CONFIG}" 2>/dev/null || echo "k8s-rollout")"
         fi
         echo -n "${TARGET}" | tee "$(results.target.path)"
+        echo -n "${RESOLVED_CONFIG}" | tee "$(results.config-json.path)" > /dev/null

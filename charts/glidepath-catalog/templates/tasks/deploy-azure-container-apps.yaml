@@ -1,0 +1,126 @@
+# catalog/tasks/deploy-azure-container-apps.yaml
+#
+# Alternative to deploy-manifests.yaml/deploy-ecs.yaml/deploy-lambda.yaml for apps whose
+# cicd.yaml sets deploy.target: azure-container-apps - updates an existing Container
+# App's image to a new revision and polls that revision for a healthy state.
+#
+# Does NOT create the Container App (environment, ingress, scale rules, registry
+# credentials already configured on the resource) - only updates its image, same
+# "update existing infra, never provision it" boundary deploy-ecs.yaml/deploy-lambda.yaml
+# both draw. Unlike Lambda, Container Apps can pull from any registry (including this
+# platform's own ghcr.io image-repo) - no ECR-style constraint here - but a PRIVATE
+# image-repo still needs its pull credentials already configured on the Container App
+# resource itself (az containerapp registry set, done once at provisioning time, out of
+# band - Glidepath doesn't manage that here, same as it doesn't manage registry-
+# credentials for the k8s-rollout target's own cluster-side Secret).
+#
+# `az containerapp update --image` creates a new revision but returns once the API call
+# succeeds, not once the new revision is actually healthy - polls
+# `az containerapp revision show` afterward for runningState, same manual poll-loop
+# shape as deploy-manifests.yaml's own Rollout .status.phase loop, since there's no
+# single blocking "wait" subcommand for this the way ECS/Lambda both have one.
+#
+# Uses the official mcr.microsoft.com/azure-cli image (confirmed real multi-arch +
+# bundled jq via `container image pull`/`inspect`/`run`, not assumed), same dedicated-
+# step-image reasoning as the other two cloud targets.
+#
+# NOT live-verified against a real Azure subscription/Container App - no Azure
+# credentials exist in this environment to test against. Render-verified only (helm
+# template) - see docs/admin/known-gaps.md.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-azure-container-apps
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Updates an existing Azure Container App's image to a new revision and waits for it to become healthy.
+  params:
+    - name: image-ref
+      type: string
+    - name: config-json
+      type: string
+      description: Reads .deploy.azureContainerApps.{resourceGroup,appName} from it directly, same pattern as the other cloud-target deploy Tasks.
+  # Same optional, mount-as-files app-secrets pattern as the other cloud targets - an
+  # app using deploy.target: azure-container-apps is expected to declare:
+  #   secrets:
+  #     - name: azure-client-id
+  #     - name: azure-client-secret
+  #     - name: azure-tenant-id
+  # (an Azure AD service principal with Contributor on the Container App, or narrower -
+  # see docs/admin/app-secrets.md for the mechanism, Azure's own docs for scoping the
+  # principal's role correctly).
+  volumes:
+    - name: app-secrets
+      secret:
+        secretName: app-secrets
+        optional: true
+  steps:
+    - name: update-container-app
+      image: mcr.microsoft.com/azure-cli:2.90.0
+      volumeMounts:
+        - name: app-secrets
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+      env:
+        - name: IMAGE_REF
+          value: $(params.image-ref)
+        - name: CONFIG_JSON
+          value: $(params.config-json)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        RESOURCE_GROUP="$(jq -r '.deploy.azureContainerApps.resourceGroup // ""' <<<"${CONFIG_JSON}")"
+        APP_NAME_AZ="$(jq -r '.deploy.azureContainerApps.appName // ""' <<<"${CONFIG_JSON}")"
+
+        if [[ -z "${RESOURCE_GROUP}" || -z "${APP_NAME_AZ}" ]]; then
+          echo "error: deploy.target is azure-container-apps but deploy.azureContainerApps.{resourceGroup,appName} is incomplete in cicd.yaml - both are required." >&2
+          exit 1
+        fi
+
+        if [[ -f /var/run/secrets/platform/azure-client-id && -f /var/run/secrets/platform/azure-client-secret && -f /var/run/secrets/platform/azure-tenant-id ]]; then
+          AZURE_CLIENT_ID="$(cat /var/run/secrets/platform/azure-client-id)"
+          AZURE_CLIENT_SECRET="$(cat /var/run/secrets/platform/azure-client-secret)"
+          AZURE_TENANT_ID="$(cat /var/run/secrets/platform/azure-tenant-id)"
+        else
+          echo "error: deploy.target is azure-container-apps but this app has no azure-client-id/azure-client-secret/azure-tenant-id in its secrets: list - see docs/admin/app-secrets.md." >&2
+          exit 1
+        fi
+
+        az login --service-principal \
+          --username "${AZURE_CLIENT_ID}" \
+          --password "${AZURE_CLIENT_SECRET}" \
+          --tenant "${AZURE_TENANT_ID}" >/dev/null
+
+        echo "updating Container App ${APP_NAME_AZ} (resource group ${RESOURCE_GROUP}) to ${IMAGE_REF}..."
+        az containerapp update \
+          --name "${APP_NAME_AZ}" \
+          --resource-group "${RESOURCE_GROUP}" \
+          --image "${IMAGE_REF}" \
+          --output none
+
+        latest_revision="$(az containerapp show --name "${APP_NAME_AZ}" --resource-group "${RESOURCE_GROUP}" \
+          --query 'properties.latestRevisionName' --output tsv)"
+        echo "new revision: ${latest_revision} - waiting for it to become healthy..."
+
+        deadline=$((SECONDS + 300))
+        while true; do
+          running_state="$(az containerapp revision show --name "${APP_NAME_AZ}" --resource-group "${RESOURCE_GROUP}" \
+            --revision "${latest_revision}" --query 'properties.runningState' --output tsv 2>/dev/null || true)"
+          echo "revision ${latest_revision} runningState: ${running_state:-<not found yet>}"
+          if [[ "${running_state}" == "Running" ]]; then
+            break
+          fi
+          if [[ "${running_state}" == "Failed" ]]; then
+            echo "error: revision ${latest_revision} entered Failed state" >&2
+            exit 1
+          fi
+          if (( SECONDS >= deadline )); then
+            echo "error: timed out waiting for revision ${latest_revision} to become Running (last state: ${running_state:-<not found>})" >&2
+            exit 1
+          fi
+          sleep 5
+        done
+        echo "Container App ${APP_NAME_AZ} is running revision ${latest_revision}"
