@@ -8,14 +8,23 @@
 # runs validate-cicd-config itself (it receives already-validated config-json forwarded
 # from test's event, or "{}" for a git-rooted deploy - see that Pipeline's own header).
 #
-# Known limitation: a git-rooted deploy (no source workspace, config-json is literally
-# "{}") always resolves to the k8s-rollout default here, even if the app's real
-# cicd.yaml sets deploy.target: aws-ecs - there's no cheap way to read the real
-# cicd.yaml without a clone, which this Pipeline deliberately avoids for the common
-# event-chained case (see deploy.yaml's own header on the optional source workspace).
-# Only matters for an aws-ecs app that ALSO triggers a git-rooted deploy (e.g. a tag
-# push with no build/test in that run) - every event-chained deploy (the common case)
-# resolves correctly, since config-json is real by then.
+# Git-rooted handling (2026-10-03, closes the gap this file originally shipped with):
+# config-json is literally "{}" for a git-rooted deploy (a tag push with no build/test
+# in that run), so reading .deploy.target from it would always silently fall back to
+# k8s-rollout even for an app whose real cicd.yaml sets aws-ecs. Fixed by cloning just
+# cicd.yaml and reading it directly in that case - same shape resolve-notify-config.yaml
+# already uses for its own git-rooted fallback, but AUTHENTICATED via the GitHub App
+# token broker (catalog/lib/github-app.sh), matching deploy-manifests.yaml's pattern,
+# rather than resolve-notify-config's unauthenticated `git clone $(params.git-url)` -
+# that Task's result only feeds a Slack message (best-effort is an acceptable
+# trade-off there, and it only works at all for a public repo in the first place); this
+# Task's result decides which deploy Task actually runs, so a silent clone failure
+# against a private repo isn't an acceptable way to reach that decision.
+#
+# No Pipeline workspace needed for this - mktemp's own ephemeral clone (same approach
+# deploy-manifests.yaml already uses) avoids the optional-workspace admission-webhook
+# restriction entirely, rather than binding deploy.yaml's `source` workspace the way
+# resolve-notify-config.yaml does.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -24,22 +33,89 @@ metadata:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
 spec:
-  description: Extracts deploy.target ("k8s-rollout"/"aws-ecs") from config-json as a plain string result.
+  description: Extracts deploy.target ("k8s-rollout"/"aws-ecs") from config-json, cloning cicd.yaml directly for a git-rooted deploy where config-json is "{}".
   params:
     - name: config-json
       type: string
+      default: "{}"
+    - name: git-url
+      type: string
+      default: ""
+      description: Only used for the git-rooted case (config-json == "{}") - same git-url this Pipeline itself received. Falls back to k8s-rollout if empty (nothing to clone from).
+    - name: git-revision
+      type: string
+      default: ""
+      description: Only used for the git-rooted case - the exact commit this deploy pertains to, so a cicd.yaml that changed since is read as it was at that commit, not the branch's current tip.
+    - name: app-name
+      type: string
+      default: ""
+      description: Only used for the git-rooted case - the GitHub token broker scopes the minted token to this repo by name (assumed == app-name, same assumption deploy-manifests.yaml already makes).
   results:
     - name: target
+  # Audience-bound projected ServiceAccount token for the shared broker's GitHub
+  # token-minting endpoint - identical volume to deploy-manifests.yaml's own, needed
+  # only for the git-rooted clone below.
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
   steps:
     - name: resolve
       image: {{ .Values.toolboxImage }}
       imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: CONFIG_JSON
+          value: $(params.config-json)
+        - name: GIT_URL
+          value: $(params.git-url)
+        - name: GIT_REVISION
+          value: $(params.git-revision)
+        - name: APP_NAME
+          value: $(params.app-name)
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        CFG='$(params.config-json)'
-        # "{}" (a git-rooted deploy with no app-side validate-cicd-config run yet) and
-        # an absent key both mean the same thing here: default to k8s-rollout, same
-        # default schemas/cicd.schema.json itself declares for deploy.target.
-        TARGET="$(jq -r '.deploy.target // "k8s-rollout"' <<< "${CFG}" 2>/dev/null || echo "k8s-rollout")"
+
+        # Event-chained (the common case): config-json is already real and
+        # already-defaulted - no clone needed.
+        if [[ "${CONFIG_JSON}" != "{}" && -n "${CONFIG_JSON}" ]]; then
+          TARGET="$(jq -r '.deploy.target // "k8s-rollout"' <<< "${CONFIG_JSON}" 2>/dev/null || echo "k8s-rollout")"
+          echo -n "${TARGET}" | tee "$(results.target.path)"
+          exit 0
+        fi
+
+        # Git-rooted, nothing to clone from (shouldn't happen in practice - deploy.yaml
+        # always has a real git-url - but fail safe to the schema default rather than
+        # error, same philosophy as the event-chained branch's own fallback above).
+        if [[ -z "${GIT_URL}" ]]; then
+          echo -n "k8s-rollout" | tee "$(results.target.path)"
+          exit 0
+        fi
+
+        source "${PLATFORM_LIB}/github-app.sh"
+        source "${PLATFORM_LIB}/retry.sh"
+
+        owner="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${APP_NAME}")"
+        workdir="$(mktemp -d)"
+        clone_url="https://x-access-token:${token}@github.com/${owner}/${APP_NAME}.git"
+        with_retry 3 -- git clone --quiet "${clone_url}" "${workdir}"
+        if [[ -n "${GIT_REVISION}" ]]; then
+          git -C "${workdir}" checkout --quiet "${GIT_REVISION}"
+        fi
+
+        TARGET="k8s-rollout"
+        if [[ -f "${workdir}/cicd.yaml" ]]; then
+          TARGET="$(yq -r '.deploy.target // "k8s-rollout"' "${workdir}/cicd.yaml" 2>/dev/null || echo "k8s-rollout")"
+        fi
         echo -n "${TARGET}" | tee "$(results.target.path)"

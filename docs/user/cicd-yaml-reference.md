@@ -534,11 +534,10 @@ account. `deploy-ecs.yaml` registers a new task-definition revision with the bui
 image, updates the named service to it, and waits for ECS's own stability check -
 nothing is deployed via this cluster's ArgoCD/Rollout machinery for this target.
 
-**Known limitation:** a git-rooted deploy (a tag push with no build/test in that same
-run) always uses `k8s-rollout` regardless of this setting - only an event-chained
-deploy (the normal build → test → deploy flow) resolves `aws-ecs` correctly. Also not
-yet live-verified against a real AWS account - see
-[known-gaps.md](../admin/known-gaps.md).
+A git-rooted deploy (a tag push with no build/test in that same run) resolves this
+correctly too, not just the normal build → test → deploy flow - `resolve-deploy-target`
+clones just `cicd.yaml` directly when it has no upstream config to inherit. Not yet
+live-verified against a real AWS account - see [known-gaps.md](../admin/known-gaps.md).
 
 ## Multi-stage pipeline flows
 
