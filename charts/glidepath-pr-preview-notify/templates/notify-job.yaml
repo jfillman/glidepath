@@ -121,13 +121,20 @@ spec:
               # Hidden marker (HTML comment, invisible in rendered markdown), same
               # dedup-via-edit-in-place pattern as comment-pr-check-result.yaml - this
               # Job re-runs on every push to the PR, not just the first one.
-              marker="<!-- platform-cicd:preview-env -->"
+              # Renamed from platform-cicd:preview-env 2026-10-03 (branding cleanup) -
+              # old_marker is only used in the lookup below, never written again, so an
+              # already-open PR's old-marker comment still gets edited in place instead
+              # of getting a duplicate posted next to it. Drop the old-marker branch once
+              # confident no PR with an old-marker comment is still open.
+              marker="<!-- glidepath:preview-env -->"
+              old_marker="<!-- platform-cicd:preview-env -->"
               body="${marker}"$'\n'"${body}"
 
               existing_comment_id="$(curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
                 -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
                 "https://api.github.com/repos/${GITHUB_OWNER}/${APP_REPO_NAME}/issues/${PR_NUMBER}/comments?per_page=100" \
-                | jq -r --arg marker "${marker}" '[.[] | select(.body | startswith($marker))][0].id // empty')"
+                | jq -r --arg marker "${marker}" --arg oldMarker "${old_marker}" \
+                    '[.[] | select((.body | startswith($marker)) or (.body | startswith($oldMarker)))][0].id // empty')"
 
               if [[ -n "${existing_comment_id}" ]]; then
                 curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused -o /dev/null \

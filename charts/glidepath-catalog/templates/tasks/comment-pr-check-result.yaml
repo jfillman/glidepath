@@ -12,10 +12,16 @@
 # field - avoids adding a result to every gate's own verification Task(s) for
 # information already sitting in their pod logs.
 #
-# Edits an existing comment in place (hidden `<!-- platform-cicd:gate:<name> -->` marker)
+# Edits an existing comment in place (hidden `<!-- glidepath:gate:<name> -->` marker)
 # instead of always posting new: every commit on a PR is now independently re-verified
 # (a real Check Run each time), so without this dedup that would spam N appended comments
 # for unchanged outcomes.
+#
+# Marker renamed from `platform-cicd:gate:<name>` 2026-10-03 (branding cleanup) - the
+# lookup below matches EITHER marker so an already-open PR with an old-marker comment
+# still gets edited in place on its next run instead of getting a duplicate new-marker
+# comment posted alongside it. New comments always write the new marker only; drop the
+# old-marker branch once confident no PR with an old-marker comment is still open.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -183,7 +189,10 @@ spec:
 
         # Hidden marker (HTML comment, invisible in rendered markdown) identifying which
         # gate this comment belongs to, so a later run can find and edit it in place.
-        marker="<!-- platform-cicd:gate:${GATE_NAME} -->"
+        # old_marker is the pre-rename form - only used for the lookup below, never
+        # written again - see this file's header comment.
+        marker="<!-- glidepath:gate:${GATE_NAME} -->"
+        old_marker="<!-- platform-cicd:gate:${GATE_NAME} -->"
         body="${marker}"$'\n'"${body}"
 
         # Response captured via $(...), not streamed to stdout - GitHub's create-comment
@@ -196,7 +205,8 @@ spec:
         existing_comment_id="$(curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
           -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
           "https://api.github.com/repos/${owner}/${repo}/issues/${PR_NUMBER}/comments?per_page=100" \
-          | jq -r --arg marker "${marker}" '[.[] | select(.body | startswith($marker))][0].id // empty')"
+          | jq -r --arg marker "${marker}" --arg oldMarker "${old_marker}" \
+              '[.[] | select((.body | startswith($marker)) or (.body | startswith($oldMarker)))][0].id // empty')"
 
         if [[ -n "${existing_comment_id}" ]]; then
           comment_response="$(curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
