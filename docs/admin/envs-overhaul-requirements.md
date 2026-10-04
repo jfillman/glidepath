@@ -231,7 +231,7 @@ Each phase is independently shippable and leaves existing apps unchanged.
 | 3 | Tower: read-only Environments tab (R23, R25) | Built on the mapping; no editing yet |
 | 4 | Per-env cloud config in the deploy tasks (R4) | `deploy-lambda`, `deploy-ecs`, `deploy-azure-container-apps` read the step's env. Verify with two Lambda functions |
 | 5 | Tower: add/edit/delete flow and shared form (R21, R22, R24, R18, R19) | Includes the delete impact preview. Ground add = one `cicd.yaml` PR (resync scaffolds the file); Flight add = `cicd.yaml` PR plus the ApplicationEnvironment template launched through the scaffolder API. No backend change: the existing cicd.yaml change route takes a `deploy` patch |
-| 6 | Cloud gated promotion (R9-R11) | Depends on Q1 |
+| 6 | Cloud gated promotion (R9-R11) | Designed in [ADR-0020](adr/0020-cloud-gated-promotion-by-release-pin.md) (proposed); five slices, none built |
 | 7 | Folder rename `platform/` to `glidepath/` (R14) | Per ADR-0018's dual-path window |
 | 8 | `deploy.chart` (R6) | Both ApplicationSets read it |
 | 9 | Migration PRs, then drop the old shape (R13, R15) | Only after every app is on the new shape |

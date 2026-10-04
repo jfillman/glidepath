@@ -26,6 +26,7 @@ distilled from.
 | [0017](0017-cicd-yaml-scaffolded-not-hand-authored.md) | `cicd.yaml` is scaffolded at onboarding, not hand-authored first |
 | [0018](0018-glidepath-owns-envs-folder-and-chart-contract.md) | Glidepath owns the per-app environments folder (`glidepath/`) and defines the chart contract |
 | [0019](0019-environments-as-one-config-model.md) | *Proposed.* Environments are one config model, defined once in `cicd.yaml` |
+| [0020](0020-cloud-gated-promotion-by-release-pin.md) | *Proposed.* Cloud Flight environments are gated by a release pin PR on the source repo |
 
 New decisions get a new numbered file here, not a paragraph buried in an unrelated doc.
 
