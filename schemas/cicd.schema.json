@@ -134,6 +134,18 @@
               "cluster": {
                 "type": "string",
                 "description": "Flight only, and only when the environment runs on a different cluster than the app's own (the same meaning as the cluster of an upperEnvironments object entry). A Ground environment cannot set it yet."
+              },
+              "ecs": {
+                "$ref": "#/properties/deploy/properties/ecs",
+                "description": "Cloud targets only. Overrides fields of deploy.ecs for this environment (for example service, or cluster); fields it does not set come from deploy.ecs. Only valid when deploy.target is aws-ecs."
+              },
+              "lambda": {
+                "$ref": "#/properties/deploy/properties/lambda",
+                "description": "Cloud targets only. Overrides fields of deploy.lambda for this environment (for example functionName); fields it does not set come from deploy.lambda. Only valid when deploy.target is aws-lambda."
+              },
+              "azureContainerApps": {
+                "$ref": "#/properties/deploy/properties/azureContainerApps",
+                "description": "Cloud targets only. Overrides fields of deploy.azureContainerApps for this environment (for example appName); fields it does not set come from deploy.azureContainerApps. Only valid when deploy.target is azure-container-apps."
               }
             }
           }

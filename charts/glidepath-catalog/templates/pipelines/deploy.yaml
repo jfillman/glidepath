@@ -163,6 +163,7 @@ spec:
         - { name: config-json, value: $(params.config-json) }
         - { name: git-url, value: $(params.git-url) }
         - { name: git-revision, value: $(params.git-revision) }
+        - { name: env, value: $(params.env) }
         - { name: app-name, value: $(params.app-name) }
 
     # Default/common path - see docs/user/cicd-yaml-reference.md's deploy.target.

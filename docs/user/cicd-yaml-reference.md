@@ -509,8 +509,32 @@ same resources; `charts/glidepath-app/tests/envs_model_test.py` checks that.
 
 Limits for now: a cloud target (`aws-ecs`, `aws-lambda`, `azure-container-apps`) supports `ground`
 environments only, because a Flight environment needs an approval path that does not exist for
-them yet (ADR-0019, open work). All environments of a cloud app still deploy to the one resource
-named under `deploy.<target>`; per-environment resources come later.
+them yet (ADR-0019, open work).
+
+#### Per-environment cloud resources
+
+A cloud app deploys to the resource named under `deploy.<target>` (`lambda`, `ecs` or
+`azureContainerApps`). An environment can override fields of that block, so `dev` and `test` deploy
+to different functions, services or Container Apps. The override is partial: fields it does not set
+come from the app-level block.
+
+```yaml
+deploy:
+  target: aws-lambda
+  lambda:
+    functionName: orders-fn          # the default, used by dev
+    region: us-east-1
+  environments:
+    - { name: dev,  tier: ground }
+    - { name: test, tier: ground, lambda: { functionName: orders-fn-test } }
+    - { name: eu,   tier: ground, lambda: { functionName: orders-fn-eu, region: eu-west-1 } }
+```
+
+An environment may only override the block for the app's own target (a `lambda` override on an ECS
+app is refused), and the target itself is per app, not per environment. The deploy step for
+environment `test` resolves to `orders-fn-test` in `us-east-1`. The resources must already exist,
+as before: Glidepath only updates what is there. Credentials are still one set per app, so every
+environment must be reachable with them.
 
 ### `promotionOrder` - declaring the full release sequence explicitly
 
