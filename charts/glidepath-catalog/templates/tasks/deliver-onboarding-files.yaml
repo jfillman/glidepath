@@ -193,6 +193,19 @@ spec:
           fi
         fi
 
+        # Only a Kubernetes app has an environments folder: a cloud target (aws-ecs, aws-lambda,
+        # azure-container-apps) deploys through a deploy-stage parameter and has no chart. Writing
+        # platform/ files for it made the lower-envs ApplicationSet render
+        # charts/airframe-application into a namespace nothing uses (found on the smoke-fn
+        # Lambda function, 2026-10-04; docs/admin/envs-overhaul-requirements.md, P2).
+        DEPLOY_TARGET="k8s-rollout"
+        if [[ -f cicd.yaml ]]; then
+          DEPLOY_TARGET="$(yq -r '.deploy.target // "k8s-rollout"' cicd.yaml)"
+        fi
+        if [[ "${DEPLOY_TARGET}" != "k8s-rollout" ]]; then
+          echo "deploy.target is ${DEPLOY_TARGET}: not scaffolding platform/ environment files (no chart, no per-environment namespace)"
+        fi
+
         # known-gap #17: ephemeralEnvironments.pullRequest.enabled alone was already
         # enough to synthesize a working pr-build flow and ApplicationSet trigger above,
         # but ephemeral-envs.yaml's ApplicationSet has always required platform/pr-env.yaml
@@ -208,7 +221,7 @@ spec:
         # ephemeralEnvironments, so the file was never created, and a developer who turns
         # previews on later hit exactly the ComparisonError above. A comment-only file
         # costs nothing when previews are off.
-        if [[ ! -f platform/pr-env.yaml ]]; then
+        if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && ! -f platform/pr-env.yaml ]]; then
           mkdir -p platform
           cat > platform/pr-env.yaml <<'PRENVEOF'
         # platform/pr-env.yaml
@@ -236,7 +249,7 @@ spec:
         # file in the D9/AF-5 merge order (base < platform/envs/<env>.yaml < release file,
         # see hangar/docs/autopilot/release-file-split.md). Optional to the ApplicationSets
         # (ignoreMissingValueFiles), scaffolded so the layout is discoverable.
-        if [[ ! -f platform/base.yaml ]]; then
+        if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && ! -f platform/base.yaml ]]; then
           mkdir -p platform
           cat > platform/base.yaml <<'BASEEOF'
         # platform/base.yaml
@@ -263,7 +276,7 @@ spec:
         # the hand-copied file also carried another app's image). The chart renders no
         # workload until release.image is set, so this is just a namespace until the first
         # build deploys. Never overwritten.
-        if [[ -f cicd.yaml ]]; then
+        if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && -f cicd.yaml ]]; then
           while IFS= read -r lower_env; do
             [[ -z "${lower_env}" ]] && continue
             [[ -f "platform/envs/${lower_env}.yaml" ]] && continue
