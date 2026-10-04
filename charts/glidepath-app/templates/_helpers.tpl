@@ -72,6 +72,17 @@ Usage: {{ include "glidepath-app.envNamespace" (list $ "staging") }}
 {{- end -}}
 
 {{/*
+glidepath-app.isKubernetesTarget - "true" when the app deploys to Kubernetes (deploy.target
+unset or k8s-rollout), "false" for a cloud target (aws-ecs, aws-lambda,
+azure-container-apps). Only a Kubernetes app has a namespace, RBAC and an environments
+folder per environment; a cloud environment is a deploy-stage parameter and creates none of
+that (docs/admin/envs-overhaul-requirements.md, R5).
+*/}}
+{{- define "glidepath-app.isKubernetesTarget" -}}
+{{- if eq ((.Values.deploy).target | default "k8s-rollout") "k8s-rollout" -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{/*
 glidepath-app.localDeployEnvs - lowerEnvironments plus same-cluster
 upperEnvironments entries: every env that needs pipeline-runner RBAC into a local
 namespace. Cluster-mapped upper envs (docs/multi-cluster.md) are excluded - they have no
@@ -80,6 +91,10 @@ local namespace to grant RBAC into.
 Usage: {{ include "glidepath-app.localDeployEnvs" . | fromYamlArray }}
 */}}
 {{- define "glidepath-app.localDeployEnvs" -}}
+{{- if ne (include "glidepath-app.isKubernetesTarget" .) "true" -}}
+{{- /* A cloud target has no namespace per environment, so there is nothing to grant RBAC into. */ -}}
+{{- list | toYaml -}}
+{{- else -}}
 {{- $envs := .Values.deploy.lowerEnvironments | default (list) -}}
 {{- range .Values.deploy.upperEnvironments | default (list) -}}
   {{- if kindIs "map" . -}}
@@ -91,6 +106,7 @@ Usage: {{ include "glidepath-app.localDeployEnvs" . | fromYamlArray }}
   {{- end -}}
 {{- end -}}
 {{- $envs | toYaml -}}
+{{- end -}}
 {{- end -}}
 
 {{/*
@@ -416,7 +432,7 @@ object (docs/multi-cluster.md); upperEnvClusters normalizes both shapes. */ -}}
 
       {{- /* deploy-rbac.yaml only grants access to envs listed under
       deploy.lowerEnvironments/upperEnvironments */ -}}
-      {{- if and (eq $stageName "deploy") $step.env (not (has $step.env $deployEnvs)) -}}
+      {{- if and (eq $stageName "deploy") $step.env (eq (include "glidepath-app.isKubernetesTarget" $) "true") (not (has $step.env $deployEnvs)) -}}
         {{- fail (printf "Flow '%s' step %d: deploy env '%s' is not listed under deploy.lowerEnvironments or deploy.upperEnvironments - pipeline-runner has no RBAC into that namespace, this would fail at deploy time with a Forbidden error instead. Add it to one of those lists." $flowName (add $index 1) $step.env) -}}
       {{- end -}}
 
