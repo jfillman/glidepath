@@ -19,6 +19,15 @@ chart and no environments folder, and the lower-envs ApplicationSet must not gen
 anything for them. *(proposed: gate the generator on `deploy.target`; today it keys only
 on files existing.)*
 
+## How the environments are declared
+
+An app declares its environments either with `deploy.environments` (a list of
+`{name, tier, cluster?}`, `tier` being `ground` or `flight`) or with the older
+`lowerEnvironments` / `upperEnvironments` / `promotionOrder`. The chart reads both through one
+normalizing helper (`glidepath-app.envEntries`), so the two shapes behave identically. See
+[ADR-0019](adr/0019-environments-as-one-config-model.md) and the `deploy.environments` section of
+the [cicd.yaml reference](../user/cicd-yaml-reference.md).
+
 ## Folder layout in the app repo
 
 ```

@@ -97,7 +97,47 @@
     "deploy": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        {
+          "$comment": "deploy.environments replaces lowerEnvironments + upperEnvironments + promotionOrder (ADR-0019). Using both is ambiguous, so it is refused rather than one silently winning.",
+          "if": { "required": ["environments"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["lowerEnvironments"] },
+                { "required": ["upperEnvironments"] },
+                { "required": ["promotionOrder"] }
+              ]
+            }
+          }
+        }
+      ],
       "properties": {
+        "environments": {
+          "type": "array",
+          "minItems": 1,
+          "description": "The app's environments, defined once, in promotion order (the order of this list is the order a release walks). Replaces lowerEnvironments, upperEnvironments and promotionOrder, which cannot be used alongside it. Each entry is a Ground environment (deployed automatically on push) or a Flight environment (deployed only through an approved release). Names must be unique. See docs/admin/adr/0019-environments-as-one-config-model.md.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "tier"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,30}$",
+                "description": "Lowercase letters, digits and '-', starting with a letter, at most 31 characters. Also used in the environment's namespace name."
+              },
+              "tier": {
+                "enum": ["ground", "flight"],
+                "description": "ground: deploys on every push. flight: deploys only through a release PR and its guardrails. A cloud target (aws-ecs, aws-lambda, azure-container-apps) supports ground only for now."
+              },
+              "cluster": {
+                "type": "string",
+                "description": "Flight only, and only when the environment runs on a different cluster than the app's own (the same meaning as the cluster of an upperEnvironments object entry). A Ground environment cannot set it yet."
+              }
+            }
+          }
+        },
         "lowerEnvironments": {
           "type": "array",
           "items": { "type": "string" },

@@ -129,7 +129,12 @@ spec:
           # pass. Needed so a git-rooted release step that omits cluster: still resolves the
           # right cluster instead of silently falling through to same-cluster (a real bug
           # that hit flow-triggers.yaml's Go-template equivalent too).
-          upper_env_clusters_json="$(yq -o=json '.deploy.upperEnvironments // []' cicd.yaml | jq 'map(if type == "object" then {(.name): (.cluster // "")} else {(.): ""} end) | add // {}')"
+          #
+          # Both shapes of the environment list (deploy.environments, or the older
+          # lowerEnvironments/upperEnvironments), normalized to [{name, tier, cluster}] the same way
+          # glidepath-app.envEntries does it (docs/admin/envs-overhaul-requirements.md, R12).
+          envs_json="$(yq -o=json '.deploy // {}' cicd.yaml | jq -c 'if (.environments // null) != null then [.environments[] | {name: .name, tier: .tier, cluster: (.cluster // "")}] else [((.lowerEnvironments // ["dev"])[] | {name: ., tier: "ground", cluster: ""}), ((.upperEnvironments // [])[] | if type == "object" then {name: .name, tier: "flight", cluster: (.cluster // "")} else {name: ., tier: "flight", cluster: ""} end)] end')"
+          upper_env_clusters_json="$(echo "${envs_json}" | jq 'map(select(.tier == "flight") | {(.name): .cluster}) | add // {}')"
 
           # Synthesize a pr-build flow from ephemeralEnvironments.pullRequest when the
           # operator hasn't hand-declared one. Its shape never varies (pull_request-
@@ -289,7 +294,7 @@ spec:
         envName: ${lower_env}
         ENVEOF
             echo "app repo: scaffolded platform/envs/${lower_env}.yaml (file was missing)"
-          done < <(yq -r '.deploy.lowerEnvironments // ["dev"] | .[]' cicd.yaml)
+          done < <(yq -o=json '.deploy // {}' cicd.yaml | jq -r 'if (.environments // null) != null then [.environments[] | select(.tier == "ground") | .name] else (.lowerEnvironments // ["dev"]) end | .[]')
         fi
 
         # onboarding-resync.yaml is the only file delivered unconditionally among
