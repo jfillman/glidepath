@@ -104,17 +104,29 @@ spec:
         fi
 
         echo "resolving current task definition for family ${FAMILY}..."
-        # Strips the read-only fields (taskDefinitionArn, revision, status, registeredAt,
-        # registeredBy, requiresAttributes, compatibilities) register-task-definition
-        # itself rejects as input - a plain describe's output can't be re-registered
-        # as-is.
-        aws ecs describe-task-definition --task-definition "${FAMILY}" \
-          --query 'taskDefinition.{family:family,containerDefinitions:containerDefinitions,requiresCompatibilities:requiresCompatibilities,networkMode:networkMode,cpu:cpu,memory:memory,executionRoleArn:executionRoleArn,taskRoleArn:taskRoleArn,volumes:volumes}' \
-          --output json > /tmp/current-def.json
+        # Re-registers the WHOLE current definition with only the image swapped, not a hand-picked
+        # subset of its fields. The first live run (smoke-ecs, 2026-10-04) showed why the old
+        # fixed projection was wrong twice over:
+        #   - a field the definition does not set (taskRoleArn on a definition with only an
+        #     execution role) came out as JSON null, which the CLI rejects before calling AWS
+        #     ("Invalid type for parameter taskRoleArn, value: None"), so any definition missing
+        #     an optional field could never be deployed;
+        #   - fields outside the list (runtimePlatform, ephemeralStorage, tags, pidMode, ...) were
+        #     silently dropped, e.g. an ARM64 Fargate task would have come back as X86_64.
+        # So: take `taskDefinition` as returned (--include TAGS puts the tags beside it, not
+        # inside it), delete only what describe adds and register refuses (taskDefinitionArn,
+        # revision, status, requiresAttributes, compatibilities, registeredAt, registeredBy,
+        # deregisteredAt), and drop any null-valued key.
+        aws ecs describe-task-definition --task-definition "${FAMILY}" --include TAGS \
+          --output json > /tmp/described.json
 
         jq --arg img "${IMAGE_REF}" --arg name "${CONTAINER_NAME}" '
-          .containerDefinitions = [.containerDefinitions[] | if .name == $name then .image = $img else . end]
-        ' /tmp/current-def.json > /tmp/new-def.json
+          (.taskDefinition + (if ((.tags // []) | length) > 0 then {tags: .tags} else {} end))
+          | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities,
+                .registeredAt, .registeredBy, .deregisteredAt)
+          | walk(if type == "object" then with_entries(select(.value != null)) else . end)
+          | .containerDefinitions = [.containerDefinitions[] | if .name == $name then .image = $img else . end]
+        ' /tmp/described.json > /tmp/new-def.json
 
         if ! jq -e --arg name "${CONTAINER_NAME}" '.containerDefinitions[] | select(.name == $name)' /tmp/new-def.json >/dev/null; then
           echo "error: no container named '${CONTAINER_NAME}' in task definition family '${FAMILY}' - check deploy.ecs.containerName against the real task definition." >&2
