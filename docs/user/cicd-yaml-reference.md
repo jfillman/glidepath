@@ -549,12 +549,24 @@ secrets:
 ```
 
 Updates an existing Lambda function's container image and waits for the update to
-complete. The function must already exist with `PackageType: Image` - this never
-creates a function. **Hard AWS constraint, not a Glidepath one:** Lambda can only pull
-a container image from Amazon ECR, never an external registry like `ghcr.io` - your
-`image-repo` must resolve to an ECR URI for this target to work at all.
-`deploy-lambda.yaml` checks for this and fails with a clear error rather than letting
-Lambda's own image-pull failure surface.
+complete.
+
+Lambda can only pull a container image from Amazon ECR, never from `ghcr.io`, where this
+pipeline builds, signs and scans everything. So the deploy stage copies the image for you:
+
+1. It reads the function's architecture and the ECR repository its **current** image lives
+   in (so there is no repository field to set; the function must already exist with an
+   ECR image).
+2. It copies the matching per-architecture image (`<tag>-arm64` or `<tag>-amd64`) into that
+   repository with your `aws-*` secrets and checks the digest is unchanged. Lambda does not
+   accept a multi-architecture image index, so the function's architecture decides which
+   one is copied. Your `build.platforms` must include it (an app that built only `amd64`
+   cannot deploy to an `arm64` function, and the stage says so).
+3. It updates the function to that ECR digest and waits for the update to finish.
+
+The function and its ECR repository are yours to create first; Glidepath never creates
+them. Signatures and attestations stay on `ghcr.io` (the digest is the same, so they remain
+verifiable there). An app that already builds to ECR skips the copy.
 
 #### `azure-container-apps`
 
