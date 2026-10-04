@@ -33,6 +33,7 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: pip install pyyaml
       - run: python3 charts/glidepath-catalog/tests/validate_config_envs_test.py
+      - run: python3 charts/glidepath-catalog/tests/resolve_deploy_target_env_test.py
 
   lint-and-render:
     runs-on: ubuntu-latest

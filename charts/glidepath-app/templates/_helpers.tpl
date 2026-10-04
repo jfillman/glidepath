@@ -143,6 +143,7 @@ for them, ADR-0019 Q1).
 {{- $k8s := eq (include "glidepath-app.isKubernetesTarget" .) "true" -}}
 {{- $target := ((.Values.deploy).target | default "k8s-rollout") -}}
 {{- range $declared -}}
+  {{- $declaredEnv := . -}}
   {{- if not (and .name (regexMatch "^[a-z][a-z0-9-]{0,30}$" (toString .name))) -}}
     {{- fail (printf "deploy.environments: '%v' is not a valid environment name (lowercase letters, digits and '-', starting with a letter, at most 31 characters)" .name) -}}
   {{- end -}}
@@ -155,6 +156,16 @@ for them, ADR-0019 Q1).
   {{- end -}}
   {{- if and (eq .tier "ground") .cluster -}}
     {{- fail (printf "deploy.environments: Ground environment '%s' sets cluster '%s'. A Ground environment runs on the app's own dev cluster; Ground environments on other clusters are not supported yet" .name .cluster) -}}
+  {{- end -}}
+  {{- /* A per-environment cloud block must be the one for the app's target; a Kubernetes app has none. */ -}}
+  {{- $envName := .name -}}
+  {{- $want := dict "aws-ecs" "ecs" "aws-lambda" "lambda" "azure-container-apps" "azureContainerApps" -}}
+  {{- range $block := list "ecs" "lambda" "azureContainerApps" -}}
+    {{- if hasKey $declaredEnv $block -}}
+      {{- if not (eq (get $want $target) $block) -}}
+        {{- fail (printf "deploy.environments: environment '%s' sets %s, but deploy.target is %s. A per-environment override must be for the app's own target" $envName $block $target) -}}
+      {{- end -}}
+    {{- end -}}
   {{- end -}}
   {{- if and (eq .tier "flight") (not $k8s) -}}
     {{- fail (printf "deploy.environments: Flight environment '%s' is not supported for deploy.target %s yet. Cloud targets have no approval path for Flight environments, so declare it as ground" .name $target) -}}

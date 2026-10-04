@@ -178,6 +178,39 @@ class Validation(unittest.TestCase):
         self.assertIn("is not listed under", err)
 
 
+class PerEnvironmentCloudConfig(unittest.TestCase):
+    """Phase 4: an environment may override fields of the app's cloud target block."""
+
+    LAMBDA = {"target": "aws-lambda", "lambda": {"functionName": "fn", "region": "us-east-1"}}
+
+    def test_an_override_for_the_apps_own_target_is_accepted(self):
+        deploy = {**self.LAMBDA, "environments": [
+            {"name": "dev", "tier": "ground"},
+            {"name": "test", "tier": "ground", "lambda": {"functionName": "fn-test"}},
+        ]}
+        rc, _, err = render(cicd(BUILD_DEPLOY, deploy))
+        self.assertEqual(rc, 0, err[:400])
+
+    def test_an_override_for_another_target_is_refused(self):
+        deploy = {**self.LAMBDA, "environments": [{"name": "dev", "tier": "ground", "ecs": {"service": "s"}}]}
+        rc, _, err = render(cicd(BUILD_DEPLOY, deploy))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("sets ecs, but deploy.target is aws-lambda", err)
+
+    def test_a_kubernetes_app_has_no_cloud_override(self):
+        deploy = {"environments": [{"name": "dev", "tier": "ground", "lambda": {"functionName": "f"}}]}
+        rc, _, err = render(cicd(BUILD_DEPLOY, deploy))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("deploy.target is k8s-rollout", err)
+
+    def test_the_schema_accepts_partial_overrides_and_refuses_unknown_keys(self):
+        ok = cicd(BUILD_DEPLOY, {**self.LAMBDA, "environments": [{"name": "t", "tier": "ground", "lambda": {"region": "eu-west-1"}}]})
+        jsonschema.validate(ok, SCHEMA)
+        bad = cicd(BUILD_DEPLOY, {**self.LAMBDA, "environments": [{"name": "t", "tier": "ground", "lambda": {"functionname": "x"}}]})
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate(bad, SCHEMA)
+
+
 class Schema(unittest.TestCase):
     def valid(self, doc):
         jsonschema.validate(doc, SCHEMA)

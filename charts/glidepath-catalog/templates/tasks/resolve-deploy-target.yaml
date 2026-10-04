@@ -55,6 +55,10 @@ spec:
       type: string
       default: ""
       description: Only used for the git-rooted case - the exact commit this deploy pertains to, so a cicd.yaml that changed since is read as it was at that commit, not the branch's current tip.
+    - name: env
+      type: string
+      default: ""
+      description: The environment this deploy targets. Its per-environment cloud overrides (deploy.environments[].ecs / lambda / azureContainerApps) are merged over the app-level block, so each environment can deploy to its own function, service or Container App. Empty means no override.
     - name: app-name
       type: string
       default: ""
@@ -93,16 +97,36 @@ spec:
           value: $(params.git-revision)
         - name: APP_NAME
           value: $(params.app-name)
+        - name: ENV_NAME
+          value: $(params.env)
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+
+        # Per-environment cloud config (ADR-0019, envs overhaul phase 4). deploy.environments[] may carry
+        # a partial ecs / lambda / azureContainerApps block; for this deploy's environment it is merged
+        # over the app-level block (an object merge, the environment's fields win), so the deploy
+        # Task reads one resolved deploy.<block> and never knows overrides exist. No environment, an
+        # environment with no override, or a file with no deploy.environments leaves config unchanged.
+        cat > /tmp/env-overrides.jq <<'JQ_ENV_OVERRIDES'
+        ((.deploy.environments // []) | map(select(.name == $env)) | first // null) as $e
+        | if $e == null then .
+          else reduce ("ecs", "lambda", "azureContainerApps") as $b (.;
+                 if ($e[$b] // null) != null
+                 then .deploy[$b] = ((.deploy[$b] // {}) * $e[$b])
+                 else . end)
+          end
+        JQ_ENV_OVERRIDES
+        with_env_overrides() {
+          jq -c --arg env "${ENV_NAME}" -f /tmp/env-overrides.jq <<< "$1" 2>/dev/null || echo -n "$1"
+        }
 
         # Event-chained (the common case): config-json is already real and
         # already-defaulted - no clone needed, pass it straight through as both results.
         if [[ "${CONFIG_JSON}" != "{}" && -n "${CONFIG_JSON}" ]]; then
           TARGET="$(jq -r '.deploy.target // "k8s-rollout"' <<< "${CONFIG_JSON}" 2>/dev/null || echo "k8s-rollout")"
           echo -n "${TARGET}" | tee "$(results.target.path)"
-          echo -n "${CONFIG_JSON}" | tee "$(results.config-json.path)" > /dev/null
+          with_env_overrides "${CONFIG_JSON}" | tee "$(results.config-json.path)" > /dev/null
           exit 0
         fi
 
@@ -134,4 +158,4 @@ spec:
           TARGET="$(jq -r '.deploy.target // "k8s-rollout"' <<< "${RESOLVED_CONFIG}" 2>/dev/null || echo "k8s-rollout")"
         fi
         echo -n "${TARGET}" | tee "$(results.target.path)"
-        echo -n "${RESOLVED_CONFIG}" | tee "$(results.config-json.path)" > /dev/null
+        with_env_overrides "${RESOLVED_CONFIG}" | tee "$(results.config-json.path)" > /dev/null
