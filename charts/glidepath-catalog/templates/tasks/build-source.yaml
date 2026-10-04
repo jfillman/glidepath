@@ -60,9 +60,9 @@ spec:
       results:
         - name: build-script-path
         - name: cache-type
-          description: "'npm'/'maven'/'' - derived from build.agent's prefix rather than a separate cicd.yaml field. Empty when caching is disabled or the agent has no cache support yet (python-*/go-1.22)."
+          description: "'npm'/'yarn'/'maven'/'' - derived from build.agent's prefix rather than a separate cicd.yaml field. Empty when caching is disabled or the agent has no cache support yet (python-*/go-1.22)."
         - name: cache-subdir
-          description: "'<cache-type>/<lockfile-hash>', or '' if caching isn't active. The lockfile hash is the cache-invalidation mechanism - a dependency change produces a new subdir instead of reusing stale packages."
+          description: "'<cache-type>/<lockfile-hash>' ('yarn' alone for yarn: its cache is per package, so no hash), or '' if caching isn't active. The lockfile hash is the cache-invalidation mechanism - a dependency change produces a new subdir instead of reusing stale packages."
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -75,15 +75,30 @@ spec:
         CACHE_TYPE=""
         LOCKFILE=""
         case "${AGENT}" in
-          nodejs-*) CACHE_TYPE="npm"; LOCKFILE="$(workspaces.source.path)/package-lock.json" ;;
+          nodejs-*)
+            # A yarn.lock without a package-lock.json means yarn (classic or berry), not npm.
+            if [[ -f "$(workspaces.source.path)/yarn.lock" && ! -f "$(workspaces.source.path)/package-lock.json" ]]; then
+              CACHE_TYPE="yarn"; LOCKFILE="$(workspaces.source.path)/yarn.lock"
+            else
+              CACHE_TYPE="npm"; LOCKFILE="$(workspaces.source.path)/package-lock.json"
+            fi
+            ;;
           openjdk-*) CACHE_TYPE="maven"; LOCKFILE="$(workspaces.source.path)/pom.xml" ;;
           *) echo "build.cache: no cache support yet for agent '${AGENT}' - enabled flag is a no-op" ;;
         esac
         CACHE_SUBDIR=""
         if [[ "${CACHE_ENABLED}" == "true" && -n "${CACHE_TYPE}" ]]; then
           if [[ -f "${LOCKFILE}" ]]; then
-            LOCKFILE_HASH="$(sha256sum "${LOCKFILE}" | cut -d' ' -f1 | cut -c1-16)"
-            CACHE_SUBDIR="${CACHE_TYPE}/${LOCKFILE_HASH}"
+            if [[ "${CACHE_TYPE}" == "yarn" ]]; then
+              # Not keyed by lockfile hash, unlike npm/maven below: yarn's cache is one file per
+              # package@version, so a single changed dependency only needs that one package
+              # fetched. A hash-keyed dir would start empty after every lockfile change - the
+              # common case (one dependency bump) - and re-download everything.
+              CACHE_SUBDIR="yarn"
+            else
+              LOCKFILE_HASH="$(sha256sum "${LOCKFILE}" | cut -d' ' -f1 | cut -c1-16)"
+              CACHE_SUBDIR="${CACHE_TYPE}/${LOCKFILE_HASH}"
+            fi
           else
             echo "build.cache: enabled but no ${LOCKFILE} found - proceeding uncached" >&2
           fi
@@ -132,6 +147,15 @@ spec:
           mkdir -p "${CACHE_DIR}"
           case "${CACHE_TYPE}" in
             npm) export NPM_CONFIG_CACHE="${CACHE_DIR}" ;;
+            yarn)
+              # Classic reads YARN_CACHE_FOLDER. Berry (2+) keeps its cache under the global
+              # folder, and only when the global cache is on - the env var overrides an
+              # `enableGlobalCache: false` in the repo's .yarnrc.yml. Berry writes cache
+              # files atomically, so concurrent builds of one app can share the directory.
+              export YARN_CACHE_FOLDER="${CACHE_DIR}"
+              export YARN_GLOBAL_FOLDER="${CACHE_DIR}"
+              export YARN_ENABLE_GLOBAL_CACHE=true
+              ;;
             maven)
               export MAVEN_OPTS="-Dmaven.repo.local=${CACHE_DIR} ${MAVEN_OPTS:-}"
               MAVEN_LOCK_DIR="${CACHE_DIR}/.build-lock"
