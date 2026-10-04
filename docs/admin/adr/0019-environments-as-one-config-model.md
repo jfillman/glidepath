@@ -42,9 +42,10 @@ form for one and raw YAML for the other. Details and evidence:
    repo changing a per-env release pin (no gitops repo); cloud credentials are one set per
    app for now; an environment's target cannot change (delete and re-add); the product keeps
    the words Ground and Flight; App Configuration stays a separate tab; the Environments
-   tab is a table with in-place expansion and a pending-changes panel; Glidepath opens the
-   gitops-repo PR for a Flight environment after the source-repo PR merges (the owner opens
-   only the source PR).
+   tab is a table with in-place expansion and a pending-changes panel; Tower opens both PRs
+   for a Flight environment (the `cicd.yaml` PR, and the existing ApplicationEnvironment
+   template through the scaffolder API), while a Ground environment is one `cicd.yaml` PR and
+   the onboarding resync scaffolds its env file.
 8. This builds on, and does not change, ADR-0018 (the `glidepath/` folder and the chart
    contract). The folder move and `deploy.chart` are phases of the same work.
 
@@ -58,6 +59,6 @@ form for one and raw YAML for the other. Details and evidence:
   against every real `cicd.yaml` before any app depends on it.
 - A longer compatibility window than a one-shot migration, deliberately: a bad migration
   would affect every app at once.
-- Adding a Flight environment touches two repos (source `cicd.yaml`, gitops directory). The
-  owner merges the source PR and then a generated gitops PR; Tower tracks the pair as one
-  change set and shows when the second has not appeared.
+- Adding a Flight environment touches two repos (source `cicd.yaml`; the tenants-repo request that
+  creates the gitops directory). Tower opens both and tracks them as one change set, showing the
+  order to merge and when either is still open.
