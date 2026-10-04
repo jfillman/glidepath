@@ -1,30 +1,47 @@
 # catalog/tasks/deploy-lambda.yaml
 #
 # Alternative to deploy-manifests.yaml/deploy-ecs.yaml for apps whose cicd.yaml sets
-# deploy.target: aws-lambda - updates an existing Lambda function's container image and
-# waits for the update to complete.
+# deploy.target: aws-lambda - copies the newly built image into the function's ECR
+# repository, points the existing Lambda function at it, and waits for the update to finish.
 #
-# Hard AWS constraint, not a Glidepath limitation: Lambda can only pull a container
-# image from Amazon ECR, never an external registry like ghcr.io (confirmed AWS
-# documentation, not assumed) - so image-ref must already resolve to an ECR URI for
-# this target to work at all. Guarded below with a clear error rather than letting
-# Lambda's own cryptic "ResourceConflictException"/image-pull failure surface - same
-# fail-loud-with-a-useful-message philosophy as deploy-ecs.yaml's container-name guard.
-# This Task does not copy/push into ECR itself - that would mean threading a second
-# registry-credential concern through build-image.yaml for a target most apps won't
-# use. An app on this target is expected to set build.agent's image-repo to an ECR
-# repository directly.
+# Why a copy step at all: Lambda can only pull a container image from Amazon ECR, never from
+# an external registry like ghcr.io (AWS documentation), and this pipeline builds, signs, scans
+# and attests everything against ghcr.io. Teaching every registry-touching Task (build, SBOM,
+# scan, signing, provenance verify) to speak ECR, with its 12-hour tokens, would be a large
+# change for a target most apps will not use. This Task already holds the app's AWS
+# credentials, so it does the one thing Lambda needs itself.
 #
-# Does NOT create the function (PackageType: Image, the function's own role/VPC/memory
-# config) - only updates its deployed code, same "update existing infra, never
-# provision it" boundary deploy-ecs.yaml draws for the ECS service/task definition.
+# Three steps, sharing a scratch volume:
+#   1. prepare:       validates, reads the function's architecture and its CURRENT image's
+#                     ECR repository, and mints an ECR login for the copy. No new cicd.yaml
+#                     field is needed: a PackageType Image function always already has an
+#                     image, and the repository that image lives in is where the new one goes.
+#   2. copy-to-ecr:   crane copy of the per-architecture image (see below) into that repository,
+#                     then compares the source and destination digests.
+#   3. update-function: update-function-code against the ECR digest, then waits.
+# An image-ref that is already an ECR URI (an app that builds to ECR directly) skips the copy.
 #
-# Same dedicated-step-image reasoning as deploy-ecs.yaml: public.ecr.aws/aws-cli/aws-cli
-# rather than toolboxImage (Alpine/musl vs. AWS CLI v2's glibc-targeted installer).
+# Why the PER-ARCH tag and not image-ref itself: Lambda does not accept a multi-architecture
+# image index, only a single-platform manifest. build-image.yaml always publishes
+# <image-ref>-arm64 and/or <image-ref>-amd64 as single-platform images, but the unsuffixed tag
+# is an OCI index when both were built. So this copies the one matching the function's
+# configured architecture. An app that built only the other architecture fails with a message
+# saying so, instead of Lambda's own cryptic manifest error.
 #
-# NOT live-verified against a real AWS account/Lambda function - no AWS credentials
-# exist in this environment to test against. Render-verified only (helm template) -
-# see docs/admin/known-gaps.md.
+# What the copy does NOT carry: cosign signatures and attestations stay on ghcr.io (they are
+# separate tags keyed by digest). The digest is preserved, so they remain verifiable there.
+#
+# Does NOT create the function or its ECR repository (PackageType: Image, role, memory, VPC) -
+# only updates its deployed code, the same "update existing infra, never provision it"
+# boundary deploy-ecs.yaml draws.
+#
+# Dedicated step images, not toolboxImage (Alpine/musl vs. the AWS CLI v2 installer's glibc):
+# public.ecr.aws/aws-cli/aws-cli for the AWS calls, and the same digest-pinned crane image
+# build-image.yaml already runs for the copy.
+#
+# Private ghcr.io packages: registry-credentials is merged into the copy's registry login the
+# same way image-scan.yaml reads it; a public package needs nothing.
+#
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -33,7 +50,7 @@ metadata:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
 spec:
-  description: Updates an existing Lambda function's container image to the newly built image and waits for the update to complete.
+  description: Copies the newly built image into the function's ECR repository, points an existing Lambda function at it, and waits for the update to complete.
   params:
     - name: image-ref
       type: string
@@ -50,13 +67,29 @@ spec:
       secret:
         secretName: app-secrets
         optional: true
+    # Only matters when the ghcr.io package is private (see the header). Optional so its
+    # absence degrades to an unauthenticated pull instead of a pod stuck on a missing Secret.
+    - name: registry-credentials
+      secret:
+        secretName: registry-credentials
+        optional: true
+        items:
+          - key: .dockerconfigjson
+            path: config.json
+    - name: work
+      emptyDir: {}
   steps:
-    - name: update-function
+    - name: prepare
       image: public.ecr.aws/aws-cli/aws-cli:2.37.9
       volumeMounts:
         - name: app-secrets
           mountPath: /var/run/secrets/platform
           readOnly: true
+        - name: registry-credentials
+          mountPath: /var/run/secrets/registry
+          readOnly: true
+        - name: work
+          mountPath: /work
       env:
         - name: IMAGE_REF
           value: $(params.image-ref)
@@ -74,12 +107,6 @@ spec:
           exit 1
         fi
 
-        # Hard AWS constraint - see this file's header comment.
-        if [[ ! "${IMAGE_REF}" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/ ]]; then
-          echo "error: deploy.target is aws-lambda but image-ref '${IMAGE_REF}' is not an Amazon ECR URI. AWS Lambda can only pull container images from ECR, never an external registry (e.g. ghcr.io) - this app's build.image-repo must point at an ECR repository for this target to work." >&2
-          exit 1
-        fi
-
         export AWS_DEFAULT_REGION="${REGION}"
 
         if [[ -f /var/run/secrets/platform/aws-access-key-id && -f /var/run/secrets/platform/aws-secret-access-key ]]; then
@@ -90,8 +117,129 @@ spec:
           exit 1
         fi
 
-        echo "updating Lambda function ${FUNCTION_NAME} to ${IMAGE_REF}..."
-        aws lambda update-function-code --function-name "${FUNCTION_NAME}" --image-uri "${IMAGE_REF}" >/dev/null
+        ECR_RE='^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/'
+
+        # An app that already builds to ECR needs no copy.
+        if [[ "${IMAGE_REF}" =~ ${ECR_RE} ]]; then
+          echo "image-ref is already an Amazon ECR URI, no copy needed."
+          touch /work/skip-copy
+          printf '%s' "${IMAGE_REF}" > /work/final-image-uri
+          exit 0
+        fi
+
+        # PackageType and architecture come from the function itself, so cicd.yaml needs no
+        # new field and a function that cannot take this image is caught here with a clear message.
+        FN="$(aws lambda get-function --function-name "${FUNCTION_NAME}" --output json)"
+        PKG="$(jq -r '.Configuration.PackageType // ""' <<<"${FN}")"
+        ARCH_RAW="$(jq -r '.Configuration.Architectures[0] // "x86_64"' <<<"${FN}")"
+        CURRENT="$(jq -r '.Code.ImageUri // ""' <<<"${FN}")"
+
+        if [[ "${PKG}" != "Image" ]]; then
+          echo "error: Lambda function ${FUNCTION_NAME} has PackageType '${PKG}', not 'Image' - this target only deploys container images, and it cannot convert a zip function." >&2
+          exit 1
+        fi
+
+        case "${ARCH_RAW}" in
+          arm64)  ARCH="arm64" ;;
+          x86_64) ARCH="amd64" ;;
+          *) echo "error: unrecognised Lambda architecture '${ARCH_RAW}' on ${FUNCTION_NAME}." >&2; exit 1 ;;
+        esac
+
+        # The ECR repository the function's current image lives in is where the new one goes.
+        # ImageUri is either repo@sha256:... or repo:tag; strip the digest, then a tag (only a
+        # colon AFTER the last slash is a tag, the registry host may carry a port).
+        REPO="${CURRENT%%@*}"
+        if [[ "${REPO##*/}" == *:* ]]; then REPO="${REPO%:*}"; fi
+
+        if [[ ! "${REPO}/" =~ ${ECR_RE} ]]; then
+          echo "error: Lambda function ${FUNCTION_NAME}'s current image '${CURRENT}' is not in Amazon ECR, so there is no repository to copy the new image into. The function must already exist with an ECR image (see docs/admin/app-secrets.md)." >&2
+          exit 1
+        fi
+
+        REGISTRY_HOST="${REPO%%/*}"
+        ECR_REGION="$(sed -E 's/^[0-9]{12}\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com$/\1/' <<<"${REGISTRY_HOST}")"
+        TAG="${IMAGE_REF##*:}"
+        SRC="${IMAGE_REF}-${ARCH}"
+
+        # ECR login token (valid 12h, minted per run, never stored). Merged over any ghcr.io
+        # credentials so a private package can still be pulled by the same crane call.
+        TOKEN="$(aws ecr get-login-password --region "${ECR_REGION}")"
+        AUTH="$(printf 'AWS:%s' "${TOKEN}" | base64 -w0)"
+        mkdir -p /work/docker
+        if [[ -s /var/run/secrets/registry/config.json ]]; then
+          jq --arg reg "${REGISTRY_HOST}" --arg auth "${AUTH}" '{auths: ((.auths // {}) + {($reg): {auth: $auth}})}' /var/run/secrets/registry/config.json > /work/docker/config.json
+        else
+          jq -n --arg reg "${REGISTRY_HOST}" --arg auth "${AUTH}" '{auths: {($reg): {auth: $auth}}}' > /work/docker/config.json
+        fi
+
+        printf '%s' "${SRC}" > /work/src
+        printf '%s' "${REPO}:${TAG}" > /work/dst
+        printf '%s' "${REPO}" > /work/repo
+        echo "function ${FUNCTION_NAME}: architecture ${ARCH_RAW}, current image repository ${REPO}"
+        echo "will copy ${SRC} -> ${REPO}:${TAG}"
+
+    - name: copy-to-ecr
+      # The same digest-pinned crane image build-image.yaml's publish-multiarch-manifest step
+      # runs (see its comment on why :debug and why a digest pin). Needs a shell, hence debug.
+      image: gcr.io/go-containerregistry/crane@sha256:e78770b31258a3846f878036d9c1f63fbe4c871f9f56990bf77fd95c013e3c1b
+      volumeMounts:
+        - name: work
+          mountPath: /work
+      env:
+        - name: DOCKER_CONFIG
+          value: /work/docker
+      script: |
+        #!/busybox/sh
+        set -eu
+        if [ -f /work/skip-copy ]; then
+          echo "nothing to copy."
+          exit 0
+        fi
+        SRC="$(cat /work/src)"
+        DST="$(cat /work/dst)"
+        REPO="$(cat /work/repo)"
+
+        if ! crane manifest "${SRC}" >/dev/null 2>&1; then
+          echo "error: ${SRC} does not exist. build-image.yaml publishes a per-architecture tag only for a platform it built, and this function's architecture is the suffix of that tag - check build.platforms in cicd.yaml includes the Lambda function's architecture." >&2
+          exit 1
+        fi
+
+        crane copy "${SRC}" "${DST}"
+
+        # A copy that changed the content would break the link to the signature and attestations
+        # that stay on the source registry, so refuse to deploy anything but the same digest.
+        SRC_DIGEST="$(crane digest "${SRC}")"
+        DST_DIGEST="$(crane digest "${DST}")"
+        if [ "${SRC_DIGEST}" != "${DST_DIGEST}" ]; then
+          echo "error: copied image digest ${DST_DIGEST} differs from the source ${SRC_DIGEST}." >&2
+          exit 1
+        fi
+        printf '%s' "${REPO}@${DST_DIGEST}" > /work/final-image-uri
+        echo "copied ${SRC} -> ${DST} (${DST_DIGEST})"
+
+    - name: update-function
+      image: public.ecr.aws/aws-cli/aws-cli:2.37.9
+      volumeMounts:
+        - name: app-secrets
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+        - name: work
+          mountPath: /work
+      env:
+        - name: CONFIG_JSON
+          value: $(params.config-json)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        FUNCTION_NAME="$(jq -r '.deploy.lambda.functionName // ""' <<<"${CONFIG_JSON}")"
+        export AWS_DEFAULT_REGION="$(jq -r '.deploy.lambda.region // "us-east-1"' <<<"${CONFIG_JSON}")"
+        export AWS_ACCESS_KEY_ID="$(cat /var/run/secrets/platform/aws-access-key-id)"
+        export AWS_SECRET_ACCESS_KEY="$(cat /var/run/secrets/platform/aws-secret-access-key)"
+
+        IMAGE_URI="$(cat /work/final-image-uri)"
+        echo "updating Lambda function ${FUNCTION_NAME} to ${IMAGE_URI}..."
+        aws lambda update-function-code --function-name "${FUNCTION_NAME}" --image-uri "${IMAGE_URI}" >/dev/null
 
         # function-updated-v2 (not the older function-updated waiter) - the current
         # AWS-documented waiter for a code/config update, confirmed via the CLI's own
