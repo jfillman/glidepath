@@ -254,14 +254,19 @@ Answered by the owner on 2026-10-04:
 - **Q7 (App Configuration): decided.** It stays as its own tab for non-environment config.
 - **UI layout: decided.** Table with in-place expansion plus the pending-changes panel (§4).
 
-Proposed, awaiting confirmation (the owner asked for more detail and then chose the layout
-without revisiting these):
+- **Q2 (a Flight env touches two repos): decided.** Glidepath opens the gitops-repo PR.
+  The owner opens one PR on the source repo in Tower; when it merges, Glidepath's existing
+  `cicd.yaml` resync opens the gitops PR with the env skeleton, and Tower tracks both as one
+  change set. The same applies to deleting a Flight env. Consequences accepted: two merges
+  by the owner (the second PR is generated and reviewable), a short wait between them, and
+  Tower must show "waiting for the gitops PR" if the resync fails rather than stalling
+  silently. Rejected: two independent PRs (the owner carries the merge ordering; a half-merged
+  state is easy to create) and writing the skeleton with no PR (breaks "every gitops change
+  is a PR", ADR-0004).
 
-- **Q2 (a Flight env touches two repos).** Proposed: the owner opens one PR on the source
-  repo in Tower; when it merges, Glidepath's existing `cicd.yaml` resync opens the gitops
-  repo PR with the env skeleton, and Tower tracks both as one change set. Alternatives
-  were two independent PRs, or deriving the directory without a PR (which breaks "every
-  gitops change is a PR").
+Proposed, awaiting confirmation (the owner asked how much complexity it adds, said they like
+the idea, and has not confirmed the approach):
+
 - **Q3 (Ground env on another cluster).** Proposed: the schema allows `cluster` on any
   environment from day one (no later breaking change); the validator rejects a Ground
   `cluster` that differs from the app's dev cluster until multi-cluster Ground is built as
