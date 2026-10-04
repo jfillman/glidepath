@@ -33,9 +33,9 @@ release mechanics in [../admin/release.md](../admin/release.md).
 
 ## Build dependency caching
 
-Persistent, per-app npm/Maven download cache, opt-in via `build.cache.enabled: true`.
-Keyed by a hash of your lockfile, so a dependency change gets a fresh cache
-automatically instead of serving stale packages. See
+Persistent, per-app npm/yarn/Maven download cache, opt-in via `build.cache.enabled: true`.
+Keyed by a hash of your lockfile (npm, Maven), so a dependency change gets a fresh cache
+automatically instead of serving stale packages; yarn uses one shared per-package cache. See
 [cicd-yaml-reference.md](cicd-yaml-reference.md#build-dependency-caching-buildcache).
 
 ## Build source volume sizing

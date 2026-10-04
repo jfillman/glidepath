@@ -353,16 +353,20 @@ build:
     size: small   # small=1Gi, medium=2.5Gi, large=5Gi, xlarge=8Gi - default small
 ```
 
-No `type` field - it's derived from `build.agent`'s prefix (`nodejs-*` -> npm, `openjdk-*`
--> Maven), not a second, separately-declarable value that could disagree with `agent`.
+No `type` field - it's derived from `build.agent`'s prefix (`nodejs-*` -> npm, or yarn when the repo has a
+`yarn.lock` and no `package-lock.json`; `openjdk-*` -> Maven), not a second, separately-declarable value that could disagree with `agent`.
 Agents without cache support yet (`python-*`, `go-1.22`) treat `enabled: true` as a no-op
 (logged, not an error).
 
 What's actually cached is the build tool's own *download* cache (npm's tarball cache,
-Maven's local repository) - not `node_modules`/`target` directly, since `npm ci` deletes
+yarn's package cache, Maven's local repository) - not `node_modules`/`target` directly, since `npm ci` deletes
 and rebuilds `node_modules` from scratch by design. The cache is a real, persistent,
 **per-app** PVC, keyed by a hash of the relevant lockfile (`package-lock.json`/`pom.xml`)
 so a dependency change invalidates it automatically rather than serving stale packages.
+Yarn is the exception: its cache holds one file per `package@version` and is never stale,
+so it is one shared directory (`YARN_CACHE_FOLDER`/`YARN_GLOBAL_FOLDER`, global cache
+forced on for Berry) and a lockfile change only fetches the packages that changed. It only
+grows as versions are added; delete the PVC to reset it.
 Not resizable live after onboarding - changing `size` later means recreating the PVC
 (losing its content).
 
