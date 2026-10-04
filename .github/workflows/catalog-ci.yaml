@@ -16,12 +16,24 @@ on:
   pull_request:
     paths:
       - "charts/glidepath-catalog/**"
+      - "schemas/**"
   push:
     branches: [main]
     paths:
       - "charts/glidepath-catalog/**"
+      - "schemas/**"
 
 jobs:
+  # validate-cicd-config must hand every Task a config-json whose environment fields agree, whichever
+  # shape cicd.yaml uses (ADR-0019). Runs the Task's own jq programs on fixtures.
+  config-json-environments:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: pip install pyyaml
+      - run: python3 charts/glidepath-catalog/tests/validate_config_envs_test.py
+
   lint-and-render:
     runs-on: ubuntu-latest
     steps:
