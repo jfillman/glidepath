@@ -103,7 +103,7 @@ spec:
                 type: "{{ "{{" }}.platformIdentity.type{{ "}}" }}"
                 # `default ""`: a service with no gitops repo (a function) has an empty or null value here, which
                 # would otherwise render as the literal, truthy string "<no value>".
-                gitopsRepoUrl: "{{ "{{" }} default "" .platformIdentity.gitopsRepoUrl {{ "}}" }}"
+                gitopsRepoUrl: '{{ "{{" }}default "" .platformIdentity.gitopsRepoUrl{{ "}}" }}'
                 appRepoUrl: "{{ "{{" }}.platformIdentity.appRepoUrl{{ "}}" }}"
                 githubOwner: "{{ "{{" }}.platformIdentity.githubOwner{{ "}}" }}"
                 catalogNamespace: "{{ "{{" }}.platformIdentity.catalogNamespace{{ "}}" }}"
