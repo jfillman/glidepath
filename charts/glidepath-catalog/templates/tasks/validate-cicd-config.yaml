@@ -117,6 +117,32 @@ spec:
         jq --argjson schema "$(cat /opt/platform/schemas/cicd.schema.json)" \
           -f /tmp/apply-defaults.jq /tmp/cicd.json > /tmp/cicd-defaulted.json
 
+        # Environments, normalized (ADR-0019). apply-defaults above fills lowerEnvironments: [dev],
+        # upperEnvironments: [] and promotionOrder: [] even for a file that declares
+        # deploy.environments, which would leave config-json contradicting itself. Whichever shape the
+        # developer wrote, config-json carries BOTH: the list, and the three older fields consistent
+        # with it, so every Task can read either form. The developer's own file ($orig) decides which
+        # shape is authoritative, since the defaulted copy always has the old fields.
+        cat > /tmp/normalize-envs.jq <<'JQ_NORMALIZE'
+        def envs_from_old:
+          [ (.lowerEnvironments // ["dev"])[] | {name: ., tier: "ground"} ]
+          + [ (.upperEnvironments // [])[]
+              | if type == "object"
+                then ({name: .name, tier: "flight"} + (if (.cluster // "") != "" then {cluster: .cluster} else {} end))
+                else {name: ., tier: "flight"} end ];
+        if ($orig.deploy.environments // null) != null then
+          .deploy.environments = $orig.deploy.environments
+          | .deploy.lowerEnvironments = [ $orig.deploy.environments[] | select(.tier == "ground") | .name ]
+          | .deploy.upperEnvironments = [ $orig.deploy.environments[] | select(.tier == "flight")
+              | if (.cluster // "") != "" then {name: .name, cluster: .cluster} else .name end ]
+          | .deploy.promotionOrder = [ $orig.deploy.environments[] | .name ]
+        else
+          .deploy.environments = (.deploy | envs_from_old)
+        end
+        JQ_NORMALIZE
+        jq --argjson orig "$(cat /tmp/cicd.json)" -f /tmp/normalize-envs.jq /tmp/cicd-defaulted.json > /tmp/cicd-normalized.json
+        mv /tmp/cicd-normalized.json /tmp/cicd-defaulted.json
+
         cp /tmp/cicd-defaulted.json "$(results.config-json.path)"
 
         HAS_BUILD_SCRIPT="$(jq -r 'if .build.script != null and .build.script != "" then "true" else "false" end' /tmp/cicd-defaulted.json)"
