@@ -1,6 +1,6 @@
 # Environments overhaul: requirements and plan
 
-**Status: draft for review (2026-10-04).** Nothing here is built. It collects what the
+**Status: plan approved, decisions recorded (2026-10-04).** Nothing here is built. It collects what the
 current model gets wrong, what the overhaul must do, a proposed order of work, and the
 decisions still open. The proposed decisions are recorded as a draft in
 [ADR-0019](adr/0019-environments-as-one-config-model.md).
@@ -150,6 +150,23 @@ on `main` is checked by nothing until the next build.
 
 ## 4. Tower UI: options and recommendation
 
+**Decision (2026-10-04): the table layout (option C below) with the pending-changes panel
+from the stack layout.** The mockups are on the design canvas "Tower Environments Tab
+Mockups" (boards C and D). Concretely:
+
+- One **Environments** tab. A dense table, one row per environment in promotion order, with
+  tier, target, where it runs, health, live image and last deploy. A row expands in place
+  into the environment's form (Settings, Values or Target config, Promotion, Danger zone).
+- Edits **stage** instead of submitting. A **Pending changes** panel beside the table lists
+  every staged change (added, edited, removed environments), the files each touches, and
+  exactly which pull requests will open and in what order, then one "Review and open PRs".
+  This is also what resolves Q2: the panel shows the change set as a whole.
+- Add and delete are the shared dialogs (board E): a file preview for add, an impact list
+  and typed confirmation for delete.
+- App Configuration stays as its own tab for non-environment config (Q7).
+
+The three options below are kept as the record of what was considered.
+
 The existing assets: ConfigTab already has the form, env banner, schema validation and PR
 dialog, but only for Flight envs. The Glidepath tab has the cicd.yaml form and a raw-YAML
 editor for Ground files.
@@ -222,27 +239,36 @@ Each phase is independently shippable and leaves existing apps unchanged.
 Phases 1 and 3 are low risk and visible; 2 is the one that could surprise existing apps,
 which is why it is read-only until the mapping has been checked against real repos.
 
-## 6. Open questions (need an owner decision)
+## 6. Decisions and what is still open
 
-- **Q1. How is a cloud Flight environment approved?** Options: (a) a PR on the *source*
-  repo that changes a small per-env release pin (`glidepath/releases/<env>.yaml`),
-  reusing the existing PR and guardrails model, no gitops repo; (b) a Tekton approval task
-  with an Approve button in Tower; (c) GitHub Environments protection rules. I lean to
-  (a): it matches how Kubernetes Flight works and is auditable in git.
-- **Q2. Adding a Flight env touches two repos.** Accept two linked PRs, or have Glidepath
-  open the gitops-repo PR itself when the source PR merges?
-- **Q3. Can a Ground environment live on a different cluster than the app's dev cluster?**
-  Today Ground is single-cluster per app. R1 lets an entry carry a `cluster`; is that
-  allowed for Ground or Flight-only?
-- **Q4. Credentials per environment for cloud targets.** AWS and Azure credentials are one
-  set per app today. Separate accounts per environment need per-env secrets. In scope now,
-  or one account per app for the first version?
-- **Q5. Can an environment change target during its life** (Kubernetes to Lambda)? I'd say
-  no: delete and re-add, with the impact preview.
-- **Q6. UI naming.** Keep "Ground / Flight" in the product, or use plainer labels
-  ("Automatic / Gated")?
-- **Q7. Tab future.** If Option A, does App Configuration remain (for non-environment
-  config such as catalog resources and ConfigMap files) or fold into Environments?
+Answered by the owner on 2026-10-04:
+
+- **Q1 (cloud Flight approval): decided.** A PR on the *source* repo that changes a small
+  per-env release pin (`glidepath/releases/<env>.yaml`), reusing the PR and guardrails
+  model. No gitops repo.
+- **Q4 (cloud credentials): decided.** One set per app for the first version. Per-env
+  accounts are a later extension (they need per-env secrets).
+- **Q5 (target change): decided.** An environment cannot change target. Delete and re-add,
+  with the impact preview.
+- **Q6 (naming): decided.** Keep "Ground" and "Flight".
+- **Q7 (App Configuration): decided.** It stays as its own tab for non-environment config.
+- **UI layout: decided.** Table with in-place expansion plus the pending-changes panel (§4).
+
+Proposed, awaiting confirmation (the owner asked for more detail and then chose the layout
+without revisiting these):
+
+- **Q2 (a Flight env touches two repos).** Proposed: the owner opens one PR on the source
+  repo in Tower; when it merges, Glidepath's existing `cicd.yaml` resync opens the gitops
+  repo PR with the env skeleton, and Tower tracks both as one change set. Alternatives
+  were two independent PRs, or deriving the directory without a PR (which breaks "every
+  gitops change is a PR").
+- **Q3 (Ground env on another cluster).** Proposed: the schema allows `cluster` on any
+  environment from day one (no later breaking change); the validator rejects a Ground
+  `cluster` that differs from the app's dev cluster until multi-cluster Ground is built as
+  its own phase. That phase needs the cluster's own ArgoCD to generate the Application, the
+  per-cluster RBAC, registry credentials and secrets store, health via the existing
+  outcome-relay path, and Tower reading each cluster. The owner likes multiple dev clusters
+  managed by one Glidepath, so this is wanted, just later.
 
 ## 7. Out of scope
 

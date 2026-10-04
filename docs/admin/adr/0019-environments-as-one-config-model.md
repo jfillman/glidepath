@@ -1,8 +1,9 @@
 # ADR-0019: Environments are one config model, defined once in `cicd.yaml`
 
-**Status: proposed (2026-10-04).** Not accepted until the open questions in the
-[requirements](../envs-overhaul-requirements.md#6-open-questions-need-an-owner-decision)
-are answered. Written as a draft so the decision, once made, only needs its status changed.
+**Status: proposed (2026-10-04); plan approved by the owner.** Most open questions are
+answered (see [requirements §6](../envs-overhaul-requirements.md#6-decisions-and-what-is-still-open)).
+Q2 (who opens the gitops PR for a Flight env) and Q3 (a Ground env on another cluster) are
+proposed and awaiting confirmation, so the status stays Proposed until they are.
 
 ## Context
 
@@ -37,7 +38,12 @@ form for one and raw YAML for the other. Details and evidence:
 6. Tower manages environments in one flow for both tiers (a dedicated Environments tab
    is the recommended shape), with changes expressed as pull requests and a preview of
    every file touched, including for deletion.
-7. This builds on, and does not change, ADR-0018 (the `glidepath/` folder and the chart
+7. Decided with the owner: a cloud Flight environment is approved by a PR on the source
+   repo changing a per-env release pin (no gitops repo); cloud credentials are one set per
+   app for now; an environment's target cannot change (delete and re-add); the product keeps
+   the words Ground and Flight; App Configuration stays a separate tab; the Environments
+   tab is a table with in-place expansion and a pending-changes panel.
+8. This builds on, and does not change, ADR-0018 (the `glidepath/` folder and the chart
    contract). The folder move and `deploy.chart` are phases of the same work.
 
 ## Consequences
