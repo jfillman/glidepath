@@ -72,6 +72,98 @@ Usage: {{ include "glidepath-app.envNamespace" (list $ "staging") }}
 {{- end -}}
 
 {{/*
+glidepath-app.envEntries - the app's environments as one normalized list of
+{name, tier, cluster}, whichever shape cicd.yaml uses (docs/admin/envs-overhaul-requirements.md,
+R1/R12, ADR-0019):
+
+  new:  deploy.environments: [{name, tier: ground|flight, cluster?}, ...]   (wins when present)
+  old:  deploy.lowerEnvironments (Ground) + deploy.upperEnvironments (Flight, a plain name or
+        {name, cluster}), in that order
+
+An empty cluster means "the app's own cluster". Every reader of the environment lists goes
+through this, so the two shapes cannot disagree.
+
+Usage: {{ include "glidepath-app.envEntries" . | fromYamlArray }}
+*/}}
+{{- define "glidepath-app.envEntries" -}}
+{{- $out := list -}}
+{{- $declared := ((.Values.deploy).environments) -}}
+{{- if $declared -}}
+  {{- range $declared -}}
+    {{- $out = append $out (dict "name" .name "tier" .tier "cluster" (.cluster | default "")) -}}
+  {{- end -}}
+{{- else -}}
+  {{- range ((.Values.deploy).lowerEnvironments | default (list)) -}}
+    {{- $out = append $out (dict "name" . "tier" "ground" "cluster" "") -}}
+  {{- end -}}
+  {{- range ((.Values.deploy).upperEnvironments | default (list)) -}}
+    {{- if kindIs "map" . -}}
+      {{- $out = append $out (dict "name" .name "tier" "flight" "cluster" (.cluster | default "")) -}}
+    {{- else -}}
+      {{- $out = append $out (dict "name" . "tier" "flight" "cluster" "") -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- $out | toYaml -}}
+{{- end -}}
+
+{{/*
+glidepath-app.lowerEnvNames - names of the Ground environments, from envEntries.
+*/}}
+{{- define "glidepath-app.lowerEnvNames" -}}
+{{- $names := list -}}
+{{- range (include "glidepath-app.envEntries" . | fromYamlArray) -}}
+  {{- if eq .tier "ground" -}}{{- $names = append $names .name -}}{{- end -}}
+{{- end -}}
+{{- $names | toYaml -}}
+{{- end -}}
+
+{{/*
+glidepath-app.upperEntries - the Flight environments as {name, cluster}, from envEntries.
+*/}}
+{{- define "glidepath-app.upperEntries" -}}
+{{- $out := list -}}
+{{- range (include "glidepath-app.envEntries" . | fromYamlArray) -}}
+  {{- if eq .tier "flight" -}}{{- $out = append $out (dict "name" .name "cluster" .cluster) -}}{{- end -}}
+{{- end -}}
+{{- $out | toYaml -}}
+{{- end -}}
+
+{{/*
+glidepath-app.validateEnvironments - checks deploy.environments when it is used. The old
+shape is not validated here (it never was). Rules: lowercase DNS-style names, no duplicates,
+tier is ground or flight, a Ground environment sets no cluster yet (multi-cluster Ground is a
+later phase, ADR-0019), and a cloud target has no Flight environments yet (no approval path
+for them, ADR-0019 Q1).
+*/}}
+{{- define "glidepath-app.validateEnvironments" -}}
+{{- $declared := ((.Values.deploy).environments) -}}
+{{- if $declared -}}
+{{- $seen := dict -}}
+{{- $k8s := eq (include "glidepath-app.isKubernetesTarget" .) "true" -}}
+{{- $target := ((.Values.deploy).target | default "k8s-rollout") -}}
+{{- range $declared -}}
+  {{- if not (and .name (regexMatch "^[a-z][a-z0-9-]{0,30}$" (toString .name))) -}}
+    {{- fail (printf "deploy.environments: '%v' is not a valid environment name (lowercase letters, digits and '-', starting with a letter, at most 31 characters)" .name) -}}
+  {{- end -}}
+  {{- if hasKey $seen .name -}}
+    {{- fail (printf "deploy.environments: environment '%s' is listed twice" .name) -}}
+  {{- end -}}
+  {{- $_ := set $seen .name true -}}
+  {{- if not (has .tier (list "ground" "flight")) -}}
+    {{- fail (printf "deploy.environments: environment '%s' has tier '%v', expected ground or flight" .name .tier) -}}
+  {{- end -}}
+  {{- if and (eq .tier "ground") .cluster -}}
+    {{- fail (printf "deploy.environments: Ground environment '%s' sets cluster '%s'. A Ground environment runs on the app's own dev cluster; Ground environments on other clusters are not supported yet" .name .cluster) -}}
+  {{- end -}}
+  {{- if and (eq .tier "flight") (not $k8s) -}}
+    {{- fail (printf "deploy.environments: Flight environment '%s' is not supported for deploy.target %s yet. Cloud targets have no approval path for Flight environments, so declare it as ground" .name $target) -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 glidepath-app.isKubernetesTarget - "true" when the app deploys to Kubernetes (deploy.target
 unset or k8s-rollout), "false" for a cloud target (aws-ecs, aws-lambda,
 azure-container-apps). Only a Kubernetes app has a namespace, RBAC and an environments
@@ -95,14 +187,10 @@ Usage: {{ include "glidepath-app.localDeployEnvs" . | fromYamlArray }}
 {{- /* A cloud target has no namespace per environment, so there is nothing to grant RBAC into. */ -}}
 {{- list | toYaml -}}
 {{- else -}}
-{{- $envs := .Values.deploy.lowerEnvironments | default (list) -}}
-{{- range .Values.deploy.upperEnvironments | default (list) -}}
-  {{- if kindIs "map" . -}}
-    {{- if not .cluster -}}
-      {{- $envs = append $envs .name -}}
-    {{- end -}}
-  {{- else -}}
-    {{- $envs = append $envs . -}}
+{{- $envs := include "glidepath-app.lowerEnvNames" . | fromYamlArray -}}
+{{- range include "glidepath-app.upperEntries" . | fromYamlArray -}}
+  {{- if not .cluster -}}
+    {{- $envs = append $envs .name -}}
   {{- end -}}
 {{- end -}}
 {{- $envs | toYaml -}}
@@ -120,13 +208,9 @@ Usage: {{ include "glidepath-app.localUpperEnvs" . | fromYamlArray }}
 */}}
 {{- define "glidepath-app.localUpperEnvs" -}}
 {{- $envs := list -}}
-{{- range .Values.deploy.upperEnvironments | default (list) -}}
-  {{- if kindIs "map" . -}}
-    {{- if not .cluster -}}
-      {{- $envs = append $envs .name -}}
-    {{- end -}}
-  {{- else -}}
-    {{- $envs = append $envs . -}}
+{{- range include "glidepath-app.upperEntries" . | fromYamlArray -}}
+  {{- if not .cluster -}}
+    {{- $envs = append $envs .name -}}
   {{- end -}}
 {{- end -}}
 {{- $envs | toYaml -}}
@@ -144,12 +228,8 @@ Usage: {{ $clusters := include "glidepath-app.upperEnvClusters" . | fromYaml }}
 */}}
 {{- define "glidepath-app.upperEnvClusters" -}}
 {{- $result := dict -}}
-{{- range .Values.deploy.upperEnvironments | default (list) -}}
-  {{- if kindIs "map" . -}}
-    {{- $_ := set $result .name (.cluster | default "") -}}
-  {{- else -}}
-    {{- $_ := set $result . "" -}}
-  {{- end -}}
+{{- range include "glidepath-app.upperEntries" . | fromYamlArray -}}
+  {{- $_ := set $result .name (.cluster | default "") -}}
 {{- end -}}
 {{- $result | toYaml -}}
 {{- end -}}
@@ -182,8 +262,8 @@ Usage: {{ include "glidepath-app.hasClusterMappedUpperEnv" . }}
 */}}
 {{- define "glidepath-app.hasClusterMappedUpperEnv" -}}
 {{- $found := false -}}
-{{- range .Values.deploy.upperEnvironments | default (list) -}}
-  {{- if and (kindIs "map" .) .cluster -}}
+{{- range include "glidepath-app.upperEntries" . | fromYamlArray -}}
+  {{- if .cluster -}}
     {{- $found = true -}}
   {{- end -}}
 {{- end -}}
@@ -388,7 +468,8 @@ Fails fast with a descriptive message if violated.
 {{- define "glidepath-app.validateFlows" -}}
 {{- $flows := .Values.pipelines | default (dict) -}}
 {{- $defaultTestName := .Values.test.name | default "" -}}
-{{- $lowerEnvs := .Values.deploy.lowerEnvironments | default (list) -}}
+{{- include "glidepath-app.validateEnvironments" . -}}
+{{- $lowerEnvs := include "glidepath-app.lowerEnvNames" . | fromYamlArray -}}
 {{- /* upperEnvironments entries are a plain string (same-cluster) or a {name, cluster}
 object (docs/multi-cluster.md); upperEnvClusters normalizes both shapes. */ -}}
 {{- $upperEnvClusters := fromYaml (include "glidepath-app.upperEnvClusters" .) -}}

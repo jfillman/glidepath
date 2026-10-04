@@ -481,6 +481,37 @@ actually lives on (resolved against the control-plane chart's own cluster regist
 see [multi-cluster.md](../admin/multi-cluster.md) for the full mechanism, including how the
 release PR delivery and ArgoCD feedback path differ for a cluster-mapped env.
 
+### `environments` - the environments, defined once
+
+`deploy.environments` is the newer way to declare environments. It replaces
+`lowerEnvironments`, `upperEnvironments` and `promotionOrder` (ADR-0019); the older fields
+keep working, and using both in one file is refused by the schema.
+
+```yaml
+deploy:
+  environments:                       # the order here is the promotion order
+    - { name: dev,     tier: ground }
+    - { name: test,    tier: ground }
+    - { name: staging, tier: flight, cluster: kind-prod }
+    - { name: prod,    tier: flight, cluster: kind-prod }
+```
+
+| Field | Meaning |
+|---|---|
+| `name` | Lowercase letters, digits and `-`, starting with a letter, at most 31 characters; unique. |
+| `tier` | `ground`: deployed automatically on every push (the old `lowerEnvironments`). `flight`: deployed only through a release PR and its guardrails (the old `upperEnvironments`). |
+| `cluster` | Flight only, and only when the environment runs on another cluster than the app's own. Same meaning as the `cluster` of an `upperEnvironments` object entry. A Ground environment cannot set it yet. |
+
+Mapping from the older fields: each `lowerEnvironments` entry is a `ground` environment, each
+`upperEnvironments` entry a `flight` one (a plain name has no `cluster`), in that order, which is
+what `promotionOrder` always was in practice. A config and its twin in the other shape render the
+same resources; `charts/glidepath-app/tests/envs_model_test.py` checks that.
+
+Limits for now: a cloud target (`aws-ecs`, `aws-lambda`, `azure-container-apps`) supports `ground`
+environments only, because a Flight environment needs an approval path that does not exist for
+them yet (ADR-0019, open work). All environments of a cloud app still deploy to the one resource
+named under `deploy.<target>`; per-environment resources come later.
+
 ### `promotionOrder` - declaring the full release sequence explicitly
 
 No `pipelines:` flow has to cover every env this app declares. A perfectly normal setup
