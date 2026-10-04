@@ -230,7 +230,7 @@ Each phase is independently shippable and leaves existing apps unchanged.
 | 2 | `deploy.environments[]` in the schema, validator and in-memory mapping (R1-R4, R12) | Needs a toolbox rebuild and bump (R17). Verify with every real `cicd.yaml` in the org mapped and diffed against today's behavior |
 | 3 | Tower: read-only Environments tab (R23, R25) | Built on the mapping; no editing yet |
 | 4 | Per-env cloud config in the deploy tasks (R4) | `deploy-lambda`, `deploy-ecs`, `deploy-azure-container-apps` read the step's env. Verify with two Lambda functions |
-| 5 | Tower: add/edit/delete flow and shared form (R21, R22, R24, R18, R19) | Includes the delete impact preview |
+| 5 | Tower: add/edit/delete flow and shared form (R21, R22, R24, R18, R19) | Includes the delete impact preview. Ground add = one `cicd.yaml` PR (resync scaffolds the file); Flight add = `cicd.yaml` PR plus the ApplicationEnvironment template launched through the scaffolder API. No backend change: the existing cicd.yaml change route takes a `deploy` patch |
 | 6 | Cloud gated promotion (R9-R11) | Depends on Q1 |
 | 7 | Folder rename `platform/` to `glidepath/` (R14) | Per ADR-0018's dual-path window |
 | 8 | `deploy.chart` (R6) | Both ApplicationSets read it |
@@ -254,15 +254,23 @@ Answered by the owner on 2026-10-04:
 - **Q7 (App Configuration): decided.** It stays as its own tab for non-environment config.
 - **UI layout: decided.** Table with in-place expansion plus the pending-changes panel (§4).
 
-- **Q2 (a Flight env touches two repos): decided.** Glidepath opens the gitops-repo PR.
-  The owner opens one PR on the source repo in Tower; when it merges, Glidepath's existing
-  `cicd.yaml` resync opens the gitops PR with the env skeleton, and Tower tracks both as one
-  change set. The same applies to deleting a Flight env. Consequences accepted: two merges
-  by the owner (the second PR is generated and reviewable), a short wait between them, and
-  Tower must show "waiting for the gitops PR" if the resync fails rather than stalling
-  silently. Rejected: two independent PRs (the owner carries the merge ordering; a half-merged
-  state is easy to create) and writing the skeleton with no PR (breaks "every gitops change
-  is a PR", ADR-0004).
+- **Q2 (a Flight env touches two repos): decided, revised 2026-10-05.** The first answer
+  (Glidepath's resync opens the gitops PR) rested on a wrong premise: the resync delivers only
+  `.tekton/` governance files to the gitops repo and never creates an environment directory. A
+  Flight environment is created by Airframe's `ApplicationEnvironment` XR, requested through the
+  existing Backstage template (a request PR on the tenants repo; Crossplane then commits
+  `<cluster>/<env>/values.yaml` into the gitops repo and the identity file the ApplicationSet reads).
+  **Decision: Tower opens both PRs.** It opens the `cicd.yaml` PR on the source repo and launches that
+  template (`applicationenvironments.catalog.hangar.io-v1alpha1`: `appName`, `env`, `cluster`,
+  `appType`, `pushToGit`) through the scaffolder API, and the pending-changes panel shows both PRs
+  and the order to merge them (the XR request first, so the environment exists before `cicd.yaml`
+  names it). No new Glidepath or Airframe machinery.
+  **Ground environments are different and the first answer holds for them:** adding one is a single
+  Tower PR on `cicd.yaml`; the onboarding resync then opens a PR on the source repo that scaffolds
+  `platform/envs/<env>.yaml`.
+  Deleting a Flight environment is not designed yet. Removing the XR must not delete data (a past
+  delete-policy mistake removed `cicd.yaml` in five repos), so the first version only edits
+  `cicd.yaml` and tells the owner the XR is still there.
 
 Proposed, awaiting confirmation (the owner asked how much complexity it adds, said they like
 the idea, and has not confirmed the approach):
