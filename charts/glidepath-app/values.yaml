@@ -225,7 +225,7 @@ idpServiceCatalog:
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
 # public, working) - override if you've built and published your own copy.
-toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-05-environments-model
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-05-per-env-cloud-config
 
 # The single shared namespace Testkube CE installs into on this cluster - see
 # templates/testkube/rbac-and-secret.yaml's own header for why this Application
