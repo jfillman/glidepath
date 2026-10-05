@@ -102,8 +102,10 @@ cannot ride along.
    Rollouts controller re-reconciles every rollout every 15 minutes, so a lost fact becomes
    a late one), and the **stall alert** (a record merged with no fact for N minutes) is
    mandatory. The fact id is deterministic, `(rollout uid, generation, phase, step)`, and the
-   reducer is idempotent. If a 15 minute recovery bound is not acceptable, the fallback is
-   the prod-side adapter, which can queue and retry.
+   reducer is idempotent. The heartbeat works but adds one key per resync to the Rollout's
+   unpruned `notified...` annotation (about four weeks to the 256 KiB cap), so it needs a
+   prune CronJob, or the prod-side adapter replaces the engine. That choice is open; see the
+   findings.
    Two further rules from Phase 0: every trigger must require
    `observedGeneration == string(generation)` (without it the engine sent `Healthy` facts
    carrying the new release-id and the old pod hash before the controller had seen the

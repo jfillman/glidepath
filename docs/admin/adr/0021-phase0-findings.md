@@ -124,14 +124,37 @@ Application).
 4. Keep status Proposed until the heartbeat redelivery is confirmed and the
    Argo CD OutOfSync question is checked.
 
+## Heartbeat result (resolved) and a new problem
+
+- **It works.** With `oncePer: string(time.Now().Unix() / 60)` the engine sent a fact on
+  the controller's own 15 minute resync (23:29:13), with no change to the Rollout. A
+  lost fact therefore becomes a fact at most about 15 minutes late.
+- **The cost is unbounded state.** `oncePer` records one key per distinct value in the
+  Rollout's `notified.notifications.argoproj.io` annotation, and the engine never pruned
+  it in this run (keys from generation 2 were still there at generation 12; 20 keys became
+  23 over the heartbeat tests). A heartbeat adds one key per resync, about 96 a day, at
+  roughly 100 bytes each. Kubernetes caps total annotations at 256 KiB, so a tracked
+  Rollout would hit the cap in about four weeks, after which writes to it fail.
+- **No `oncePer` does not help.** A heartbeat with no `oncePer` sent one fact and then
+  nothing: the engine fires once per false-to-true transition of the condition.
+- **Options:** (a) keep the engine and add a small prod CronJob that strips the
+  `notified...` annotation on a schedule. That bounds the size and also forces a resend of
+  current state at the next reconcile, which is itself a heartbeat; it needs a Role to
+  patch Rollouts. (b) Use the prod-side adapter named in the ADR: a small controller that
+  watches Rollouts, keeps its own state, queues and retries. It is one more component but
+  removes the silent-loss and annotation problems at the source. **This is now a real
+  choice for the owner, not a footnote.**
+
 ## Open items
 
-- **Heartbeat redelivery:** a trigger keyed on `string(time.Now().Unix() / 60)` was
-  installed on kiac-dev. A poke produced facts immediately. Whether the 15 minute resync
-  sends one on its own, and whether the `notified` annotation keeps growing, is being
-  watched for the 23:29 resync.
 - **Argo CD OutOfSync from `notified.notifications.argoproj.io`:** needs one real
   Argo-managed Rollout.
-- **Spike cleanup on kiac-dev:** `spike-rollouts` namespace, the
-  `argo-rollouts-notification-configmap`, and the `catcher-token` key in
-  `argo-rollouts-notification-secret`. Left in place while the heartbeat watch runs.
+- **Argo CD sync-failure trigger firing:** not tested live.
+- **Indefinitely paused canary and `undo` under selfHeal:** not tested; need an Argo-managed
+  throwaway app.
+
+## Cleanup
+
+Done 2026-10-05: the `spike-rollouts` namespace, the `argo-rollouts-notification-configmap`
+and the `catcher-token` key were removed from kiac-dev. The curl pod on kind-prod was
+deleted after its single run.
