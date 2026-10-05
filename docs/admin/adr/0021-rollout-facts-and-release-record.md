@@ -219,5 +219,29 @@ rebuild and `toolboxImage` bump in all three values files.
   Glidepath should also open the rollback PR automatically is a separate decision.
 - Several Flight environments in sequence, and several clusters per environment: the
   `release-id` shape allows it, the reducer's per-environment ordering is not designed.
-- The retention period for ReleaseRecords, and whether the terminal record is also
-  committed to git as Tower's Release Record design proposes.
+- The retention period for ReleaseRecords.
+
+## Where the ReleaseRecord lives (proposed 2026-10-05, owner raised Tekton Results)
+
+The record has two lives and they want different stores.
+
+| Life | Properties | Store |
+|---|---|---|
+| **Live** (open to terminal, plus TTL) | Small, updated on every fact, read by the reducer on each event | A ConfigMap per release-id on dev, as `release-tracking-<chain-id>` is today. A CRD is a later option if we need watches or status. |
+| **Terminal** (immutable, kept long) | Written once, queried across apps and time | The existing release log (OTLP to Loki, `release-log-emit`) for search, plus the git-committed record in Tower's Release Record design for the audit trail. |
+
+**Tekton Results is not the store, but it is evidence the record links to.** Results
+archives Tekton objects (PipelineRun, TaskRun, step logs) keyed by the Tekton CR. A
+ReleaseRecord is not a Tekton object: it is a state machine fed by facts from another
+cluster, and most of its lifetime is mutation. Specifically:
+
+- Its API is TLS-only and not exposed (ADR-0016); access today is `kubectl port-forward`
+  or `tkn-results`. A reducer and Tower would both depend on that path.
+- Its retention and cleanup are tied to the watcher's 1 h grace period for CRs it
+  archives, which is the wrong clock for a record that must outlive them.
+- It is operator-managed internal Postgres on a platform that has hit node-capacity
+  ceilings; a record store should not share fate with that.
+
+What Results is good for here is the *evidence*: the build, gate and
+`release-outcome-notify` PipelineRuns behind a release. The terminal record should
+store their Results record names so Tower can open the logs after the CRs are pruned.
