@@ -22,6 +22,9 @@ while [[ $# -gt 0 ]]; do
     *) repos+=("$1");;
   esac; shift
 done
+for v in "${approvals}" "${integration}" ${bypass[@]+"${bypass[@]}"}; do
+  [[ "${v}" =~ ^[0-9]+$ ]] || { echo "error: '${v}' must be a number (--bypass-app-id/--integration-id take the numeric GitHub App ID, not a name)" >&2; exit 2; }
+done
 [[ ${#repos[@]} -gt 0 ]] || { echo "usage: $0 [--dry-run] [--approvals N] [--bypass-app-id ID]... OWNER/REPO..." >&2; exit 2; }
 
 # Check names are "Pipelines as Code CI / <gate>-": PaC names the check-run after the PipelineRun generateName, and
@@ -43,9 +46,16 @@ body="$(jq -n --argjson checks "${checks}" --argjson approvals "${approvals}" --
       do_not_enforce_on_create: true, required_status_checks: $checks}}
   ]}')"
 
+rc=0
 for repo in "${repos[@]}"; do
   if [[ ${dry} -eq 1 ]]; then echo "# ${repo}"; echo "${body}" | jq .; continue; fi
-  id="$(gh api "repos/${repo}/rulesets" --jq '.[]|select(.name=="Glidepath Guardrail Checks")|.id' 2>/dev/null || true)"
+  if ! list="$(gh api "repos/${repo}/rulesets" 2>&1)"; then
+    echo "error: ${repo}: cannot list rulesets: $(jq -r '.message // empty' <<<"${list}" 2>/dev/null || true) ${list:0:200}" >&2
+    echo "  (403 'Upgrade to GitHub Pro' = private repo on the free plan; rulesets can't be enforced there)" >&2
+    rc=1; continue
+  fi
+  id="$(jq -r '.[]|select(.name=="Glidepath Guardrail Checks")|.id' <<<"${list}")"
   if [[ -n "${id}" ]]; then gh api -X PUT "repos/${repo}/rulesets/${id}" --input - <<<"${body}" >/dev/null && echo "updated ${repo} (#${id})"
   else gh api -X POST "repos/${repo}/rulesets" --input - <<<"${body}" >/dev/null && echo "created ${repo}"; fi
 done
+exit "${rc}"
