@@ -85,7 +85,7 @@ cannot ride along.
    `release-outcome-notify`, DORA, the release log and the outcome span are unchanged in
    phase 1. New event types (`service.rolledback` and others) come later.
 4. **Argo CD Notifications return in one narrow role: sync failure.** A sync that fails
-   before the Rollout changes produces no Rollout fact. One Argo CD trigger,
+   before the Rollout changes produces no Rollout fact. One Argo CD trigger on `argocd-apps` (the tenant instance; kind-prod runs two),
    `operationState.phase in [Failed, Error]`, posts a failure fact keyed by the gitops
    revision. Dev maps revision to release by the open record for that app and env.
 5. **Auth and transport.** One bearer token per cluster, stored in the
