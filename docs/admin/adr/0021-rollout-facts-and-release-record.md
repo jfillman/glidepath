@@ -103,9 +103,12 @@ cannot ride along.
    a late one), and the **stall alert** (a record merged with no fact for N minutes) is
    mandatory. The fact id is deterministic, `(rollout uid, generation, phase, step)`, and the
    reducer is idempotent. The heartbeat works but adds one key per resync to the Rollout's
-   unpruned `notified...` annotation (about four weeks to the 256 KiB cap), so it needs a
-   prune CronJob, or the prod-side adapter replaces the engine. That choice is open; see the
-   findings.
+   unpruned `notified...` annotation (about four weeks to the 256 KiB cap). **Decided
+   (owner, 2026-10-05): keep the engine and add a small prod CronJob that strips the
+   `notified...` annotation from tracked Rollouts on a schedule.** That bounds the annotation
+   and, because the engine then sees empty state, resends the current state at the next
+   reconcile, which is the heartbeat. It needs a Role that can patch Rollouts. The prod-side
+   adapter remains the fallback if the CronJob proves unreliable (see the findings).
    Two further rules from Phase 0: every trigger must require
    `observedGeneration == string(generation)` (without it the engine sent `Healthy` facts
    carrying the new release-id and the old pod hash before the controller had seen the
@@ -212,7 +215,7 @@ Rollouts and relays facts. That keeps the same architecture with one more compon
 | Phase | What | Verifiable by |
 |---|---|---|
 | 0 | Spikes S1 to S5 | A written findings note. Stop if S2 fails. |
-| 1 | `release.id` in `release.yaml`; chart renders `hangar.io/release-id` and the tracked label; prod notification config in the kind-prod gitops repo; relay `/facts/<cluster>` that emits today's CDEvents; hooks left running on the same app (S6) | Both paths emit equal CDEvents for one real release; no spurious event from a scale or self-heal |
+| 1 | `release.id` in `release.yaml`; chart renders `hangar.io/release-id` and the tracked label; prod notification config and the prune CronJob in the kind-prod gitops repo; relay `/facts/<cluster>` that emits today's CDEvents; hooks left running on the same app (S6) | Both paths emit equal CDEvents for one real release; no spurious event from a scale or self-heal |
 | 2 | Retained ReleaseRecord, reducer state machine, idempotency, stall alert, drift fact | Replay of the S3 captures reaches the expected states |
 | 3 | Cut over the five apps; delete the three hook Jobs, `airframe-identity` ServiceAccount, Role and ExternalSecret, `relayHostAliasIP`, `argocd-outcome-hook.sh`, and the `configJsonB64` and baked tracking fields | A release with the hooks gone; the PostSync wait is gone |
 | 4 | Rollback: the PR backend, the eligibility check, the advisory gate mode, `service.rolledback` | A live rollback on a throwaway app |
