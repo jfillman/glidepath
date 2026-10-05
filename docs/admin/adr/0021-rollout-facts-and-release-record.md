@@ -95,10 +95,20 @@ cannot ride along.
    ServiceAccount, Role, RoleBinding, ExternalSecret, `relayHostAliasIP` and the three Jobs
    are deleted. The DNS gap for `*.kiac.local` becomes one fix on one Deployment instead of
    one per app.
-6. **Delivery is at-least-once, and the reducer must be idempotent.** The fact id is
-   deterministic: `(rollout uid, generation, phase, step)`. The reducer drops repeats. A
-   fact lost while the relay is down is caught by the stall alert (a record that is merged
-   with no fact for N minutes), not by retry alone.
+6. **Delivery is at-most-once per fact, and a failure is silent** (confirmed in Phase 0,
+   [findings](0021-phase0-findings.md)): with the receiver down the engine logged no error,
+   marked the facts notified, and never redelivered. So the stream must be made
+   level-triggered. A **heartbeat trigger** re-sends current state once per time bucket (the
+   Rollouts controller re-reconciles every rollout every 15 minutes, so a lost fact becomes
+   a late one), and the **stall alert** (a record merged with no fact for N minutes) is
+   mandatory. The fact id is deterministic, `(rollout uid, generation, phase, step)`, and the
+   reducer is idempotent. If a 15 minute recovery bound is not acceptable, the fallback is
+   the prod-side adapter, which can queue and retry.
+   Two further rules from Phase 0: every trigger must require
+   `observedGeneration == string(generation)` (without it the engine sent `Healthy` facts
+   carrying the new release-id and the old pod hash before the controller had seen the
+   update), and the reducer counts a fact as a release event only when the release-id or
+   image changed (scale and restart produce facts with an unchanged pod hash).
 
 ![ReleaseRecord state machine](../diagrams/adr-0021-states.svg)
 
