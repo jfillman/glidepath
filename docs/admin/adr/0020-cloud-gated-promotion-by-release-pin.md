@@ -1,6 +1,6 @@
 # ADR-0020: Cloud Flight environments are gated by a release pin PR on the source repo
 
-*Status: Proposed (2026-10-04). Slice 1 of the build is not started. Nothing here is implemented.*
+*Status: Accepted (2026-10-06). Slice 1 of the build is not started. Nothing here is implemented. The owner's decisions on the open questions are under [Decided at acceptance](#decided-at-acceptance-2026-10-06).*
 
 ## Context
 
@@ -26,7 +26,10 @@ gitops repo.
 
    ```yaml
    release:
-     image: ghcr.io/o/app@sha256:...   # by digest, the same artifact that ran in the previous environment (R11)
+     image:                            # same layout as a gitops release file, so every gate's
+       repository: ghcr.io/o/app       # extract-promoted-image reads it unchanged
+       tag: <tag>
+       digest: sha256:...              # what is deployed: the same artifact that ran in the previous environment (R11)
      promotedFrom: dev
      sourceRevision: <git sha the image was built from>
    ```
@@ -111,7 +114,26 @@ bump in all three values files. Live verification uses Azure (smoke-az-fn works;
 blocked on credentials), and each step that creates a cloud resource or a PR on a real repo
 needs the owner's go-ahead.
 
-## Not decided here
+## Decided at acceptance (2026-10-06)
+
+- **Pin layout.** `release.image.{repository,tag,digest}`, the gitops release file's layout plus a
+  digest. `extract-promoted-image` finds the one changed file in the PR and reads
+  `release.image`, so the scan, SAST and SBOM gates need no pin-specific reader. Deploy tasks
+  use the digest.
+- **Commit signatures.** Not required for cloud targets: the provenance gate runs its
+  image-provenance half (cosign/SLSA, produced by CI) and skips the commit-signature half.
+  The pin Task writes through the GitHub contents API, so a ruleset that requires signed
+  commits is still satisfied (GitHub signs App commits made through the API).
+- **Auto-merge.** Allowed per environment as an opt-in (off by default). Glidepath enables
+  GitHub auto-merge on the pin PR; whether it merges unattended is decided by the repo's
+  ruleset (required checks and reviews still apply).
+- **Rollback.** Required: Tower offers "Roll back" on a cloud Flight environment, which
+  opens a pin PR restoring the previous pin from the file's history. Same gates, same merge.
+- **Order.** Not enforced. Each cloud Flight environment's pin PR is independent;
+  `promotedFrom` defaults to the previous environment in list order but any environment may
+  be the source.
+
+## Superseded open questions (kept for history)
 
 - Whether a pin PR may be auto-merged for an environment the owner marks as low risk. The
   default is no: an approval that can be skipped is not an approval.
