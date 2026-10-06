@@ -27,6 +27,10 @@ spec:
     - name: merged
       type: string
       description: '"true" if the PR merged, anything else if it was closed unmerged.'
+    - name: merged-at
+      type: string
+      default: ""
+      description: When the PR merged, from GitHub. Empty means "now" (the Task starts tens of seconds after the merge, longer if the run was delayed or started by hand).'
   steps:
     - name: mark
       image: {{ .Values.toolboxImage }}
@@ -38,6 +42,8 @@ spec:
           value: $(params.pr-number)
         - name: MERGED
           value: $(params.merged)
+        - name: MERGED_AT
+          value: $(params.merged-at)
         - name: NAMESPACE
           # $(context.taskRun.namespace), not the pipelineRun form - see
           # resolve-release-tracking.yaml for the same documented gotcha.
@@ -59,6 +65,8 @@ spec:
         state="$(kubectl get configmap "${name}" -n "${NAMESPACE}" -o jsonpath='{.data.state}')"
         merged_at="$(kubectl get configmap "${name}" -n "${NAMESPACE}" -o jsonpath='{.data.mergedAt}')"
         now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        # the real merge time when GitHub told us, else now
+        merge_time="${MERGED_AT:-${now}}"
 
         # mergedAt is recorded whatever state the release is in. This Task starts tens of seconds
         # after the merge (a pipeline pod and a GitHub lookup), and Argo CD can sync and the
@@ -68,10 +76,10 @@ spec:
         # clock for a release that never started).
         if [[ "${MERGED}" == "true" && -z "${merged_at}" ]]; then
           if [[ -z "${state}" || "${state}" == "proposed" ]]; then
-            patch="$(jq -n --arg now "${now}" '{data: {state: "merged", stateAt: $now, mergedAt: $now}}')"
+            patch="$(jq -n --arg now "${now}" --arg mt "${merge_time}" '{data: {state: "merged", stateAt: $now, mergedAt: $mt}}')"
             echo "${name}: proposed -> merged"
           else
-            patch="$(jq -n --arg now "${now}" '{data: {mergedAt: $now}}')"
+            patch="$(jq -n --arg mt "${merge_time}" '{data: {mergedAt: $mt}}')"
             echo "${name} is already '${state}' (the release started before this ran) - recording mergedAt only."
           fi
         elif [[ "${MERGED}" != "true" && ( -z "${state}" || "${state}" == "proposed" ) ]]; then

@@ -43,6 +43,8 @@ spec:
       description: The merged PR's number, or empty if this push was not a PR merge.
     - name: merged
       description: '"true" when pr-number is set.'
+    - name: merged-at
+      description: The PR's merged_at from GitHub, or empty (a passed-in PR number, or not a merge).
   volumes:
     - name: github-token-broker-token
       projected:
@@ -77,6 +79,7 @@ spec:
 
         out_pr=""
         out_merged=""
+        out_merged_at=""
         if [[ -n "${PR_NUMBER}" ]]; then
           out_pr="${PR_NUMBER}"
           out_merged="${MERGED:-true}"
@@ -91,6 +94,7 @@ spec:
           # PRs that merely contain the commit, so require the merge commit to match
           out_pr="$(jq -r --arg sha "${REVISION}" '[.[] | select(.merged_at != null and .merge_commit_sha == $sha)][0].number // empty' <<<"${prs}")"
           [[ -n "${out_pr}" ]] && out_merged="true"
+          out_merged_at="$(jq -r --arg sha "${REVISION}" '[.[] | select(.merged_at != null and .merge_commit_sha == $sha)][0].merged_at // empty' <<<"${prs}")"
         fi
 
         if [[ -z "${out_pr}" ]]; then
@@ -100,3 +104,4 @@ spec:
         fi
         printf '%s' "${out_pr}" > "$(results.pr-number.path)"
         printf '%s' "${out_merged}" > "$(results.merged.path)"
+        printf '%s' "${out_merged_at}" > "$(results.merged-at.path)"

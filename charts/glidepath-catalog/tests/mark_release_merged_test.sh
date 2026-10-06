@@ -15,7 +15,7 @@ cat > "${stubdir}/kubectl" <<'STUB'
 case "$1" in
   get)
     if [[ "${*: -2}" == "-o json" ]]; then printf '%s' "${RECORDS}"
-    elif [[ "$*" == *"data.mergedAt"* ]]; then printf '%s' "${MERGED_AT:-}"
+    elif [[ "$*" == *"data.mergedAt"* ]]; then printf '%s' "${EXISTING_MERGED_AT:-}"
     else printf '%s' "${STATE:-}"; fi ;;
   patch) printf "%s %s\n" "$3" "$(jq -c . <<<"$9")" >> "${PATCHLOG}" ;;
 esac
@@ -38,8 +38,12 @@ out="$(run false proposed "$recs")"
 [[ "$out" == release-tracking-b*'"state":"closed"'* ]] || { echo "FAIL closed: $out"; fail=1; }
 out="$(run true progressing "$recs")"
 [[ "$out" == release-tracking-b*'"mergedAt"'* && "$out" != *'"state"'* ]] || { echo "FAIL: a release already progressing must get mergedAt only, never a state: $out"; fail=1; }
-out="$(MERGED_AT=2026-10-06T00:00:00Z run true progressing "$recs")"
+out="$(EXISTING_MERGED_AT=2026-10-06T00:00:00Z run true progressing "$recs")"
 [[ -z "$out" ]] || { echo "FAIL: overwrote an existing mergedAt: $out"; fail=1; }
+out="$(MERGED_AT=2026-10-06T04:16:26Z run true proposed "$recs")"
+[[ "$out" == *'"mergedAt":"2026-10-06T04:16:26Z"'* ]] || { echo "FAIL: the merge time from GitHub must be used, not now: $out"; fail=1; }
+out="$(MERGED_AT=2026-10-06T04:16:26Z run true progressing "$recs")"
+[[ "$out" == *'"mergedAt":"2026-10-06T04:16:26Z"'* && "$out" != *'"state"'* ]] || { echo "FAIL: mergedAt from GitHub on an already-started release: $out"; fail=1; }
 out="$(run false progressing "$recs")"
 [[ -z "$out" ]] || { echo "FAIL: an unmerged close touched a release that already ran: $out"; fail=1; }
 out="$(run true proposed '{"items":[{"metadata":{"name":"release-tracking-z"},"data":{"prUrl":"https://github.com/o/gitops-app/pull/99"}}]}')"

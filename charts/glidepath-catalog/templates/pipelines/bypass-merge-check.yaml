@@ -78,3 +78,4 @@ spec:
         - { name: repo-url, value: $(params.repo-url) }
         - { name: pr-number, value: $(tasks.resolve-merged-pr.results.pr-number) }
         - { name: merged, value: $(tasks.resolve-merged-pr.results.merged) }
+        - { name: merged-at, value: $(tasks.resolve-merged-pr.results.merged-at) }
