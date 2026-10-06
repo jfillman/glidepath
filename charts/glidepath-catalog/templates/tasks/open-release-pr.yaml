@@ -280,6 +280,8 @@ spec:
           exit 1
         fi
 
+        # The del() drops the fields earlier versions of this Task wrote (hook-era, ADR-0021 phase 3b), so
+        # each app's release file sheds them on its next release; yq -i only sets what it is told to.
         yq -i -e "
           .release.image.repository = \"${image_repo}\" |
           .release.image.tag = \"${image_tag}\" |
@@ -287,7 +289,10 @@ spec:
           del(.rollout | select(. == null)) |
           .releaseTracking.cluster = \"${CLUSTER}\" |
           .releaseTracking.appNamespace = \"${APP_NAMESPACE}\" |
-          .releaseTracking.releaseId = \"${CHAIN_ID}:${CLUSTER}/${ENV}\"
+          .releaseTracking.releaseId = \"${CHAIN_ID}:${CLUSTER}/${ENV}\" |
+          del(.releaseTracking.relayUrl, .releaseTracking.relayHostAliasIP, .releaseTracking.gitUrl,
+              .releaseTracking.gitRevision, .releaseTracking.flowStartTime, .releaseTracking.chainId,
+              .releaseTracking.configJsonB64)
         " "${manifest}"
         git add "${manifest}"
 
