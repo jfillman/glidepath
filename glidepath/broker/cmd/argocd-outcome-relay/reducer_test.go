@@ -164,3 +164,44 @@ func TestStateTimestamps(t *testing.T) {
 		t.Errorf("LastFactAt must move on every fact")
 	}
 }
+
+func TestDriftIsReportedOncePerChange(t *testing.T) {
+	s := &relState{State: stMerged}
+	replay(s, []*fact{mk("Progressing", "h1", false), mk("Healthy", "h1", false)})
+	// the edit stays in place: every fact the Rollout sends now carries the new hash, in
+	// different phases (one real edit produced 9 Events before this was deduplicated)
+	n := 0
+	for i, ph := range []string{"Progressing", "Paused", "Progressing", "Healthy", "Healthy", "Progressing"} {
+		if d := reduce(s, mk(ph, "h2", false), t0.Add(time.Duration(i)*time.Second)); d.Drift != "" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("one edit must raise one drift, got %d", n)
+	}
+	// reverting and going healthy ends the drift...
+	if d := reduce(s, mk("Healthy", "h1", false), t0.Add(time.Minute)); d.Drift != "" || s.Drift != "" {
+		t.Fatalf("a Healthy fact with the release's own hash must clear the drift: %+v %q", d, s.Drift)
+	}
+	// ...so the next edit is news again
+	if d := reduce(s, mk("Progressing", "h3", false), t0.Add(2*time.Minute)); d.Drift == "" {
+		t.Errorf("a new drift after the old one cleared must be reported")
+	}
+}
+
+func TestDegradedAfterHealthyIsReportedOnce(t *testing.T) {
+	s := &relState{State: stMerged}
+	replay(s, []*fact{mk("Progressing", "h1", false), mk("Healthy", "h1", false)})
+	n := 0
+	for i := 0; i < 5; i++ {
+		if d := reduce(s, mk("Degraded", "h1", false), t0.Add(time.Duration(i)*time.Second)); d.Drift != "" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("repeated Degraded facts must raise one drift, got %d", n)
+	}
+	if d := reduce(s, mk("Healthy", "h1", false), t0.Add(time.Minute)); d.Drift != "" || s.Drift != "" {
+		t.Errorf("recovery must clear it")
+	}
+}

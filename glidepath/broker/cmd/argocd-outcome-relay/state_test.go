@@ -131,6 +131,9 @@ func TestDriftRaisesAnEventAndChangesNothing(t *testing.T) {
 	if d := record1(t, h); d["state"] != "healthy" || !strings.Contains(d["drift"], "h1 -> h2") {
 		t.Errorf("record: %v", d)
 	}
+	// the same edit keeps producing facts: still one Event
+	post(h, "kind-prod", "Bearer tok", strings.Replace(factBody(rel1, "Healthy", 5, "5"), `"currentPodHash":"h1"`, `"currentPodHash":"h2"`, 1))
+	post(h, "kind-prod", "Bearer tok", strings.Replace(factBody(rel1, "Progressing", 6, "6"), `"currentPodHash":"h1"`, `"currentPodHash":"h2"`, 1))
 	evs, _ := h.clientset.CoreV1().Events("app-gate-api-cicd").List(context.Background(), metav1.ListOptions{})
 	if len(evs.Items) != 1 || evs.Items[0].Reason != "ReleaseDrift" {
 		t.Errorf("want one ReleaseDrift event, got %+v", evs.Items)
