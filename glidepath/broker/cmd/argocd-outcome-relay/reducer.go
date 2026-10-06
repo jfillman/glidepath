@@ -96,10 +96,23 @@ func reduce(s *relState, f *fact, now time.Time) decision {
 	case hash != "" && hash != s.PodHash:
 		// Same release-id, different pod template: someone changed the Rollout without a
 		// release (an edit, an undo that selfHeal has not yet reverted). Not a new release.
-		d.Drift = fmt.Sprintf("pod template changed outside a release: %s -> %s (rollout phase %s)", s.PodHash, hash, f.Status.Phase)
-		s.Drift = d.Drift
+		// Reported once per distinct change: while the changed template stays, every fact the
+		// Rollout sends carries the new hash (seen live: 9 Events in under a minute from one
+		// edit), and the description deliberately leaves out the rollout phase so those facts
+		// compare equal.
+		desc := fmt.Sprintf("pod template changed outside a release: %s -> %s", s.PodHash, hash)
 		d.Ignore = "drift"
+		if s.Drift != desc {
+			s.Drift = desc
+			d.Drift = desc
+		} else {
+			d.Ignore = "drift (already reported)"
+		}
 		return d
+	case s.Drift != "" && f.Status.Phase == "Healthy":
+		// The release's own template is back and healthy: the drift is over, so a later one
+		// is reported again.
+		s.Drift = ""
 	}
 
 	// emit adds kind to the decision once, in order, and records it.
@@ -150,9 +163,13 @@ func reduce(s *relState, f *fact, now time.Time) decision {
 		if s.Emitted[kindSuccess] {
 			// Healthy was already reported; Degraded now is the workload failing after a
 			// good release, not the release failing. Tower and SLOs own that story.
-			d.Drift = "rollout became Degraded after the release was reported healthy: " + f.Status.Message
-			s.Drift = d.Drift
-			d.Ignore = "drift"
+			desc := "rollout became Degraded after the release was reported healthy: " + f.Status.Message
+			d.Ignore = "drift (already reported)"
+			if s.Drift != desc {
+				s.Drift = desc
+				d.Drift = desc
+				d.Ignore = "drift"
+			}
 			return d
 		}
 		if f.Status.Abort {
