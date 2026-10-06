@@ -29,7 +29,7 @@ One ConfigMap per release, `release-tracking-<chain-id>`, in the Application's o
 | `appNamespace`, `appName`, `env`, `cluster` | `open-release-pr` | What was released and where. |
 | `gitUrl`, `gitRevision`, `flowStartTime`, `configJson` | `open-release-pr` | The context the outcome events and the lead-time anchor need. |
 | `state`, `stateAt` | `open-release-pr` (`proposed`), `mark-release-merged` (`merged`, `closed`), the relay (everything after) | Where the release is, and since when. |
-| `mergedAt` | `mark-release-merged` | When the PR merged. The stall alert's clock for a merged release. |
+| `mergedAt` | `mark-release-merged` | When the PR merged, recorded whatever state the release is in (Argo CD and the Rollout can start faster than the Task does, so the record may already be `progressing`: seen live). The stall alert's clock for a merged release, and the merge-to-deploy latency. |
 | `lastFactAt`, `lastFactPhase` | relay | The last fact that arrived for this release. The stall alert's clock for a progressing release. |
 | `podHash` | relay | The pod template hash of the release's first fact. A different hash later is drift. |
 | `drift` | relay | The last drift description, if any. |
