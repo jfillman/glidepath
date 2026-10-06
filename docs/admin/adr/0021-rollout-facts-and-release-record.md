@@ -83,7 +83,9 @@ cannot ride along.
    advances the state machine below, and emits the **same CDEvents as today**
    (`environment.deploying`, `environment.deployed`) so the broker, Triggers,
    `release-outcome-notify`, DORA, the release log and the outcome span are unchanged in
-   phase 1. New event types (`service.rolledback` and others) come later.
+   phase 1. New event types (`service.rolledback` and others) come later and follow
+   [ADR-0022](0022-cdevents-conformance-and-vocabulary.md), which also retires
+   `environment.deploying` / `environment.deployed` (not CDEvents spec events).
 4. **Argo CD Notifications return in one narrow role: sync failure.** A sync that fails
    before the Rollout changes produces no Rollout fact. One Argo CD trigger on `argocd-apps` (the tenant instance; kind-prod runs two),
    `operationState.phase in [Failed, Error]`, posts a failure fact keyed by the gitops

@@ -28,6 +28,7 @@ distilled from.
 | [0019](0019-environments-as-one-config-model.md) | *Proposed.* Environments are one config model, defined once in `cicd.yaml` |
 | [0020](0020-cloud-gated-promotion-by-release-pin.md) | *Proposed.* Cloud Flight environments are gated by a release pin PR on the source repo |
 | [0021](0021-rollout-facts-and-release-record.md) | *Proposed.* Release events are facts from the Rollout, interpreted on dev (replaces the hook Jobs) |
+| [0022](0022-cdevents-conformance-and-vocabulary.md) | *Proposed.* CDEvents conformance (v0.5.1), subject and content discipline, the rollout event set, and what stays out of the events |
 
 New decisions get a new numbered file here, not a paragraph buried in an unrelated doc.
 
