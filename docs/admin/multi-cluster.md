@@ -808,6 +808,8 @@ phases and asserts the fact path builds an identical event.
 
 ## ADR-0021 phase 2: the release state machine (2026-10-06)
 
+*The reference is now [release-state.md](release-state.md), with diagrams; this section is the build note.*
+
 The fact endpoint now keeps each release's state on its record and decides, from the state,
 what to emit. Everything downstream of the broker is unchanged.
 

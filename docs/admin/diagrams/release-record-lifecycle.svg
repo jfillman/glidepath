@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="release-record-lifecycle-title release-record-lifecycle-desc" id="release-record-lifecycle-root">
+<title id="release-record-lifecycle-title">The release record: who writes it, who reads it</title>
+<desc id="release-record-lifecycle-desc">Architecture showing the release-tracking ConfigMap on the dev cluster at the centre, written by the release PR task, the merge task and the relay's reducer, read by the outcome task, swept by a CronJob, and fed by facts from the prod cluster.</desc>
+<defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
+      #release-record-lifecycle-root { font-family: 'Geist',system-ui,sans-serif; color: #1b1f24; }
+      #release-record-lifecycle-root .diagram-container { width:100%;overflow-x:auto }
+      #release-record-lifecycle-root .diagram-container { overflow-x:visible }</style>
+          <marker id="release-record-lifecycle-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#5b6570"/></marker>
+          <marker id="release-record-lifecycle-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#b9791f"/></marker>
+          <marker id="release-record-lifecycle-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e7ba6"/></marker>
+          <marker id="release-record-lifecycle-arrow-open" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polyline points="0 0, 8 3, 0 6" fill="none" stroke="#2e7ba6" stroke-width="1.2"/></marker>
+        </defs>
+<rect width="100%" height="100%" fill="#f2efe9"/>
+<rect x="24" y="32" width="840" height="536" rx="8" fill="#1b1f24" fill-opacity="0.02" stroke="#1b1f24" stroke-opacity="0.12" stroke-width="0.8"/>
+<rect x="717" y="36" width="139" height="12" rx="2" fill="#f2efe9"/>
+<text x="848" y="45" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0.14em">DEV CLUSTER · kiac-dev</text>
+<rect x="896" y="32" width="280" height="536" rx="8" fill="#1b1f24" fill-opacity="0.02" stroke="#1b1f24" stroke-opacity="0.12" stroke-width="0.8"/>
+<rect x="1018" y="36" width="150" height="12" rx="2" fill="#f2efe9"/>
+<text x="1160" y="45" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0.14em">PROD CLUSTER · kind-prod</text>
+<path d="M248,136 H280 Q288,136 288,144 V192 Q288,200 296,200 H336" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#release-record-lifecycle-arrow)"/>
+<path d="M248,256 H336" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#release-record-lifecycle-arrow)"/>
+<path d="M336,328 H296 Q288,328 288,336 V368 Q288,376 280,376 H248" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#release-record-lifecycle-arrow)"/>
+<path d="M640,232 H576" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#release-record-lifecycle-arrow)"/>
+<path d="M456,456 V376" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#release-record-lifecycle-arrow)"/>
+<path d="M740,288 V352" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#release-record-lifecycle-arrow)"/>
+<path d="M952,212 H840" fill="none" stroke="#2e7ba6" stroke-width="1.2" marker-end="url(#release-record-lifecycle-arrow-link)"/>
+<path d="M952,336 H876 Q868,336 868,328 V272 Q868,264 860,264 H840" fill="none" stroke="#2e7ba6" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#release-record-lifecycle-arrow-link)"/>
+<rect x="272" y="239" width="41" height="12" rx="2" fill="#f2efe9"/>
+<text x="292" y="248" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">MERGED</text>
+<rect x="252" y="117" width="41" height="12" rx="2" fill="#f2efe9"/>
+<text x="272" y="126" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">CREATE</text>
+<rect x="296" y="343" width="30" height="12" rx="2" fill="#f2efe9"/>
+<text x="300" y="352" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">READ</text>
+<rect x="590" y="216" width="35" height="12" rx="2" fill="#f2efe9"/>
+<text x="608" y="225" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">STATE</text>
+<rect x="464" y="411" width="90" height="12" rx="2" fill="#f2efe9"/>
+<text x="468" y="420" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">EVENTS · DELETE</text>
+<rect x="748" y="317" width="46" height="12" rx="2" fill="#f2efe9"/>
+<text x="752" y="326" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">CDEVENT</text>
+<rect x="878" y="196" width="35" height="12" rx="2" fill="#f2efe9"/>
+<text x="896" y="205" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">FACTS</text>
+<rect x="878" y="313" width="68" height="12" rx="2" fill="#f2efe9"/>
+<text x="882" y="322" fill="#2e7ba6" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">SYNC FAILED</text>
+<rect x="48" y="96" width="200" height="80" rx="6" fill="#f2efe9"/>
+<rect x="48" y="96" width="200" height="80" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="56" y="102" width="30" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="71" y="111" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">TASK</text>
+<text x="148" y="134" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">open-release-pr</text>
+<text x="148" y="150" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">creates the record</text>
+<text x="148" y="162" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">state=proposed + labels</text>
+<rect x="48" y="216" width="200" height="80" rx="6" fill="#f2efe9"/>
+<rect x="48" y="216" width="200" height="80" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="56" y="222" width="30" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="71" y="231" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">TASK</text>
+<text x="148" y="254" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">mark-release-merged</text>
+<text x="148" y="270" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">from bypass-merge-check</text>
+<text x="148" y="282" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">proposed → merged | closed</text>
+<rect x="48" y="336" width="200" height="80" rx="6" fill="#f2efe9"/>
+<rect x="48" y="336" width="200" height="80" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="56" y="342" width="30" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="71" y="351" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">TASK</text>
+<text x="148" y="374" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">resolve-release-tracking</text>
+<text x="148" y="390" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">reads pr-url, created-at</text>
+<text x="148" y="402" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">no longer deletes</text>
+<rect x="336" y="176" width="240" height="200" rx="6" fill="#f2efe9"/>
+<rect x="336" y="176" width="240" height="200" rx="6" fill="#1b1f24" fill-opacity="0.05" stroke="#5b6570" stroke-width="1"/>
+<rect x="344" y="182" width="55" height="12" rx="2" fill="none" stroke="#5b6570" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="372" y="191" fill="#5b6570" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CONFIGMAP</text>
+<text x="456" y="214" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">release-tracking-&lt;chain-id&gt;</text>
+<text x="456" y="230" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">state · stateAt</text>
+<text x="456" y="242" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">lastFactAt · lastFactPhase</text>
+<text x="456" y="254" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">podHash · drift · lastError</text>
+<text x="456" y="266" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">emittedLive · emittedShadow</text>
+<text x="456" y="278" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">+ the release context</text>
+<rect x="640" y="176" width="200" height="112" rx="6" fill="#f2efe9"/>
+<rect x="640" y="176" width="200" height="112" rx="6" fill="#b9791f" fill-opacity="0.08" stroke="#b9791f" stroke-width="1"/>
+<rect x="648" y="182" width="45" height="12" rx="2" fill="none" stroke="#b9791f" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="670" y="191" fill="#b9791f" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">REDUCER</text>
+<text x="740" y="214" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">argocd-outcome-relay</text>
+<text x="740" y="230" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">facts → state → CDEvents</text>
+<text x="740" y="242" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">drift · superseded</text>
+<text x="740" y="254" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">shadow | emit</text>
+<rect x="640" y="352" width="200" height="80" rx="6" fill="#f2efe9"/>
+<rect x="640" y="352" width="200" height="80" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="648" y="358" width="45" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="670" y="367" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">SERVICE</text>
+<text x="740" y="390" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">CDEvents broker</text>
+<text x="740" y="406" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">unchanged</text>
+<rect x="336" y="456" width="240" height="80" rx="6" fill="#f2efe9"/>
+<rect x="336" y="456" width="240" height="80" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="344" y="462" width="45" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="366" y="471" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CRONJOB</text>
+<text x="456" y="494" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">release-record-sweeper</text>
+<text x="456" y="510" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">ReleaseStalled after 45 min</text>
+<text x="456" y="522" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">retention 14 days</text>
+<rect x="952" y="172" width="200" height="80" rx="6" fill="#f2efe9"/>
+<rect x="952" y="172" width="200" height="80" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="960" y="178" width="60" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="990" y="187" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CONTROLLER</text>
+<text x="1052" y="210" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Rollouts controller</text>
+<text x="1052" y="226" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">notifications → webhook</text>
+<text x="1052" y="238" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">phase facts, heartbeat</text>
+<rect x="952" y="296" width="200" height="80" rx="6" fill="#f2efe9"/>
+<rect x="952" y="296" width="200" height="80" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="960" y="302" width="20" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="970" y="311" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CD</text>
+<text x="1052" y="334" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Argo CD (tenant)</text>
+<text x="1052" y="350" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">notifications</text>
+<text x="1052" y="362" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">a failing sync</text>
+<text x="48" y="464" fill="#1b1f24" font-size="14" font-style="italic" font-family="'Instrument Serif', 'Noto Serif', Georgia, serif"><tspan x="48" dy="0">The record outlives its</tspan><tspan x="48" dy="17">first read: the state</tspan><tspan x="48" dy="17">machine needs it after.</tspan></text>
+<text x="640" y="470" fill="#1b1f24" font-size="14" font-style="italic" font-family="'Instrument Serif', 'Noto Serif', Georgia, serif"><tspan x="640" dy="0">Access is per Application</tspan><tspan x="640" dy="17">namespace: the relay gets</tspan><tspan x="640" dy="17">get, list, update; the</tspan><tspan x="640" dy="17">sweeper get, list, patch,</tspan><tspan x="640" dy="17">delete. Nothing cluster-wide.</tspan></text>
+<line x1="30" y1="592" x2="1170" y2="592" stroke="#1b1f24" stroke-opacity="0.10" stroke-width="0.8"/>
+<text x="30" y="608" fill="#5b6570" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">LEGEND</text>
+<rect x="110" y="600" width="14" height="10" rx="2" fill="#b9791f" fill-opacity="0.08" stroke="#b9791f"/>
+<text x="134" y="609" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">reducer</text>
+<line x1="209.2" y1="605" x2="231.2" y2="605" stroke="#2e7ba6" stroke-width="1.2"/>
+<text x="237.2" y="609" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">cross-cluster HTTP</text>
+<line x1="374.0" y1="605" x2="396.0" y2="605" stroke="#2e7ba6" stroke-width="1.2" stroke-dasharray="5,4"/>
+<text x="402.0" y="609" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">failure-only path</text>
+<line x1="533.2" y1="605" x2="555.2" y2="605" stroke="#5b6570" stroke-width="1.2"/>
+<text x="561.2" y="609" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">internal call</text>
+</svg>
