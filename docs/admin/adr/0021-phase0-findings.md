@@ -8,6 +8,10 @@ Argo CD. S1 and S4 read kind-prod; S4 ran one short-lived curl pod there.*
 
 ## Verdict
 
+**Phase 0 is complete. Every spike is resolved.** The decision stands: facts from the
+Rollouts notifications engine, with the prune CronJob (option A). The inferred problem
+(S1) is now confirmed and attributed to the hooks.
+
 **S2 passes, with three design rules the ADR must adopt** (A, B, C below). The Rollouts
 notifications engine delivers the facts we need. It does not guarantee delivery.
 
@@ -145,16 +149,62 @@ Application).
   removes the silent-loss and annotation problems at the source. **This is now a real
   choice for the owner, not a footnote.**
 
+## Second round: an Argo-managed throwaway app (2026-10-06)
+
+A throwaway Application on kiac-dev (`spike-adr21`, selfHeal and prune on) synced a probe
+Rollout from a scratch branch of this repo (`spike/adr-0021`, branch since deleted). It
+used the same notification config and request-catcher as before, plus a PostSync hook Job
+and Argo CD notifications.
+
+**S1 confirmed, and the hooks are the cause.**
+
+| Case | Result |
+|---|---|
+| Release 2: image change, **indefinite** pause step, PostSync hook present | Application `Suspended`, operation **Running** for as long as we watched (80 s+). |
+| Release 3 pushed (a revert) while release 2 was paused | Application **OutOfSync** for 80 s+ and the new sync **never started**: the revert could not deploy until the paused operation ended. |
+| Release 4: **no hook**, same indefinite pause | Operation `Succeeded` in **0 s** (23:53:24 to 23:53:24) with the Rollout still `Paused`. |
+
+So with a PostSync hook a paused or long-analysis canary pins the sync operation and blocks
+a revert; without the hook it does not. This is the strongest argument for the change.
+
+**Other results**
+
+- **Argo CD does not show OutOfSync for the `notified...` annotation.** The Rollout stayed
+  `Synced` throughout, including while the annotation held 32 keys.
+- **selfHeal reverts a manual spec change.** A manual image patch (what
+  `kubectl argo rollouts undo` does) was reverted by Argo within about 2 s. So `undo` does
+  not work under selfHeal; `abort` (status only, not in the manifest) is the in-cluster
+  emergency lever and the rollback PR is how git catches up. The facts for the revert carry
+  the unchanged release-id, which is rule B's drift case: observed image differs from the
+  release's image.
+- **The prune CronJob mechanism works (option A).** Removing the annotation took it from 32
+  keys to 2, the engine immediately resent current state (a `Paused` fact), and the
+  Rollout stayed `Synced`. The removal triggers the resend at once; it does not wait for the
+  15 minute resync.
+- **Argo CD sync-failure trigger works, with two corrections.**
+  1. `phase` stays `Running` through Argo's automated retries (limit 5, backoff to about
+     3 minutes) and only becomes `Failed` after the fifth, so a `phase in [Failed, Error]`
+     trigger fires about 5 minutes after the first failure, not on each attempt. The webhook
+     body carried the full error message, revision and timestamps. (The hook-based
+     SyncFail fires per attempt, which is earlier. A retry-count trigger would restore
+     that; my one attempt did not fire and was not pursued. Open for phase 1.)
+  2. `oncePer: ...syncResult.revision` made the trigger error (the log says `FAILED`, which
+     here means an expression error, not "condition false") because `syncResult` was
+     missing for a failed sync. Use `oncePer: ...finishedAt`.
+- Notification config written as inline JSON with `\u0027` lost its quotes and errored the
+  same way; write it from a file.
+
 ## Open items
 
-- **Argo CD OutOfSync from `notified.notifications.argoproj.io`:** needs one real
-  Argo-managed Rollout.
-- **Argo CD sync-failure trigger firing:** not tested live.
-- **Indefinitely paused canary and `undo` under selfHeal:** not tested; need an Argo-managed
-  throwaway app.
+- **Retry-count trigger for earlier failure facts:** untested (see above).
+- **kind-prod, not kiac-dev:** the Rollouts notification config has not been installed on
+  kind-prod. That is phase 1 and goes through a PR to the cluster gitops repo.
 
 ## Cleanup
 
-Done 2026-10-05: the `spike-rollouts` namespace, the `argo-rollouts-notification-configmap`
-and the `catcher-token` key were removed from kiac-dev. The curl pod on kind-prod was
-deleted after its single run.
+Done 2026-10-06: kiac-dev `spike-adr21` and `spike-rollouts` namespaces, the
+`argo-rollouts-notification-configmap`, the `catcher-token` key, and the four keys added
+to `argocd-notifications-cm` were removed; the remote branch `adr-0021-spike` was deleted.
+Left behind: a local worktree and branch (`glidepath-wt-adr21spike`, `adr-0021-spike`),
+which can be removed with `git worktree remove` and `git branch -D`. The curl pod on
+kind-prod from S4 was deleted after its single run.

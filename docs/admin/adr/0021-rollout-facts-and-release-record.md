@@ -34,7 +34,7 @@ cannot do.
   that ServiceAccount under a running Job (2026-09-18) is the same design pressure.
 - **Dev spawns a lot per release.** Every event is a PipelineRun with five Task pods.
 
-**Cost that is inferred, not yet measured (spike S1):** `PostSync` runs only once the
+**Cost confirmed in Phase 0 (spike S1; a control without the hook finished in 0 s):** `PostSync` runs only once the
 Application is Healthy, and a canary that is paused or running analysis is not Healthy.
 The sync operation therefore stays Running for the whole canary, so a revert merged during
 a bad canary may not start syncing until the operation ends.
