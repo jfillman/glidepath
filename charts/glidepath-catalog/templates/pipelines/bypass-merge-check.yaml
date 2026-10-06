@@ -31,3 +31,17 @@ spec:
         - { name: repo-url, value: $(params.repo-url) }
         - { name: pr-number, value: $(params.pr-number) }
         - { name: merged, value: $(params.merged) }
+
+    # ADR-0021 phase 2: independent of the break-glass check above (no runAfter), so a failure
+    # in either cannot hide the other.
+    - name: mark-release-merged
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: mark-release-merged }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: merged, value: $(params.merged) }

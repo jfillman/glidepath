@@ -1,0 +1,68 @@
+{{- $appNamespace := include "glidepath-app.namespace" . }}
+# ADR-0021 phase 2. argocd-outcome-relay (platform-system) keeps each release's state on the
+# release-tracking-<chain-id> ConfigMap in THIS namespace: it reads it, writes the state keys,
+# lists the app's other records to mark an older release superseded, and raises a drift Event
+# on it. Scoped to this one namespace and to those verbs; it replaces the cluster-wide
+# get that phase 1 gave the relay. No create, no delete: the record is written by
+# open-release-pr.yaml and swept by the stalled-pipeline detector.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-record-relay
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "update"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-record-relay
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: release-record-relay }
+subjects:
+  - kind: ServiceAccount
+    name: argocd-outcome-relay
+    namespace: platform-system
+---
+# The release-record sweeper (control-plane, platform-system) raises ReleaseStalled Events on
+# records, labels them so it alerts once per state, and deletes them past their retention.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-record-sweeper
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-record-sweeper
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: release-record-sweeper }
+subjects:
+  - kind: ServiceAccount
+    name: release-record-sweeper
+    namespace: platform-system

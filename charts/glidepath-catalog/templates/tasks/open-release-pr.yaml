@@ -170,6 +170,13 @@ spec:
         # PR) cannot drift apart. configJson is the cicd.yaml content as resolved here.
         write_release_record() {
           local pr_url_arg="$1" pr_created_arg="$2"
+          # The reducer (argocd-outcome-relay) owns state from here on, so the initial state is
+          # written only when the record is new: a retry that reuses an open PR must not reset a
+          # record that has already moved on.
+          local initial_state=()
+          if ! kubectl get configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" >/dev/null 2>&1; then
+            initial_state=(--from-literal="state=proposed" --from-literal="stateAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+          fi
           kubectl create configmap "release-tracking-${CHAIN_ID}" \
             -n "${NAMESPACE}" \
             --from-literal="prUrl=${pr_url_arg}" \
@@ -184,10 +191,14 @@ spec:
             --from-literal="gitRevision=${GIT_REVISION}" \
             --from-literal="flowStartTime=${FLOW_START_TIME}" \
             --from-literal="configJson=${CONFIG_JSON}" \
+            ${initial_state[@]+"${initial_state[@]}"} \
             --dry-run=client -o yaml \
             | kubectl apply -f -
+          # app/env/cluster labels let the reducer list this app's other releases (to mark an
+          # older one superseded) without reading every ConfigMap in the namespace.
           kubectl label configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" \
-            "hangar.io/subcomponent=release-tracking" --overwrite
+            "hangar.io/subcomponent=release-tracking" "hangar.io/app=${APP_NAME}" \
+            "hangar.io/env=${ENV}" "hangar.io/cluster=${CLUSTER}" --overwrite
         }
 
         if [[ -z "${CLUSTER}" ]]; then

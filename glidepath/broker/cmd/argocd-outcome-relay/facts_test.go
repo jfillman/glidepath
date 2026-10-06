@@ -71,13 +71,10 @@ func TestFactsEmitAndIdempotency(t *testing.T) {
 	}
 	post(h, "kind-prod", "Bearer tok", factBody(rel, "Healthy", 3, "3"))
 	post(h, "kind-prod", "Bearer tok", factBody(rel, "Healthy", 4, "4")) // scale or heartbeat: new generation
-	if len(*sent) != 3 {
-		t.Fatalf("want 3 forwarded events (ids dedupe downstream), got %d", len(*sent))
+	if len(*sent) != 2 {
+		t.Fatalf("want 2 forwarded events (the repeat is suppressed by release state), got %d", len(*sent))
 	}
 	id := func(b []byte) string { return between(string(b), `"id":"`, `"`) }
-	if id((*sent)[1]) != id((*sent)[2]) {
-		t.Errorf("a repeat Healthy for the same release must keep the same event id")
-	}
 	if id((*sent)[0]) == id((*sent)[1]) {
 		t.Errorf("deploying and deployed must differ")
 	}
@@ -113,7 +110,7 @@ func TestFactsIgnoredAndRejected(t *testing.T) {
 		{"no token", "kind-prod", "", factBody("chain1:kind-prod/staging", "Healthy", 3, "3"), 401},
 		{"untracked rollout", "kind-prod", "Bearer tok", `{"ns":"x","name":"y","generation":1,"annotations":{},"status":{"phase":"Healthy","observedGeneration":"1"}}`, 202},
 		{"stale generation", "kind-prod", "Bearer tok", factBody("chain1:kind-prod/staging", "Healthy", 4, "3"), 202},
-		{"paused has no event", "kind-prod", "Bearer tok", factBody("chain1:kind-prod/staging", "Paused", 3, "3"), 202},
+		{"no phase we map", "kind-prod", "Bearer tok", factBody("chain1:kind-prod/staging", "Unknown", 3, "3"), 202},
 		{"unknown record", "kind-prod", "Bearer tok", factBody("nochain:kind-prod/staging", "Healthy", 3, "3"), 202},
 		{"release-id names another cluster", "kind-prod", "Bearer tok", factBody("chain1:other/staging", "Healthy", 3, "3"), 400},
 		{"malformed release-id", "kind-prod", "Bearer tok", factBody("garbage", "Healthy", 3, "3"), 400},
@@ -161,11 +158,12 @@ func TestFactEventMatchesHookEvent(t *testing.T) {
 	write("sleep", "#!/bin/sh\nexit 0\n")
 	write("curl", "#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ \"$1\" = -d ]; then printf '%s' \"$2\" > "+out+"; fi; shift; done\n")
 
-	h, sent := newTestHandler(t, "emit")
 	rel := "chain1:kind-prod/staging"
 	cases := []struct{ phase, factPhase string }{{"Syncing", "Progressing"}, {"Succeeded", "Healthy"}, {"Failed", "Degraded"}}
 	for _, c := range cases {
-		*sent = nil
+		// a fresh handler (and so a fresh release record) per phase: each phase is compared
+		// as if it were the first fact for the release
+		h, sent := newTestHandler(t, "emit")
 		os.Remove(out)
 		cmd := exec.Command("bash", script)
 		cmd.Env = []string{
@@ -184,10 +182,12 @@ func TestFactEventMatchesHookEvent(t *testing.T) {
 			t.Fatalf("hook produced no payload: %v", err)
 		}
 		post(h, "kind-prod", "Bearer tok", factBody(rel, c.factPhase, 3, "3"))
-		if len(*sent) != 1 {
-			t.Fatalf("%s: fact produced %d events", c.factPhase, len(*sent))
+		// a first Healthy or Degraded fact also carries the "deploying" that was lost before it
+		last := len(*sent) - 1
+		if last < 0 {
+			t.Fatalf("%s: fact produced no event", c.factPhase)
 		}
-		if a, b := normalizeEvent(hook), normalizeEvent((*sent)[0]); a != b {
+		if a, b := normalizeEvent(hook), normalizeEvent((*sent)[last]); a != b {
 			t.Errorf("%s: hook and fact events differ\nhook: %s\nfact: %s", c.phase, a, b)
 		}
 	}
