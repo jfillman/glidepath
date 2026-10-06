@@ -223,7 +223,7 @@ idpServiceCatalog:
   # 2026-10-05: v0.3.110 -> v0.3.115, airframe#48 (optional rollout.labels/annotations, podLabels/podAnnotations,
   # serviceLabels/serviceAnnotations; additive). All 8 live Flight env files render byte-identically under both
   # versions (helm template of each chart version, diffed). Moves the per-app PR-preview ApplicationSets with it.
-  chartVersion: v0.3.115
+  chartVersion: v0.3.117
 
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
