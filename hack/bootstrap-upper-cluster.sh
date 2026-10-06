@@ -6,10 +6,10 @@
 # the broker, an almost entirely disjoint set of components) installs declaratively
 # instead - see docs/admin/installation.md.
 #
-# No ArgoCD Notifications controller - the release-outcome feedback loop is ArgoCD sync
-# hooks instead (PostSync/SyncFail Jobs, see catalog/lib/argocd-outcome-hook.sh):
-# Notifications fired on any completed sync, including pure selfHeal drift with no
-# release involved. See docs/admin/multi-cluster.md.
+# No ArgoCD Notifications controller here. The release feedback loop is Argo Rollouts
+# notifications (a webhook per Rollout phase change, installed with the cluster's gitops
+# repo) plus Argo CD notifications for sync failures; both post facts to the release relay
+# (docs/admin/release-state.md). The earlier sync-hook Jobs are gone (ADR-0021).
 #
 # Targets an EXISTING cluster context - never runs `kind create cluster`. Note:
 # "kind-prod" (the first upper cluster) is named "prod" but currently

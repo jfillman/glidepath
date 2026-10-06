@@ -137,7 +137,7 @@ spec:
             - name: CDEVENTS_BROKER_URL
               value: http://el-cdevents-broker.platform-system.svc.cluster.local:8080
             - name: FACTS_MODE
-              value: {{ .Values.outcomeRelay.factsMode | default "shadow" | quote }}
+              value: {{ .Values.outcomeRelay.factsMode | default "emit" | quote }}
             # DORA_EXPORTER_URL removed 2026-08-22: dora-exporter is now updated by
             # update-dora-metrics.yaml, a Task in release-outcome-notify's own
             # PipelineRun, not a direct call from this Deployment - see that Task's

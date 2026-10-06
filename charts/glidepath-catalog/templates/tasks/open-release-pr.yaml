@@ -20,23 +20,17 @@
 # only, values.yaml untouched. Unset (every live app today) keeps the pre-split
 # behavior of writing straight into values.yaml.
 #
-# Exactly ONE commit per release PR. releaseTracking data (relay URL, chain-id, etc.)
-# that airframe-application's own PostSync/SyncFail hook Jobs read to report DORA/Slack
-# outcomes rides in the SAME commit as the image-tag patch - every field is known before
-# the PR exists, except prUrl/prCreatedAt (the PR's own URL obviously can't be committed
-# before the PR is created). Those two go to a short-lived ConfigMap on THIS cluster
-# instead of a second git commit - see the note lower in this file. A second commit used
-# to carry them, but that meant every governance gate on the gitops repo re-ran in full a
-# second time on every single release (found live 2026-08-31: doubled Check Runs,
-# doubled Trivy re-scans, for zero informational gain - the two commits never differed in
-# anything those gates inspect). outcomeRelayURL is looked up live from glidepath's
-# own cluster-registry ConfigMap via a narrow get-only Role; this Task still never calls
-# the upper cluster's API directly, preserving the "only a reviewed git commit crosses
-# from dev to an upper cluster" boundary. releaseTracking.relayHostAliasIP rides in the
-# same commit (from this Task's own pod's downward-API status.hostIP, added 2026-09-04) -
-# airframe-application's hook Job needs it as a literal hostAliases IP, since a pod's CoreDNS
-# never sees the host machine's /etc/hosts that makes outcomeRelayURL's dev.kiac.local
-# hostname resolvable everywhere else. See idp/docs/local-clusters.md.
+# Exactly ONE commit per release PR. releaseTracking carries only what airframe-application
+# needs to stamp the Rollout for the Argo Rollouts notifications engine (ADR-0021): releaseId
+# (becomes the hangar.io/release-id annotation) and appNamespace (the dev-cluster Application
+# namespace the relay finds the release record in), plus cluster. Everything else about the
+# release (prUrl, prCreatedAt, chain-id, flow start, git url/revision, config) is written to the
+# release-tracking ConfigMap on THIS cluster (see the note lower in this file) rather than the
+# gitops repo: it is not needed on the upper cluster any more, and a second git commit for it
+# made every governance gate re-run in full on every release (found live 2026-08-31). This Task
+# reads glidepath's cluster-registry ConfigMap only to confirm the target cluster is registered;
+# it never calls the upper cluster's API, preserving the "only a reviewed git commit crosses from
+# dev to an upper cluster" boundary.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -80,19 +74,19 @@ spec:
         Threaded through from cicd.yaml's deploy.upperEnvironments object form, not
         derived - this Task doesn't read idp's own cluster registry (a deliberately
         separate source of truth). It does read glidepath's own cluster registry
-        live, but only for outcomeRelayURL.
+        live, but only to confirm the cluster is registered.
     - name: chain-id
       type: string
       default: ""
-      description: This flow's chain-id (start-flow's result) - rides into releaseTracking.chainId for release-outcome-span.yaml's Tempo correlation.
+      description: This flow's chain-id (start-flow's result) - rides into releaseTracking.releaseId and the release record ConfigMap.
     - name: flow-start-time
       type: string
       default: ""
-      description: This flow's own start time (start-flow's result) - rides into releaseTracking.flowStartTime, the DORA lead-time attribute carried on the eventual outcome span.
+      description: This flow's own start time (start-flow's result) - rides into the release record ConfigMap (the DORA lead-time attribute carried on the eventual outcome span).
     - name: config-json
       type: string
       default: "{}"
-      description: cicd.yaml's resolved content (resolve-notify-config's result) - rides into releaseTracking.configJsonB64 (base64) so notify-slack can render the outcome message once the hook Job reports back.
+      description: cicd.yaml's resolved content (resolve-notify-config's result) - rides into the release record ConfigMap so notify-slack can render the outcome message when the relay reports the outcome.
   results:
     - name: pr-url
       description: URL of the opened (or already-open, on retry) release PR.
@@ -148,15 +142,6 @@ spec:
           # equivalent of $(context.pipelineRun.namespace), which does not resolve here.
           # Same gotcha comment-pr-check-result.yaml already documents.
           value: $(context.taskRun.namespace)
-        - name: RELAY_HOST_ALIAS_IP
-          # This Task's own pod runs on the dev cluster, same one hosting
-          # argocd-outcome-relay - status.hostIP is that node's current address, exactly
-          # what an upper-env cluster's hook Job needs in its hostAliases to resolve
-          # registry_relay_url's dev.kiac.local hostname (a pod's CoreDNS never sees the
-          # host machine's /etc/hosts - see idp/docs/local-clusters.md). Resolved fresh
-          # via the downward API on every release, not re-derived from /etc/hosts or any
-          # DNS lookup this pod couldn't make itself either.
-          valueFrom: { fieldRef: { fieldPath: status.hostIP } }
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -285,45 +270,24 @@ spec:
           [[ -f "${manifest}" ]] || printf '# machine-owned: written by open-release-pr.yaml (D9/AF-5) - do not hand-edit\n' > "${manifest}"
         fi
 
-        # Release-tracking fields resolved up front, before the (only) commit - every
-        # one of these is known without the PR existing. outcomeRelayURL is resolved
-        # live from glidepath's own cluster-registry ConfigMap (platform-system) via
-        # a get-only Role scoped to this ConfigMap only. A hard failure here (not
-        # best-effort) is deliberate: CLUSTER is already required/validated above, so a
-        # missing registry entry means this app's cluster mapping is genuinely
-        # misconfigured - better to fail before opening a PR than open one with silently
-        # broken outcome reporting.
+        # The target cluster must be in glidepath's cluster-registry ConfigMap (platform-system,
+        # get-only Role scoped to that ConfigMap). A hard failure here (not best-effort) is
+        # deliberate: CLUSTER is already required above, so a missing entry means this app's
+        # cluster mapping is genuinely misconfigured - better to fail before opening a PR.
         registry_entry="$(kubectl get configmap cluster-registry -n platform-system -o jsonpath="{.data.${CLUSTER}}")"
         if [[ -z "${registry_entry}" ]]; then
-          echo "error: cluster '${CLUSTER}' has no entry in the glidepath cluster-registry ConfigMap (platform-system, charts/glidepath-control-plane's clusters:) - can't resolve outcomeRelayURL, so release-tracking can't be wired up for this release. A platform admin needs to add it before this app can release to ${ENV}." >&2
+          echo "error: cluster '${CLUSTER}' has no entry in the glidepath cluster-registry ConfigMap (platform-system, charts/glidepath-control-plane's clusters:), so it is not a known release target. A platform admin needs to add it before this app can release to ${ENV}." >&2
           exit 1
         fi
-        registry_relay_url="$(jq -r '.outcomeRelayURL' <<<"${registry_entry}")"
-        # The address the upper cluster's hook Jobs map the relay hostname to. The registry entry wins when it sets
-        # one: the dev node's own hostIP is only reachable from a cluster that shares its network (known-gaps #12).
-        relay_host_alias_ip="$(jq -r '.relayHostAliasIP // empty' <<<"${registry_entry}")"
-        relay_host_alias_ip="${relay_host_alias_ip:-${RELAY_HOST_ALIAS_IP}}"
-
-        # Base64, not raw JSON - the one field here that can contain quotes/braces;
-        # sidesteps yq mis-escaping it into the surrounding YAML. Decoded only at the
-        # end, by catalog/lib/argocd-outcome-hook.sh.
-        config_json_b64="$(printf '%s' "${CONFIG_JSON}" | base64 | tr -d '\n')"
 
         yq -i -e "
           .release.image.repository = \"${image_repo}\" |
           .release.image.tag = \"${image_tag}\" |
           del(.rollout.image) |
           del(.rollout | select(. == null)) |
-          .releaseTracking.relayUrl = \"${registry_relay_url}\" |
-          .releaseTracking.relayHostAliasIP = \"${relay_host_alias_ip}\" |
           .releaseTracking.cluster = \"${CLUSTER}\" |
           .releaseTracking.appNamespace = \"${APP_NAMESPACE}\" |
-          .releaseTracking.gitUrl = \"${GIT_URL}\" |
-          .releaseTracking.gitRevision = \"${GIT_REVISION}\" |
-          .releaseTracking.flowStartTime = \"${FLOW_START_TIME}\" |
-          .releaseTracking.chainId = \"${CHAIN_ID}\" |
-          .releaseTracking.releaseId = \"${CHAIN_ID}:${CLUSTER}/${ENV}\" |
-          .releaseTracking.configJsonB64 = \"${config_json_b64}\"
+          .releaseTracking.releaseId = \"${CHAIN_ID}:${CLUSTER}/${ENV}\"
         " "${manifest}"
         git add "${manifest}"
 

@@ -3,14 +3,14 @@ package main
 // POST /facts/<cluster> - ADR-0021. The Argo Rollouts notifications engine on an upper
 // cluster posts one small JSON fact per Rollout phase change (docs/admin/adr/0021-*).
 // A fact is never trusted for meaning: this file joins it to the dev-side release record
-// (the release-tracking-<chain-id> ConfigMap open-release-pr.yaml writes) and rebuilds the
-// same CDEvent argocd-outcome-hook.sh builds today, so everything downstream of the
-// broker is unchanged in phase 1.
+// (the release-tracking-<chain-id> ConfigMap open-release-pr.yaml writes) and builds
+// the CDEvent (the shape the removed hook script used to send), so everything downstream of the
+// broker is unchanged.
 //
 // Two modes, FACTS_MODE:
-//   shadow (default) - build the event, log it normalized, forward nothing. Used while the
-//                      hook Jobs are still live so a release is not reported twice.
-//   emit             - forward the event to the broker like /outcome does.
+//   shadow (code default) - build the event, log it normalized, forward nothing. For trying the
+//                           path out beside another reporter; the chart default is emit.
+//   emit                  - forward the event to the broker.
 //
 // Idempotency without state: the event id is derived from (release-id, event type,
 // outcome), never from the Rollout generation or a timestamp. Heartbeat and scale facts
@@ -133,7 +133,7 @@ func (h *handler) handleFacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Cluster identity is what the shared secret proves; a release-id naming another
-	// cluster is the same spoof the /outcome path rejects.
+	// cluster is the spoof this check rejects.
 	if relCluster != cluster {
 		http.Error(w, fmt.Sprintf("release-id claims cluster %q, authenticated as %q", relCluster, cluster), http.StatusBadRequest)
 		return
@@ -244,15 +244,15 @@ func (h *handler) mode() string {
 	return "shadow"
 }
 
-// buildEvent rebuilds the CDEvent argocd-outcome-hook.sh builds for the same release.
+// buildEvent builds the release's CDEvent. The shape is the one the removed hook script sent,
+// kept so everything downstream of the broker is unchanged.
 func buildEvent(rec *record, relID string, em emission) ([]byte, error) {
 	source := fmt.Sprintf("/platform-cicd/%s/%s-%s-%s-outcome", rec.AppNamespace, rec.Cluster, rec.AppName, rec.Env)
 	sum := sha256.Sum256([]byte(source + ":" + em.EventType + ":" + relID + ":" + em.Outcome))
 	id := hex.EncodeToString(sum[:])[:20]
 	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
 
-	// The hook builds this field with jq's tojson (compact, key order kept); compacting the
-	// stored text gives the same string.
+	// The field is compact JSON with key order kept (what the hook script's jq tojson made).
 	cfg := "{}"
 	var cbuf bytes.Buffer
 	if json.Compact(&cbuf, []byte(rec.ConfigJSON)) == nil {
@@ -421,9 +421,8 @@ func (h *handler) recordDrift(ctx context.Context, cm *corev1.ConfigMap, relID, 
 	}
 }
 
-// normalizeEvent drops the fields that legitimately differ between the hook path and
-// this one (ids, timestamps) and returns the rest as stable JSON, so the two streams can
-// be diffed. It is also what the hook path logs for each event it forwards.
+// normalizeEvent drops the fields that legitimately differ between runs (ids, timestamps)
+// and returns the rest as stable JSON, so shadow-mode events can be diffed.
 func normalizeEvent(raw []byte) string {
 	var e map[string]any
 	if err := json.Unmarshal(raw, &e); err != nil {

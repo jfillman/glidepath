@@ -192,7 +192,7 @@ func reduce(s *relState, f *fact, now time.Time) decision {
 // or instead of, the Rollout reporting anything: a rejected manifest, an admission webhook,
 // a hook, a missing secret. It is not terminal: Argo retries, and a later Progressing or
 // Healthy fact for the same release moves it on. One failure event per release, however many
-// retries Argo makes (the hook path sent one per attempt).
+// retries Argo makes (the removed hook path sent one per attempt).
 func reduceSyncFailed(s *relState, message string, now time.Time) decision {
 	if s.Emitted == nil {
 		s.Emitted = map[string]bool{}

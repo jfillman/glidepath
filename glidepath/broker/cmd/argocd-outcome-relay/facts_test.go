@@ -4,9 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -133,69 +130,4 @@ func TestFactsAppNamespaceCannotEscape(t *testing.T) {
 	if c := post(h, "kind-prod", "Bearer tok", b).Code; c != 202 || len(*sent) != 0 {
 		t.Fatalf("a fact naming a non-app namespace must be ignored, code=%d sent=%d", c, len(*sent))
 	}
-}
-
-// The facts path must rebuild what argocd-outcome-hook.sh builds. Runs the real script
-// with stub kubectl/curl and compares both events after normalization.
-func TestFactEventMatchesHookEvent(t *testing.T) {
-	script := filepath.Join("..", "..", "..", "..", "catalog", "lib", "argocd-outcome-hook.sh")
-	if _, err := os.Stat(script); err != nil {
-		t.Skip("hook script not found")
-	}
-	for _, bin := range []string{"bash", "jq", "base64", "sha256sum"} {
-		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("%s not available", bin)
-		}
-	}
-	dir := t.TempDir()
-	out := filepath.Join(dir, "payload.json")
-	write := func(name, body string) {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write("kubectl", "#!/bin/sh\nprintf dG9r\n") // base64("tok")
-	write("sleep", "#!/bin/sh\nexit 0\n")
-	write("curl", "#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ \"$1\" = -d ]; then printf '%s' \"$2\" > "+out+"; fi; shift; done\n")
-
-	rel := "chain1:kind-prod/staging"
-	cases := []struct{ phase, factPhase string }{{"Syncing", "Progressing"}, {"Succeeded", "Healthy"}, {"Failed", "Degraded"}}
-	for _, c := range cases {
-		// a fresh handler (and so a fresh release record) per phase: each phase is compared
-		// as if it were the first fact for the release
-		h, sent := newTestHandler(t, "emit")
-		os.Remove(out)
-		cmd := exec.Command("bash", script)
-		cmd.Env = []string{
-			"PATH=" + dir + ":" + os.Getenv("PATH"),
-			"RELAY_URL=http://x", "APP_NAMESPACE=app-gate-api-cicd", "APP_NAME=gate-api", "ENV=staging",
-			"CLUSTER=kind-prod", "PHASE=" + c.phase, "POD_NAMESPACE=app-gate-api-staging",
-			"GIT_URL=https://github.com/o/gate-api.git", "GIT_REVISION=abc123",
-			"FLOW_START_TIME=2026-10-05T10:00:00Z", "CHAIN_ID=chain1",
-			"CONFIG_JSON_B64=" + b64(testConfigJSON),
-		}
-		if b, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("hook script (%s): %v\n%s", c.phase, err, b)
-		}
-		hook, err := os.ReadFile(out)
-		if err != nil {
-			t.Fatalf("hook produced no payload: %v", err)
-		}
-		post(h, "kind-prod", "Bearer tok", factBody(rel, c.factPhase, 3, "3"))
-		// a first Healthy or Degraded fact also carries the "deploying" that was lost before it
-		last := len(*sent) - 1
-		if last < 0 {
-			t.Fatalf("%s: fact produced no event", c.factPhase)
-		}
-		if a, b := normalizeEvent(hook), normalizeEvent((*sent)[last]); a != b {
-			t.Errorf("%s: hook and fact events differ\nhook: %s\nfact: %s", c.phase, a, b)
-		}
-	}
-}
-
-func b64(s string) string {
-	cmd := exec.Command("base64")
-	cmd.Stdin = strings.NewReader(s)
-	o, _ := cmd.Output()
-	return strings.ReplaceAll(strings.TrimSpace(string(o)), "\n", "")
 }

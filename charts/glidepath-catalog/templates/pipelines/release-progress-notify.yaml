@@ -1,8 +1,8 @@
 # catalog/pipelines/release-progress-notify.yaml (2026-09-14 release-flow redesign)
 #
-# The downstream consumer of the environment.deploying CDEvent argocd-outcome-hook.sh
-# sends from a release's PreSync hook Job - ArgoCD has just started applying this
-# sync, nothing confirmed either way yet. Closes the gap between a release PR's own
+# The downstream consumer of the environment.deploying CDEvent the release relay sends when
+# a release's first Rollout fact arrives (it was a PreSync hook Job before ADR-0021) - the
+# Rollout has started, nothing confirmed either way yet. Closes the gap between a release PR's own
 # "requested" notification (fires at PR-open/commit time - see release.yaml's/
 # glidepathPromote.ts's own notify calls) and release-outcome-notify's confirmed
 # Succeeded/Failed, which previously left "did my merged PR even start deploying?"
@@ -40,7 +40,7 @@ spec:
       type: string
     - name: status
       type: string
-      description: "Always 'Syncing' today (the only phase argocd-outcome-hook.sh routes to this Pipeline's own CDEvent type) - passed through rather than hardcoded so a future intermediate phase doesn't need a schema change here."
+      description: "Always 'Syncing' today (the only phase the relay routes to this Pipeline's own CDEvent type) - passed through rather than hardcoded so a future intermediate phase doesn't need a schema change here."
     - name: git-url
       type: string
       default: ""
