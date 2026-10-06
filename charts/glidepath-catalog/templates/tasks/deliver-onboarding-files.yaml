@@ -208,8 +208,15 @@ spec:
           DEPLOY_TARGET="$(yq -r '.deploy.target // "k8s-rollout"' cicd.yaml)"
         fi
         if [[ "${DEPLOY_TARGET}" != "k8s-rollout" ]]; then
-          echo "deploy.target is ${DEPLOY_TARGET}: not scaffolding platform/ environment files (no chart, no per-environment namespace)"
+          echo "deploy.target is ${DEPLOY_TARGET}: not scaffolding environment files (no chart, no per-environment namespace)"
         fi
+
+        # ADR-0018 dual-path window: the environments folder is glidepath/ once the repo has
+        # one, platform/ until then (and for a brand-new repo, until the rename is proven on a
+        # migrated app). Every reader and writer uses this same rule; never scaffold into the
+        # other folder, or the lower-envs ApplicationSet sees two copies of one environment.
+        ENVS_ROOT=platform
+        [[ -d glidepath ]] && ENVS_ROOT=glidepath
 
         # known-gap #17: ephemeralEnvironments.pullRequest.enabled alone was already
         # enough to synthesize a working pr-build flow and ApplicationSet trigger above,
@@ -226,17 +233,17 @@ spec:
         # ephemeralEnvironments, so the file was never created, and a developer who turns
         # previews on later hit exactly the ComparisonError above. A comment-only file
         # costs nothing when previews are off.
-        if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && ! -f platform/pr-env.yaml ]]; then
-          mkdir -p platform
-          cat > platform/pr-env.yaml <<'PRENVEOF'
-        # platform/pr-env.yaml
+        if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && ! -f ${ENVS_ROOT}/pr-env.yaml ]]; then
+          mkdir -p "${ENVS_ROOT}"
+          cat > ${ENVS_ROOT}/pr-env.yaml <<PRENVEOF
+        # ${ENVS_ROOT}/pr-env.yaml
         #
         # Shared values file for every PR-based ephemeral preview environment (Glidepath's
         # pr-envs ApplicationSet, ephemeral-envs.yaml) - same airframe-application chart and
-        # directory convention as platform/envs/dev.yaml's ground tier, just one static file
+        # directory convention as ${ENVS_ROOT}/envs/dev.yaml's ground tier, just one static file
         # reused for every PR rather than one file per env (a PR number isn't a fixed
-        # filename). Deliberately NOT platform/envs/pr.yaml - the ground tier's own
-        # ApplicationSet already watches platform/envs/*.yaml, and a file there would collide
+        # filename). Deliberately NOT ${ENVS_ROOT}/envs/pr.yaml - the ground tier's own
+        # ApplicationSet already watches ${ENVS_ROOT}/envs/*.yaml, and a file there would collide
         # with it. See glidepath/docs/admin/ephemeral-environments.md.
         #
         # envName and rollout.image are NOT set here - the ApplicationSet template stamps both
@@ -247,34 +254,34 @@ spec:
         # If your rollout.ports don't already match airframe-application's chart default
         # (8080/http), set rollout.ports here explicitly.
         PRENVEOF
-          echo "app repo: scaffolded platform/pr-env.yaml (file was missing)"
+          echo "app repo: scaffolded ${ENVS_ROOT}/pr-env.yaml (file was missing)"
         fi
 
-        # platform/base.yaml: values shared by every environment, the lowest-precedence
-        # file in the D9/AF-5 merge order (base < platform/envs/<env>.yaml < release file,
+        # ${ENVS_ROOT}/base.yaml: values shared by every environment, the lowest-precedence
+        # file in the D9/AF-5 merge order (base < ${ENVS_ROOT}/envs/<env>.yaml < release file,
         # see hangar/docs/autopilot/release-file-split.md). Optional to the ApplicationSets
         # (ignoreMissingValueFiles), scaffolded so the layout is discoverable.
-        if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && ! -f platform/base.yaml ]]; then
-          mkdir -p platform
-          cat > platform/base.yaml <<'BASEEOF'
-        # platform/base.yaml
+        if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && ! -f ${ENVS_ROOT}/base.yaml ]]; then
+          mkdir -p "${ENVS_ROOT}"
+          cat > ${ENVS_ROOT}/base.yaml <<BASEEOF
+        # ${ENVS_ROOT}/base.yaml
         #
         # Helm values shared by EVERY environment of this app (airframe-application chart).
-        # Merge order, last wins: this file < platform/envs/<env>.yaml < the release file
+        # Merge order, last wins: this file < ${ENVS_ROOT}/envs/<env>.yaml < the release file
         # (machine-owned, written by Glidepath's deploy stage). Put anything that is the same
         # in every environment here - ports, probes, resources, shared env vars - and only the
-        # differences in platform/envs/<env>.yaml.
+        # differences in ${ENVS_ROOT}/envs/<env>.yaml.
         #
         # Scaffolded once by the onboarding mechanism - never regenerated after this, so any
         # edit below is yours.
         {}
         BASEEOF
-          echo "app repo: scaffolded platform/base.yaml (file was missing)"
+          echo "app repo: scaffolded ${ENVS_ROOT}/base.yaml (file was missing)"
         fi
 
-        # platform/envs/<env>.yaml for every Ground (lower) environment cicd.yaml declares.
+        # ${ENVS_ROOT}/envs/<env>.yaml for every Ground (lower) environment cicd.yaml declares.
         # The lower-envs ApplicationSet creates one Application per file under
-        # platform/envs/, so without this a freshly onboarded app has a pipeline that
+        # ${ENVS_ROOT}/envs/, so without this a freshly onboarded app has a pipeline that
         # deploys to "dev" and no dev environment to deploy into - the first deploy stage
         # had nothing to write to and the app never reached "running healthy" until a
         # developer hand-authored the file (found end-to-end on sky-marshall, 2026-10-03;
@@ -284,16 +291,16 @@ spec:
         if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && -f cicd.yaml ]]; then
           while IFS= read -r lower_env; do
             [[ -z "${lower_env}" ]] && continue
-            [[ -f "platform/envs/${lower_env}.yaml" ]] && continue
-            mkdir -p platform/envs
-            cat > "platform/envs/${lower_env}.yaml" <<ENVEOF
-        # platform/envs/${lower_env}.yaml - human-owned values for this environment.
+            [[ -f "${ENVS_ROOT}/envs/${lower_env}.yaml" ]] && continue
+            mkdir -p ${ENVS_ROOT}/envs
+            cat > "${ENVS_ROOT}/envs/${lower_env}.yaml" <<ENVEOF
+        # ${ENVS_ROOT}/envs/${lower_env}.yaml - human-owned values for this environment.
         # Scaffolded once by the onboarding mechanism; the first successful build's deploy
         # stage adds a release.image block below (or in the release file, if deploy.releaseFile
-        # is set). Overrides platform/base.yaml.
+        # is set). Overrides ${ENVS_ROOT}/base.yaml.
         envName: ${lower_env}
         ENVEOF
-            echo "app repo: scaffolded platform/envs/${lower_env}.yaml (file was missing)"
+            echo "app repo: scaffolded ${ENVS_ROOT}/envs/${lower_env}.yaml (file was missing)"
           done < <(yq -o=json '.deploy // {}' cicd.yaml | jq -r 'if (.environments // null) != null then [.environments[] | select(.tier == "ground") | .name] else (.lowerEnvironments // ["dev"]) end | .[]')
         fi
 
@@ -444,7 +451,7 @@ spec:
               # silently dropped a developer's push when a bot commit shared its range.)
               # size() > 0 keeps a push with an empty file list (nothing to classify)
               # building as before rather than vacuously matching `all`.
-              local exempt_guard='!(size(files.all) > 0 && files.all.all(f, f == "cicd.yaml" || f.startsWith("platform/")))'
+              local exempt_guard='!(size(files.all) > 0 && files.all.all(f, f == "cicd.yaml" || f.startsWith("platform/") || f.startsWith("glidepath/")))'
               loop_guard="${loop_guard} && ${exempt_guard}"
               # Same on-cel-expression-drops-on-event/on-target-branch gap as the
               # pull_request case below, hit live 2026-08-24: this flow's on-target-branch
@@ -662,15 +669,15 @@ spec:
           branch_name="onboarding-resync"
           git checkout -b "${branch_name}"
           git add .tekton/
-          # platform/ (see the scaffold block above) holds untracked, one-time content outside
-          # .tekton/ - `git add platform` only stages what this run created or what a human
+          # ${ENVS_ROOT}/ (see the scaffold block above) holds untracked, one-time content outside
+          # .tekton/ - `git add "${ENVS_ROOT}"` only stages what this run created or what a human
           # already changed there (nothing, in a fresh clone), since existing files are never
           # rewritten.
           # `|| true` at the end: same reasoning as every `jq -e ... || true` elsewhere in
           # this file - a legitimate "nothing to add" (file absent, or already tracked and
           # unchanged) exits this chain non-zero, which set -e would otherwise abort on.
-          { [[ -d platform ]] && git add platform; } || true
-          git commit --quiet -m "$(printf 'Onboarding: re-sync .tekton boilerplate from the platform catalog\n\nRegenerated onboarding-resync.yaml plus one .tekton/flow-<name>.yaml per git-rooted flow declared under cicd.yaml'"'"'s pipelines: - see docs/onboarding.md. Also scaffolds platform/base.yaml, platform/pr-env.yaml and platform/envs/<lower-env>.yaml once each, only when missing (known-gap #17). No developer action needed beyond merging.')"
+          { [[ -d "${ENVS_ROOT}" ]] && git add "${ENVS_ROOT}"; } || true
+          git commit --quiet -m "$(printf 'Onboarding: re-sync .tekton boilerplate from the platform catalog\n\nRegenerated onboarding-resync.yaml plus one .tekton/flow-<name>.yaml per git-rooted flow declared under cicd.yaml'"'"'s pipelines: - see docs/onboarding.md. Also scaffolds '"${ENVS_ROOT}"'/base.yaml, '"${ENVS_ROOT}"'/pr-env.yaml and '"${ENVS_ROOT}"'/envs/<lower-env>.yaml once each, only when missing (known-gap #17). No developer action needed beyond merging.')"
           # --force: the only way this exact branch name already exists remotely is a
           # still-open resync PR from an earlier trigger - this run's freshly
           # regenerated content should replace it outright, not be rejected as a

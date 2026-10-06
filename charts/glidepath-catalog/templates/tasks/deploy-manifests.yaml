@@ -131,8 +131,25 @@ spec:
           release_file_template="$(yq -r '.deploy.releaseFile // ""' cicd.yaml)"
         fi
 
+        # ADR-0018 dual-path window: the environments folder is glidepath/ once the repo has
+        # one, platform/ until then (same rule as deliver-onboarding-files.yaml). The lower-envs
+        # ApplicationSet watches both, so an env file in both folders would be two Applications
+        # with one name: refuse instead of writing to either.
+        envs_root=platform
+        [[ -d glidepath ]] && envs_root=glidepath
+        if [[ -f "platform/envs/${ENV}.yaml" && -f "glidepath/envs/${ENV}.yaml" ]]; then
+          echo "error: ${ENV} has a values file in both platform/envs/ and glidepath/envs/ - finish the platform/ -> glidepath/ move (delete the platform/ copy) before deploying" >&2
+          exit 1
+        fi
+        # A releaseFile still naming platform/ after the move would recreate platform/ beside
+        # glidepath/; the ApplicationSet reads the release file from the env file's own folder.
+        if [[ "${envs_root}" == "glidepath" && "${release_file_template}" == platform/* ]]; then
+          echo "warn: deploy.releaseFile '${release_file_template}' still names platform/ but this repo uses glidepath/ - writing under glidepath/ instead; update cicd.yaml" >&2
+          release_file_template="glidepath/${release_file_template#platform/}"
+        fi
+
         if [[ -z "${release_file_template}" ]]; then
-          manifest="platform/envs/${ENV}.yaml"
+          manifest="${envs_root}/envs/${ENV}.yaml"
           yq -i -e "
             .release.image.repository = \"${image_repo}\" |
             .release.image.tag = \"${image_tag}\" |

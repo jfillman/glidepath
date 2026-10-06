@@ -46,6 +46,30 @@ glidepath/
 - `deploy.releaseFile` (default `glidepath/envs/{env}.release.yaml`) says where the
   release file is written. It must contain one `{env}`.
 
+### Dual-path window (`platform/` to `glidepath/`)
+
+Until every app repo has moved, the folder is either `platform/` (the old name) or
+`glidepath/`. The rule, used by every reader and writer: **a repo uses `glidepath/` once
+it has a `glidepath/` directory, and `platform/` until then.** A brand-new repo is still
+scaffolded into `platform/` until the move is proven on a migrated app.
+
+- The lower-envs ApplicationSet watches `platform/envs/*.yaml` and `glidepath/envs/*.yaml`,
+  and takes `base.yaml` and the release file from the matched file's own folder.
+- The ephemeral-envs ApplicationSet lists both `pr-env.yaml` paths and ignores the missing one.
+- `deploy-manifests`, `deliver-onboarding-files` (scaffolds) and `run-testworkflow` resolve
+  the folder in the cloned repo. `deploy-manifests` refuses an env with a file in both
+  folders, and rewrites a `deploy.releaseFile` that still names `platform/` in a repo that
+  has moved (with a warning: update `cicd.yaml`).
+- The PaC config-only-push exemption skips builds for pushes that only touch `cicd.yaml`,
+  `platform/` or `glidepath/`. Existing apps get this when their `.tekton/` is next
+  re-synced (any `cicd.yaml` change).
+- Backstage and Tower resolve the folder per repo through the GitHub API with the same rule.
+
+To move an app: one commit that `git mv platform glidepath`, plus a `cicd.yaml` change
+(update `deploy.releaseFile` if it is set, which also re-syncs `.tekton/`). Never leave
+both folders in place: the same `envName` in both is two Applications with one name, and
+that app's ApplicationSet stops updating until one copy is removed.
+
 ## Values merge order
 
 Lowest to highest precedence: `base.yaml`, `envs/<env>.yaml`, the release file. Glidepath
