@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Proposed: prod emits facts, dev decides meaning</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Geist',system-ui,sans-serif;background:#f2efe9;color:#1b1f24;padding:3rem 2rem}
+.frame{max-width:1240px;margin:0 auto}
+.diagram-container{width:100%;overflow-x:auto}
+.eyebrow{font-family:'Geist Mono',ui-monospace,monospace;font-size:.66rem;font-weight:500;letter-spacing:.18em;text-transform:uppercase;color:#5b6570;margin-bottom:.5rem}
+h1{font-family:'Instrument Serif','Noto Serif',serif;font-size:clamp(1.5rem,2.4vw + .75rem,2rem);font-weight:400;letter-spacing:-.02em;line-height:1.15;margin-bottom:1.5rem}
+svg{width:100%;min-width:1200px;display:block}
+@media print{.diagram-container{overflow-x:visible}svg{min-width:0}}
+</style>
+</head>
+<body>
+<div class="frame">
+<p class="eyebrow">ADR-0021 · Architecture</p>
+<h1>Proposed: prod sends facts, dev decides what they mean</h1>
+<div class="diagram-container">
+<svg viewBox="0 0 1200 616" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="adr-0021-proposed-title adr-0021-proposed-desc">
+<title id="adr-0021-proposed-title">Proposed: prod emits facts, dev decides meaning</title>
+<desc id="adr-0021-proposed-desc">Architecture showing the Rollouts controller on the prod cluster posting small facts to a relay and reducer on the dev cluster, which joins them with a release record and emits the existing CDEvents.</desc>
+<defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#5b6570"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#b9791f"/></marker>
+          <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e7ba6"/></marker>
+          <marker id="arrow-open" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polyline points="0 0, 8 3, 0 6" fill="none" stroke="#2e7ba6" stroke-width="1.2"/></marker>
+        </defs>
+<rect width="100%" height="100%" fill="#f2efe9"/>
+<rect x="24" y="32" width="1152" height="164" rx="8" fill="rgba(27,31,36,0.02)" stroke="rgba(27,31,36,0.12)" stroke-width="0.8"/>
+<rect x="1029" y="36" width="139" height="12" rx="2" fill="#f2efe9"/>
+<text x="1160" y="45" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0.14em">DEV CLUSTER · kiac-dev</text>
+<rect x="24" y="332" width="1152" height="212" rx="8" fill="rgba(27,31,36,0.02)" stroke="rgba(27,31,36,0.12)" stroke-width="0.8"/>
+<rect x="1018" y="336" width="150" height="12" rx="2" fill="#f2efe9"/>
+<text x="1160" y="345" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0.14em">PROD CLUSTER · kind-prod</text>
+<path d="M128,152 V236" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M128,300 V388" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M208,112 H256" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M464,112 H416" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M928,112 H992" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M704,112 H768" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M248,428 H344" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M544,428 H640" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M672,388 V152" fill="none" stroke="#2e7ba6" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+<path d="M232,388 V240 Q232,232 240,232 H504 Q512,232 512,224 V152" fill="none" stroke="#2e7ba6" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow-link)"/>
+<rect x="136" y="208" width="62" height="12" rx="2" fill="#f2efe9"/>
+<text x="140" y="217" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">RELEASE PR</text>
+<rect x="136" y="340" width="35" height="12" rx="2" fill="#f2efe9"/>
+<text x="140" y="349" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">MERGE</text>
+<rect x="212" y="92" width="41" height="12" rx="2" fill="#f2efe9"/>
+<text x="232" y="101" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">INTENT</text>
+<rect x="422" y="92" width="35" height="12" rx="2" fill="#f2efe9"/>
+<text x="440" y="101" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">STATE</text>
+<rect x="713" y="92" width="46" height="12" rx="2" fill="#f2efe9"/>
+<text x="736" y="101" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">CDEVENT</text>
+<rect x="937" y="92" width="46" height="12" rx="2" fill="#f2efe9"/>
+<text x="960" y="101" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">TRIGGER</text>
+<rect x="278" y="412" width="35" height="12" rx="2" fill="#f2efe9"/>
+<text x="296" y="421" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">APPLY</text>
+<rect x="574" y="412" width="35" height="12" rx="2" fill="#f2efe9"/>
+<text x="592" y="421" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">STATE</text>
+<rect x="680" y="261" width="79" height="12" rx="2" fill="#f2efe9"/>
+<text x="684" y="270" fill="#2e7ba6" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">FACTS + TOKEN</text>
+<rect x="338" y="212" width="68" height="12" rx="2" fill="#f2efe9"/>
+<text x="372" y="221" fill="#2e7ba6" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">SYNC FAILED</text>
+<rect x="48" y="72" width="160" height="80" rx="6" fill="#f2efe9"/>
+<rect x="48" y="72" width="160" height="80" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="56" y="78" width="30" height="12" rx="2" fill="transparent" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="71" y="87" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">TASK</text>
+<text x="128" y="110" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">open-release-pr</text>
+<text x="128" y="126" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">release-id + record</text>
+<text x="128" y="138" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">opens gitops PR</text>
+<rect x="256" y="72" width="160" height="80" rx="6" fill="#f2efe9"/>
+<rect x="256" y="72" width="160" height="80" rx="6" fill="rgba(27,31,36,0.05)" stroke="#5b6570" stroke-width="1"/>
+<rect x="264" y="78" width="35" height="12" rx="2" fill="transparent" stroke="#5b6570" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="282" y="87" fill="#5b6570" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">STORE</text>
+<text x="336" y="110" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">ReleaseRecord</text>
+<text x="336" y="126" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">one per release-id</text>
+<text x="336" y="138" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">flow time · PR · intent</text>
+<rect x="464" y="72" width="240" height="80" rx="6" fill="#f2efe9"/>
+<rect x="464" y="72" width="240" height="80" rx="6" fill="rgba(185,121,31,0.08)" stroke="#b9791f" stroke-width="1"/>
+<rect x="472" y="78" width="45" height="12" rx="2" fill="transparent" stroke="#b9791f" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="494" y="87" fill="#b9791f" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">REDUCER</text>
+<text x="584" y="110" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Relay + reducer</text>
+<text x="584" y="126" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">facts + record → CDEvents</text>
+<text x="584" y="138" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">state machine · stall alert</text>
+<rect x="768" y="72" width="160" height="80" rx="6" fill="#f2efe9"/>
+<rect x="768" y="72" width="160" height="80" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="776" y="78" width="45" height="12" rx="2" fill="transparent" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="798" y="87" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">SERVICE</text>
+<text x="848" y="110" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">CDEvents broker</text>
+<text x="848" y="126" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">unchanged</text>
+<rect x="992" y="72" width="144" height="80" rx="6" fill="#f2efe9"/>
+<rect x="992" y="72" width="144" height="80" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="1000" y="78" width="55" height="12" rx="2" fill="transparent" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="1028" y="87" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">PIPELINES</text>
+<text x="1064" y="110" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Consumers</text>
+<text x="1064" y="126" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">unchanged in phase 1</text>
+<rect x="48" y="236" width="160" height="64" rx="6" fill="#f2efe9"/>
+<rect x="48" y="236" width="160" height="64" rx="6" fill="#ebe8e1" stroke="#aaa8a4" stroke-width="1"/>
+<rect x="56" y="242" width="40" height="12" rx="2" fill="transparent" stroke="#aaa8a4" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="76" y="251" fill="#5b6570" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">GITHUB</text>
+<text x="128" y="274" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">gitops-&lt;app&gt;</text>
+<text x="128" y="290" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">release.yaml + release-id</text>
+<rect x="48" y="388" width="200" height="80" rx="6" fill="#f2efe9"/>
+<rect x="48" y="388" width="200" height="80" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="56" y="394" width="20" height="12" rx="2" fill="transparent" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="66" y="403" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CD</text>
+<text x="148" y="426" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Argo CD</text>
+<text x="148" y="442" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">applies release.yaml</text>
+<text x="148" y="454" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">notify: sync-failed only</text>
+<rect x="344" y="388" width="200" height="80" rx="6" fill="#f2efe9"/>
+<rect x="344" y="388" width="200" height="80" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="352" y="394" width="50" height="12" rx="2" fill="transparent" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="377" y="403" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">WORKLOAD</text>
+<text x="444" y="426" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Rollout</text>
+<text x="444" y="442" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">hangar.io/release-id</text>
+<text x="444" y="454" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">canary · analysis</text>
+<rect x="640" y="388" width="240" height="80" rx="6" fill="#f2efe9"/>
+<rect x="640" y="388" width="240" height="80" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="648" y="394" width="60" height="12" rx="2" fill="transparent" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="678" y="403" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CONTROLLER</text>
+<text x="760" y="426" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Rollouts controller</text>
+<text x="760" y="442" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">notifications → webhook</text>
+<text x="760" y="454" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">one token per cluster</text>
+<text x="928" y="404" fill="#1b1f24" font-size="14" font-style="italic" font-family="'Instrument Serif', 'Noto Serif', Georgia, serif"><tspan x="928" dy="0">Nothing runs in the sync path, so</tspan><tspan x="928" dy="17">a relay outage cannot block</tspan><tspan x="928" dy="17">a deploy.</tspan></text>
+<text x="928" y="472" fill="#1b1f24" font-size="14" font-style="italic" font-family="'Instrument Serif', 'Noto Serif', Georgia, serif"><tspan x="928" dy="0">Prod sends small facts. Dev</tspan><tspan x="928" dy="17">decides what they mean.</tspan></text>
+<line x1="30" y1="572" x2="1170" y2="572" stroke="rgba(27,31,36,0.10)" stroke-width="0.8"/>
+<text x="30" y="588" fill="#5b6570" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">LEGEND</text>
+<rect x="110" y="580" width="14" height="10" rx="2" fill="rgba(185,121,31,0.08)" stroke="#b9791f"/>
+<text x="134" y="589" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">new: meaning layer</text>
+<line x1="270.8" y1="585" x2="292.8" y2="585" stroke="#2e7ba6" stroke-width="1.2"/>
+<text x="298.8" y="589" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">cross-cluster HTTP</text>
+<line x1="435.6" y1="585" x2="457.6" y2="585" stroke="#2e7ba6" stroke-width="1.2" stroke-dasharray="5,4"/>
+<text x="463.6" y="589" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">failure-only path</text>
+<line x1="594.8" y1="585" x2="616.8" y2="585" stroke="#5b6570" stroke-width="1.2"/>
+<text x="622.8" y="589" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">internal call</text>
+</svg>
+</div>
+</div>
+</body>
+</html>

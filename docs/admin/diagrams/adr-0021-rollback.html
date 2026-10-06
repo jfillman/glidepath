@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rollback sequence</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Geist',system-ui,sans-serif;background:#f2efe9;color:#1b1f24;padding:3rem 2rem}
+.frame{max-width:1240px;margin:0 auto}
+.diagram-container{width:100%;overflow-x:auto}
+.eyebrow{font-family:'Geist Mono',ui-monospace,monospace;font-size:.66rem;font-weight:500;letter-spacing:.18em;text-transform:uppercase;color:#5b6570;margin-bottom:.5rem}
+h1{font-family:'Instrument Serif','Noto Serif',serif;font-size:clamp(1.5rem,2.4vw + .75rem,2rem);font-weight:400;letter-spacing:-.02em;line-height:1.15;margin-bottom:1.5rem}
+svg{width:100%;min-width:1200px;display:block}
+@media print{.diagram-container{overflow-x:visible}svg{min-width:0}}
+</style>
+</head>
+<body>
+<div class="frame">
+<p class="eyebrow">ADR-0021 · Sequence</p>
+<h1>Rolling back a release, end to end</h1>
+<div class="diagram-container">
+<svg viewBox="0 0 1200 820" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="adr-0021-rollback-title adr-0021-rollback-desc">
+<title id="adr-0021-rollback-title">Rollback sequence</title>
+<desc id="adr-0021-rollback-desc">Sequence of an operator rolling back: Tower opens a pin-back PR through Glidepath, the merge reaches the prod cluster, facts stream to the reducer, which emits a rolled-back CDEvent.</desc>
+<defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#5b6570"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#b9791f"/></marker>
+          <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e7ba6"/></marker>
+          <marker id="arrow-open" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polyline points="0 0, 8 3, 0 6" fill="none" stroke="#2e7ba6" stroke-width="1.2"/></marker>
+        </defs>
+<rect width="100%" height="100%" fill="#f2efe9"/>
+<rect x="300" y="224" width="248" height="156" rx="4" fill="rgba(27,31,36,0.02)" stroke="rgba(27,31,36,0.22)" stroke-width="1"/>
+<rect x="300" y="224" width="40" height="16" rx="2" fill="#f2efe9" stroke="rgba(27,31,36,0.22)" stroke-width="1"/>
+<text x="320" y="236" fill="#5b6570" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.12em">ALT</text>
+<text x="312" y="256" fill="#5b6570" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.04em">[eligible]</text>
+<line x1="308" y1="308" x2="540" y2="308" stroke="rgba(27,31,36,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="312" y="324" fill="#5b6570" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.04em">[else]</text>
+<line x1="128" y1="96" x2="128" y2="688" stroke="rgba(27,31,36,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="368" y1="96" x2="368" y2="688" stroke="rgba(27,31,36,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="608" y1="96" x2="608" y2="688" stroke="rgba(27,31,36,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="848" y1="96" x2="848" y2="688" stroke="rgba(27,31,36,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="1072" y1="96" x2="1072" y2="688" stroke="rgba(27,31,36,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="128" y1="140" x2="364" y2="140" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M368,176 H408 Q416,176 416,184 V188 Q416,196 408,196 H372" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M368,272 H408 Q416,272 416,280 V284 Q416,292 408,292 H372" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<path d="M368,336 H408 Q416,336 416,344 V348 Q416,356 408,356 H372" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="364" y1="404" x2="132" y2="404" stroke="#5b6570" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<line x1="128" y1="448" x2="604" y2="448" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="604" y1="492" x2="844" y2="492" stroke="#2e7ba6" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow-open)"/>
+<line x1="604" y1="528" x2="844" y2="528" stroke="#2e7ba6" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow-open)"/>
+<path d="M848,564 H888 Q896,564 896,572 V576 Q896,584 888,584 H852" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="848" y1="628" x2="1068" y2="628" stroke="#b9791f" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+<line x1="1068" y1="668" x2="132" y2="668" stroke="#5b6570" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<rect x="220" y="123" width="57" height="12" rx="2" fill="#f2efe9"/>
+<text x="248" y="132" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">ROLL BACK</text>
+<rect x="424" y="180" width="57" height="12" rx="2" fill="#f2efe9"/>
+<text x="428" y="189" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">ELIGIBLE?</text>
+<rect x="424" y="276" width="84" height="12" rx="2" fill="#f2efe9"/>
+<text x="428" y="285" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">INTEGRITY GATE</text>
+<rect x="424" y="340" width="79" height="12" rx="2" fill="#f2efe9"/>
+<text x="428" y="349" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">FULL GATE SET</text>
+<rect x="220" y="387" width="57" height="12" rx="2" fill="#f2efe9"/>
+<text x="248" y="396" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">PR OPENED</text>
+<rect x="462" y="431" width="52" height="12" rx="2" fill="#f2efe9"/>
+<text x="488" y="440" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">MERGE PR</text>
+<rect x="697" y="475" width="62" height="12" rx="2" fill="#f2efe9"/>
+<text x="728" y="484" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">STEP FACTS</text>
+<rect x="691" y="511" width="73" height="12" rx="2" fill="#f2efe9"/>
+<text x="728" y="520" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">HEALTHY FACT</text>
+<rect x="904" y="568" width="52" height="12" rx="2" fill="#f2efe9"/>
+<text x="908" y="577" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">CLASSIFY</text>
+<rect x="929" y="611" width="62" height="12" rx="2" fill="#f2efe9"/>
+<text x="960" y="620" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">ROLLEDBACK</text>
+<rect x="228" y="651" width="41" height="12" rx="2" fill="#f2efe9"/>
+<text x="248" y="660" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">NOTIFY</text>
+<rect x="48" y="32" width="160" height="64" rx="6" fill="#f2efe9"/>
+<rect x="48" y="32" width="160" height="64" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="56" y="38" width="35" height="12" rx="2" fill="transparent" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="74" y="47" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">ACTOR</text>
+<text x="128" y="70" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Operator</text>
+<text x="128" y="86" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">Tower or CLI</text>
+<rect x="288" y="32" width="160" height="64" rx="6" fill="#f2efe9"/>
+<rect x="288" y="32" width="160" height="64" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="296" y="38" width="50" height="12" rx="2" fill="transparent" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="321" y="47" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">LIFELINE</text>
+<text x="368" y="70" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Glidepath</text>
+<text x="368" y="86" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">dev · gates</text>
+<rect x="528" y="32" width="160" height="64" rx="6" fill="#f2efe9"/>
+<rect x="528" y="32" width="160" height="64" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="536" y="38" width="50" height="12" rx="2" fill="transparent" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="561" y="47" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">LIFELINE</text>
+<text x="608" y="70" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Argo CD + Rollout</text>
+<text x="608" y="86" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">prod</text>
+<rect x="768" y="32" width="160" height="64" rx="6" fill="#f2efe9"/>
+<rect x="768" y="32" width="160" height="64" rx="6" fill="rgba(185,121,31,0.08)" stroke="#b9791f" stroke-width="1"/>
+<rect x="776" y="38" width="50" height="12" rx="2" fill="transparent" stroke="#b9791f" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="801" y="47" fill="#b9791f" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">LIFELINE</text>
+<text x="848" y="70" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Relay + reducer</text>
+<text x="848" y="86" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">dev</text>
+<rect x="992" y="32" width="160" height="64" rx="6" fill="#f2efe9"/>
+<rect x="992" y="32" width="160" height="64" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="1000" y="38" width="50" height="12" rx="2" fill="transparent" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="1025" y="47" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">LIFELINE</text>
+<text x="1072" y="70" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Consumers</text>
+<text x="1072" y="86" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">broker · Slack · DORA</text>
+<text x="48" y="724" fill="#1b1f24" font-size="14" font-style="italic" font-family="'Instrument Serif', 'Noto Serif', Georgia, serif"><tspan x="48" dy="0">Eligible means the digest was Healthy in this env within the last N releases. Integrity (signature, provenance, digest still in the registry)</tspan><tspan x="48" dy="17">always blocks. Content gates (SAST, SBOM, image scan) run and record, but do not block an eligible rollback. An ineligible target takes the full gate set.</tspan></text>
+<line x1="30" y1="768" x2="1170" y2="768" stroke="rgba(27,31,36,0.10)" stroke-width="0.8"/>
+<text x="30" y="784" fill="#5b6570" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">LEGEND</text>
+<line x1="110" y1="781" x2="132" y2="781" stroke="#5b6570" stroke-width="1.2"/>
+<text x="138" y="785" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">call</text>
+<line x1="196.4" y1="781" x2="218.4" y2="781" stroke="#5b6570" stroke-width="1.2" stroke-dasharray="5,4"/>
+<text x="224.4" y="785" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">return</text>
+<line x1="294.0" y1="781" x2="316.0" y2="781" stroke="#2e7ba6" stroke-width="1.2" stroke-dasharray="5,4"/>
+<text x="322.0" y="785" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">async fact</text>
+<line x1="414.0" y1="781" x2="436.0" y2="781" stroke="#b9791f" stroke-width="1.2"/>
+<text x="442.0" y="785" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">headline event</text>
+</svg>
+</div>
+</div>
+</body>
+</html>

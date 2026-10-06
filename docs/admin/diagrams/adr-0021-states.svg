@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1200 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="adr-0021-states-title adr-0021-states-desc" id="adr-0021-states-root">
+<title id="adr-0021-states-title">ReleaseRecord state machine</title>
+<desc id="adr-0021-states-desc">State machine for one release: proposed, merged, progressing, healthy, then superseded or rolled back, with sync-failed and aborted branches.</desc>
+<defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
+      #adr-0021-states-root { font-family: 'Geist',system-ui,sans-serif; color: #1b1f24; }
+      #adr-0021-states-root .diagram-container { width:100%;overflow-x:auto }
+      #adr-0021-states-root .diagram-container { overflow-x:visible }</style>
+          <marker id="adr-0021-states-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#5b6570"/></marker>
+          <marker id="adr-0021-states-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#b9791f"/></marker>
+          <marker id="adr-0021-states-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e7ba6"/></marker>
+          <marker id="adr-0021-states-arrow-open" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polyline points="0 0, 8 3, 0 6" fill="none" stroke="#2e7ba6" stroke-width="1.2"/></marker>
+        </defs>
+<rect width="100%" height="100%" fill="#f2efe9"/>
+<path d="M166,54 V96" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#adr-0021-states-arrow)"/>
+<path d="M236,128 H316" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#adr-0021-states-arrow)"/>
+<path d="M456,128 H536" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#adr-0021-states-arrow)"/>
+<path d="M696,128 H776" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#adr-0021-states-arrow)"/>
+<path d="M916,128 H996" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#adr-0021-states-arrow)"/>
+<path d="M166,160 V288" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#adr-0021-states-arrow)"/>
+<path d="M386,160 V288" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#adr-0021-states-arrow)"/>
+<path d="M636,160 V288" fill="none" stroke="#b9791f" stroke-width="1.2" marker-end="url(#adr-0021-states-arrow-accent)"/>
+<path d="M846,160 V288" fill="none" stroke="#b9791f" stroke-width="1.2" marker-end="url(#adr-0021-states-arrow-accent)"/>
+<path d="M456,320 H552 Q560,320 560,312 V160" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#adr-0021-states-arrow)"/>
+<path d="M588,96 V76 Q588,68 596,68 H636 Q644,68 644,76 V92" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#adr-0021-states-arrow)"/>
+<rect x="174" y="71" width="57" height="12" rx="2" fill="#f2efe9"/>
+<text x="178" y="80" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">PR OPENED</text>
+<rect x="248" y="111" width="57" height="12" rx="2" fill="#f2efe9"/>
+<text x="276" y="120" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">PR MERGED</text>
+<rect x="462" y="111" width="68" height="12" rx="2" fill="#f2efe9"/>
+<text x="496" y="120" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">ROLLING OUT</text>
+<rect x="713" y="111" width="46" height="12" rx="2" fill="#f2efe9"/>
+<text x="736" y="120" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">HEALTHY</text>
+<rect x="917" y="111" width="79" height="12" rx="2" fill="#f2efe9"/>
+<text x="956" y="120" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">NEWER RELEASE</text>
+<rect x="579" y="51" width="73" height="12" rx="2" fill="#f2efe9"/>
+<text x="616" y="60" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">PAUSE · STEP</text>
+<rect x="174" y="219" width="57" height="12" rx="2" fill="#f2efe9"/>
+<text x="178" y="228" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">PR CLOSED</text>
+<rect x="394" y="219" width="68" height="12" rx="2" fill="#f2efe9"/>
+<text x="398" y="228" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">SYNC FAILED</text>
+<rect x="644" y="219" width="79" height="12" rx="2" fill="#f2efe9"/>
+<text x="648" y="228" fill="#b9791f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">ANALYSIS FAIL</text>
+<rect x="854" y="219" width="79" height="12" rx="2" fill="#f2efe9"/>
+<text x="858" y="228" fill="#b9791f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">ROLLBACK DONE</text>
+<rect x="568" y="251" width="52" height="12" rx="2" fill="#f2efe9"/>
+<text x="572" y="260" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">RETRY OK</text>
+<rect x="96" y="96" width="140" height="64" rx="6" fill="#f2efe9"/>
+<rect x="96" y="96" width="140" height="64" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="104" y="102" width="35" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="122" y="111" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">STATE</text>
+<text x="166" y="134" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Proposed</text>
+<text x="166" y="150" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">PR open</text>
+<rect x="316" y="96" width="140" height="64" rx="6" fill="#f2efe9"/>
+<rect x="316" y="96" width="140" height="64" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="324" y="102" width="35" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="342" y="111" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">STATE</text>
+<text x="386" y="134" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Merged</text>
+<text x="386" y="150" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">awaiting sync</text>
+<rect x="536" y="96" width="160" height="64" rx="6" fill="#f2efe9"/>
+<rect x="536" y="96" width="160" height="64" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="544" y="102" width="35" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="562" y="111" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">STATE</text>
+<text x="616" y="134" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Progressing</text>
+<text x="616" y="150" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">step n of m · paused</text>
+<rect x="776" y="96" width="140" height="64" rx="6" fill="#f2efe9"/>
+<rect x="776" y="96" width="140" height="64" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="784" y="102" width="35" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="802" y="111" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">STATE</text>
+<text x="846" y="134" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Healthy</text>
+<text x="846" y="150" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">serving traffic</text>
+<rect x="996" y="96" width="160" height="64" rx="6" fill="#f2efe9"/>
+<rect x="996" y="96" width="160" height="64" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1.8"/>
+<rect x="1004" y="102" width="50" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="1029" y="111" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">TERMINAL</text>
+<text x="1076" y="134" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Superseded</text>
+<text x="1076" y="150" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">a newer release is live</text>
+<rect x="96" y="288" width="140" height="64" rx="6" fill="#f2efe9"/>
+<rect x="96" y="288" width="140" height="64" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1.8"/>
+<rect x="104" y="294" width="50" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="129" y="303" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">TERMINAL</text>
+<text x="166" y="326" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Closed</text>
+<text x="166" y="342" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">PR closed unmerged</text>
+<rect x="316" y="288" width="140" height="64" rx="6" fill="#f2efe9"/>
+<rect x="316" y="288" width="140" height="64" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="324" y="294" width="35" height="12" rx="2" fill="none" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="342" y="303" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">STATE</text>
+<text x="386" y="326" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Sync failed</text>
+<text x="386" y="342" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">Argo retries</text>
+<rect x="566" y="288" width="140" height="64" rx="6" fill="#f2efe9"/>
+<rect x="566" y="288" width="140" height="64" rx="6" fill="#b9791f" fill-opacity="0.08" stroke="#b9791f" stroke-width="1.8"/>
+<rect x="574" y="294" width="50" height="12" rx="2" fill="none" stroke="#b9791f" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="599" y="303" fill="#b9791f" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">TERMINAL</text>
+<text x="636" y="326" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Aborted</text>
+<text x="636" y="342" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">old stable still serving</text>
+<rect x="776" y="288" width="140" height="64" rx="6" fill="#f2efe9"/>
+<rect x="776" y="288" width="140" height="64" rx="6" fill="#b9791f" fill-opacity="0.08" stroke="#b9791f" stroke-width="1.8"/>
+<rect x="784" y="294" width="50" height="12" rx="2" fill="none" stroke="#b9791f" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="809" y="303" fill="#b9791f" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">TERMINAL</text>
+<text x="846" y="326" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Rolled back</text>
+<text x="846" y="342" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">replaced by rollbackOf</text>
+<circle cx="166" cy="48" r="6" fill="#1b1f24"/>
+<text x="96" y="420" fill="#1b1f24" font-size="14" font-style="italic" font-family="'Instrument Serif', 'Noto Serif', Georgia, serif"><tspan x="96" dy="0">Drift is a fact, not a state. If the observed release-id matches no open release, the reducer</tspan><tspan x="96" dy="17">records a drift fact and alerts: an out-of-band change that no hook could ever see.</tspan></text>
+<text x="96" y="470" fill="#1b1f24" font-size="14" font-style="italic" font-family="'Instrument Serif', 'Noto Serif', Georgia, serif"><tspan x="96" dy="0">A rollback is a new release with its own release-id and rollbackOf. When it turns Healthy,</tspan><tspan x="96" dy="17">the release it replaces becomes Rolled back.</tspan></text>
+<line x1="30" y1="508" x2="1170" y2="508" stroke="#1b1f24" stroke-opacity="0.10" stroke-width="0.8"/>
+<text x="30" y="524" fill="#5b6570" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">LEGEND</text>
+<rect x="110" y="516" width="14" height="10" rx="2" fill="#fff" stroke="#1b1f24"/>
+<text x="134" y="525" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">state</text>
+<rect x="198.0" y="516" width="14" height="10" rx="2" fill="#fff" stroke="#1b1f24" stroke-width="1.8"/>
+<text x="222.0" y="525" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">terminal state</text>
+<rect x="336.4" y="516" width="14" height="10" rx="2" fill="#b9791f" fill-opacity="0.08" stroke="#b9791f"/>
+<text x="360.4" y="525" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">new visibility</text>
+<line x1="474.79999999999995" y1="521" x2="496.79999999999995" y2="521" stroke="#5b6570" stroke-width="1.2"/>
+<text x="502.79999999999995" y="525" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">transition</text>
+</svg>
