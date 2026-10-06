@@ -48,7 +48,7 @@ it afterwards, and the sweeper removes it past its retention.
 | Move | Caused by | Written by |
 |---|---|---|
 | (new) → `proposed` | The release PR opens | `open-release-pr` |
-| `proposed` → `merged` / `closed` | The gitops PR closes (merged or not) | `mark-release-merged`, run by `bypass-merge-check` on every gitops PR close. It only moves `proposed` (or a record with no state), never a state the relay owns. |
+| `proposed` → `merged` | The gitops PR merges | `mark-release-merged`, run by `bypass-merge-check`, which is triggered by the **push to main the merge produces** (`resolve-merged-pr` turns the pushed commit back into the PR number; a push that is not a PR merge skips it). It only moves `proposed` (or a record with no state), never a state the relay owns. |
 | `merged` → `progressing` | The Rollout reports `Progressing` or `Paused` | relay |
 | `merged` → `sync-failed` | Argo CD reports a failing sync | relay |
 | `sync-failed` → `progressing` | Argo's retry succeeded and the Rollout reports | relay |
@@ -183,3 +183,9 @@ Rollback (a release with `rollbackOf`, `rolled-back`, the `service.rolledback` e
 policy for it), deleting the hook Jobs and the per-app identity chart (phase 3, when `emit`
 goes on and the relay is renamed), moving the events onto the spec's vocabulary
 ([ADR-0022](adr/0022-cdevents-conformance-and-vocabulary.md)).
+
+## Known gap: a PR closed without merging
+
+`closed` (a PR closed unmerged) is in the state machine but nothing sets it yet. The merge signal is
+the push to main, and an unmerged close produces no push. The record stays `proposed` until
+retention deletes it (14 days). Nothing downstream depends on it.

@@ -1,14 +1,12 @@
-# BOILERPLATE - break-glass audit trigger. Unlike the governance-check files, this
-# doesn't report a GitHub Check - it fires once a PR is closed (merged or not) and
-# hands off to detect-bypass-merge.yaml to decide whether anything needs alerting.
+# BOILERPLATE - runs after a gitops-repo PR merges: the break-glass audit (does not report a
+# GitHub Check) and the release record's merge signal (ADR-0021 phase 2). Both hand off to
+# bypass-merge-check.
 #
-# on-cel-expression (not just on-event) is what limits this to close events - PaC's
-# on-event alone can't distinguish close from open/sync.
-#
-# has(body.action) guards against a push webhook (e.g. this PR's own merge) hitting the
-# same on-cel-expression once present: on-event alone is otherwise dead, since PaC
-# evaluates on-cel-expression against every webhook delivery for the repo, and a push
-# event's body has no `action` key.
+# Triggered by the PUSH to main that the merge produces, not by the pull_request "closed" event
+# this file used to match. PaC handles a closed PR itself (it cancels that PR's in-flight runs,
+# logging "no pipelinerun found for repository ... and pullRequest N") and never matches a
+# template against it, so the old trigger never fired (found live 2026-10-06). The Pipeline
+# turns the pushed commit back into a PR number and skips pushes that are not PR merges.
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
@@ -16,8 +14,8 @@ metadata:
   labels:
     hangar.io/app: "<APP_NAME>"
   annotations:
-    pipelinesascode.tekton.dev/on-event: "[pull_request]"
-    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.action) && body.action == "closed"'
+    pipelinesascode.tekton.dev/on-event: "[push]"
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
     pipelinesascode.tekton.dev/max-keep-runs: "5"
 spec:
   pipelineRef:
@@ -28,8 +26,7 @@ spec:
       - { name: namespace, value: platform-catalog }
   params:
     - { name: repo-url, value: "{{ repo_url }}" }
-    - { name: pr-number, value: "{{ body.pull_request.number }}" }
-    - { name: merged, value: "{{ body.pull_request.merged }}" }
+    - { name: revision, value: "{{ revision }}" }
   taskRunTemplate:
     serviceAccountName: pipeline-runner
   timeouts:
