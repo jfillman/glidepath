@@ -12,9 +12,9 @@
 # predates the mechanism) means pr-url/pr-created-at are just empty, same graceful
 # degradation release-log-emit.yaml/release-outcome-span.yaml already apply downstream.
 #
-# Self-cleaning: deletes the ConfigMap once read, since release-outcome-notify.yaml only
-# ever needs it once per confirmed outcome - pr-namespace-ttl-sweep is the backstop for a
-# release whose PR never merges (this Task then never runs at all).
+# No longer self-cleaning (ADR-0021 phase 2): the record now carries the release's state
+# and argocd-outcome-relay keeps updating it after the first outcome, so it must outlive
+# this read. The release-record sweeper (control plane) deletes it past its retention.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -58,7 +58,6 @@ spec:
           if kubectl get configmap "${cm_name}" -n "${NAMESPACE}" >/dev/null 2>&1; then
             pr_url="$(kubectl get configmap "${cm_name}" -n "${NAMESPACE}" -o jsonpath='{.data.prUrl}' 2>/dev/null || true)"
             pr_created_at="$(kubectl get configmap "${cm_name}" -n "${NAMESPACE}" -o jsonpath='{.data.prCreatedAt}' 2>/dev/null || true)"
-            kubectl delete configmap "${cm_name}" -n "${NAMESPACE}" --ignore-not-found --wait=false
           else
             echo "no release-tracking ConfigMap for chain-id '${CHAIN_ID}' (already consumed, TTL-swept, or this release predates the mechanism) - pr-url/pr-created-at will be empty." >&2
           fi

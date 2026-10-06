@@ -1,0 +1,147 @@
+# ADR-0021 phase 2. Two jobs on the dev-side release records (release-tracking-<chain-id>
+# ConfigMaps, one per release, state kept by argocd-outcome-relay):
+#
+#  1. Stall alert. A release that was merged but never reported a rollout fact, or that is
+#     "progressing" with no fact for much longer than the heartbeat, is a release that
+#     started and went quiet: a lost event, a broken relay or notification config, or a
+#     Rollout deleted mid-release. Raised as a Kubernetes Event (reason ReleaseStalled) on the
+#     record, once per state, the way stalled-pipeline-detector raises its Events.
+#  2. Retention. Records are no longer deleted when the outcome is first read (the state
+#     machine needs them afterwards), so they are swept here: terminal or closed records past
+#     RECORD_TTL_DAYS, and proposals and state-less legacy records past it too.
+#
+# Heartbeat facts arrive every 15 minutes while the Rollouts notification config is working,
+# so 45 minutes of silence from a "progressing" release means something is wrong, while a
+# canary paused for a person to promote it is not silent (the heartbeat keeps reporting).
+#
+# RBAC is per Application namespace (glidepath-app's identity/release-record-relay.yaml
+# binds this identity there), not cluster-wide: the only cluster-scoped grant is listing
+# namespaces to find them.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-record-sweeper
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "broker"
+  namespace: platform-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: release-record-sweeper-namespaces
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "broker"
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: release-record-sweeper-namespaces
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "broker"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: release-record-sweeper-namespaces }
+subjects:
+  - kind: ServiceAccount
+    name: release-record-sweeper
+    namespace: platform-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: release-record-sweeper
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "broker"
+  namespace: platform-system
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 300
+      template:
+        spec:
+          serviceAccountName: release-record-sweeper
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: sweep
+              image: ghcr.io/jfillman/glidepath-toolbox:latest
+              imagePullPolicy: IfNotPresent  # published to ghcr.io/jfillman, not kind-loaded
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              env:
+                - name: RELEASE_STALL_MINUTES
+                  value: "45"
+                - name: RECORD_TTL_DAYS
+                  value: "14"
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -uo pipefail
+                  now="$(date -u +%s)"
+                  stall_s=$(( RELEASE_STALL_MINUTES * 60 ))
+                  ttl_s=$(( RECORD_TTL_DAYS * 86400 ))
+                  epoch() { [[ -n "$1" ]] && date -u -d "$1" +%s 2>/dev/null || echo 0; }
+
+                  for ns in $(kubectl get namespace -o name | sed 's#^namespace/##' | grep -E '^app-.+-cicd$'); do
+                    # A namespace without the per-app Role yet (chart not rolled out) is skipped, not fatal.
+                    records="$(kubectl get configmap -n "${ns}" -l hangar.io/subcomponent=release-tracking -o json 2>/dev/null)" || {
+                      echo "[release-record-sweeper] cannot list records in ${ns} (no Role yet?) - skipping"; continue; }
+
+                    # "-" stands for an empty field: bash's read collapses consecutive tabs (tab is
+                    # whitespace to IFS), which silently shifted every later field left.
+                    jq -r '.items[] | [.metadata.name, (.data.state // "-"), (.data.stateAt // "-"), (.data.mergedAt // "-"),
+                                       (.data.lastFactAt // "-"), .metadata.creationTimestamp,
+                                       (.metadata.labels["hangar.io/stall-alerted"] // "-")] | @tsv' <<<"${records}" |
+                    while IFS=$'\t' read -r name state state_at merged_at last_fact created alerted; do
+                      for v in state state_at merged_at last_fact alerted; do [[ "${!v}" == "-" ]] && printf -v "${v}" ''; done
+
+                      # 2. retention
+                      case "${state}" in
+                        healthy|aborted|degraded|superseded|rolled-back|closed) anchor="$(epoch "${state_at}")" ;;
+                        *) anchor="$(epoch "${created}")" ;;   # proposed, merged-and-never-started, legacy
+                      esac
+                      if [[ "${state}" != "merged" && "${state}" != "progressing" && "${anchor}" -gt 0 && $(( now - anchor )) -gt ${ttl_s} ]]; then
+                        echo "[release-record-sweeper] ${ns}/${name} (${state:-no state}) past ${RECORD_TTL_DAYS}d - deleting"
+                        kubectl delete configmap "${name}" -n "${ns}" --ignore-not-found --wait=false
+                        continue
+                      fi
+
+                      # 1. stall alert, once per state
+                      quiet_since=0
+                      case "${state}" in
+                        merged)      quiet_since="$(epoch "${merged_at}")" ;;
+                        progressing) quiet_since="$(epoch "${last_fact}")" ;;
+                      esac
+                      if [[ "${quiet_since}" -gt 0 && $(( now - quiet_since )) -gt ${stall_s} && "${alerted}" != "${state}" ]]; then
+                        mins=$(( (now - quiet_since) / 60 ))
+                        if [[ "${state}" == "merged" ]]; then
+                          message="release PR merged ${mins} min ago but the cluster has reported no rollout activity - the sync may not have started, or facts are not arriving"
+                        else
+                          message="release has been progressing with no rollout fact for ${mins} min - the heartbeat should arrive every 15 min"
+                        fi
+                        echo "[release-record-sweeper] STALLED ${ns}/${name}: ${message}"
+                        now_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                        # printf + explicit \n, not a heredoc, for the reason stalled-pipeline-detector gives.
+                        printf 'apiVersion: v1\nkind: Event\nmetadata:\n  generateName: release-stalled-\n  namespace: %s\ninvolvedObject:\n  apiVersion: v1\n  kind: ConfigMap\n  name: %s\n  namespace: %s\nreason: ReleaseStalled\nmessage: %s\ntype: Warning\nsource:\n  component: release-record-sweeper\nfirstTimestamp: "%s"\nlastTimestamp: "%s"\ncount: 1\n' \
+                          "${ns}" "${name}" "${ns}" "$(jq -Rn --arg m "${message}" '$m')" "${now_ts}" "${now_ts}" \
+                          | kubectl create -f - >/dev/null || echo "[release-record-sweeper] could not create the event for ${ns}/${name}"
+                        kubectl label configmap "${name}" -n "${ns}" "hangar.io/stall-alerted=${state}" --overwrite >/dev/null || true
+                      fi
+                    done
+                  done

@@ -44,9 +44,10 @@ rules:
   # resolve-release-tracking Task reads + deletes it). Can't be resourceNames-restricted
   # like the app-secrets grant above - the name is dynamic per chain-id - so this is
   # genuinely configmaps-wide within this one namespace, not just one object.
+  # list: mark-release-merged.yaml finds a release's record by its PR URL (ADR-0021 phase 2).
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "create", "patch", "delete"]
+    verbs: ["get", "list", "create", "patch", "delete"]
   # Deliberately no apps/deployments rule (that's deploy-rbac.yaml, a peer namespace),
   # no impersonate, no wildcards, no cluster-scoped rules - this plus the configmaps
   # grant above is the entire blast radius of a compromised pipeline-runner identity

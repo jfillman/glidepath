@@ -805,3 +805,62 @@ removing anything:
 
 `go test ./cmd/argocd-outcome-relay` runs `argocd-outcome-hook.sh` for each of its three
 phases and asserts the fact path builds an identical event.
+
+## ADR-0021 phase 2: the release state machine (2026-10-06)
+
+The fact endpoint now keeps each release's state on its record and decides, from the state,
+what to emit. Everything downstream of the broker is unchanged.
+
+**State** lives on the `release-tracking-<chain-id>` ConfigMap (one per release): `state`
+(`proposed`, `merged`, `progressing`, `healthy`, `degraded`, `aborted`, `superseded`,
+`rolled-back`, `closed`), `stateAt`, `lastFactAt`, `lastFactPhase`, `podHash`, `drift`, and
+the CDEvent kinds already sent (`emittedLive`, `emittedShadow`: separate, so flipping
+shadow to emit sends the history instead of believing it was sent).
+
+**Who moves it**
+- `open-release-pr.yaml` creates it `proposed`, labelled `hangar.io/app|env|cluster`.
+- `mark-release-merged.yaml`, run by `bypass-merge-check` on every gitops PR close, moves
+  `proposed` to `merged` or `closed`. It never touches a state the relay owns.
+- `argocd-outcome-relay` (`reducer.go`) moves it from facts. Rules, each covered by a test
+  replaying what phases 0 and 1 saw: a release's pod template hash is fixed by its first fact
+  and a different hash afterwards is **drift** (a Kubernetes Event `ReleaseDrift` on the
+  record), never a new release, so a scale, restart, heartbeat or manual edit emits nothing;
+  a `Progressing` after the release is terminal is ignored; `Degraded` after `Healthy` was
+  reported is drift, not a failed deploy; a first fact that is already `Healthy` still emits
+  the `deploying` that was lost before it; a newer release's first fact marks older live
+  releases of the same app, environment and cluster `superseded`.
+- Events are forwarded **before** state is written, so a failed write repeats deterministic
+  event ids (collapsed downstream) instead of losing an event; a forward failure returns 502
+  and writes nothing, so the next heartbeat fact retries. A write conflict between the two
+  relay replicas re-reads and re-applies. A record the relay cannot write degrades to the
+  phase 1 stateless behaviour.
+
+**Sync failures** come from a second endpoint, `POST /argocd/<cluster>` (`argocd_facts.go`),
+fed by the tenant Argo CD's notifications controller (`argocd-apps` on kind-prod). The Rollouts
+engine never sees a sync that is rejected before the Rollout changes; without this a release
+that never started looks the same as one still queued. Tenant Applications retry (limit 5,
+backoff to 10 minutes, about 15 minutes to a final `Failed`) and the phase stays `Running`
+through the retries, so the trigger fires on the first failed attempt (`retryCount > 0`) and on
+the final failure. The relay finds the release by `(app, env, cluster)` (newest `merged`,
+`progressing` or `sync-failed` record; a sync with no such release, such as a hand edit to
+`values.yaml`, is ignored), moves it to `sync-failed` (not terminal: a later Rollout fact moves
+it on), keeps the error in `lastError`, and emits one `deploying` and one failure per release
+however many retries Argo makes. The hook path sent one per attempt.
+
+**Permissions** are per Application namespace now: `glidepath-app`'s
+`identity/release-record-relay.yaml` gives the relay get, list and update on ConfigMaps and
+create on Events there, and gives the sweeper its own Role. The cluster-wide `get` that
+phase 1 added stays until every namespace has the Role, then goes.
+
+**The sweeper** (`release-record-sweeper`, control plane, every 10 minutes): raises a
+`ReleaseStalled` Event, once per state, on a record that is `merged` with no fact for 45
+minutes or `progressing` with no fact for 45 minutes (the heartbeat arrives every 15), and
+deletes records past 14 days (terminal, closed, proposed, or state-less legacy). Records are
+no longer deleted when the outcome is first read.
+
+Tests: `go test ./cmd/argocd-outcome-relay` (reducer, persistence, supersede, drift,
+conflict, forward failure, no-permission fallback), and the two shell tests
+`charts/glidepath-catalog/tests/mark_release_merged_test.sh` and
+`charts/glidepath-control-plane/tests/release_record_sweeper_test.sh`, which run the real
+scripts against a stub `kubectl` (the second found a real field-shift bug while it was being
+written).
