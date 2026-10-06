@@ -34,7 +34,7 @@ func newTestHandler(t *testing.T, mode string) (*handler, *[][]byte) {
 			Data: map[string]string{
 				"appNamespace": "app-gate-api-cicd", "appName": "gate-api", "env": "staging", "cluster": "kind-prod",
 				"gitUrl": "https://github.com/o/gate-api.git", "gitRevision": "abc123",
-				"flowStartTime": "2026-10-05T10:00:00Z", "configJson": testConfigJSON,
+				"flowStartTime": "2026-10-05T10:00:00Z", "configJson": testConfigJSON, "releaseId": "chain1:kind-prod/staging",
 			},
 		},
 	)

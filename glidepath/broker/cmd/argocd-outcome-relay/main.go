@@ -66,11 +66,16 @@ type registryEntry struct {
 // FlowStartTime at all, only Cluster/AppNamespace/AppName (the last two purely for
 // log lines).
 type cdEventEnvelope struct {
+	Context struct {
+		Type    string `json:"type"`
+		ChainID string `json:"chainId"`
+	} `json:"context"`
 	Subject struct {
 		Content struct {
 			Cluster      string `json:"cluster"`
 			AppNamespace string `json:"appNamespace"`
 			AppName      string `json:"appName"`
+			Outcome      string `json:"outcome"`
 		} `json:"content"`
 	} `json:"subject"`
 }
@@ -148,7 +153,16 @@ func (h *handler) handleOutcome(w http.ResponseWriter, r *http.Request) {
 	// Logged normalized so the ADR-0021 fact path's shadow events can be diffed against
 	// the hook path's real ones; see facts.go.
 	log.Printf("argocd-outcome-relay: hook-event %s", normalizeEvent(body))
-	if err := h.forwardToBroker(ctx, body); err != nil {
+	// In emit mode the fact path reports releases, so the hook Jobs' copy of the same event
+	// must not also be forwarded (different ids, so the broker would not collapse them).
+	if h.factsMode == "emit" {
+		if suppress, why := h.supersededByFacts(ctx, &env); suppress {
+			log.Printf("argocd-outcome-relay: hook-event not forwarded, the fact path owns this release: %s (cluster=%s app=%s/%s)", why, cluster, env.Subject.Content.AppNamespace, env.Subject.Content.AppName)
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+	}
+	if err := h.forward(ctx, body); err != nil {
 		log.Printf("argocd-outcome-relay: forwarding to broker failed (cluster=%s app=%s/%s): %v", cluster, env.Subject.Content.AppNamespace, env.Subject.Content.AppName, err)
 		http.Error(w, "failed to forward event", http.StatusBadGateway)
 		return
