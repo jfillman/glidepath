@@ -75,7 +75,7 @@ every row below is a plain test) handles it like this:
 | `Degraded` | State `aborted` or `degraded`; one `environment.deployed` (failure) event. |
 | The first fact seen is already `Healthy` or `Degraded` | The `deploying` event that was lost before it is sent first, then the outcome. |
 | `Progressing` after the release is terminal | Ignored (Phase 1 saw one arrive in the same second as `Healthy`). |
-| **Same release-id, different pod template hash** | **Drift**: a `ReleaseDrift` Event on the record, state unchanged, no CDEvent. This is a scale-less manual edit, or an `undo` that selfHeal has not yet reverted. A scale, a restart or a heartbeat keep the hash, so they are not drift and not releases. |
+| **Same release-id, different pod template hash** | **Drift**: a `ReleaseDrift` Event on the record, state unchanged, no CDEvent. A manual edit, or an `undo` that selfHeal has not yet reverted. A scale, a restart or a heartbeat keep the hash, so they are not drift and not releases. |
 | `Degraded` after `Healthy` was already reported | Drift, not a failed deploy: the workload failed after a good release. |
 | An Argo CD sync failure on a merged, progressing or sync-failed release | State `sync-failed`; `deploying` and a failure event, once per release however many retries. |
 | An Argo CD sync failure with no such release in flight (a hand edit to `values.yaml`) | Ignored. |
