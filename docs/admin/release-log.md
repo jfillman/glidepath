@@ -176,6 +176,6 @@ has deliberately kept narrow everywhere else (TokenReview-scoped brokering, per-
 impersonation - see `docs/admin/release.md`'s own token-broker section). Closing this
 gap needs a real design decision (e.g. `mark-release-pending.yaml` also stamping a
 `pr-url` annotation, and `dora-exporter` posting a `dev.cdevents.environment.deployed`
-CDEvent back through the broker the same way `argocd-outcome-relay` already does "on
+CDEvent back through the broker the same way `glidepath-relay` already does "on
 behalf of" any app - reusing that already-reviewed trust boundary rather than opening a
 new one), not a quick patch alongside this feature.

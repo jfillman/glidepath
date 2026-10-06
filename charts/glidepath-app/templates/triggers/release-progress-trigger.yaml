@@ -77,7 +77,7 @@ spec:
           serviceAccountName: pipeline-runner
         {{- /* Same cross-cluster DNS gap as release-outcome-trigger.yaml's identical
         block - this PipelineRun also runs on the dev cluster (fired by
-        argocd-outcome-relay, itself dev-hosted), so notify-backstage's Task pod here
+        glidepath-relay, itself dev-hosted), so notify-backstage's Task pod here
         needs the same fix. */ -}}
         {{- if .Values.backstageHostAliasIP }}
         taskRunSpecs:

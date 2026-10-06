@@ -130,7 +130,7 @@ flow trace already reports. `flow-start-time` still rides along as a span attrib
 instead - a strict superset, derivable without re-instrumenting anything.
 
 Live-verified end to end (not just that the Pipeline completes): fired a synthetic
-outcome directly at `argocd-outcome-relay` with real, distinct `chainId`/`prCreatedAt`
+outcome directly at `glidepath-relay` with real, distinct `chainId`/`prCreatedAt`
 values, confirmed both reached the `release-outcome-notify` PipelineRun and its `span`
 TaskRun's own params, then queried Tempo directly and confirmed the resulting span's
 real `startTimeUnixNano` matched `prCreatedAt` exactly - not `flowStartTime`.

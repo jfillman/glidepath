@@ -1,7 +1,7 @@
-# templates/clusters/argocd-outcome-relay.yaml
+# templates/clusters/glidepath-relay.yaml
 #
 # Sibling entry point into the shared broker, deployed in platform-system alongside it -
-# see glidepath/broker/cmd/argocd-outcome-relay/main.go for the full design
+# see glidepath/broker/cmd/glidepath-relay/main.go for the full design
 # (docs/admin/multi-cluster.md).
 #
 # RBAC is narrow and enumerated, not wildcard get-on-secrets: resourceNames lists exactly
@@ -12,7 +12,7 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: argocd-outcome-relay
+  name: glidepath-relay
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
     hangar.io/subcomponent: "clusters"
@@ -21,7 +21,7 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: argocd-outcome-relay
+  name: glidepath-relay
   namespace: platform-system
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
@@ -42,15 +42,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: argocd-outcome-relay
+  name: glidepath-relay
   namespace: platform-system
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
     hangar.io/subcomponent: "clusters"
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: argocd-outcome-relay }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: glidepath-relay }
 subjects:
   - kind: ServiceAccount
-    name: argocd-outcome-relay
+    name: glidepath-relay
     namespace: platform-system
 ---
 # ADR-0021: the fact endpoint reads the dev-side release record,
@@ -61,7 +61,7 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: argocd-outcome-relay-records
+  name: glidepath-relay-records
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
     hangar.io/subcomponent: "clusters"
@@ -73,20 +73,20 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: argocd-outcome-relay-records
+  name: glidepath-relay-records
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
     hangar.io/subcomponent: "clusters"
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: argocd-outcome-relay-records }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: glidepath-relay-records }
 subjects:
   - kind: ServiceAccount
-    name: argocd-outcome-relay
+    name: glidepath-relay
     namespace: platform-system
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: argocd-outcome-relay
+  name: glidepath-relay
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
     hangar.io/subcomponent: "clusters"
@@ -94,12 +94,12 @@ metadata:
 spec:
   replicas: 2
   selector:
-    matchLabels: { app: argocd-outcome-relay }
+    matchLabels: { app: glidepath-relay }
   template:
     metadata:
-      labels: { app: argocd-outcome-relay }
+      labels: { app: glidepath-relay }
     spec:
-      serviceAccountName: argocd-outcome-relay
+      serviceAccountName: glidepath-relay
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532 # distroless "nonroot" - see interceptor.yaml's identical comment for why this is required, not cosmetic
@@ -117,7 +117,7 @@ spec:
                   expirationSeconds: 3600
       containers:
         - name: relay
-          image: ghcr.io/jfillman/glidepath-argocd-outcome-relay:p3a-2239db6
+          image: ghcr.io/jfillman/glidepath-relay:p3a-2239db6
           # Published to ghcr.io/jfillman - previously referenced a nonexistent
           # ghcr.io/platform-cicd org; relay pods were only surviving on a stale
           # locally-cached image (same gap dora-exporter had).
@@ -152,13 +152,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: argocd-outcome-relay
+  name: glidepath-relay
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
     hangar.io/subcomponent: "clusters"
   namespace: platform-system
 spec:
   type: NodePort
-  selector: { app: argocd-outcome-relay }
+  selector: { app: glidepath-relay }
   ports: [{ name: http, port: 8080, targetPort: http, nodePort: 30880 }]
 {{- end }}

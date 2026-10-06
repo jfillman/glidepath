@@ -200,7 +200,7 @@ every key `dora-exporter`'s own PATCH calls have added since.
 
 This only works because the call into `/argocd-outcome` now happens as a Tekton Task
 (`update-dora-metrics.yaml`, run from `release-outcome-notify`'s own PipelineRun) rather
-than a direct HTTP call from `argocd-outcome-relay` itself - not because a Task can do
+than a direct HTTP call from `glidepath-relay` itself - not because a Task can do
 anything a Go service couldn't, but because moving the call is what prompted noticing
 `dora-exporter` already had everything it needed to close this gap on its own cluster,
 and gave a natural home to the code that did it. See `multi-cluster.md`'s
@@ -330,7 +330,7 @@ Application's ArgoCD Application object, no other resource type.
   `<app-name>-staging`.
 - The above all cover the same-cluster path (Phase F's original scope). For the
   cluster-mapped path (`update-dora-metrics.yaml`'s Task, fed by
-  `argocd-outcome-relay` via the broker/Trigger), see `multi-cluster.md`'s
+  `glidepath-relay` via the broker/Trigger), see `multi-cluster.md`'s
   "Live-verified end to end, 2026-08-17" section - a real `checkout-api`/`prod`
   release confirmed both `dora_deployments_total` and
   `dora_releases_total{outcome="succeeded"|"failed"}` incrementing via that path too

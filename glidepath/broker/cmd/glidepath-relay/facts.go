@@ -106,7 +106,7 @@ func (h *handler) handleFacts(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	if err := h.authenticate(ctx, cluster, r.Header.Get("Authorization")); err != nil {
-		log.Printf("argocd-outcome-relay: facts auth failed for cluster=%s: %v", cluster, err)
+		log.Printf("glidepath-relay: facts auth failed for cluster=%s: %v", cluster, err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -204,11 +204,11 @@ func (h *handler) apply(w http.ResponseWriter, ctx context.Context, cluster, who
 				return
 			}
 			if h.mode() != "emit" {
-				log.Printf("argocd-outcome-relay: shadow-event %s", normalizeEvent(ev))
+				log.Printf("glidepath-relay: shadow-event %s", normalizeEvent(ev))
 				continue
 			}
 			if err := h.forward(ctx, ev); err != nil {
-				log.Printf("argocd-outcome-relay: forwarding event failed (cluster=%s source=%s kind=%s): %v", cluster, who, em.Kind, err)
+				log.Printf("glidepath-relay: forwarding event failed (cluster=%s source=%s kind=%s): %v", cluster, who, em.Kind, err)
 				http.Error(w, "failed to forward event", http.StatusBadGateway)
 				return
 			}
@@ -221,7 +221,7 @@ func (h *handler) apply(w http.ResponseWriter, ctx context.Context, cluster, who
 		if err != nil {
 			// No permission, or the record vanished: carry on statelessly (the deterministic
 			// ids still make repeats harmless) rather than dropping the fact.
-			log.Printf("argocd-outcome-relay: not persisting release state for %s/%s: %v", cm.Namespace, cm.Name, err)
+			log.Printf("glidepath-relay: not persisting release state for %s/%s: %v", cm.Namespace, cm.Name, err)
 		} else if firstFact {
 			h.supersedeOlder(ctx, cm)
 		}
@@ -381,7 +381,7 @@ func (h *handler) supersedeOlder(ctx context.Context, cur *corev1.ConfigMap) {
 	}
 	list, err := h.clientset.CoreV1().ConfigMaps(cur.Namespace).List(ctx, metav1.ListOptions{LabelSelector: sel})
 	if err != nil {
-		log.Printf("argocd-outcome-relay: cannot list earlier releases in %s: %v", cur.Namespace, err)
+		log.Printf("glidepath-relay: cannot list earlier releases in %s: %v", cur.Namespace, err)
 		return
 	}
 	for i := range list.Items {
@@ -400,7 +400,7 @@ func (h *handler) supersedeOlder(ctx context.Context, cur *corev1.ConfigMap) {
 		old.Data[keyState], old.Data[keyStateAt] = stSuperseded, time.Now().UTC().Format(time.RFC3339)
 		old.Data["supersededBy"] = cur.Data["releaseId"]
 		if _, err := h.clientset.CoreV1().ConfigMaps(old.Namespace).Update(ctx, old, metav1.UpdateOptions{}); err != nil {
-			log.Printf("argocd-outcome-relay: marking %s/%s superseded: %v", old.Namespace, old.Name, err)
+			log.Printf("glidepath-relay: marking %s/%s superseded: %v", old.Namespace, old.Name, err)
 		}
 	}
 }
@@ -408,16 +408,16 @@ func (h *handler) supersedeOlder(ctx context.Context, cur *corev1.ConfigMap) {
 // recordDrift raises a Kubernetes Event on the release record; the stalled-pipeline
 // detector's Events are how this platform already surfaces this class of thing.
 func (h *handler) recordDrift(ctx context.Context, cm *corev1.ConfigMap, relID, msg string) {
-	log.Printf("argocd-outcome-relay: release drift on %s: %s", relID, msg)
+	log.Printf("glidepath-relay: release drift on %s: %s", relID, msg)
 	ev := &corev1.Event{
 		ObjectMeta:     metav1.ObjectMeta{GenerateName: "release-drift-", Namespace: cm.Namespace},
 		InvolvedObject: corev1.ObjectReference{Kind: "ConfigMap", Namespace: cm.Namespace, Name: cm.Name, UID: cm.UID},
 		Reason:         "ReleaseDrift", Message: msg, Type: corev1.EventTypeWarning,
-		Source:         corev1.EventSource{Component: "argocd-outcome-relay"},
+		Source:         corev1.EventSource{Component: "glidepath-relay"},
 		FirstTimestamp: metav1.Now(), LastTimestamp: metav1.Now(), Count: 1,
 	}
 	if _, err := h.clientset.CoreV1().Events(cm.Namespace).Create(ctx, ev, metav1.CreateOptions{}); err != nil {
-		log.Printf("argocd-outcome-relay: could not record the drift event: %v", err)
+		log.Printf("glidepath-relay: could not record the drift event: %v", err)
 	}
 }
 

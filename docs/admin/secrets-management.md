@@ -130,7 +130,7 @@ hand-provisioned `platform-outcome-relay-token` `Secret`, copied by hand into ev
 app's namespace on the upper cluster (`hack/bootstrap-upper-cluster.sh`). Now:
 
 - The dev-cluster (verifier) side - `cluster-<name>-relay-token` `Secret`s in
-  `platform-system`, which `argocd-outcome-relay` compares bearer tokens against - sync
+  `platform-system`, which `glidepath-relay` compares bearer tokens against - sync
   from `platform-cicd-dev`'s Infisical project (`relay-token-<cluster>` key per
   registered cluster), via `charts/glidepath-control-plane/templates/clusters/
   relay-token-external-secret.yaml`.

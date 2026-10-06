@@ -12,7 +12,7 @@
 // (internal/githubapp, handleGitHubInstallationToken below) - an extension of this same
 // trusted component rather than a new service, since copying the App's private key into
 // every Application namespace would let one compromised Task mint tokens for every
-// other Application's repos. cmd/argocd-outcome-relay shares the same githubapp client
+// other Application's repos. cmd/glidepath-relay shares the same githubapp client
 // for a different reason (see its own header).
 package main
 
