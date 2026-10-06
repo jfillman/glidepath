@@ -305,7 +305,7 @@ failing required check, and how it's made visible.
   requirement" section above) - a manual, out-of-band GitHub setting, not platform IaC.
 - **Audit**: GitHub's own merge/audit-log record is real and already visible on the PR,
   but a security-relevant bypass shouldn't depend on someone thinking to go check it -
-  `charts/glidepath-catalog/templates/tasks/detect-bypass-merge.yaml` fires on every PR close (via the new
+  `charts/glidepath-catalog/templates/tasks/detect-bypass-merge.yaml` fires after every PR merge (via the
   `.tekton/pull-request-merged.yaml` trigger) and posts a real Slack alert (same
   `slack-webhook-url` Secret/design language as every other notification, but **not**
   gated on `notifications.slack.enabled` - a bypass alert isn't a routine preference)
@@ -315,7 +315,15 @@ failing required check, and how it's made visible.
   with all checks green correctly produced no alert; a real PR with a genuinely failing
   `provenance`, fed synthetically as `merged=true` (no actual bypass has happened yet
   on this repo), correctly detected it and posted a real, visible Slack message.
-  **Still not fully verified** (a real PR close event with an actual bypass hasn't been
+  **Correction, 2026-10-06:** the trigger described below never fired. It matched the
+  `pull_request` "closed" event, and Pipelines-as-Code handles a closed PR itself (cancelling
+  its in-flight runs, logging "no pipelinerun found for repository ... and pullRequest N")
+  without matching any template against it; found live while checking the release record's
+  merge signal. The trigger is now the push to main the merge produces, and
+  `resolve-merged-pr.yaml` turns the pushed commit into the PR number (see that Task). The
+  synthetic verification above exercised the Task, not the trigger. Gitops repos need the new
+  `.tekton/pull-request-merged.yaml` delivered by an onboarding resync.
+  **Still not fully verified** (a real PR merge with an actual bypass hasn't been
   exercised), but a real, related bug WAS found and fixed live 2026-08-12 while
   investigating something else: PaC evaluates a Pipeline's `on-cel-expression` against
   *every* webhook delivery for the repo once one is present, not just events shaped like

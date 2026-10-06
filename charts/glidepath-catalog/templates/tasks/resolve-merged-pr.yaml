@@ -1,0 +1,102 @@
+# catalog/tasks/resolve-merged-pr.yaml
+#
+# Finds the PR a gitops-repo push to main merged. bypass-merge-check used to be triggered by
+# the pull_request "closed" event; Pipelines-as-Code handles a closed PR itself (it cancels
+# that PR's in-flight runs and logs "no pipelinerun found for repository ... and pullRequest
+# N") and never matches a template against it, so the trigger never fired: not for the
+# break-glass audit, and not for mark-release-merged (found live 2026-10-06 on the gate-api
+# release). The push the merge itself produces is delivered and matched, so the trigger is
+# now push to main, and this Task turns the pushed commit back into a PR number: GitHub's
+# "pull requests associated with a commit" lookup, which finds it for merge, squash and rebase
+# merges alike (a commit-message parse would only cover two of the three, and a PaC template
+# variable holding the message would break the YAML on a multi-line message).
+#
+# Legacy path kept: a pr-number and merged passed in directly (the old pull_request-shaped
+# trigger, if it ever works) pass straight through. A push with no merged PR (a direct commit,
+# or a provider writing files) yields empty results, and the Pipeline's `when` skips the
+# rest. Always succeeds.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: resolve-merged-pr
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Resolves the merged PR for a pushed commit on a gitops repo's default branch.
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+      default: ""
+      description: The pushed commit's SHA - PaC's `revision`.
+    - name: pr-number
+      type: string
+      default: ""
+      description: A PR number already known (the legacy pull_request-shaped trigger); passes straight through.
+    - name: merged
+      type: string
+      default: ""
+  results:
+    - name: pr-number
+      description: The merged PR's number, or empty if this push was not a PR merge.
+    - name: merged
+      description: '"true" when pr-number is set.'
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+  steps:
+    - name: resolve
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: REVISION
+          value: $(params.revision)
+        - name: PR_NUMBER
+          value: $(params.pr-number)
+        - name: MERGED
+          value: $(params.merged)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+
+        out_pr=""
+        out_merged=""
+        if [[ -n "${PR_NUMBER}" ]]; then
+          out_pr="${PR_NUMBER}"
+          out_merged="${MERGED:-true}"
+        elif [[ -n "${REVISION}" ]]; then
+          owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+          repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+          token="$(github_app_installation_token "${owner}" "${repo}")"
+          prs="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/pulls")"
+          # a merged PR whose merge commit is this commit; the commit-to-PRs lookup also returns
+          # PRs that merely contain the commit, so require the merge commit to match
+          out_pr="$(jq -r --arg sha "${REVISION}" '[.[] | select(.merged_at != null and .merge_commit_sha == $sha)][0].number // empty' <<<"${prs}")"
+          [[ -n "${out_pr}" ]] && out_merged="true"
+        fi
+
+        if [[ -z "${out_pr}" ]]; then
+          echo "push ${REVISION:-?} to ${REPO_URL} is not a PR merge (a direct commit or a provider write) - nothing to mark or audit."
+        else
+          echo "push ${REVISION:-?} merged PR #${out_pr}"
+        fi
+        printf '%s' "${out_pr}" > "$(results.pr-number.path)"
+        printf '%s' "${out_merged}" > "$(results.merged.path)"

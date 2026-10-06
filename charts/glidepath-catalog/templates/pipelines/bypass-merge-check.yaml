@@ -1,8 +1,11 @@
 # catalog/pipelines/bypass-merge-check.yaml
 #
-# Thin wrapper around detect-bypass-merge.yaml (Phase 3 item 8.6) - matches this
-# platform's existing convention of every gitops-repo PR-check being a Pipeline
-# (sast-check.yaml, image-scan-check.yaml), even where, as here, there's only one Task.
+# Runs after a gitops-repo PR merges: detect-bypass-merge.yaml (the break-glass audit) and
+# mark-release-merged.yaml (the release record's merge signal, ADR-0021 phase 2). Triggered by
+# the push to main the merge produces, not by the pull_request "closed" event: PaC never
+# matches a template against a closed PR (see resolve-merged-pr.yaml), so the old trigger
+# never fired. resolve-merged-pr turns the pushed commit back into the PR number; a push that
+# is not a PR merge skips everything.
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
@@ -11,16 +14,41 @@ metadata:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
 spec:
-  description: Checks whether a just-closed gitops-repo PR merged despite a non-passing required governance check, and alerts Slack if so.
+  description: After a gitops-repo push to main, finds the merged PR, checks whether it merged despite a non-passing required governance check (alerting Slack if so), and marks its release record merged.
   params:
     - name: repo-url
       type: string
+    - name: revision
+      type: string
+      default: ""
+      description: The pushed commit's SHA.
     - name: pr-number
       type: string
+      default: ""
+      description: A PR number already known (legacy pull_request-shaped trigger).
     - name: merged
       type: string
+      default: ""
   tasks:
+    - name: resolve-merged-pr
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: resolve-merged-pr }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: merged, value: $(params.merged) }
+
     - name: detect-bypass-merge
+      runAfter: [resolve-merged-pr]
+      when:
+        - input: $(tasks.resolve-merged-pr.results.pr-number)
+          operator: notin
+          values: [""]
       taskRef:
         resolver: cluster
         params:
@@ -29,12 +57,17 @@ spec:
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
         - { name: repo-url, value: $(params.repo-url) }
-        - { name: pr-number, value: $(params.pr-number) }
-        - { name: merged, value: $(params.merged) }
+        - { name: pr-number, value: $(tasks.resolve-merged-pr.results.pr-number) }
+        - { name: merged, value: $(tasks.resolve-merged-pr.results.merged) }
 
-    # ADR-0021 phase 2: independent of the break-glass check above (no runAfter), so a failure
-    # in either cannot hide the other.
+    # Independent of the break-glass check above (no runAfter on it), so a failure in either
+    # cannot hide the other.
     - name: mark-release-merged
+      runAfter: [resolve-merged-pr]
+      when:
+        - input: $(tasks.resolve-merged-pr.results.pr-number)
+          operator: notin
+          values: [""]
       taskRef:
         resolver: cluster
         params:
@@ -43,5 +76,5 @@ spec:
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
         - { name: repo-url, value: $(params.repo-url) }
-        - { name: pr-number, value: $(params.pr-number) }
-        - { name: merged, value: $(params.merged) }
+        - { name: pr-number, value: $(tasks.resolve-merged-pr.results.pr-number) }
+        - { name: merged, value: $(tasks.resolve-merged-pr.results.merged) }
