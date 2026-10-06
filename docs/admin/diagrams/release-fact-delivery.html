@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How a fact is applied</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Geist',system-ui,sans-serif;background:#f2efe9;color:#1b1f24;padding:3rem 2rem}
+.frame{max-width:1240px;margin:0 auto}
+.diagram-container{width:100%;overflow-x:auto}
+.eyebrow{font-family:'Geist Mono',ui-monospace,monospace;font-size:.66rem;font-weight:500;letter-spacing:.18em;text-transform:uppercase;color:#5b6570;margin-bottom:.5rem}
+h1{font-family:'Instrument Serif','Noto Serif',serif;font-size:clamp(1.5rem,2.4vw + .75rem,2rem);font-weight:400;letter-spacing:-.02em;line-height:1.15;margin-bottom:1.5rem}
+svg{width:100%;min-width:1200px;display:block}
+@media print{.diagram-container{overflow-x:visible}svg{min-width:0}}
+</style>
+</head>
+<body>
+<div class="frame">
+<p class="eyebrow">Release state · Sequence</p>
+<h1>How a fact is applied</h1>
+<div class="diagram-container">
+<svg viewBox="0 0 1200 780" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="release-fact-delivery-title release-fact-delivery-desc">
+<title id="release-fact-delivery-title">How a fact is applied</title>
+<desc id="release-fact-delivery-desc">Sequence of the relay applying one fact: read the record, reduce, forward the event, then write state; a failed forward returns 502 and writes nothing so the next heartbeat retries.</desc>
+<defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#5b6570"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#b9791f"/></marker>
+          <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e7ba6"/></marker>
+          <marker id="arrow-open" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polyline points="0 0, 8 3, 0 6" fill="none" stroke="#2e7ba6" stroke-width="1.2"/></marker>
+        </defs>
+<rect width="100%" height="100%" fill="#f2efe9"/>
+<rect x="352" y="268" width="676" height="316" rx="4" fill="rgba(27,31,36,0.02)" stroke="rgba(27,31,36,0.22)" stroke-width="1"/>
+<rect x="352" y="268" width="40" height="16" rx="2" fill="#f2efe9" stroke="rgba(27,31,36,0.22)" stroke-width="1"/>
+<text x="372" y="280" fill="#5b6570" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.12em">ALT</text>
+<text x="364" y="300" fill="#5b6570" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.04em">[broker accepts]</text>
+<line x1="360" y1="440" x2="1020" y2="440" stroke="rgba(27,31,36,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="364" y="456" fill="#5b6570" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.04em">[broker fails]</text>
+<line x1="128" y1="96" x2="128" y2="624" stroke="rgba(27,31,36,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="408" y1="96" x2="408" y2="624" stroke="rgba(27,31,36,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="688" y1="96" x2="688" y2="624" stroke="rgba(27,31,36,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="968" y1="96" x2="968" y2="624" stroke="rgba(27,31,36,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="128" y1="140" x2="404" y2="140" stroke="#2e7ba6" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow-open)"/>
+<line x1="408" y1="176" x2="684" y2="176" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="684" y1="212" x2="412" y2="212" stroke="#5b6570" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<path d="M408,236 H448 Q456,236 456,244 V248 Q456,256 448,256 H412" fill="none" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="408" y1="320" x2="964" y2="320" stroke="#b9791f" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+<line x1="408" y1="360" x2="684" y2="360" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="408" y1="400" x2="132" y2="400" stroke="#5b6570" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<line x1="408" y1="488" x2="964" y2="488" stroke="#5b6570" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="964" y1="524" x2="412" y2="524" stroke="#5b6570" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<line x1="408" y1="560" x2="132" y2="560" stroke="#5b6570" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<rect x="251" y="123" width="30" height="12" rx="2" fill="#f2efe9"/>
+<text x="266" y="132" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">FACT</text>
+<rect x="515" y="159" width="62" height="12" rx="2" fill="#f2efe9"/>
+<text x="546" y="168" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">GET RECORD</text>
+<rect x="530" y="195" width="35" height="12" rx="2" fill="#f2efe9"/>
+<text x="548" y="204" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">STATE</text>
+<rect x="464" y="240" width="41" height="12" rx="2" fill="#f2efe9"/>
+<text x="468" y="249" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.06em">REDUCE</text>
+<rect x="663" y="303" width="46" height="12" rx="2" fill="#f2efe9"/>
+<text x="686" y="312" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">CDEVENT</text>
+<rect x="509" y="343" width="73" height="12" rx="2" fill="#f2efe9"/>
+<text x="546" y="352" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">UPDATE STATE</text>
+<rect x="258" y="383" width="24" height="12" rx="2" fill="#f2efe9"/>
+<text x="270" y="392" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">202</text>
+<rect x="663" y="471" width="46" height="12" rx="2" fill="#f2efe9"/>
+<text x="686" y="480" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">CDEVENT</text>
+<rect x="670" y="507" width="35" height="12" rx="2" fill="#f2efe9"/>
+<text x="688" y="516" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">ERROR</text>
+<rect x="212" y="543" width="117" height="12" rx="2" fill="#f2efe9"/>
+<text x="270" y="552" fill="#838b93" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">502: NOTHING WRITTEN</text>
+<rect x="48" y="32" width="160" height="64" rx="6" fill="#f2efe9"/>
+<rect x="48" y="32" width="160" height="64" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="56" y="38" width="50" height="12" rx="2" fill="transparent" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="81" y="47" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">LIFELINE</text>
+<text x="128" y="70" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Rollouts engine</text>
+<text x="128" y="86" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">or Argo CD (prod)</text>
+<rect x="328" y="32" width="160" height="64" rx="6" fill="#f2efe9"/>
+<rect x="328" y="32" width="160" height="64" rx="6" fill="rgba(185,121,31,0.08)" stroke="#b9791f" stroke-width="1"/>
+<rect x="336" y="38" width="50" height="12" rx="2" fill="transparent" stroke="#b9791f" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="361" y="47" fill="#b9791f" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">LIFELINE</text>
+<text x="408" y="70" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Relay</text>
+<text x="408" y="86" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">dev</text>
+<rect x="608" y="32" width="160" height="64" rx="6" fill="#f2efe9"/>
+<rect x="608" y="32" width="160" height="64" rx="6" fill="rgba(27,31,36,0.05)" stroke="#5b6570" stroke-width="1"/>
+<rect x="616" y="38" width="50" height="12" rx="2" fill="transparent" stroke="#5b6570" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="641" y="47" fill="#5b6570" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">LIFELINE</text>
+<text x="688" y="70" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Release record</text>
+<text x="688" y="86" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">ConfigMap</text>
+<rect x="888" y="32" width="160" height="64" rx="6" fill="#f2efe9"/>
+<rect x="888" y="32" width="160" height="64" rx="6" fill="#ffffff" stroke="#1b1f24" stroke-width="1"/>
+<rect x="896" y="38" width="50" height="12" rx="2" fill="transparent" stroke="#1b1f24" stroke-opacity="0.45" stroke-width="0.8"/>
+<text x="921" y="47" fill="#1b1f24" fill-opacity="0.85" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">LIFELINE</text>
+<text x="968" y="70" fill="#1b1f24" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Broker</text>
+<text x="968" y="86" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">dev</text>
+<text x="48" y="656" fill="#1b1f24" font-size="14" font-style="italic" font-family="'Instrument Serif', 'Noto Serif', Georgia, serif"><tspan x="48" dy="0">Events go out before state is written. If the write then fails, the next fact repeats the same deterministic event ids, which the broker</tspan><tspan x="48" dy="17">collapses; the other order could lose an event for good. A write conflict between the two relay replicas re-reads and re-reduces.</tspan><tspan x="48" dy="17">A record the relay cannot write degrades to the stateless Phase 1 behaviour. Nothing retries the 502 itself: the heartbeat fact</tspan><tspan x="48" dy="17">(every 15 minutes) is the retry.</tspan></text>
+<line x1="30" y1="728" x2="1170" y2="728" stroke="rgba(27,31,36,0.10)" stroke-width="0.8"/>
+<text x="30" y="744" fill="#5b6570" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">LEGEND</text>
+<line x1="110" y1="741" x2="132" y2="741" stroke="#5b6570" stroke-width="1.2"/>
+<text x="138" y="745" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">call</text>
+<line x1="196.4" y1="741" x2="218.4" y2="741" stroke="#5b6570" stroke-width="1.2" stroke-dasharray="5,4"/>
+<text x="224.4" y="745" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">return</text>
+<line x1="294.0" y1="741" x2="316.0" y2="741" stroke="#2e7ba6" stroke-width="1.2" stroke-dasharray="5,4"/>
+<text x="322.0" y="745" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">async fact</text>
+<line x1="414.0" y1="741" x2="436.0" y2="741" stroke="#b9791f" stroke-width="1.2"/>
+<text x="442.0" y="745" fill="#5b6570" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">event out</text>
+</svg>
+</div>
+</div>
+</body>
+</html>
