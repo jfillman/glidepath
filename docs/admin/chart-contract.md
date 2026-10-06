@@ -43,8 +43,11 @@ glidepath/
 - The generator matches `glidepath/envs/*.yaml` and excludes `*.release.yaml`.
 - `pr-env.yaml` sits one level up on purpose: a file under `envs/` would also spawn a
   static `pr` lower environment.
-- `deploy.releaseFile` (default `glidepath/envs/{env}.release.yaml`) says where the
-  release file is written. It must contain one `{env}`.
+- The deploy stage writes the image to `<folder>/envs/<env>.release.yaml` (the release-file
+  split; the default since 2026-10-06). On an app's first deploy after that it also removes
+  `release.image`, `rollout.image` and a bootstrap `rollout: null` from the env file, in the
+  same commit. `deploy.releaseFile` may only name that same path (`{env}` placeholder); any
+  other path is refused, because the lower-envs ApplicationSet would never read it.
 
 ### Dual-path window (`platform/` to `glidepath/`)
 

@@ -296,9 +296,8 @@ spec:
             mkdir -p ${ENVS_ROOT}/envs
             cat > "${ENVS_ROOT}/envs/${lower_env}.yaml" <<ENVEOF
         # ${ENVS_ROOT}/envs/${lower_env}.yaml - human-owned values for this environment.
-        # Scaffolded once by the onboarding mechanism; the first successful build's deploy
-        # stage adds a release.image block below (or in the release file, if deploy.releaseFile
-        # is set). Overrides ${ENVS_ROOT}/base.yaml.
+        # Scaffolded once by the onboarding mechanism. The deploy stage writes the image to
+        # ${lower_env}.release.yaml beside this file, never here. Overrides ${ENVS_ROOT}/base.yaml.
         envName: ${lower_env}
         ENVEOF
             echo "app repo: scaffolded ${ENVS_ROOT}/envs/${lower_env}.yaml (file was missing)"
