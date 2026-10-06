@@ -117,7 +117,7 @@ spec:
                   expirationSeconds: 3600
       containers:
         - name: relay
-          image: ghcr.io/jfillman/glidepath-relay:p3a-2239db6
+          image: ghcr.io/jfillman/glidepath-relay:rename-b8efbab
           # Published to ghcr.io/jfillman - previously referenced a nonexistent
           # ghcr.io/platform-cicd org; relay pods were only surviving on a stale
           # locally-cached image (same gap dora-exporter had).

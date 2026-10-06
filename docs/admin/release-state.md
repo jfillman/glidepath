@@ -180,7 +180,7 @@ kubectl -n platform-system logs -l app=glidepath-relay --prefix | grep shadow-ev
 ## Not built yet
 
 Rollback (a release with `rollbackOf`, `rolled-back`, the `service.rolledback` event, the gate
-policy for it), renaming the relay to `glidepath-relay`, moving the events onto the spec's
+policy for it), moving the events onto the spec's
 vocabulary ([ADR-0022](adr/0022-cdevents-conformance-and-vocabulary.md)).
 
 ## Known gap: a PR closed without merging

@@ -890,5 +890,8 @@ written).
   `appNamespace` and `cluster` into `releaseTracking`.
 - **3c, cleanup.** The relay lost `/outcome`, the hook-supersede logic and its equivalence
   test; the hook script left the toolbox image; the registry lost `outcomeRelayURL` and
-  `relayHostAliasIP`; `factsMode` defaults to `emit`. Still to do: rename the relay to
-  `glidepath-relay`.
+  `relayHostAliasIP`; `factsMode` defaults to `emit`.
+- **Rename.** `argocd-outcome-relay` is now `glidepath-relay` (image `ghcr.io/jfillman/glidepath-relay`,
+  Deployment, Service, ServiceAccount, RBAC, the `app` label, `glidepath/broker/cmd/glidepath-relay`).
+  Older sections of this doc, and the ADRs, keep the old name where they describe history. The
+  NodePort stays 30880, so the clusters' notification URLs did not change.
