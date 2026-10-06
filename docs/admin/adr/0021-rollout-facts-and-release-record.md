@@ -136,7 +136,7 @@ cannot ride along.
    |---|---|---|---|
    | Integrity | `provenance`, `values`, commit signing, and "the digest still exists in the registry" | **Block**, always | Cheap, deterministic, and they prove the thing we are about to run is the thing we built. A rollback must never be a way around them. |
    | Content | `sast`, `sbom`, `image-scan` | **Run and record, do not block** | The target already ran in this environment. A CVE database that moved overnight must not be able to stop recovery, and re-running SAST on unchanged source cannot find anything new. |
-   | Process stubs | `itsm`, `qa`, `policy-validation`, `image-promotion` | Unchanged | They stay stubs, loud as ADR-0003 requires. |
+   | Process | `itsm`, `qa`, `policy-validation`, `image-promotion` | Unchanged | The class is named for what the gates protect, not their build state: these four are stubs today and stay loud as ADR-0003 requires. |
    | Approval | CODEOWNERS review on Flight | **Unchanged** | "An approval that can be skipped is not an approval" (ADR-0020). |
 
    **Eligible** means the digest was Healthy in this exact app, environment and cluster

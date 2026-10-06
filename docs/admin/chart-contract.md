@@ -50,8 +50,8 @@ glidepath/
 
 Until every app repo has moved, the folder is either `platform/` (the old name) or
 `glidepath/`. The rule, used by every reader and writer: **a repo uses `glidepath/` once
-it has a `glidepath/` directory, and `platform/` until then.** A brand-new repo is still
-scaffolded into `platform/` until the move is proven on a migrated app.
+it has a `glidepath/` directory, and `platform/` until then.** A brand-new repo is
+scaffolded into `glidepath/` (since 2026-10-06, after sky-marshall's move was verified).
 
 - The lower-envs ApplicationSet watches `platform/envs/*.yaml` and `glidepath/envs/*.yaml`,
   and takes `base.yaml` and the release file from the matched file's own folder.

@@ -129,6 +129,14 @@ needs the owner's go-ahead.
   ruleset (required checks and reviews still apply).
 - **Rollback.** Required: Tower offers "Roll back" on a cloud Flight environment, which
   opens a pin PR restoring the previous pin from the file's history. Same gates, same merge.
+- **Which gates apply (2026-10-06).** Each `releaseGuardrails` entry gains `class`
+  (`integrity`, `content`, `process`, `approval`: ADR-0021 decision 8's classes) and
+  `targets` (the `deploy.target` values it applies to; absent = all). One table then drives
+  both the rollback rule (ADR-0021) and which gates a release or pin PR waits for and shows.
+  For a cloud pin PR: integrity = image provenance and "digest still in the registry"
+  (`values` is `k8s-rollout` only, commit signing is off for cloud); content = `sast`,
+  `sbom`, `image-scan`, unchanged (they read `release.image` from the pin); process = as for
+  Kubernetes; approval = CODEOWNERS review on `glidepath/releases/`. Built in slice 3.
 - **Order.** Not enforced. Each cloud Flight environment's pin PR is independent;
   `promotedFrom` defaults to the previous environment in list order but any environment may
   be the source.

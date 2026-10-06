@@ -211,12 +211,13 @@ spec:
           echo "deploy.target is ${DEPLOY_TARGET}: not scaffolding environment files (no chart, no per-environment namespace)"
         fi
 
-        # ADR-0018 dual-path window: the environments folder is glidepath/ once the repo has
-        # one, platform/ until then (and for a brand-new repo, until the rename is proven on a
-        # migrated app). Every reader and writer uses this same rule; never scaffold into the
-        # other folder, or the lower-envs ApplicationSet sees two copies of one environment.
-        ENVS_ROOT=platform
-        [[ -d glidepath ]] && ENVS_ROOT=glidepath
+        # ADR-0018 dual-path window: an existing repo keeps platform/ until it moves; every
+        # other repo (moved, or brand new: the rename was proven on sky-marshall 2026-10-06) gets
+        # glidepath/. Once scaffolded, every reader resolves the same folder ("glidepath/ if it
+        # exists, else platform/"). Never scaffold into the other folder, or the lower-envs
+        # ApplicationSet sees two copies of one environment.
+        ENVS_ROOT=glidepath
+        [[ -d platform && ! -d glidepath ]] && ENVS_ROOT=platform
 
         # known-gap #17: ephemeralEnvironments.pullRequest.enabled alone was already
         # enough to synthesize a working pr-build flow and ApplicationSet trigger above,
