@@ -780,3 +780,28 @@ in the `checkout-api` repo itself, unrelated to any of the above. Scaled to 0 in
 `prod/prod/values.yaml` as a stopgap so ArgoCD's periodic retry doesn't keep
 generating real-but-redundant `SyncFail` Slack messages/DORA `failed` counts - remove
 that override once the app side is fixed.
+
+## ADR-0021 phase 1: the fact endpoint (2026-10-06, in shadow)
+
+[ADR-0021](adr/0021-rollout-facts-and-release-record.md) replaces the hook Jobs with facts
+from the Argo Rollouts notifications engine. Phase 1 adds the receiving side without
+removing anything:
+
+- `argocd-outcome-relay` gains `POST /facts/<cluster>` (`facts.go`). It authenticates with
+  the same per-cluster secret, reads the release record, and rebuilds the same
+  `environment.deploying` / `environment.deployed` CDEvent the hook builds. The event id
+  is derived from `(release-id, type, outcome)`, so a heartbeat or scale fact for a release
+  already reported collapses onto the same id.
+- `FACTS_MODE` (`outcomeRelay.factsMode`, default `shadow`) decides whether that event is
+  forwarded. In `shadow` it is only logged, normalized, as `shadow-event`; the hook path
+  logs its real events the same way as `hook-event`, so the two streams can be diffed.
+  `emit` forwards. Only use `emit` once the hooks for that app are gone.
+- `open-release-pr.yaml` now writes the whole release record into
+  `release-tracking-<chain-id>` (app, env, cluster, git url and revision, flow start time,
+  `cicd.yaml` content, `releaseId`) and `releaseTracking.releaseId` into `release.yaml`.
+  `airframe-application` renders the id on the Rollout as `hangar.io/release-id`.
+- The relay needs `get` on ConfigMaps cluster-wide to read the record; the name prefix and
+  the `app-` namespace prefix are enforced in code.
+
+`go test ./cmd/argocd-outcome-relay` runs `argocd-outcome-hook.sh` for each of its three
+phases and asserts the fact path builds an identical event.

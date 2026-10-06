@@ -163,6 +163,33 @@ spec:
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
 
+        # The dev-side release record (ADR-0021): prUrl/prCreatedAt as before, plus
+        # everything argocd-outcome-relay's /facts endpoint needs to rebuild this
+        # release's CDEvent when the upper cluster reports a Rollout fact for it. One
+        # function so the two writers below (a retry that reuses an open PR, and a fresh
+        # PR) cannot drift apart. configJson is the cicd.yaml content as resolved here.
+        write_release_record() {
+          local pr_url_arg="$1" pr_created_arg="$2"
+          kubectl create configmap "release-tracking-${CHAIN_ID}" \
+            -n "${NAMESPACE}" \
+            --from-literal="prUrl=${pr_url_arg}" \
+            --from-literal="prCreatedAt=${pr_created_arg}" \
+            --from-literal="releaseId=${CHAIN_ID}:${CLUSTER}/${ENV}" \
+            --from-literal="kind=promote" \
+            --from-literal="appNamespace=${APP_NAMESPACE}" \
+            --from-literal="appName=${APP_NAME}" \
+            --from-literal="env=${ENV}" \
+            --from-literal="cluster=${CLUSTER}" \
+            --from-literal="gitUrl=${GIT_URL}" \
+            --from-literal="gitRevision=${GIT_REVISION}" \
+            --from-literal="flowStartTime=${FLOW_START_TIME}" \
+            --from-literal="configJson=${CONFIG_JSON}" \
+            --dry-run=client -o yaml \
+            | kubectl apply -f -
+          kubectl label configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" \
+            "hangar.io/subcomponent=release-tracking" --overwrite
+        }
+
         if [[ -z "${CLUSTER}" ]]; then
           echo "error: cluster is required - gitops-${APP_NAME}'s layout is <cluster>/<env>/values.yaml, there's no manifest path to write without one. Set deploy.upperEnvironments' object form ({ name: ${ENV}, cluster: <cluster-name> }) in this app's cicd.yaml." >&2
           exit 1
@@ -208,14 +235,7 @@ spec:
           # anchor, not this attempt's (later) wall-clock time.
           pr_created_at="$(jq -r '.[0].created_at' <<<"${existing_pr}")"
           if [[ -n "${CHAIN_ID}" ]]; then
-            kubectl create configmap "release-tracking-${CHAIN_ID}" \
-              -n "${NAMESPACE}" \
-              --from-literal="prUrl=${pr_url}" \
-              --from-literal="prCreatedAt=${pr_created_at}" \
-              --dry-run=client -o yaml \
-              | kubectl apply -f -
-            kubectl label configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" \
-              "hangar.io/subcomponent=release-tracking" --overwrite
+            write_release_record "${pr_url}" "${pr_created_at}"
           fi
           echo "${pr_url}" | tee "$(results.pr-url.path)"
           echo -n "${pr_created_at}" | tee "$(results.pr-created-at.path)"
@@ -291,6 +311,7 @@ spec:
           .releaseTracking.gitRevision = \"${GIT_REVISION}\" |
           .releaseTracking.flowStartTime = \"${FLOW_START_TIME}\" |
           .releaseTracking.chainId = \"${CHAIN_ID}\" |
+          .releaseTracking.releaseId = \"${CHAIN_ID}:${CLUSTER}/${ENV}\" |
           .releaseTracking.configJsonB64 = \"${config_json_b64}\"
         " "${manifest}"
         git add "${manifest}"
@@ -364,14 +385,7 @@ spec:
         # see the pr_body_text comment above on why a heredoc at column 0 breaks this
         # Task's own surrounding YAML.
         if [[ -n "${CHAIN_ID}" ]]; then
-          kubectl create configmap "release-tracking-${CHAIN_ID}" \
-            -n "${NAMESPACE}" \
-            --from-literal="prUrl=${pr_url}" \
-            --from-literal="prCreatedAt=${pr_created_at}" \
-            --dry-run=client -o yaml \
-            | kubectl apply -f -
-          kubectl label configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" \
-            "hangar.io/subcomponent=release-tracking" --overwrite
+          write_release_record "${pr_url}" "${pr_created_at}"
         else
           echo "warning: no chain-id for this release - pr-url/pr-created-at won't reach release-outcome-notify.yaml (app onboarded before chain-id existed, or a manual/direct invocation)." >&2
         fi

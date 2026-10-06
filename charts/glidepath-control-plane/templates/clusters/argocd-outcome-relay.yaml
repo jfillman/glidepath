@@ -53,6 +53,36 @@ subjects:
     name: argocd-outcome-relay
     namespace: platform-system
 ---
+# ADR-0021: the fact endpoint reads the dev-side release record,
+# release-tracking-<chain-id>, from the Application namespace a fact names. get only, on
+# ConfigMaps, cluster-wide because the set of Application namespaces is open. The ConfigMap
+# name prefix and the app- namespace prefix are enforced in code (facts.go loadRecord), so a
+# fact cannot be used to read anything else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argocd-outcome-relay-records
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "clusters"
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argocd-outcome-relay-records
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "clusters"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: argocd-outcome-relay-records }
+subjects:
+  - kind: ServiceAccount
+    name: argocd-outcome-relay
+    namespace: platform-system
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -106,6 +136,8 @@ spec:
           env:
             - name: CDEVENTS_BROKER_URL
               value: http://el-cdevents-broker.platform-system.svc.cluster.local:8080
+            - name: FACTS_MODE
+              value: {{ .Values.outcomeRelay.factsMode | default "shadow" | quote }}
             # DORA_EXPORTER_URL removed 2026-08-22: dora-exporter is now updated by
             # update-dora-metrics.yaml, a Task in release-outcome-notify's own
             # PipelineRun, not a direct call from this Deployment - see that Task's
