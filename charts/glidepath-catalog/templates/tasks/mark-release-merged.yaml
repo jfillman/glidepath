@@ -8,7 +8,7 @@
 #
 # The record is found by its PR URL. Only a record still "proposed" (or with no state, from
 # before the state existed) moves: the relay owns every later transition and must not be
-# overwritten by a late close event. Always succeeds - no record (swept, or a release that
+# overwritten by a late event (mergedAt is still recorded, see below). Always succeeds - no record (swept, or a release that
 # predates records) is not an error, and this must never fail the break-glass check beside it.
 apiVersion: tekton.dev/v1
 kind: Task
@@ -57,17 +57,28 @@ spec:
         fi
 
         state="$(kubectl get configmap "${name}" -n "${NAMESPACE}" -o jsonpath='{.data.state}')"
-        if [[ -n "${state}" && "${state}" != "proposed" ]]; then
-          echo "${name} is already '${state}' - leaving it to the release state machine."
-          exit 0
-        fi
-
+        merged_at="$(kubectl get configmap "${name}" -n "${NAMESPACE}" -o jsonpath='{.data.mergedAt}')"
         now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        if [[ "${MERGED}" == "true" ]]; then
-          patch="$(jq -n --arg now "${now}" '{data: {state: "merged", stateAt: $now, mergedAt: $now}}')"
-          echo "${name}: proposed -> merged"
-        else
+
+        # mergedAt is recorded whatever state the release is in. This Task starts tens of seconds
+        # after the merge (a pipeline pod and a GitHub lookup), and Argo CD can sync and the
+        # Rollout report faster than that: seen live, the relay had already moved the record to
+        # "progressing" when this ran. The state only moves from "proposed"; mergedAt is the
+        # merge time either way (it is also the merge-to-deploy latency, and the stall alert's
+        # clock for a release that never started).
+        if [[ "${MERGED}" == "true" && -z "${merged_at}" ]]; then
+          if [[ -z "${state}" || "${state}" == "proposed" ]]; then
+            patch="$(jq -n --arg now "${now}" '{data: {state: "merged", stateAt: $now, mergedAt: $now}}')"
+            echo "${name}: proposed -> merged"
+          else
+            patch="$(jq -n --arg now "${now}" '{data: {mergedAt: $now}}')"
+            echo "${name} is already '${state}' (the release started before this ran) - recording mergedAt only."
+          fi
+        elif [[ "${MERGED}" != "true" && ( -z "${state}" || "${state}" == "proposed" ) ]]; then
           patch="$(jq -n --arg now "${now}" '{data: {state: "closed", stateAt: $now}}')"
           echo "${name}: proposed -> closed (PR closed unmerged)"
+        else
+          echo "${name} is '${state}'${merged_at:+ and already has mergedAt} - nothing to record."
+          exit 0
         fi
         kubectl patch configmap "${name}" -n "${NAMESPACE}" --type merge -p "${patch}"
