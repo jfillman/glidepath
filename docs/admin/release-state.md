@@ -100,6 +100,14 @@ not the hash, identifies a release.
 - **A write conflict re-reads and re-reduces.** There are two relay replicas.
 - **A record the relay cannot write** (no Role yet, or it vanished) degrades to the stateless
   behaviour of phase 1: the deterministic ids still make repeats harmless.
+- **In `emit` mode the fact path owns a release, and the hook Jobs' copy is dropped** (phase 3a;
+  the Jobs still call `/outcome` until they are removed). From the release's record: a
+  PreSync `deploying` is always dropped (the first `Progressing` fact sends it); a terminal hook
+  event is dropped when the facts have already moved the record, and is the **fallback** when
+  they have not (lost facts, or a Rollout with no annotation): it is forwarded, and its kinds
+  are recorded as sent so a heartbeat fact arriving later does not send them again. A release
+  with no record, or no `releaseId`, is the hooks' alone and is forwarded as before. Shadow
+  mode is unchanged.
 - **Shadow and emit keep separate sent-sets** (`emittedShadow`, `emittedLive`). In `shadow`
   (the default, `outcomeRelay.factsMode`) the relay logs the event it would send as
   `shadow-event` and forwards nothing, so it can run beside the hook Jobs without reporting a
