@@ -243,3 +243,10 @@ secretStore:
 #   outcomeRelayURL: http://<dev-cluster-node-ip>:30880/outcome/kind-prod
 #   relayHostAliasIP: 192.168.1.10   # optional, see above
 clusters: []
+
+# argocd-outcome-relay's ADR-0021 fact endpoint (POST /facts/<cluster>). "shadow" builds the
+# CDEvent a fact implies and logs it normalized without forwarding, so it can run beside the
+# hook Jobs without reporting a release twice; "emit" forwards it to the broker. Only set
+# "emit" once the hooks for the same app are gone. See docs/admin/adr/0021-*.
+outcomeRelay:
+  factsMode: shadow

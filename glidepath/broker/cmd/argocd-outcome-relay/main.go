@@ -90,10 +90,12 @@ func main() {
 		log.Fatal("CDEVENTS_BROKER_URL must be set")
 	}
 
-	h := &handler{clientset: clientset, brokerURL: brokerURL, httpClient: &http.Client{Timeout: 10 * time.Second}}
+	h := &handler{clientset: clientset, brokerURL: brokerURL, httpClient: &http.Client{Timeout: 10 * time.Second}, factsMode: os.Getenv("FACTS_MODE")}
+	h.forward = h.forwardToBroker
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/outcome/", h.handleOutcome)
+	mux.HandleFunc("/facts/", h.handleFacts) // ADR-0021; see facts.go
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	log.Println("argocd-outcome-relay: listening on :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
@@ -103,6 +105,10 @@ type handler struct {
 	clientset  kubernetes.Interface
 	brokerURL  string
 	httpClient *http.Client
+	// factsMode is "shadow" (default) or "emit"; see facts.go.
+	factsMode string
+	// forward sends a CDEvent to the broker; a field so tests can stub it.
+	forward func(ctx context.Context, body []byte) error
 }
 
 func (h *handler) handleOutcome(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +144,9 @@ func (h *handler) handleOutcome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Logged normalized so the ADR-0021 fact path's shadow events can be diffed against
+	// the hook path's real ones; see facts.go.
+	log.Printf("argocd-outcome-relay: hook-event %s", normalizeEvent(body))
 	if err := h.forwardToBroker(ctx, body); err != nil {
 		log.Printf("argocd-outcome-relay: forwarding to broker failed (cluster=%s app=%s/%s): %v", cluster, env.Subject.Content.AppNamespace, env.Subject.Content.AppName, err)
 		http.Error(w, "failed to forward event", http.StatusBadGateway)
