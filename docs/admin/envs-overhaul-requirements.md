@@ -233,7 +233,7 @@ Each phase is independently shippable and leaves existing apps unchanged.
 | 5 | Tower: add/edit/delete flow and shared form (R21, R22, R24, R18, R19) | Includes the delete impact preview. Ground add = one `cicd.yaml` PR (resync scaffolds the file); Flight add = `cicd.yaml` PR plus the ApplicationEnvironment template launched through the scaffolder API. No backend change: the existing cicd.yaml change route takes a `deploy` patch |
 | 6 | Cloud gated promotion (R9-R11) | Designed in [ADR-0020](adr/0020-cloud-gated-promotion-by-release-pin.md) (proposed); five slices, none built |
 | 7 | Folder rename `platform/` to `glidepath/` (R14) | Per ADR-0018's dual-path window. Readers and writers are dual-path (rule in [chart-contract.md](chart-contract.md#dual-path-window-platform-to-glidepath)); app repos move one by one; dropping `platform/` is a later cleanup |
-| 8 | `deploy.chart` (R6) | Both ApplicationSets read it |
+| 8 | `deploy.chart` (R6) | [ADR-0023](adr/0023-per-app-chart-deploy-chart.md): Ground ApplicationSet moves into `glidepath-app`; Flight chart recorded in `identity.yaml` |
 | 9 | Migration PRs, then drop the old shape (R13, R15) | Only after every app is on the new shape |
 
 Phases 1 and 3 are low risk and visible; 2 is the one that could surprise existing apps,
