@@ -77,7 +77,10 @@ jobs:
           # unescaped in a comment/description collide with Helm's Go-template engine.
           # helm template above would already fail loudly on most of these, but this
           # catches ones that happen to parse successfully with the wrong output.
-          if grep -rn '{{' /tmp/rendered.yaml | grep -v "^\s*#"; then
+          # grep -n prefixes each line with "<number>:", so the comment filter has to skip that
+          # prefix: a bare `grep -v "^\s*#"` never matched, and flagged a comment that deliberately
+          # renders a literal brace pair (comment-pr-check-result.yaml).
+          if grep -n '{{' /tmp/rendered.yaml | grep -v -E '^[0-9]+:\s*#'; then
             echo "ERROR: rendered output contains a literal '{{' - check for an unescaped PaC/ArgoCD template variable in a comment or string"
             exit 1
           fi

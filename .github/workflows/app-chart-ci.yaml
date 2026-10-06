@@ -115,20 +115,20 @@ jobs:
             -f /tmp/fixtures/build-only.yaml -f /tmp/fixtures/platform-identity.yaml \
             > /tmp/rendered-build-only.yaml
           python3 hack/ci/assert_app_render.py /tmp/rendered-build-only.yaml \
-            --absent Trigger:on-build-success Trigger:on-test-success Trigger:on-deploy-success \
+            --absent Trigger:flow-ci-1-test Trigger:flow-ci-2-deploy Trigger:flow-ci-3-release \
             --absent AppProject ApplicationSet Application \
             --present ServiceAccount:pipeline-runner \
             --present ConfigMap:fixture-app-policy-config \
             --present PersistentVolumeClaim:build-cache-fixture-app
 
-      - name: 'Fixture: build-test - only on-build-success Trigger present'
+      - name: 'Fixture: build-test - only the test-stage Trigger present (flow-ci-1-test; Triggers are named <flow>-<step index>-<stage>)'
         run: |
           helm template t charts/glidepath-app \
             -f /tmp/fixtures/build-test.yaml -f /tmp/fixtures/platform-identity.yaml \
             > /tmp/rendered-build-test.yaml
           python3 hack/ci/assert_app_render.py /tmp/rendered-build-test.yaml \
-            --present Trigger:on-build-success \
-            --absent Trigger:on-test-success Trigger:on-deploy-success \
+            --present Trigger:flow-ci-1-test \
+            --absent Trigger:flow-ci-2-deploy Trigger:flow-ci-3-release \
             --absent AppProject ApplicationSet Application
 
       - name: 'Fixture: full-pipeline - every stage-gated resource must be PRESENT, sized correctly'
@@ -137,7 +137,7 @@ jobs:
             -f /tmp/fixtures/full-pipeline.yaml -f /tmp/fixtures/platform-identity.yaml \
             > /tmp/rendered-full.yaml
           python3 hack/ci/assert_app_render.py /tmp/rendered-full.yaml \
-            --present Trigger:on-build-success Trigger:on-test-success Trigger:on-deploy-success \
+            --present Trigger:flow-ci-1-test Trigger:flow-ci-2-deploy Trigger:flow-ci-3-release \
             --present AppProject Application ApplicationSet \
             --present ConfigMap:fixture-app-policy-config \
             --present PersistentVolumeClaim:build-cache-fixture-app \
@@ -149,8 +149,12 @@ jobs:
         run: |
           # ephemeral-envs.yaml deliberately emits literal {{.number}}/{{.head_sha}}/etc
           # for ArgoCD's own template engine to evaluate later - see that file's header
-          # comment. Anything else with a stray '{{' is a real bug.
-          if grep -n '{{' /tmp/rendered-full.yaml | grep -v '{{\.\(number\|head_sha\)\|trunc 12 \.head_sha'; then
+          # comment. The onboarding-templates ConfigMaps also carry Pipelines-as-Code's own
+          # variables ({{ repo_url }}, {{ revision }}, {{ body.pull_request.number }}: a space
+          # after the braces, a bare lower-case name) because those files are delivered to a
+          # repo and evaluated by PaC there. A Helm leak looks different ({{ .Values.x }}, a
+          # leading dot), so only the PaC shape is allowed. Anything else is a real bug.
+          if grep -n '{{' /tmp/rendered-full.yaml | grep -v '{{\.\(number\|head_sha\)\|trunc 12 \.head_sha' | grep -v -E '\{\{ [a-z_][a-z_0-9.]* \}\}'; then
             echo "ERROR: unexpected stray '{{' in rendered output"
             exit 1
           fi

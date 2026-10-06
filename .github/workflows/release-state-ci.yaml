@@ -1,0 +1,59 @@
+name: release-state-ci
+
+# ADR-0021's release state machine: the relay's Go tests (reducer, persistence, the Argo CD
+# endpoint, and a test that runs the real argocd-outcome-hook.sh against the fact path) and the
+# shell tests that run the real Task and sweeper scripts against a stub kubectl. None of this
+# needs a cluster. See docs/admin/release-state.md.
+
+on:
+  pull_request:
+    paths:
+      - "glidepath/broker/**"
+      - "catalog/lib/argocd-outcome-hook.sh"
+      - "charts/glidepath-catalog/templates/tasks/mark-release-merged.yaml"
+      - "charts/glidepath-catalog/templates/tasks/resolve-merged-pr.yaml"
+      - "charts/glidepath-catalog/templates/tasks/open-release-pr.yaml"
+      - "charts/glidepath-catalog/tests/*.sh"
+      - "charts/glidepath-control-plane/templates/broker/release-record-sweeper-cronjob.yaml"
+      - "charts/glidepath-control-plane/tests/*.sh"
+      - ".github/workflows/release-state-ci.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "glidepath/broker/**"
+      - "catalog/lib/argocd-outcome-hook.sh"
+      - "charts/glidepath-catalog/templates/tasks/mark-release-merged.yaml"
+      - "charts/glidepath-catalog/templates/tasks/resolve-merged-pr.yaml"
+      - "charts/glidepath-catalog/templates/tasks/open-release-pr.yaml"
+      - "charts/glidepath-catalog/tests/*.sh"
+      - "charts/glidepath-control-plane/templates/broker/release-record-sweeper-cronjob.yaml"
+      - "charts/glidepath-control-plane/tests/*.sh"
+      - ".github/workflows/release-state-ci.yaml"
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: glidepath/broker/go.mod
+      - name: go vet
+        working-directory: glidepath/broker
+        run: go vet ./...
+      - name: go test
+        working-directory: glidepath/broker
+        run: go test ./...
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: pip install pyyaml
+      - name: mark-release-merged
+        run: charts/glidepath-catalog/tests/mark_release_merged_test.sh
+      - name: resolve-merged-pr
+        run: charts/glidepath-catalog/tests/resolve_merged_pr_test.sh
+      - name: release-record-sweeper
+        run: charts/glidepath-control-plane/tests/release_record_sweeper_test.sh
