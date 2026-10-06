@@ -34,6 +34,12 @@ subjects:
   - kind: ServiceAccount
     name: argocd-outcome-relay
     namespace: platform-system
+  # The relay is being renamed glidepath-relay. Both subjects are bound until the control
+  # plane runs under the new name and every app has this chart version, so the swap has no
+  # window where the relay cannot reach its records. The old subject is dropped afterwards.
+  - kind: ServiceAccount
+    name: glidepath-relay
+    namespace: platform-system
 ---
 # The release-record sweeper (control-plane, platform-system) raises ReleaseStalled Events on
 # records, labels them so it alerts once per state, and deletes them past their retention.
