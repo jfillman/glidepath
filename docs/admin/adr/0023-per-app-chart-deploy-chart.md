@@ -74,6 +74,16 @@ strict keys and component checks do not apply to a chart they do not describe). 
 the raw YAML editor instead of the values form for such an app; the form is generated from
 Airframe's schema.
 
+### Deploy RBAC moves with the environment
+
+`glidepath-app`'s deploy RBAC (the pipeline runner's Role and RoleBinding in
+`app-<app>-<env>`) is rendered by the `<app>-cicd` Application, but the namespace it targets
+is created by that environment's own Application, which first syncs minutes later on a new
+app. Until then every `<app>-cicd` sync fails with "error getting namespace" and ArgoCD
+retries (seen on flight-attendant, 2026-10-06; it recovered on the second retry). In slice 3
+the RBAC is rendered by the environment's Application instead, in the same sync as its
+namespace, so the order cannot race. No retry tuning is added in the meantime.
+
 ## Alternatives considered
 
 **A. A matrix generator that also reads the app's `cicd.yaml`.** The smallest change, but a
@@ -130,6 +140,6 @@ change reaches pods through the Rollout's own strategy like any other spec chang
 |---|---|---|
 | 1 | One default chart reference per cluster; validator image bumped with it (fixes the v0.3.97 drift) | All consumers render the same tag; the gate validates against it |
 | 2 | Schema: `deploy.chart`, `environments[].chart` | Toolbox rebuilt and bumped; validator accepts and rejects the right shapes |
-| 3 | Lower-envs ApplicationSet in `glidepath-app`, adopting existing Applications | Every live Ground Application byte-identical before and after (dry-run, then live) |
+| 3 | Lower-envs ApplicationSet in `glidepath-app`, adopting existing Applications; the deploy RBAC (`templates/env/deploy-rbac.yaml`) moves into each Ground environment's Application, beside the namespace it targets | Every live Ground Application byte-identical before and after (dry-run, then live); a fresh onboarding syncs `<app>-cicd` first time, with no "error getting namespace" retries |
 | 4 | `identity.yaml` `chart` + template default; Glidepath sync PR | A Flight canary on one app renders the pinned chart; others unchanged |
 | 5 | `values` gate and Tower for a non-Airframe chart | A conformant scratch chart deploys to a Ground environment and passes the gate |
