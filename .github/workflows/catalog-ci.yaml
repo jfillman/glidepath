@@ -16,11 +16,13 @@ on:
   pull_request:
     paths:
       - "charts/glidepath-catalog/**"
+      - ".github/workflows/catalog-ci.yaml"
       - "schemas/**"
   push:
     branches: [main]
     paths:
       - "charts/glidepath-catalog/**"
+      - ".github/workflows/catalog-ci.yaml"
       - "schemas/**"
 
 jobs:

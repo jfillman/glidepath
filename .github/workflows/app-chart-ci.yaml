@@ -12,13 +12,14 @@ on:
   pull_request:
     paths:
       - "charts/glidepath-app/**"
+      - ".github/workflows/app-chart-ci.yaml"
       - "schemas/**"
   push:
     branches: [main]
     paths:
       - "charts/glidepath-app/**"
-      - "schemas/**"
       - ".github/workflows/app-chart-ci.yaml"
+      - "schemas/**"
 
 jobs:
   lint:
