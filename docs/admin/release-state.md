@@ -189,3 +189,32 @@ goes on and the relay is renamed), moving the events onto the spec's vocabulary
 `closed` (a PR closed unmerged) is in the state machine but nothing sets it yet. The merge signal is
 the push to main, and an unmerged close produces no push. The record stays `proposed` until
 retention deletes it (14 days). Nothing downstream depends on it.
+
+## Live verification (2026-10-06)
+
+Every scenario above was exercised against the real clusters, not only in unit tests: real
+gate-api releases on kind-prod, and a synthetic Application namespace on kiac-dev driven
+through the relay's real endpoints (with the real `mark-release-merged` Task and the real
+sweeper CronJob).
+
+| Scenario | How | Result |
+|---|---|---|
+| Merge marker, three cases (`proposed`, already `progressing`, already has `mergedAt`) | real Task run via the cluster resolver | `merged` + `mergedAt`; `mergedAt` only; untouched |
+| Happy path with noise: repeated `Progressing`, `Paused`, `Healthy`, scale facts, heartbeats | synthetic facts | one `deploying` + one success, nothing more; state `healthy` |
+| Late `Progressing` after `Healthy` | synthetic | ignored, reported in the response header |
+| Scale, then restart, on a real healthy release | real Rollout on kind-prod | no CDEvent, no drift, state unchanged |
+| Pod template edited by hand | real Rollout on kind-prod | `ReleaseDrift` Event naming `old -> new` hash, state unchanged, no CDEvent. **Raised 9 Events from one edit** (fixed: once per change) |
+| `Degraded` after `Healthy` reported | synthetic | drift, no failure event |
+| Abort, repeats, then recovery | synthetic | state `aborted`, one failure; recovery sends the success |
+| First fact is already `Healthy` | synthetic | `deploying` sent first, then success |
+| Newer release | real gate-api release, and synthetic with older/newer/unmerged neighbours | older live one `superseded` with `supersededBy`; an unmerged proposal and a newer record left alone; a superseded release's further facts send nothing |
+| Rejected or ignored requests | synthetic | bad token 401; untracked, stale generation, unknown record, a namespace outside `app-*` all 202 and ignored; another cluster's release-id, a malformed id, and an env that differs from the record all 400 |
+| Argo CD sync failure, first attempt through final failure | synthetic, through `/argocd/<cluster>` | `sync-failed`, one `deploying` + one failure however many retries, `lastError` kept; the Rollout then recovers it to `healthy` with the success sent; an unmerged proposal, another env, unlabelled apps and a healthy release are ignored |
+| Stall alert and retention | real sweeper CronJob run | `merged` 2 h with no fact and `progressing` 90 min silent raise `ReleaseStalled` once; a recent progressing release does not; a healthy record past 14 days is deleted; a merged record is never swept; a second run raises nothing new |
+| Prune CronJob | real, on kind-prod | the Rollout's `notified` annotation went from **90 keys to 4**, the engine resent state at once, no CDEvent, state unchanged, Argo CD still `Synced` |
+| A namespace the relay has no Role in | synthetic | fact accepted, events still produced, a log line says it did not persist |
+
+Not exercised live: a forward failure and the 502 retry (needs `emit` mode, unit-tested), a
+write conflict between the two relay replicas (unit-tested), and a PR closed unmerged (the
+known gap above). The retention of proposed and state-less legacy records is covered by the
+sweeper's script test, because a record's creation time cannot be back-dated.
