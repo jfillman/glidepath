@@ -10,7 +10,7 @@
 //     directly instead of subscribing to the CDEvents broker like the original
 //     architecture plan assumed.
 //  2. Cluster-mapped envs (Phase 3 item 4, docs/multi-cluster.md): a small HTTP
-//     endpoint (/argocd-outcome) that platform/broker/cmd/argocd-outcome-relay calls
+//     endpoint (/argocd-outcome) that platform/broker/cmd/glidepath-relay calls
 //     directly once an upper cluster's ArgoCD confirms a real outcome - this service
 //     has no live API access to a remote cluster's Application object, so there's
 //     nothing to watch there. NOT a replacement for path 1 - same-cluster
@@ -285,9 +285,9 @@ type server struct {
 	stateMu sync.Mutex
 }
 
-// argocdOutcomeRequest mirrors argocd-outcome-relay's own outcomeRequest shape (the
+// argocdOutcomeRequest mirrors glidepath-relay's own outcomeRequest shape (the
 // relay forwards close to what it itself received, adding nothing dora-exporter-
-// specific) - see platform/broker/cmd/argocd-outcome-relay/main.go.
+// specific) - see platform/broker/cmd/glidepath-relay/main.go.
 type argocdOutcomeRequest struct {
 	AppNamespace  string `json:"appNamespace"`
 	AppName       string `json:"appName"`
@@ -303,7 +303,7 @@ type argocdOutcomeRequest struct {
 // remote object). Called by release-outcome-notify.yaml's update-dora-metrics Task
 // (runs on this cluster, same as everything else this service reads/writes) - not
 // authenticated independently; that Task only exists because a cluster-mapped
-// release's outcome already made it through argocd-outcome-relay's own auth once,
+// release's outcome already made it through glidepath-relay's own auth once,
 // same trust boundary as before.
 func (s *server) handleArgoCDOutcome(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

@@ -1,5 +1,5 @@
 # ADR-0021 phase 2. Two jobs on the dev-side release records (release-tracking-<chain-id>
-# ConfigMaps, one per release, state kept by argocd-outcome-relay):
+# ConfigMaps, one per release, state kept by glidepath-relay):
 #
 #  1. Stall alert. A release that was merged but never reported a rollout fact, or that is
 #     "progressing" with no fact for much longer than the heartbeat, is a release that

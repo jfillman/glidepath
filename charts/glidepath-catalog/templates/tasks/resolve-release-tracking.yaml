@@ -13,7 +13,7 @@
 # degradation release-log-emit.yaml/release-outcome-span.yaml already apply downstream.
 #
 # No longer self-cleaning (ADR-0021 phase 2): the record now carries the release's state
-# and argocd-outcome-relay keeps updating it after the first outcome, so it must outlive
+# and glidepath-relay keeps updating it after the first outcome, so it must outlive
 # this read. The release-record sweeper (control plane) deletes it past its retention.
 apiVersion: tekton.dev/v1
 kind: Task

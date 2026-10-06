@@ -1,5 +1,5 @@
 // Shared GitHub App client (JWT signing + installation-token minting), used by both
-// token-review-interceptor and argocd-outcome-relay. The relay holds this client
+// token-review-interceptor and glidepath-relay. The relay holds this client
 // directly rather than calling the interceptor's /github-installation-token endpoint,
 // because that endpoint's authorization check trusts only the caller's own
 // TokenReview-verified app namespace - which doesn't fit a platform-wide service that

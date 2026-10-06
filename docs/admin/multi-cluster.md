@@ -197,7 +197,7 @@ scoping (`appproject.yaml`) isn't replicated there yet.
 
 ## The feedback relay (Phase E)
 
-`glidepath/broker/cmd/argocd-outcome-relay` - a small Go HTTP service in
+`glidepath/broker/cmd/glidepath-relay` - a small Go HTTP service in
 `platform-system`, sibling to `token-review-interceptor`, exposed via a fixed NodePort
 (`30880`) Service since it's the one endpoint in this platform genuinely called from
 outside the cluster. `POST /outcome/<cluster>` with `Authorization: Bearer <token>`:
@@ -456,7 +456,7 @@ had caught neither:
    the manifest via `printf '%s\n'` with one quoted line per arg instead - this file's
    own `commit_message`/`governance_text` already used exactly this pattern for the
    identical reason, documented in their own comments before this session even started.
-2. **An event-id collision in `argocd-outcome-relay`, live-cluster-only** (a
+2. **An event-id collision in `glidepath-relay`, live-cluster-only** (a
    `helm lint`/unit-test could never have caught this - it's a matter of which byte
    values two DIFFERENT live events over TIME happen to hash to): `context.source` has
    no per-attempt uniqueness (a fixed string per app/env/cluster, unlike a real
@@ -657,9 +657,9 @@ nothing writes an Application manifest from it any more.
 (`charts/glidepath-control-plane/values.yaml`) had gone back to empty (`[]`) at some
 point after platform-cicd's control plane moved onto `dev` as its own, independent
 instance - confirmed live, not assumed
-(`clusters: []`, `data: null` on the real ConfigMap). Since `argocd-outcome-relay`'s own
+(`clusters: []`, `data: null` on the real ConfigMap). Since `glidepath-relay`'s own
 Deployment/RBAC/Service are all gated behind `if .Values.clusters`
-(`templates/clusters/argocd-outcome-relay.yaml`), the relay wasn't even deployed on
+(`templates/clusters/glidepath-relay.yaml`), the relay wasn't even deployed on
 `dev` at all - a second, independent reason cluster-mapped outcome reporting had no
 working path, on top of the hook-Job removal. Re-populated with a real `prod` entry
 to fix both at once.
@@ -669,7 +669,7 @@ per app namespace - see "Relay-token distribution via External Secrets Operator 
 2026-08-19)" above. At the time this section was written, it still did.
 
 **2026-08-22 update: relay generified, hook script now builds the CDEvent itself.**
-`argocd-outcome-relay` used to receive a flat, bespoke JSON request from the hook
+`glidepath-relay` used to receive a flat, bespoke JSON request from the hook
 script and reshape it into a CDEvent in Go (~80 lines duplicating `catalog/lib/
 cdevents.sh`'s envelope shape, with no retry on the broker POST, unlike every other
 call site in this codebase). Flipped: `catalog/lib/argocd-outcome-hook.sh` now builds
@@ -728,11 +728,11 @@ and any node with an already-cached `:latest` layer won't re-pull on its own.
 
 **Still not done**: rebuild+push three images - `ghcr.io/jfillman/glidepath-toolbox`
 (bakes in the hook script AND `update-dora-metrics.yaml`'s step image),
-`ghcr.io/jfillman/glidepath-argocd-outcome-relay`, and
+`ghcr.io/jfillman/glidepath-relay`, and
 `ghcr.io/jfillman/dora-exporter` (all `:latest`, all `imagePullPolicy: IfNotPresent` -
 a stale node-cached image has bitten this exact relay before, see the
-"ghcr.io/jfillman" comment in `argocd-outcome-relay.yaml`) - and a rollout restart of
-the `argocd-outcome-relay` and `dora-exporter` Deployments afterward, not just a
+"ghcr.io/jfillman" comment in `glidepath-relay.yaml`) - and a rollout restart of
+the `glidepath-relay` and `dora-exporter` Deployments afterward, not just a
 re-apply. Safe to do in any order or partially: the old hook script sends the old flat
 request shape the old relay still expects, and the old relay's own direct dora-exporter
 call still works against the old dora-exporter binary - nothing breaks until all three
@@ -756,7 +756,7 @@ Merging it synced on `prod`; both hook variants fired for real:
   `release-outcome-notify` PipelineRun succeeded, and both `dora_deployments_total` and
   `dora_releases_total{outcome="succeeded"}` incremented to 1.
 
-Confirmed via `argocd-outcome-relay`'s own code that it logs nothing on a fully
+Confirmed via `glidepath-relay`'s own code that it logs nothing on a fully
 successful request (only on auth/forward failure) - empty relay logs during this test
 were a red herring, not evidence the mechanism wasn't firing; the real proof is the
 PipelineRuns/Slack/metrics above, plus a manual debug-pod run of the exact hook script
@@ -774,7 +774,7 @@ session's code changes, all pre-existing on `prod`):
    version `40-observability` pins, not the full stack - `prod` still has no
    Prometheus of its own).
 2. The control-plane's own `clusters:` registry had gone back to `[]` (and
-   `argocd-outcome-relay` - gated behind `if .Values.clusters` - wasn't even deployed)
+   `glidepath-relay` - gated behind `if .Values.clusters` - wasn't even deployed)
    at some point after platform-cicd's control plane moved onto its own, independent
    `dev` instance. Re-populated with a real `prod` entry (see this doc's own
    "Outcome reporting, rebuilt" section above).
@@ -797,7 +797,7 @@ that override once the app side is fixed.
 from the Argo Rollouts notifications engine. Phase 1 adds the receiving side without
 removing anything:
 
-- `argocd-outcome-relay` gains `POST /facts/<cluster>` (`facts.go`). It authenticates with
+- `glidepath-relay` gains `POST /facts/<cluster>` (`facts.go`). It authenticates with
   the same per-cluster secret, reads the release record, and rebuilds the same
   `environment.deploying` / `environment.deployed` CDEvent the hook builds. The event id
   is derived from `(release-id, type, outcome)`, so a heartbeat or scale fact for a release
@@ -813,7 +813,7 @@ removing anything:
 - The relay needs `get` on ConfigMaps cluster-wide to read the record; the name prefix and
   the `app-` namespace prefix are enforced in code.
 
-`go test ./cmd/argocd-outcome-relay` runs `argocd-outcome-hook.sh` for each of its three
+`go test ./cmd/glidepath-relay` runs `argocd-outcome-hook.sh` for each of its three
 phases and asserts the fact path builds an identical event.
 
 ## ADR-0021 phase 2: the release state machine (2026-10-06)
@@ -833,7 +833,7 @@ shadow to emit sends the history instead of believing it was sent).
 - `open-release-pr.yaml` creates it `proposed`, labelled `hangar.io/app|env|cluster`.
 - `mark-release-merged.yaml`, run by `bypass-merge-check` on every gitops PR close, moves
   `proposed` to `merged` or `closed`. It never touches a state the relay owns.
-- `argocd-outcome-relay` (`reducer.go`) moves it from facts. Rules, each covered by a test
+- `glidepath-relay` (`reducer.go`) moves it from facts. Rules, each covered by a test
   replaying what phases 0 and 1 saw: a release's pod template hash is fixed by its first fact
   and a different hash afterwards is **drift** (a Kubernetes Event `ReleaseDrift` on the
   record), never a new release, so a scale, restart, heartbeat or manual edit emits nothing;
@@ -870,7 +870,7 @@ minutes or `progressing` with no fact for 45 minutes (the heartbeat arrives ever
 deletes records past 14 days (terminal, closed, proposed, or state-less legacy). Records are
 no longer deleted when the outcome is first read.
 
-Tests: `go test ./cmd/argocd-outcome-relay` (reducer, persistence, supersede, drift,
+Tests: `go test ./cmd/glidepath-relay` (reducer, persistence, supersede, drift,
 conflict, forward failure, no-permission fallback), and the two shell tests
 `charts/glidepath-catalog/tests/mark_release_merged_test.sh` and
 `charts/glidepath-control-plane/tests/release_record_sweeper_test.sh`, which run the real
@@ -890,5 +890,8 @@ written).
   `appNamespace` and `cluster` into `releaseTracking`.
 - **3c, cleanup.** The relay lost `/outcome`, the hook-supersede logic and its equivalence
   test; the hook script left the toolbox image; the registry lost `outcomeRelayURL` and
-  `relayHostAliasIP`; `factsMode` defaults to `emit`. Still to do: rename the relay to
-  `glidepath-relay`.
+  `relayHostAliasIP`; `factsMode` defaults to `emit`.
+- **Rename.** `argocd-outcome-relay` is now `glidepath-relay` (image `ghcr.io/jfillman/glidepath-relay`,
+  Deployment, Service, ServiceAccount, RBAC, the `app` label, `glidepath/broker/cmd/glidepath-relay`).
+  Older sections of this doc, and the ADRs, keep the old name where they describe history. The
+  NodePort stays 30880, so the clusters' notification URLs did not change.

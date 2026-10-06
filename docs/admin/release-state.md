@@ -142,11 +142,11 @@ cluster-wide:
 
 | Identity | Verbs on ConfigMaps in `app-<name>-cicd` | Also |
 |---|---|---|
-| `argocd-outcome-relay` (platform-system) | get, list, update | create Events |
+| `glidepath-relay` (platform-system) | get, list, update | create Events |
 | `release-record-sweeper` (platform-system) | get, list, patch, delete | create Events |
 | `pipeline-runner` (the Tekton tasks) | get, list, create, patch, delete (list added for `mark-release-merged`) | |
 
-The relay's cluster-wide `get` on ConfigMaps from phase 1 (`argocd-outcome-relay-records`)
+The relay's cluster-wide `get` on ConfigMaps from phase 1 (`glidepath-relay-records`)
 remains until every namespace has the Role, then goes. The two infra apps (`skyport-auth`,
 `skyport-broker`) have no release flow and no Role; the relay and sweeper skip them.
 
@@ -165,12 +165,12 @@ kubectl get events -A --field-selector reason=ReleaseDrift
 kubectl get events -A --field-selector reason=ReleaseStalled
 
 # what the relay would send, if factsMode is shadow
-kubectl -n platform-system logs -l app=argocd-outcome-relay --prefix | grep shadow-event
+kubectl -n platform-system logs -l app=glidepath-relay --prefix | grep shadow-event
 ```
 
 ## Tests
 
-- `glidepath/broker`: `go test ./cmd/argocd-outcome-relay`. The reducer's rows above, state
+- `glidepath/broker`: `go test ./cmd/glidepath-relay`. The reducer's rows above, state
   persistence, a failed forward, a write conflict, an unwritable record, drift, supersede,
   shadow-then-emit, and the Argo CD endpoint.
 - `charts/glidepath-catalog/tests/mark_release_merged_test.sh` and
@@ -180,7 +180,7 @@ kubectl -n platform-system logs -l app=argocd-outcome-relay --prefix | grep shad
 ## Not built yet
 
 Rollback (a release with `rollbackOf`, `rolled-back`, the `service.rolledback` event, the gate
-policy for it), renaming the relay to `glidepath-relay`, moving the events onto the spec's
+policy for it), moving the events onto the spec's
 vocabulary ([ADR-0022](adr/0022-cdevents-conformance-and-vocabulary.md)).
 
 ## Known gap: a PR closed without merging

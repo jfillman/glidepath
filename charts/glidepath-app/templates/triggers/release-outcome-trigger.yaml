@@ -1,12 +1,12 @@
-# Consumes the environment.deployed CDEvent argocd-outcome-relay forwards once a
+# Consumes the environment.deployed CDEvent glidepath-relay forwards once a
 # cluster-mapped release env's ArgoCD confirms a sync outcome. Only rendered for apps
 # with a cluster-mapped upper env (docs/admin/multi-cluster.md).
 #
 # Unlike flow-triggers.yaml, this CEL filter does not check extensions.app_namespace -
-# the caller is always argocd-outcome-relay's own platform-system SA forwarding on
+# the caller is always glidepath-relay's own platform-system SA forwarding on
 # behalf of any app, so that extension would just read "platform-system" here. Matches
 # on the event's claimed body.subject.content.appNamespace instead - a deliberate,
-# bounded trust difference from the TokenReview path (see argocd-outcome-relay/main.go).
+# bounded trust difference from the TokenReview path (see glidepath-relay/main.go).
 {{- if eq (include "glidepath-app.hasClusterMappedUpperEnv" .) "true" }}
 {{- $appNamespace := include "glidepath-app.namespace" . }}
 ---
@@ -87,7 +87,7 @@ spec:
           serviceAccountName: pipeline-runner
         {{- /* Same cross-cluster DNS gap as flow-triggers.yaml's identical block - see
         values.yaml's own backstageHostAliasIP comment. This PipelineRun also runs on
-        the dev cluster (fired by argocd-outcome-relay, itself dev-hosted), so
+        the dev cluster (fired by glidepath-relay, itself dev-hosted), so
         notify-backstage's Task pod here needs the same fix. */ -}}
         {{- if .Values.backstageHostAliasIP }}
         taskRunSpecs:

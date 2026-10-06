@@ -70,7 +70,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       # Own identity's token, re-read from disk each request (not cached) so kubelet's
       # rotation just works with no pod restart - same pattern as
-      # templates/clusters/argocd-outcome-relay.yaml's broker-token volume. No custom
+      # templates/clusters/glidepath-relay.yaml's broker-token volume. No custom
       # `audience` set, unlike that one: Results does plain Kubernetes TokenReview with
       # no custom audience requirement, confirmed live via `kubectl create token
       # backstage-ingestor` (no --audience flag) succeeding against Results' ClusterIP

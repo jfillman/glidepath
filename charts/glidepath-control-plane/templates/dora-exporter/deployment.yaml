@@ -103,7 +103,7 @@ metadata:
 ---
 # get+patch only, resourceNames-scoped to exactly these two ConfigMaps - no create,
 # matching this platform's "no wildcard verbs, enumerate resourceNames" RBAC
-# convention everywhere else (see e.g. argocd-outcome-relay's own Role). Never needs
+# convention everywhere else (see e.g. glidepath-relay's own Role). Never needs
 # create because both ConfigMaps above are always pre-rendered by this same chart.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

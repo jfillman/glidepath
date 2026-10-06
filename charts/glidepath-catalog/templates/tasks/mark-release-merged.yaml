@@ -2,7 +2,7 @@
 #
 # ADR-0021 phase 2. Records on the release's dev-side record (release-tracking-<chain-id>,
 # written by open-release-pr.yaml) that its gitops PR was merged or closed unmerged, so the
-# release state machine (argocd-outcome-relay) starts from "merged" and the stall detector
+# release state machine (glidepath-relay) starts from "merged" and the stall detector
 # can tell a merged release that never started deploying from a PR still waiting for review.
 # Runs from bypass-merge-check, the Pipeline that already fires on every gitops PR close.
 #

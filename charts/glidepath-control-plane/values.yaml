@@ -222,8 +222,8 @@ secretStore:
 #
 # Empty by default - this is cluster state (which real upper clusters are registered),
 # not chart source, so real entries live in each cluster's own gitops-cluster-<name>
-# repo. Rendering .Values.clusters non-empty is also what turns on argocd-outcome-relay
-# itself (templates/clusters/argocd-outcome-relay.yaml's own `if .Values.clusters`).
+# repo. Rendering .Values.clusters non-empty is also what turns on glidepath-relay
+# itself (templates/clusters/glidepath-relay.yaml's own `if .Values.clusters`).
 #
 # - name: kind-prod
 #   relaySecretName: cluster-kind-prod-relay-token

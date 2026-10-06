@@ -53,7 +53,7 @@ platform's PaaS/RBAC posture.
 - **The GitHub App needs a public endpoint.** Pipelines-as-Code's webhook delivery
   can't reach a local/private cluster directly - front the PaC controller with a
   tunnel (`cloudflared`, `ngrok`) for local dev, or real ingress/DNS for anything else.
-- **`token-review-interceptor`/`argocd-outcome-relay` images are `IfNotPresent` +
+- **`token-review-interceptor`/`glidepath-relay` images are `IfNotPresent` +
   `:latest`.** A source change under `glidepath/broker/cmd/` does nothing to a running
   cluster until you rebuild, push, and `kubectl rollout restart` the affected
   Deployment - there's no CI wired to a private cluster to do this automatically.

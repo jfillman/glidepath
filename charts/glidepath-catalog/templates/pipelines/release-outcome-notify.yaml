@@ -1,7 +1,7 @@
 # catalog/pipelines/release-outcome-notify.yaml (Phase 3 item 4, docs/multi-cluster.md)
 #
-# The downstream consumer of the environment.deployed CDEvent the argocd-outcome-relay
-# forwards (glidepath/broker/cmd/argocd-outcome-relay) once a cluster-mapped release
+# The downstream consumer of the environment.deployed CDEvent the glidepath-relay
+# forwards (glidepath/broker/cmd/glidepath-relay) once a cluster-mapped release
 # actually confirms success/failure on its own upper-env cluster - this is what "closes
 # the loop" in a way a human notices, not just a CDEvent landing unseen. Four tasks:
 # `resolve-release-tracking` reads pr-url/pr-created-at back out of the dev-cluster
@@ -18,7 +18,7 @@
 # separate trace, not appended to the original flow's - added 2026-08-12, a real gap
 # found live: this Pipeline had no tracing task at all before), `update-dora-metrics`
 # calls dora-exporter's own /argocd-outcome endpoint (added 2026-08-22, replacing a
-# direct HTTP call argocd-outcome-relay used to make itself - see
+# direct HTTP call glidepath-relay used to make itself - see
 # update-dora-metrics.yaml's own header for why running it here instead fixed a real
 # MTTR gap, not just moved the call). `release-log` emits one structured record of this
 # release's full outcome - approvers, per-gate results, bypass - into the release log
@@ -27,7 +27,7 @@
 # No resolve-notify-config/clone/workspace needed here (unlike
 # deploy.yaml/release.yaml) - config-json arrives pre-resolved: open-release-pr.yaml
 # base64-encodes it into the PostSync/SyncFail hook Job's own CONFIG_JSON_B64 env var at
-# PR-open time, the hook script forwards it to argocd-outcome-relay, and the relay
+# PR-open time, the hook script forwards it to glidepath-relay, and the relay
 # decodes it straight into the CDEvent's body.subject.content.configJson this Pipeline's
 # own Trigger binds from (see release-outcome-trigger.yaml).
 apiVersion: tekton.dev/v1
@@ -158,7 +158,7 @@ spec:
         - { name: pr-created-at, value: $(tasks.resolve-release-tracking.results.pr-created-at) }
 
     # See update-dora-metrics.yaml's own header for why this runs as a Task here now,
-    # instead of argocd-outcome-relay calling dora-exporter directly.
+    # instead of glidepath-relay calling dora-exporter directly.
     - name: update-dora-metrics
       taskRef:
         resolver: cluster

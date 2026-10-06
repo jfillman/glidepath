@@ -1,7 +1,7 @@
 # catalog/tasks/update-dora-metrics.yaml
 #
 # Calls dora-exporter's own /argocd-outcome endpoint for a cluster-mapped release's
-# confirmed outcome - the same call argocd-outcome-relay used to make directly,
+# confirmed outcome - the same call glidepath-relay used to make directly,
 # best-effort, from inside handleOutcome (docs/admin/multi-cluster.md). Moved here,
 # added 2026-08-22, for two real reasons, not just relocation for its own sake:
 #

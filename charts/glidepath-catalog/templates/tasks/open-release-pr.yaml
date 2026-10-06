@@ -149,13 +149,13 @@ spec:
         source "${PLATFORM_LIB}/retry.sh"
 
         # The dev-side release record (ADR-0021): prUrl/prCreatedAt as before, plus
-        # everything argocd-outcome-relay's /facts endpoint needs to rebuild this
+        # everything glidepath-relay's /facts endpoint needs to rebuild this
         # release's CDEvent when the upper cluster reports a Rollout fact for it. One
         # function so the two writers below (a retry that reuses an open PR, and a fresh
         # PR) cannot drift apart. configJson is the cicd.yaml content as resolved here.
         write_release_record() {
           local pr_url_arg="$1" pr_created_arg="$2"
-          # The reducer (argocd-outcome-relay) owns state from here on, so the initial state is
+          # The reducer (glidepath-relay) owns state from here on, so the initial state is
           # written only when the record is new: a retry that reuses an open PR must not reset a
           # record that has already moved on.
           local initial_state=()
