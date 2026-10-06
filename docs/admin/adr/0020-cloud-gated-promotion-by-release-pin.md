@@ -1,6 +1,6 @@
 # ADR-0020: Cloud Flight environments are gated by a release pin PR on the source repo
 
-*Status: Accepted (2026-10-06). Slice 1 of the build is not started. Nothing here is implemented. The owner's decisions on the open questions are under [Decided at acceptance](#decided-at-acceptance-2026-10-06).*
+*Status: Accepted (2026-10-06). Slice 1 built (open-release-pin-pr, release pipeline branch on deploy.target); inert until slice 4 allows a cloud Flight environment. The owner's decisions on the open questions are under [Decided at acceptance](#decided-at-acceptance-2026-10-06).*
 
 ## Context
 

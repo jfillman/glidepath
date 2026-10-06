@@ -1,0 +1,184 @@
+# catalog/tasks/open-release-pin-pr.yaml
+# ADR-0020 slice 1: the approval for a cloud Flight environment (aws-ecs, aws-lambda,
+# azure-container-apps). A cloud app has no gitops repo, so instead of open-release-pr.yaml's
+# gitops PR this opens a PR on the app's own source repo that changes one file, the release pin
+# glidepath/releases/<env>.yaml. Merging it is the approval; slice 2's promote-<env> flow then
+# deploys exactly the pinned digest.
+#
+# Pin layout (ADR-0020, decided 2026-10-06): release.image.{repository,tag,digest}, the gitops
+# release file's layout plus a digest, so extract-promoted-image.yaml and every gate built on it
+# read a pin PR unchanged.
+#
+# One open pin PR per environment: the branch is glidepath-release-<env>. A newer release resets
+# that branch to main and rewrites the pin, so an open PR always shows the latest candidate and
+# never a stack of them.
+#
+# Every write goes through the GitHub contents/refs API, never `git push`: GitHub signs commits
+# the App makes through the API, so a ruleset that requires signed commits accepts pin commits
+# (ADR-0020: no gitsign for cloud targets). The commit author is the App itself.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: open-release-pin-pr
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  params:
+    - name: image-ref
+      type: string
+      description: The already-built image (repo:tag) to promote; its digest is resolved here and pinned.
+    - name: git-url
+      type: string
+      description: The app's source repo; the pin PR is opened there.
+    - name: app-name
+      type: string
+    - name: git-revision
+      type: string
+      description: The commit the image was built from (release.sourceRevision).
+    - name: env
+      type: string
+      description: The cloud Flight environment being promoted to.
+    - name: config-json
+      type: string
+      default: "{}"
+      description: >-
+        cicd.yaml's resolved content (resolve-deploy-target's result). Only the environment order
+        is read, to name the environment the release comes from (release.promotedFrom): the
+        previous one in list order. Order is not enforced (ADR-0020).
+  results:
+    - name: pr-url
+      description: URL of the opened (or updated) pin PR.
+    - name: digest
+      description: The pinned image digest (sha256:...).
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+    # Same Secret/key mapping verify-image-provenance.yaml uses: a fresh ghcr package is private.
+    - name: registry-credentials
+      secret:
+        secretName: registry-credentials
+        items:
+          - key: .dockerconfigjson
+            path: config.json
+  steps:
+    - name: open-pin-pr
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+        - name: registry-credentials
+          mountPath: /var/run/secrets/registry
+          readOnly: true
+      env:
+        - name: DOCKER_CONFIG
+          value: /var/run/secrets/registry
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: IMAGE_REF
+          value: $(params.image-ref)
+        - name: GIT_URL
+          value: $(params.git-url)
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: GIT_REVISION
+          value: $(params.git-revision)
+        - name: ENV
+          value: $(params.env)
+        - name: CONFIG_JSON
+          value: $(params.config-json)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+
+        owner="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="${APP_NAME}"
+        api="https://api.github.com/repos/${owner}/${repo}"
+        pin="glidepath/releases/${ENV}.yaml"
+        branch="glidepath-release-${ENV}"
+
+        image_repo="${IMAGE_REF%:*}"
+        image_tag="${IMAGE_REF##*:}"
+        digest="$(crane digest "${IMAGE_REF}" | tr -d '\n')"
+        [[ "${digest}" == sha256:* ]] || { echo "error: could not resolve a digest for ${IMAGE_REF} (got '${digest}')" >&2; exit 1; }
+
+        # The previous environment in cicd.yaml's order (deploy.environments, else promotionOrder,
+        # else lower ++ upper), or empty when ENV is first or not listed.
+        promoted_from="$(jq -r --arg env "${ENV}" '
+          (.deploy // {}) as $d
+          | (if ($d.environments // null) != null then [$d.environments[].name]
+             elif (($d.promotionOrder // []) | length) > 0 then $d.promotionOrder
+             else (($d.lowerEnvironments // []) + [($d.upperEnvironments // [])[] | if type == "object" then .name else . end])
+             end) as $order
+          | ($order | index($env)) as $i
+          | if $i == null or $i == 0 then "" else $order[$i - 1] end
+        ' <<<"${CONFIG_JSON}")"
+
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+        gh_api() { # method path [json-body]
+          local args=(--fail --silent --show-error --retry 3 --retry-connrefused --max-time 20
+            -X "$1" -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json")
+          [[ $# -ge 3 ]] && args+=(-H "Content-Type: application/json" --data "$3")
+          curl "${args[@]}" "${api}$2"
+        }
+
+        default_branch="$(gh_api GET "" | jq -r .default_branch)"
+        base_sha="$(gh_api GET "/git/ref/heads/${default_branch}" | jq -r .object.sha)"
+
+        # Reset the pin branch to the default branch (create it the first time), so the PR's diff is
+        # only ever this one pin, whatever an earlier release left on the branch.
+        if gh_api GET "/git/ref/heads/${branch}" >/dev/null 2>&1; then
+          gh_api PATCH "/git/refs/heads/${branch}" "$(jq -n --arg sha "${base_sha}" '{sha: $sha, force: true}')" >/dev/null
+        else
+          gh_api POST "/git/refs" "$(jq -n --arg ref "refs/heads/${branch}" --arg sha "${base_sha}" '{ref: $ref, sha: $sha}')" >/dev/null
+        fi
+
+        content="$(cat <<PINEOF
+        # ${pin} - the release pin for ${ENV} (glidepath ADR-0020). Written by Glidepath; do not edit.
+        # Merging the pull request that changes this file deploys exactly this digest to ${ENV}.
+        release:
+          image:
+            repository: ${image_repo}
+            tag: ${image_tag}
+            digest: ${digest}
+          promotedFrom: ${promoted_from:-null}
+          sourceRevision: ${GIT_REVISION}
+        PINEOF
+        )"
+        # Fail before writing anything a deploy would later trip on.
+        yq -e '.release.image.digest | test("^sha256:")' <<<"${content}" >/dev/null
+
+        existing_sha="$(gh_api GET "/contents/${pin}?ref=${default_branch}" 2>/dev/null | jq -r '.sha // empty' || true)"
+        message="Pin ${APP_NAME} ${ENV} to ${image_tag} (${digest:0:19})"
+        put_body="$(jq -n --arg m "${message}" --arg c "$(printf '%s\n' "${content}" | base64 | tr -d '\n')" \
+          --arg b "${branch}" --arg s "${existing_sha}" \
+          '{message: $m, content: $c, branch: $b} + (if $s == "" then {} else {sha: $s} end)')"
+        gh_api PUT "/contents/${pin}" "${put_body}" >/dev/null
+
+        pr_url="$(gh_api GET "/pulls?head=${owner}:${branch}&state=open" | jq -r '.[0].html_url // empty')"
+        if [[ -n "${pr_url}" ]]; then
+          echo "pin PR for ${ENV} was already open - updated it to ${image_tag}: ${pr_url}"
+        else
+          body="$(printf '%s\n' \
+            "Promotes **${APP_NAME}** to **${ENV}**." \
+            "" \
+            "- Image: \`${image_repo}:${image_tag}\`" \
+            "- Digest: \`${digest}\`" \
+            "- From: ${promoted_from:-(first environment)}" \
+            "- Source revision: \`${GIT_REVISION}\`" \
+            "" \
+            "Merging deploys exactly this digest to ${ENV}. Opened by Glidepath (ADR-0020); a newer release updates this PR instead of opening another.")"
+          pr_url="$(gh_api POST "/pulls" "$(jq -n --arg t "Release ${APP_NAME} ${image_tag} to ${ENV}" --arg h "${branch}" \
+            --arg b "${default_branch}" --arg body "${body}" '{title: $t, head: $h, base: $b, body: $body}')" | jq -r .html_url)"
+          echo "opened pin PR for ${ENV}: ${pr_url}"
+        fi
+        echo -n "${pr_url}" | tee "$(results.pr-url.path)"
+        echo -n "${digest}" > "$(results.digest.path)"

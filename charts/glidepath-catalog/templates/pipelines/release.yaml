@@ -188,8 +188,27 @@ spec:
         - { name: git-tag, value: $(params.git-tag) }
         - { name: git-revision, value: $(params.git-revision) }
 
+    # ADR-0020: a Kubernetes app's approval is a gitops release PR; a cloud app's is a release-pin
+    # PR on its own source repo (open-release-pin-pr below). Same resolution deploy.yaml uses.
+    - name: resolve-deploy-target
+      runAfter: [start-release-stage-span]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: resolve-deploy-target }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: config-json, value: $(params.config-json) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: env, value: $(params.env) }
+        - { name: app-name, value: $(params.app-name) }
+
     - name: open-release-pr
-      runAfter: [resolve-image-ref]
+      runAfter: [resolve-image-ref, resolve-deploy-target]
+      when:
+        - { input: $(tasks.resolve-deploy-target.results.target), operator: in, values: ["k8s-rollout"] }
       taskRef:
         resolver: cluster
         params:
@@ -219,6 +238,8 @@ spec:
     # back once ArgoCD confirms the sync succeeded or failed.
     - name: mark-release-pending
       runAfter: [open-release-pr]
+      when:
+        - { input: $(tasks.resolve-deploy-target.results.target), operator: in, values: ["k8s-rollout"] }
       taskRef:
         resolver: cluster
         params:
@@ -231,6 +252,24 @@ spec:
         - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
         - { name: env, value: $(params.env) }
         - { name: cluster, value: $(params.cluster) }
+    - name: open-release-pin-pr
+      runAfter: [resolve-image-ref, resolve-deploy-target]
+      when:
+        - { input: $(tasks.resolve-deploy-target.results.target), operator: in, values: ["aws-ecs", "aws-lambda", "azure-container-apps"] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: open-release-pin-pr }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: env, value: $(params.env) }
+        - { name: config-json, value: $(tasks.resolve-deploy-target.results.config-json) }
+
     # Never when-gated/skipped and has no result-dependency on clone-repo - see this
     # Task's own header for why that's load-bearing (notify below must always be able
     # to reference its result, regardless of git-rooted vs event-chained).
