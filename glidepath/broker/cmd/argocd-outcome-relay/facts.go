@@ -147,30 +147,55 @@ func (h *handler) handleFacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read-modify-write the release record. Two relay replicas can race, so a conflict
-	// re-reads and re-applies the (pure) reducer. Events go out BEFORE the state is
-	// written: if the write then fails the next fact repeats the same deterministic event
-	// ids, which downstream collapses; the other order could lose an event for good.
-	var (
-		ignored string
-		dec     decision
-	)
-	for attempt := 0; attempt < 4; attempt++ {
+	load := func() (*record, *corev1.ConfigMap, error) {
 		rec, cm, err := h.loadRecord(ctx, &f, chain)
 		if err != nil {
 			// Expected after the record has been swept, or for a release that predates the record.
-			w.Header().Set("X-Fact-Ignored", "no-record: "+err.Error())
-			w.WriteHeader(http.StatusAccepted)
-			return
+			return nil, nil, ignoreErr("no-record: " + err.Error())
 		}
 		if rec.Env != env || rec.Cluster != cluster {
-			http.Error(w, fmt.Sprintf("record for chain %q is for %s/%s, fact says %s/%s", chain, rec.Cluster, rec.Env, cluster, env), http.StatusBadRequest)
+			return nil, nil, badErr(fmt.Sprintf("record for chain %q is for %s/%s, fact says %s/%s", chain, rec.Cluster, rec.Env, cluster, env))
+		}
+		return rec, cm, nil
+	}
+	h.apply(w, ctx, cluster, f.NS+"/"+f.Name, relID, load, func(st *relState, now time.Time) decision { return reduce(st, &f, now) })
+}
+
+// ignoreErr and badErr let a loader say "valid but nothing to do" (202) or "reject" (400).
+type ignoreErr string
+type badErr string
+
+func (e ignoreErr) Error() string { return string(e) }
+func (e badErr) Error() string    { return string(e) }
+
+// apply is the read-modify-write every fact goes through. Two relay replicas can race, so a
+// conflict re-reads and re-applies the (pure) reducer. Events go out BEFORE the state is
+// written: if the write then fails the next fact repeats the same deterministic event ids,
+// which downstream collapses; the other order could lose an event for good.
+func (h *handler) apply(w http.ResponseWriter, ctx context.Context, cluster, who, relID string,
+	load func() (*record, *corev1.ConfigMap, error), fn func(*relState, time.Time) decision) {
+	ignored := ""
+	for attempt := 0; attempt < 4; attempt++ {
+		rec, cm, err := load()
+		if err != nil {
+			switch e := err.(type) {
+			case ignoreErr:
+				w.Header().Set("X-Fact-Ignored", string(e))
+				w.WriteHeader(http.StatusAccepted)
+			case badErr:
+				http.Error(w, string(e), http.StatusBadRequest)
+			default:
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 			return
+		}
+		if relID == "" {
+			relID = cm.Data["releaseId"]
 		}
 
 		st := stateFromRecord(cm, h.mode())
 		firstFact := st.LastFactAt.IsZero()
-		dec = reduce(&st, &f, time.Now().UTC())
+		dec := fn(&st, time.Now().UTC())
 
 		for _, em := range dec.Emits {
 			ev, err := buildEvent(rec, relID, em)
@@ -183,7 +208,7 @@ func (h *handler) handleFacts(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if err := h.forward(ctx, ev); err != nil {
-				log.Printf("argocd-outcome-relay: forwarding fact event failed (cluster=%s rollout=%s/%s kind=%s): %v", cluster, f.NS, f.Name, em.Kind, err)
+				log.Printf("argocd-outcome-relay: forwarding event failed (cluster=%s source=%s kind=%s): %v", cluster, who, em.Kind, err)
 				http.Error(w, "failed to forward event", http.StatusBadGateway)
 				return
 			}
@@ -287,7 +312,7 @@ func (h *handler) loadRecord(ctx context.Context, f *fact, chain string) (*recor
 
 const (
 	keyState, keyStateAt, keyLastFactAt, keyLastFactPhase = "state", "stateAt", "lastFactAt", "lastFactPhase"
-	keyPodHash, keyDrift                                  = "podHash", "drift"
+	keyPodHash, keyDrift, keyLastError                    = "podHash", "drift", "lastError"
 	keyEmittedLive, keyEmittedShadow                      = "emittedLive", "emittedShadow"
 )
 
@@ -307,7 +332,7 @@ func stateFromRecord(cm *corev1.ConfigMap, mode string) relState {
 	d := cm.Data
 	st := relState{
 		State: d[keyState], StateAt: parseTime(d[keyStateAt]), LastFactAt: parseTime(d[keyLastFactAt]),
-		LastFactPhase: d[keyLastFactPhase], PodHash: d[keyPodHash], Drift: d[keyDrift],
+		LastFactPhase: d[keyLastFactPhase], PodHash: d[keyPodHash], Drift: d[keyDrift], LastError: d[keyLastError],
 		Emitted: map[string]bool{},
 	}
 	if st.State == "" {
@@ -339,7 +364,7 @@ func (h *handler) persistState(ctx context.Context, cm *corev1.ConfigMap, st rel
 	sort.Strings(em)
 	d := next.Data
 	d[keyState], d[keyStateAt], d[keyLastFactAt], d[keyLastFactPhase] = st.State, ts(st.StateAt), ts(st.LastFactAt), st.LastFactPhase
-	d[keyPodHash], d[keyDrift] = st.PodHash, st.Drift
+	d[keyPodHash], d[keyDrift], d[keyLastError] = st.PodHash, st.Drift, st.LastError
 	d[emittedKey(h.mode())] = strings.Join(em, ",")
 	_, err := h.clientset.CoreV1().ConfigMaps(cm.Namespace).Update(ctx, next, metav1.UpdateOptions{})
 	return err

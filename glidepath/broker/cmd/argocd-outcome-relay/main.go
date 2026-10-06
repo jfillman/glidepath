@@ -96,6 +96,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/outcome/", h.handleOutcome)
 	mux.HandleFunc("/facts/", h.handleFacts) // ADR-0021; see facts.go
+	mux.HandleFunc("/argocd/", h.handleArgoFacts)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	log.Println("argocd-outcome-relay: listening on :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))

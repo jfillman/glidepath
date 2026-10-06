@@ -835,6 +835,18 @@ shadow to emit sends the history instead of believing it was sent).
   relay replicas re-reads and re-applies. A record the relay cannot write degrades to the
   phase 1 stateless behaviour.
 
+**Sync failures** come from a second endpoint, `POST /argocd/<cluster>` (`argocd_facts.go`),
+fed by the tenant Argo CD's notifications controller (`argocd-apps` on kind-prod). The Rollouts
+engine never sees a sync that is rejected before the Rollout changes; without this a release
+that never started looks the same as one still queued. Tenant Applications retry (limit 5,
+backoff to 10 minutes, about 15 minutes to a final `Failed`) and the phase stays `Running`
+through the retries, so the trigger fires on the first failed attempt (`retryCount > 0`) and on
+the final failure. The relay finds the release by `(app, env, cluster)` (newest `merged`,
+`progressing` or `sync-failed` record; a sync with no such release, such as a hand edit to
+`values.yaml`, is ignored), moves it to `sync-failed` (not terminal: a later Rollout fact moves
+it on), keeps the error in `lastError`, and emits one `deploying` and one failure per release
+however many retries Argo makes. The hook path sent one per attempt.
+
 **Permissions** are per Application namespace now: `glidepath-app`'s
 `identity/release-record-relay.yaml` gives the relay get, list and update on ConfigMaps and
 create on Events there, and gives the sweeper its own Role. The cluster-wide `get` that

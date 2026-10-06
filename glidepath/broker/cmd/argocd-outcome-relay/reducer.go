@@ -35,6 +35,7 @@ const (
 	stSuperseded  = "superseded"
 	stRolledBack  = "rolled-back"
 	stClosed      = "closed"
+	stSyncFailed  = "sync-failed"
 
 	kindDeploying = "deploying"
 	kindSuccess   = "deployed-success"
@@ -49,6 +50,7 @@ type relState struct {
 	LastFactPhase string
 	PodHash       string
 	Drift         string
+	LastError     string
 	// Emitted is the set of CDEvent kinds already sent for this release, per mode, so that
 	// switching shadow -> emit sends the history instead of believing it already did.
 	Emitted map[string]bool
@@ -165,6 +167,40 @@ func reduce(s *relState, f *fact, now time.Time) decision {
 	}
 	if len(d.Emits) == 0 && d.Ignore == "" {
 		d.Ignore = "nothing new"
+	}
+	return d
+}
+
+// reduceSyncFailed applies an Argo CD sync failure for the release. The sync failed before,
+// or instead of, the Rollout reporting anything: a rejected manifest, an admission webhook,
+// a hook, a missing secret. It is not terminal: Argo retries, and a later Progressing or
+// Healthy fact for the same release moves it on. One failure event per release, however many
+// retries Argo makes (the hook path sent one per attempt).
+func reduceSyncFailed(s *relState, message string, now time.Time) decision {
+	if s.Emitted == nil {
+		s.Emitted = map[string]bool{}
+	}
+	var d decision
+	switch s.State {
+	case stHealthy, stSuperseded, stRolledBack, stClosed:
+		// A sync failure on a release that already ran, or one that is no longer current,
+		// is not this release failing to deploy.
+		d.Ignore = "sync failure on a release that is " + s.State
+		return d
+	}
+	s.LastError = message
+	if s.State != stSyncFailed {
+		s.State = stSyncFailed
+		s.StateAt = now
+	}
+	for _, e := range []emission{emDeploying, emFailure} {
+		if !s.Emitted[e.Kind] {
+			s.Emitted[e.Kind] = true
+			d.Emits = append(d.Emits, e)
+		}
+	}
+	if len(d.Emits) == 0 {
+		d.Ignore = "sync failure already reported"
 	}
 	return d
 }
