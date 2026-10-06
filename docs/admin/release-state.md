@@ -100,19 +100,15 @@ not the hash, identifies a release.
 - **A write conflict re-reads and re-reduces.** There are two relay replicas.
 - **A record the relay cannot write** (no Role yet, or it vanished) degrades to the stateless
   behaviour of phase 1: the deterministic ids still make repeats harmless.
-- **In `emit` mode the fact path owns a release, and the hook Jobs' copy is dropped** (phase 3a;
-  the Jobs still call `/outcome` until they are removed). From the release's record: a
-  PreSync `deploying` is always dropped (the first `Progressing` fact sends it); a terminal hook
-  event is dropped when the facts have already moved the record, and is the **fallback** when
-  they have not (lost facts, or a Rollout with no annotation): it is forwarded, and its kinds
-  are recorded as sent so a heartbeat fact arriving later does not send them again. A release
-  with no record, or no `releaseId`, is the hooks' alone and is forwarded as before. Shadow
-  mode is unchanged.
+- **The hook Jobs are gone** (phase 3b/3c). While both ran, emit mode dropped the hook Jobs'
+  copy of an event when the facts owned the release, and forwarded it as a fallback when they
+  had not; that code, the `/outcome` endpoint and the hook script were deleted with the Jobs.
+  A release whose facts are lost now waits for the next heartbeat (15 minutes), and the sweeper
+  raises `ReleaseStalled` if none arrives.
 - **Shadow and emit keep separate sent-sets** (`emittedShadow`, `emittedLive`). In `shadow`
-  (the default, `outcomeRelay.factsMode`) the relay logs the event it would send as
-  `shadow-event` and forwards nothing, so it can run beside the hook Jobs without reporting a
-  release twice. Flipping to `emit` then sends the history instead of believing shadow already
-  did.
+  (opt-in; `outcomeRelay.factsMode` defaults to `emit`) the relay logs the event it would send
+  as `shadow-event` and forwards nothing. Flipping to `emit` then sends the history instead of
+  believing shadow already did.
 
 ### The two sources
 
@@ -168,19 +164,15 @@ kubectl -n app-gate-api-cicd get cm release-tracking-<chain-id> -o yaml
 kubectl get events -A --field-selector reason=ReleaseDrift
 kubectl get events -A --field-selector reason=ReleaseStalled
 
-# what the fact path would send vs what the hooks sent (shadow mode)
-kubectl -n platform-system logs -l app=argocd-outcome-relay --prefix | grep -E 'shadow-event|hook-event'
+# what the relay would send, if factsMode is shadow
+kubectl -n platform-system logs -l app=argocd-outcome-relay --prefix | grep shadow-event
 ```
-
-Flipping a cluster from `shadow` to `emit` is `outcomeRelay.factsMode: emit` on the control
-plane chart, done only once the hook Jobs for the apps on that cluster are gone (phase 3).
 
 ## Tests
 
 - `glidepath/broker`: `go test ./cmd/argocd-outcome-relay`. The reducer's rows above, state
   persistence, a failed forward, a write conflict, an unwritable record, drift, supersede,
-  shadow-then-emit, the Argo CD endpoint, and one test that runs the real
-  `argocd-outcome-hook.sh` and asserts the fact path builds an identical event.
+  shadow-then-emit, and the Argo CD endpoint.
 - `charts/glidepath-catalog/tests/mark_release_merged_test.sh` and
   `charts/glidepath-control-plane/tests/release_record_sweeper_test.sh` run the real Task and
   sweeper scripts against a stub `kubectl`.
@@ -188,9 +180,8 @@ plane chart, done only once the hook Jobs for the apps on that cluster are gone 
 ## Not built yet
 
 Rollback (a release with `rollbackOf`, `rolled-back`, the `service.rolledback` event, the gate
-policy for it), deleting the hook Jobs and the per-app identity chart (phase 3, when `emit`
-goes on and the relay is renamed), moving the events onto the spec's vocabulary
-([ADR-0022](adr/0022-cdevents-conformance-and-vocabulary.md)).
+policy for it), renaming the relay to `glidepath-relay`, moving the events onto the spec's
+vocabulary ([ADR-0022](adr/0022-cdevents-conformance-and-vocabulary.md)).
 
 ## Known gap: a PR closed without merging
 

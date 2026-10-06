@@ -134,12 +134,13 @@ app's namespace on the upper cluster (`hack/bootstrap-upper-cluster.sh`). Now:
   from `platform-cicd-dev`'s Infisical project (`relay-token-<cluster>` key per
   registered cluster), via `charts/glidepath-control-plane/templates/clusters/
   relay-token-external-secret.yaml`.
-- The upper-cluster (caller) side - `platform-outcome-relay-token`, read by the
-  release-tracking hook Jobs (`catalog/lib/argocd-outcome-hook.sh`) - syncs from that
-  cluster's OWN `platform-cicd-<cluster>` Infisical project, via
-  `airframe/charts/airframe-application`'s `templates/release-tracking/
-  relay-token-external-secret.yaml`, gated on `releaseTracking` exactly like the hook
-  Jobs/RBAC it accompanies.
+- The upper-cluster (caller) side is the cluster's two notifications controllers (Argo
+  Rollouts, and the tenant Argo CD), each reading the token from a Secret synced from that
+  cluster's OWN Infisical project by an ExternalSecret in its gitops repo
+  (`10-crds-operators/argo-rollouts/notifications-external-secret.yaml`,
+  `02-argocd-apps/repo-creds/notifications-relay-token-external-secret.yaml`). The per-app
+  `platform-outcome-relay-token` and the hook Jobs that read it were removed in ADR-0021
+  phase 3b.
 
 The token value still has to originate somewhere real - plant the same value into both
 clusters' own Infisical projects by hand, once per cluster (not per app). See

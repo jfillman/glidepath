@@ -71,7 +71,7 @@ spec:
       type: string
       default: ""
       description: >-
-        When argocd-outcome-hook.sh's own `date -u` ran (the CDEvent's
+        When the relay observed the outcome (the CDEvent's
         subject.content.finishedAt) - update-dora-metrics's lead-time/MTTR end anchor,
         same field the same-cluster path reads off status.operationState.finishedAt.
   tasks:

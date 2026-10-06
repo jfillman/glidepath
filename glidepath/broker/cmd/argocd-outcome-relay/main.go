@@ -1,31 +1,13 @@
-// Closes the loop on the release stage (docs/admin/multi-cluster.md): an upper-env
-// cluster's ArgoCD sync-hook Jobs (catalog/lib/argocd-outcome-hook.sh) POST a
-// ready-made CDEvent here once a release completes, and this service forwards it
-// unchanged to the existing broker - see catalog/lib/argocd-outcome-hook.sh for the
-// JSON shape (mirrors catalog/lib/cdevents.sh's, built there rather than here since
-// this service used to duplicate that shaping logic in Go).
+// The release relay (ADR-0021). Receives facts - Argo Rollouts notifications from each upper
+// cluster at /facts/<cluster>, Argo CD sync notifications at /argocd/<cluster> - joins each to the
+// release record ConfigMap on this cluster (facts.go), runs it through the release state machine
+// (reducer.go), and forwards the resulting CDEvents to the broker.
 //
-// Auth is a shared secret per upstream cluster (POST /outcome/<cluster>, resolved live
-// via the cluster-registry ConfigMap), not the broker's own TokenReview - TokenReview
-// can't validate a token issued by a different cluster's API server. Trust boundary:
-// the secret proves the call came from cluster X, not that the payload's claimed
-// appName/env are accurate - acceptable because which apps can run a hook Job on
-// cluster X is already gated by the PR-review + branch-protection flow, so a
-// compromised cluster secret can spoof an outcome, not fabricate a release.
-//
-// One field IS still checked, not just passed through: subject.content.cluster must
-// match the <cluster> the URL path authenticated against. Every other field is a
-// self-asserted claim by the hook script (same trust boundary as before) - but
-// "which cluster is this" is exactly what the shared-secret lookup above already
-// proved, so silently trusting a different, self-asserted value there would let a
-// compromised app namespace on cluster X claim an outcome for cluster Y. Cheap
-// integrity check, not decoration.
-//
-// Earlier design fetched release data from GitHub via ArgoCD Notifications callbacks,
-// dropped because Notifications fired on any completed sync (including pure selfHeal
-// drift-correction with no release involved). Sync-hook Jobs only run when their own
-// sync needed reapplying, and already carry the real values baked in at commit time -
-// simpler and correct.
+// Auth is a shared secret per upstream cluster (the <cluster> in the URL, resolved live via the
+// cluster-registry ConfigMap), not the broker's own TokenReview - TokenReview can't validate a
+// token issued by a different cluster's API server. Trust boundary: the secret proves the call
+// came from cluster X, not that the payload's claims are accurate. The release-id's cluster must
+// match the authenticated one, so a compromised cluster can report on its own releases only.
 package main
 
 import (
@@ -57,29 +39,6 @@ type registryEntry struct {
 	RelaySecretName string `json:"relaySecretName"`
 }
 
-// Just enough of the hook script's CDEvent envelope to validate the claimed cluster -
-// this service otherwise treats the body as opaque bytes it doesn't need to
-// understand. Used to mirror a dora-exporter forward too (see this file's git history,
-// 2026-08-22) - that call moved to update-dora-metrics.yaml, a Task in the same
-// release-outcome-notify Pipeline the broker event this relay forwards ends up
-// triggering, so this service no longer needs to parse Phase/FinishedAt/
-// FlowStartTime at all, only Cluster/AppNamespace/AppName (the last two purely for
-// log lines).
-type cdEventEnvelope struct {
-	Context struct {
-		Type    string `json:"type"`
-		ChainID string `json:"chainId"`
-	} `json:"context"`
-	Subject struct {
-		Content struct {
-			Cluster      string `json:"cluster"`
-			AppNamespace string `json:"appNamespace"`
-			AppName      string `json:"appName"`
-			Outcome      string `json:"outcome"`
-		} `json:"content"`
-	} `json:"subject"`
-}
-
 func main() {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -99,7 +58,6 @@ func main() {
 	h.forward = h.forwardToBroker
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/outcome/", h.handleOutcome)
 	mux.HandleFunc("/facts/", h.handleFacts) // ADR-0021; see facts.go
 	mux.HandleFunc("/argocd/", h.handleArgoFacts)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -111,64 +69,10 @@ type handler struct {
 	clientset  kubernetes.Interface
 	brokerURL  string
 	httpClient *http.Client
-	// factsMode is "shadow" (default) or "emit"; see facts.go.
+	// factsMode is "shadow" (the code default) or "emit" (the chart default); see facts.go.
 	factsMode string
 	// forward sends a CDEvent to the broker; a field so tests can stub it.
 	forward func(ctx context.Context, body []byte) error
-}
-
-func (h *handler) handleOutcome(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	cluster := strings.TrimPrefix(r.URL.Path, "/outcome/")
-	if cluster == "" || strings.Contains(cluster, "/") {
-		http.Error(w, "cluster name required in path: /outcome/<cluster>", http.StatusBadRequest)
-		return
-	}
-
-	ctx := r.Context()
-	if err := h.authenticate(ctx, cluster, r.Header.Get("Authorization")); err != nil {
-		log.Printf("argocd-outcome-relay: auth failed for cluster=%s: %v", cluster, err)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, requestBodyMaxSize))
-	if err != nil {
-		http.Error(w, fmt.Sprintf("reading request body: %v", err), http.StatusBadRequest)
-		return
-	}
-	var env cdEventEnvelope
-	if err := json.Unmarshal(body, &env); err != nil {
-		http.Error(w, fmt.Sprintf("invalid CDEvent JSON: %v", err), http.StatusBadRequest)
-		return
-	}
-	if env.Subject.Content.Cluster != cluster {
-		http.Error(w, fmt.Sprintf("event claims cluster %q, authenticated as %q", env.Subject.Content.Cluster, cluster), http.StatusBadRequest)
-		return
-	}
-
-	// Logged normalized so the ADR-0021 fact path's shadow events can be diffed against
-	// the hook path's real ones; see facts.go.
-	log.Printf("argocd-outcome-relay: hook-event %s", normalizeEvent(body))
-	// In emit mode the fact path reports releases, so the hook Jobs' copy of the same event
-	// must not also be forwarded (different ids, so the broker would not collapse them).
-	if h.factsMode == "emit" {
-		if suppress, why := h.supersededByFacts(ctx, &env); suppress {
-			log.Printf("argocd-outcome-relay: hook-event not forwarded, the fact path owns this release: %s (cluster=%s app=%s/%s)", why, cluster, env.Subject.Content.AppNamespace, env.Subject.Content.AppName)
-			w.WriteHeader(http.StatusAccepted)
-			return
-		}
-	}
-	if err := h.forward(ctx, body); err != nil {
-		log.Printf("argocd-outcome-relay: forwarding to broker failed (cluster=%s app=%s/%s): %v", cluster, env.Subject.Content.AppNamespace, env.Subject.Content.AppName, err)
-		http.Error(w, "failed to forward event", http.StatusBadGateway)
-		return
-	}
-
-	w.WriteHeader(http.StatusAccepted)
 }
 
 // authenticate resolves cluster -> relaySecretName live off the cluster-registry
@@ -213,7 +117,7 @@ func (h *handler) authenticate(ctx context.Context, cluster, authHeader string) 
 	return nil
 }
 
-// forwardToBroker POSTs the hook script's own CDEvent bytes to the broker unchanged,
+// forwardToBroker POSTs a CDEvent to the broker,
 // swapping in this pod's own projected SA token (verified by the broker's existing
 // TokenReview interceptor) in place of the shared-secret auth this call arrived with.
 func (h *handler) forwardToBroker(ctx context.Context, body []byte) error {

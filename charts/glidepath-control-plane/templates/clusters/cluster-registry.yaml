@@ -2,9 +2,11 @@
 # docs/admin/multi-cluster.md for the full rationale.
 #
 # One ConfigMap, one key per registered cluster (JSON blob each) - resolved LIVE at
-# pipeline-run time / by the outcome relay, not baked into any per-Application Helm
+# pipeline-run time / by the release relay, not baked into any per-Application Helm
 # release, so every app that releases onto a cluster shares one source of truth for
-# relaySecretName/outcomeRelayURL instead of a per-app copy that can drift.
+# relaySecretName instead of a per-app copy that can drift. (outcomeRelayURL and
+# relayHostAliasIP were removed with the hook Jobs, ADR-0021 phase 3c; a values entry that
+# still sets them is ignored.)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -15,7 +17,6 @@ metadata:
 data:
   {{- range .Values.clusters }}
   {{ .name }}: |
-    {{- $entry := dict "relaySecretName" .relaySecretName "outcomeRelayURL" .outcomeRelayURL }}
-    {{- if .relayHostAliasIP }}{{- $_ := set $entry "relayHostAliasIP" .relayHostAliasIP }}{{- end }}
+    {{- $entry := dict "relaySecretName" .relaySecretName }}
     {{ $entry | toJson }}
   {{- end }}

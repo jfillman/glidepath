@@ -35,6 +35,16 @@ mechanism's *design* (why hooks over Notifications, why a shared secret, why the
 is shaped the way it is, the real bugs found live) - just not accurate about WHERE the
 hook Jobs get written from any more.
 
+**2026-10-06: the hook Jobs are gone.** [ADR-0021](adr/0021-rollout-facts-and-release-record.md)
+replaced the PostSync/SyncFail Jobs, the per-app identity chart, the `/outcome/<cluster>`
+endpoint, `catalog/lib/argocd-outcome-hook.sh`, and the registry's `outcomeRelayURL` and
+`relayHostAliasIP` with facts from the Argo Rollouts notifications engine (plus Argo CD
+notifications for sync failures) and a release state machine in the relay. The reference is
+[release-state.md](release-state.md). **Everything below that describes hook Jobs, `/outcome`,
+`outcomeRelayURL` or the hook script is history, not the current mechanism**; the relay,
+the per-cluster shared secret, the `release-outcome-*` Pipelines and the DORA exporter are
+still current.
+
 ## Terminology
 
 - **env** - a logical upper-environment name from `cicd.yaml` (`deploy.upperEnvironments`,
@@ -866,3 +876,19 @@ conflict, forward failure, no-permission fallback), and the two shell tests
 `charts/glidepath-control-plane/tests/release_record_sweeper_test.sh`, which run the real
 scripts against a stub `kubectl` (the second found a real field-shift bug while it was being
 written).
+
+## ADR-0021 phase 3: hooks removed (2026-10-06)
+
+- **3a, emit.** `outcomeRelay.factsMode: emit`; the relay dropped the hook Jobs' duplicate of
+  any release the fact path owned (live-verified: one progress and one outcome PipelineRun
+  per release).
+- **3b, hooks and identity removed.** `airframe-application` v0.3.118 no longer renders the
+  hook Jobs, and fails the render when `releaseTracking` is set on a release with no Rollout
+  (events come from the Rollout). `airframe-identity` and the `tenant-identity` ApplicationSet
+  are deleted (kind-prod repo and the Apron template); all 14 kind-prod tenant Applications
+  were Synced and Healthy on v0.3.118 afterwards. `open-release-pr` writes only `releaseId`,
+  `appNamespace` and `cluster` into `releaseTracking`.
+- **3c, cleanup.** The relay lost `/outcome`, the hook-supersede logic and its equivalence
+  test; the hook script left the toolbox image; the registry lost `outcomeRelayURL` and
+  `relayHostAliasIP`; `factsMode` defaults to `emit`. Still to do: rename the relay to
+  `glidepath-relay`.

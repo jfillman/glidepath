@@ -1,6 +1,6 @@
 # 2026-09-14 release-flow redesign - consumes the environment.deploying CDEvent
-# argocd-outcome-hook.sh sends from a release's PreSync hook Job (ArgoCD just started
-# applying this sync). Sibling to release-outcome-trigger.yaml, not an edit to it - see
+# the release relay sends when the first Rollout fact for a release arrives (the Rollout
+# started progressing; ADR-0021). Sibling to release-outcome-trigger.yaml, not an edit to it - see
 # release-progress-notify.yaml's own header for why this needs its own Pipeline, and
 # a distinct CDEvent type (rather than a third status value on
 # dev.cdevents.environment.deployed.0.1.0) keeps that Trigger's CEL filter and
@@ -65,7 +65,7 @@ spec:
           - { name: app-namespace, value: $(tt.params.app-namespace) }
           - { name: app-name, value: $(tt.params.app-name) }
           - { name: env, value: $(tt.params.env) }
-          # Already "Syncing" by the time it gets here - argocd-outcome-hook.sh
+          # Already "Syncing" by the time it gets here - the relay
           # precomputes this, same reasoning as release-outcome-template's identical
           # comment on its own status param.
           - { name: status, value: $(tt.params.status) }

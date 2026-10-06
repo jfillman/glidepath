@@ -213,25 +213,12 @@ secretStore:
 # into every app's own Helm values - see that file's header for why.
 #
 # relaySecretName: name of a Secret in THIS namespace holding the shared bearer token
-# the outcome-reporting hook Jobs on THAT cluster present to the outcome relay (a copy
-# of the SAME token also lives directly in each app's own namespace on that cluster -
-# see docs/admin/multi-cluster.md, the hook runs there, not here). ESO-backed, like
-# everything else in this file now - see templates/clusters/
+# that cluster's notifications (Argo Rollouts and Argo CD) present to the release relay at
+# /facts/<cluster> and /argocd/<cluster>. ESO-backed - see templates/clusters/
 # relay-token-external-secret.yaml, synced from this control plane's own Infisical
 # project (a small number of platform-wide tokens, one per registered cluster - not an
 # app secret, so it lives in platform-cicd-kind-dev, not any app's own project).
-#
-# outcomeRelayURL: where THAT cluster's own outcome-reporting hook Jobs reach this
-# (the dev) cluster's argocd-outcome-relay - baked into the hook Job manifests
-# open-release-pr.yaml generates, since a Job running on a different cluster obviously
-# can't resolve this cluster's in-cluster DNS name. A same-host podman IP works for a
-# shared-host dev setup (see docs/admin/multi-cluster.md's cross-cluster-reachability
-# section); a genuinely remote cluster needs a real ingress/DNS name here instead.
-#
-# relayHostAliasIP (optional): the address THAT cluster's hook Jobs should map outcomeRelayURL's hostname to
-# (their hostAliases entry). Set it whenever the dev node's own address isn't reachable from that cluster, for
-# example a cluster on another machine that reaches dev through the host's LAN address. Unset, open-release-pr
-# falls back to the dev node's status.hostIP, which only works when both clusters share a network.
+# The cluster's own copy of the token is what its notification config reads (docs/admin/release-state.md).
 #
 # Empty by default - this is cluster state (which real upper clusters are registered),
 # not chart source, so real entries live in each cluster's own gitops-cluster-<name>
@@ -240,13 +227,10 @@ secretStore:
 #
 # - name: kind-prod
 #   relaySecretName: cluster-kind-prod-relay-token
-#   outcomeRelayURL: http://<dev-cluster-node-ip>:30880/outcome/kind-prod
-#   relayHostAliasIP: 192.168.1.10   # optional, see above
 clusters: []
 
-# argocd-outcome-relay's ADR-0021 fact endpoint (POST /facts/<cluster>). "shadow" builds the
-# CDEvent a fact implies and logs it normalized without forwarding, so it can run beside the
-# hook Jobs without reporting a release twice; "emit" forwards it to the broker. Only set
-# "emit" once the hooks for the same app are gone. See docs/admin/adr/0021-*.
+# The release relay's fact endpoints (POST /facts/<cluster>, /argocd/<cluster>; ADR-0021). "emit"
+# (default) builds the CDEvent a fact implies and forwards it to the broker; "shadow" logs it
+# normalized without forwarding, for trying the path out beside another reporter.
 outcomeRelay:
-  factsMode: shadow
+  factsMode: emit
