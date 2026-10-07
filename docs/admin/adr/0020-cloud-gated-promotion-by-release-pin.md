@@ -1,6 +1,6 @@
 # ADR-0020: Cloud Flight environments are gated by a release pin PR on the source repo
 
-*Status: Accepted (2026-10-06). Slice 1 built (open-release-pin-pr, release pipeline branch on deploy.target); inert until slice 4 allows a cloud Flight environment. The owner's decisions on the open questions are under [Decided at acceptance](#decided-at-acceptance-2026-10-06).*
+*Status: Accepted (2026-10-06). Slices 1-4 built (2026-10-07): pin PR, promote-<env> deploy on merge, gates on pin PRs, cloud Flight environments allowed. Slice 5 (Tower Promote/Roll back, pin PRs in the Pull requests tab and Release record) not started. The owner's decisions on the open questions are under [Decided at acceptance](#decided-at-acceptance-2026-10-06).*
 
 ## Context
 
@@ -137,6 +137,13 @@ needs the owner's go-ahead.
   (`values` is `k8s-rollout` only, commit signing is off for cloud); content = `sast`,
   `sbom`, `image-scan`, unchanged (they read `release.image` from the pin); process = as for
   Kubernetes; approval = CODEOWNERS review on `glidepath/releases/`. Built in slice 3.
+- **As built (2026-10-07).** The gates find the image in `glidepath/releases/*.yaml` as a third
+  fallback beside `*/release.yaml` and `*/values.yaml` (extract-promoted-image, verify-image-provenance);
+  the pin layout alone was not enough, those two only matched gitops paths. Onboarding writes
+  `.tekton/pin-gate-<gate>.yaml` from the gitops gate templates, retargeted to `glidepath-release-*`
+  branches whose every changed file is under `glidepath/releases/`. `provenance-check` takes
+  `commit-signature: "false"`. The deploy on merge uses the pin's tag and refuses it if the tag no
+  longer resolves to the pinned digest (deploy tasks such as deploy-lambda need a tag, not a digest).
 - **Order.** Not enforced. Each cloud Flight environment's pin PR is independent;
   `promotedFrom` defaults to the previous environment in list order but any environment may
   be the source.

@@ -132,9 +132,9 @@ glidepath-app.upperEntries - the Flight environments as {name, cluster}, from en
 {{/*
 glidepath-app.validateEnvironments - checks deploy.environments when it is used. The old
 shape is not validated here (it never was). Rules: lowercase DNS-style names, no duplicates,
-tier is ground or flight, a Ground environment sets no cluster yet (multi-cluster Ground is a
-later phase, ADR-0019), and a cloud target has no Flight environments yet (no approval path
-for them, ADR-0019 Q1).
+tier is ground or flight, and a Ground environment sets no cluster yet (multi-cluster Ground is a
+later phase, ADR-0019). A cloud target's Flight environment is approved by a release pin PR on
+the source repo (ADR-0020), sets no cluster, and gets no Kubernetes artifacts (localUpperEnvs).
 */}}
 {{- define "glidepath-app.validateEnvironments" -}}
 {{- $declared := ((.Values.deploy).environments) -}}
@@ -167,8 +167,8 @@ for them, ADR-0019 Q1).
       {{- end -}}
     {{- end -}}
   {{- end -}}
-  {{- if and (eq .tier "flight") (not $k8s) -}}
-    {{- fail (printf "deploy.environments: Flight environment '%s' is not supported for deploy.target %s yet. Cloud targets have no approval path for Flight environments, so declare it as ground" .name $target) -}}
+  {{- if and (eq .tier "flight") (not $k8s) .cluster -}}
+    {{- fail (printf "deploy.environments: Flight environment '%s' sets cluster '%s', but deploy.target %s has no cluster: a cloud environment deploys through its per-environment cloud settings" .name .cluster $target) -}}
   {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -219,10 +219,13 @@ Usage: {{ include "glidepath-app.localUpperEnvs" . | fromYamlArray }}
 */}}
 {{- define "glidepath-app.localUpperEnvs" -}}
 {{- $envs := list -}}
+{{- /* A cloud target's Flight environment has no namespace or Argo CD Application (ADR-0020). */ -}}
+{{- if eq (include "glidepath-app.isKubernetesTarget" .) "true" -}}
 {{- range include "glidepath-app.upperEntries" . | fromYamlArray -}}
   {{- if not .cluster -}}
     {{- $envs = append $envs .name -}}
   {{- end -}}
+{{- end -}}
 {{- end -}}
 {{- $envs | toYaml -}}
 {{- end -}}

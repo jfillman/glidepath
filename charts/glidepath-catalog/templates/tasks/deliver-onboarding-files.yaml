@@ -74,7 +74,13 @@ spec:
         - name: onboarding-templates-app-repo
           mountPath: /opt/platform/onboarding-templates/app-repo
           readOnly: true
+        # ADR-0020: a cloud app's release pin PRs get the same gate PipelineRuns as a gitops repo.
+        - name: onboarding-templates-gitops-repo
+          mountPath: /opt/platform/onboarding-templates/gitops-repo
+          readOnly: true
       env:
+        - name: RELEASE_GUARDRAILS_JSON
+          value: {{ .Values.releaseGuardrails | toJson | quote }}
         - name: GITHUB_TOKEN_BROKER_URL
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
         - name: GIT_URL
@@ -348,6 +354,10 @@ spec:
           local flow_name="$1" event="$2" branch="$3" tag_pattern="$4" file_paths_json="$5" root_stage="$6"
           local root_env="$7" root_test_name="$8" root_cluster="$9" root_name="${10}" is_flow_terminal="${11}"
           local labels_json="${12:-[]}"
+          # ADR-0020: a cloud Flight environment's promote-<env> flow. Its trigger IS a change under
+          # glidepath/, so the config-only build exemption must not apply to it, and the deploy
+          # stage reads its image from this pin instead of rebuilding.
+          local pin_file="${13:-}"
           local on_event="" branch_line="" cel_line="" tag_param_line="" task_run_specs_block=""
           # Only build/test/deploy/release actually declare a notify-backstage task
           # (see notify-backstage.yaml's own finally-block wiring) - gitops-image-bump
@@ -392,6 +402,10 @@ spec:
           if [[ -n "${root_name}" ]]; then
             root_param_lines="${root_param_lines}
             - { name: name, value: \"${root_name}\" }"
+          fi
+          if [[ -n "${pin_file}" ]]; then
+            root_param_lines="${root_param_lines}
+            - { name: pin-file, value: \"${pin_file}\" }"
           fi
           # PR-validation builds get their own -pr image repo suffix (kept from the old
           # static pull-request.yaml template) so they never collide with a real release
@@ -452,7 +466,7 @@ spec:
               # size() > 0 keeps a push with an empty file list (nothing to classify)
               # building as before rather than vacuously matching `all`.
               local exempt_guard='!(size(files.all) > 0 && files.all.all(f, f == "cicd.yaml" || f.startsWith("platform/") || f.startsWith("glidepath/")))'
-              loop_guard="${loop_guard} && ${exempt_guard}"
+              [[ -z "${pin_file}" ]] && loop_guard="${loop_guard} && ${exempt_guard}"
               # Same on-cel-expression-drops-on-event/on-target-branch gap as the
               # pull_request case below, hit live 2026-08-24: this flow's on-target-branch
               # ([main]) was silently ignored once the loop-guard CEL line was added, so a
@@ -613,6 +627,26 @@ spec:
         YAMLEOF
         }
 
+        # ADR-0020 slice 2: each cloud Flight environment gets a promote-<env> flow. Merging its
+        # release pin (glidepath/releases/<env>.yaml, written by open-release-pin-pr.yaml) is a
+        # push that changes only that file; this flow deploys exactly the pinned image to that
+        # environment and nothing builds (the build flow's exemption covers glidepath/). An
+        # explicit pipelines.promote-<env> wins, as pr-build's does.
+        if [[ "${DEPLOY_TARGET}" != "k8s-rollout" && -f cicd.yaml ]]; then
+          promote_branch="$(echo "${pipelines_json}" | jq -r '[.[] | select((.trigger.event // .trigger.type) == "push") | .trigger.branch // empty] | first // "main"')"
+          while IFS= read -r flight_env; do
+            [[ -z "${flight_env}" ]] && continue
+            [[ "$(echo "${pipelines_json}" | jq -r --arg n "promote-${flight_env}" 'has($n)')" == "true" ]] && continue
+            pin_path="glidepath/releases/${flight_env}.yaml"
+            pipelines_json="$(echo "${pipelines_json}" | jq --arg n "promote-${flight_env}" --arg env "${flight_env}" \
+              --arg branch "${promote_branch}" --arg pin "${pin_path}" \
+              '. + {($n): {trigger: {source: "git", event: "push", branch: $branch, filePathPattern: [$pin]}, steps: [{stage: "deploy", env: $env}], pinFile: $pin}}')"
+            echo "cicd.yaml: cloud Flight environment ${flight_env} - synthesized promote-${flight_env} (deploys ${pin_path} on merge)"
+          done < <(yq -o=json '.deploy // {}' cicd.yaml | jq -r '
+            if (.environments // null) != null then [.environments[] | select(.tier == "flight") | .name]
+            else [(.upperEnvironments // [])[] | if type == "object" then .name else . end] end | .[]')
+        fi
+
         flow_names="$(echo "${pipelines_json}" | jq -r 'keys[]' 2>/dev/null || true)"
         while IFS= read -r flow_name; do
           [[ -z "${flow_name}" ]] && continue
@@ -643,6 +677,7 @@ spec:
             root_cluster="$(jq -r --arg e "${root_env}" '.[$e] // ""' <<<"${upper_env_clusters_json}")"
           fi
           root_name="$(echo "${flow_json}" | jq -r '.steps[0].name // ""')"
+          pin_file="$(echo "${flow_json}" | jq -r '.pinFile // ""')"
           # This function only generates a flow's first step (index 0). is-flow-terminal
           # tells that step's Pipeline to close the flow-root span when it's also the
           # flow's last step (a build-only or single-step-release flow).
@@ -650,9 +685,35 @@ spec:
           is_flow_terminal="false"
           [[ "${step_count}" -eq 1 ]] && is_flow_terminal="true"
 
-          generate_flow_file "${flow_name}" "${trigger_event}" "${branch}" "${tag_pattern}" "${file_paths_json}" "${root_stage}" "${root_env}" "${root_test_name}" "${root_cluster}" "${root_name}" "${is_flow_terminal}" "${labels_json}" > ".tekton/flow-${flow_name}.yaml"
+          generate_flow_file "${flow_name}" "${trigger_event}" "${branch}" "${tag_pattern}" "${file_paths_json}" "${root_stage}" "${root_env}" "${root_test_name}" "${root_cluster}" "${root_name}" "${is_flow_terminal}" "${labels_json}" "${pin_file}" > ".tekton/flow-${flow_name}.yaml"
           echo "app repo: generated .tekton/flow-${flow_name}.yaml (${trigger_event} -> ${root_stage})"
         done <<< "${flow_names}"
+
+        # ADR-0020 slice 3: a cloud app with a Flight environment gets the release gates on its own
+        # repo, for its release pin PRs only: the gitops repo's gate PipelineRuns, retargeted to
+        # branches named glidepath-release-* (open-release-pin-pr.yaml) whose every changed file is
+        # under glidepath/releases/, so an ordinary code PR never runs a release gate. Which gates:
+        # releaseGuardrails entries whose `targets` include this deploy.target (or have none).
+        # Provenance keeps its image half only: commit signing is not required for cloud targets.
+        rm -f .tekton/pin-gate-*.yaml
+        if [[ "${DEPLOY_TARGET}" != "k8s-rollout" ]] && jq -e '[.[] | select(.pinFile)] | length > 0' <<<"${pipelines_json}" >/dev/null; then
+          while IFS= read -r gate; do
+            tmpl="/opt/platform/onboarding-templates/gitops-repo/pull-request-${gate}.yaml"
+            if [[ ! -f "${tmpl}" ]] || ! grep -q 'head.ref.startsWith("release-")' "${tmpl}"; then
+              echo "warn: gate ${gate} has no gitops PR template with a release- branch trigger - not delivered for pin PRs" >&2
+              continue
+            fi
+            sed \
+              -e "s|<APP_NAMESPACE>|${APP_NAMESPACE}|g" \
+              -e "s|<APP_NAME>|${APP_NAME}|g" \
+              -e 's|body.pull_request.head.ref.startsWith("release-")|body.pull_request.head.ref.startsWith("glidepath-release-") \&\& files.all.all(f, f.startsWith("glidepath/releases/"))|' \
+              "${tmpl}" > ".tekton/pin-gate-${gate}.yaml"
+            if [[ "${gate}" == "provenance" ]]; then
+              yq -i '.spec.params += [{"name": "commit-signature", "value": "false"}]' ".tekton/pin-gate-${gate}.yaml"
+            fi
+            echo "app repo: generated .tekton/pin-gate-${gate}.yaml (release pin PRs)"
+          done < <(jq -r --arg t "${DEPLOY_TARGET}" '.[] | select((.targets // null) == null or (.targets | index($t) != null)) | .name' <<<"${RELEASE_GUARDRAILS_JSON}")
+        fi
 
         if git status --porcelain | grep -q .; then
           git config user.name "glidepath onboarding automation"

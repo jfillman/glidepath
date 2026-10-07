@@ -99,33 +99,47 @@ tektonChainsNamespace: tekton-pipelines
 # effect on enforcement (branch protection enforces every required check identically
 # regardless of stub-ness; see ADR-0003 for why a stub is still a real, structurally-loud
 # gate, just one whose check always reports "stub" rather than passing real judgment).
+# `class` (ADR-0021 decision 8, ADR-0020): integrity | content | process | approval - what the gate
+# protects, which decides how it treats a rollback to an eligible target (integrity blocks, content
+# records without blocking, process unchanged). `targets` lists the deploy.target values the gate
+# applies to (absent = every target); it decides which gates a cloud target's release pin PR gets.
 releaseGuardrails:
   - name: sast
     description: Static analysis (Semgrep) of the promoted commit's source
     status: real
+    class: content
   - name: image-scan
     description: Vulnerability scan (Trivy) of the promoted image
     status: real
+    class: content
   - name: provenance
     description: Commit signature (gitsign) + SLSA provenance (Conforma)
     status: real
+    class: integrity
   - name: sbom
     description: Software bill of materials
     status: real
+    class: content
   # name must equal the PipelineRun generateName prefix (values-): wait-for-release-guardrails looks up the check
   # "Pipelines as Code CI / <name>-".
   - name: values
     description: Values-file validation (strict keys, component XRD specs, helm template) by the validator image
     status: real
+    class: integrity
+    targets: [k8s-rollout]
   - name: itsm
     description: ServiceNow Change Request
     status: stub
+    class: process
   - name: qa
     description: Test-completion verification
     status: stub
+    class: process
   - name: policy-validation
     description: Gatekeeper/Kyverno admission-policy validation of the rendered manifest
     status: stub
+    class: process
   - name: image-promotion
     description: Promotes the image from the dev registry to this env's upper registry - runs last, only once every other gate above has passed
     status: stub
+    class: process

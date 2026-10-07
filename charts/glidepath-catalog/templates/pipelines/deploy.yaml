@@ -48,6 +48,10 @@ spec:
       type: string
       default: ""
       description: "Event-chained image-ref from test's testcaserun.finished event. Empty for a git-rooted deploy."
+    - name: pin-file
+      type: string
+      default: ""
+      description: "ADR-0020: set by a cloud Flight environment's generated promote-<env> flow to its release pin (glidepath/releases/<env>.yaml); the image comes from the pin."
     - name: env
       type: string
       default: dev
@@ -148,6 +152,8 @@ spec:
         - { name: image-repo, value: $(params.image-repo) }
         - { name: git-tag, value: $(params.git-tag) }
         - { name: git-revision, value: $(params.git-revision) }
+        - { name: pin-file, value: $(params.pin-file) }
+        - { name: git-url, value: $(params.git-url) }
 
     # Drives the when: gates on the two deploy-task entries below - see this Task's own
     # header for why it exists separately from validate-cicd-config.

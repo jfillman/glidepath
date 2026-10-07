@@ -88,6 +88,8 @@ spec:
         # prefer that file, fall back to values.yaml for apps that haven't opted in.
         manifest="$(git diff --name-only HEAD~1 HEAD -- '*/release.yaml' | head -1)"
         [[ -n "${manifest}" ]] || manifest="$(git diff --name-only HEAD~1 HEAD -- '*/values.yaml' | head -1)"
+        # ADR-0020: a cloud Flight environment's release pin, on a pin PR in the app's source repo.
+        [[ -n "${manifest}" ]] || manifest="$(git diff --name-only HEAD~1 HEAD -- 'glidepath/releases/*.yaml' | head -1)"
         if [[ -z "${manifest}" ]]; then
           echo "error: no */release.yaml or */values.yaml changed between HEAD~1 and ${REVISION} in ${REPO_URL} - expected open-release-pr.yaml's single surgical image-tag commit" >&2
           exit 1
