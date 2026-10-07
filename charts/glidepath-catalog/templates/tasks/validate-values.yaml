@@ -202,15 +202,20 @@ spec:
           if ! helm template "${APP_NAME}" "${chart}" --namespace "app-${APP_NAME}-${env}" "${vf[@]}" -f /tmp/injected.yaml > /tmp/out.yaml; then
             echo "FAIL ${f}: helm template failed"; rc=1; continue
           fi
-          python3 - "${APP_NAME}" "${f}" <<'PY' || rc=1
+          python3 - "${APP_NAME}" "${f}" "${vf[@]+"${vf[@]}"}" <<'PY' || rc=1
         import sys, yaml
         app, f = sys.argv[1], sys.argv[2]
+        released = False  # before the first release a chart renders no workload (chart-contract.md, bootstrap)
+        for v in sys.argv[3:]:
+            if v != "-f":
+                doc = yaml.safe_load(open(v)) or {}
+                released = released or bool(((doc.get("release") or {}).get("image") or {}).get("repository"))
         docs = [d for d in yaml.safe_load_all(open("/tmp/out.yaml")) if d]
         kinds = {(d.get("kind"), (d.get("metadata") or {}).get("name")) for d in docs}
         missing = []
         if not any(k == "Namespace" for k, _ in kinds):
             missing.append("a Namespace")
-        if ("Rollout", app) not in kinds:
+        if released and ("Rollout", app) not in kinds:
             missing.append(f"a Rollout named {app}")
         if missing:
             print(f"FAIL {f}: rendered {len(docs)} objects but no " + " or ".join(missing) + " (docs/admin/chart-contract.md)")
