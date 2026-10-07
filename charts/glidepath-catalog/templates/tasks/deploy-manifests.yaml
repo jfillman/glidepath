@@ -186,19 +186,25 @@ spec:
         NAMESPACE="${APP_TYPE}-${APP_NAME}-${ENV}"
         echo "pushed ${manifest} - waiting for argocd-apps' ${APP_NAME}-${ENV} Application to sync and the Rollout to become Healthy"
 
-        deadline=$((SECONDS + 300))
+        # Wait for THIS image, not just any Healthy Rollout: the previous release is already Healthy,
+        # so a phase-only check passed one second after the push, before Argo CD (which polls the
+        # repo every ~3 minutes) had even seen the commit (sky-marshall, 2026-10-07). Degraded only
+        # counts once the Rollout carries this image; the deadline covers a poll plus the rollout.
+        deadline=$((SECONDS + 600))
         while true; do
-          phase="$(kubectl -n "${NAMESPACE}" get rollout "${APP_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-          echo "rollout phase: ${phase:-<not found yet>}"
-          if [[ "${phase}" == "Healthy" ]]; then
+          rollout_json="$(kubectl -n "${NAMESPACE}" get rollout "${APP_NAME}" -o json 2>/dev/null || echo '{}')"
+          phase="$(jq -r '.status.phase // ""' <<<"${rollout_json}")"
+          has_image="$(jq -r --arg img "${IMAGE_REF}" '[.spec.template.spec.containers[]?.image] | index($img) != null' <<<"${rollout_json}")"
+          echo "rollout phase: ${phase:-<not found yet>}, running ${IMAGE_REF}: ${has_image}"
+          if [[ "${has_image}" == "true" && "${phase}" == "Healthy" ]]; then
             break
           fi
-          if [[ "${phase}" == "Degraded" ]]; then
-            echo "error: rollout ${APP_NAME} in ${NAMESPACE} is Degraded" >&2
+          if [[ "${has_image}" == "true" && "${phase}" == "Degraded" ]]; then
+            echo "error: rollout ${APP_NAME} in ${NAMESPACE} is Degraded on ${IMAGE_REF}" >&2
             exit 1
           fi
           if (( SECONDS >= deadline )); then
-            echo "error: timed out waiting for rollout ${APP_NAME} in ${NAMESPACE} to become Healthy (last phase: ${phase:-<not found>})" >&2
+            echo "error: timed out waiting for rollout ${APP_NAME} in ${NAMESPACE} to run ${IMAGE_REF} Healthy (last phase: ${phase:-<not found>}, image applied: ${has_image})" >&2
             exit 1
           fi
           sleep 5
