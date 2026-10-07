@@ -100,7 +100,7 @@ spec:
           GIT_URL='$(params.git-url)'
           REVISION='$(params.git-revision)'
           owner="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
-          repo="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/]+)$#\1#; s#\.git$##; s#/$##')"
+          repo="$(echo "${GIT_URL}" | sed -E 's#/$##; s#https?://github\.com/[^/]+/([^/]+)$#\1#; s#\.git$##')"
           token="$(github_app_installation_token "${owner}" "${repo}")"
           pin="$(curl --fail --silent --show-error --retry 3 --max-time 20 \
             -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github.raw+json" \

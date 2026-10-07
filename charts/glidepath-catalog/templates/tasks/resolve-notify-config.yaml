@@ -53,14 +53,30 @@ spec:
       description: Only bound for a git-rooted run (see deploy.yaml/release.yaml) - left unbound for the common event-chained case, which is what lets the Pipeline skip PVC provisioning entirely.
   results:
     - name: config-json
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
   steps:
     - name: resolve
       image: {{ .Values.toolboxImage }}
       imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
         source "${PLATFORM_LIB}/retry.sh"
+        source "${PLATFORM_LIB}/github-app.sh"
         if [[ "$(workspaces.source.bound)" == "true" ]]; then
           WS="$(workspaces.source.path)"
           CONFIG_FILE="${WS}/cicd.yaml"
@@ -69,7 +85,13 @@ spec:
             # UID, so git's "dubious ownership" check refuses to operate on it without
             # this explicit exception.
             git config --global --add safe.directory "${WS}"
-            with_retry 3 -- git clone --quiet '$(params.git-url)' "${WS}"
+            # Authenticated: a private app repo refused the anonymous clone, failing every git-rooted
+            # deploy/release of it (smoke-az-fn's promote-prod, 2026-10-07).
+            GIT_URL='$(params.git-url)'
+            owner="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+            repo="$(echo "${GIT_URL}" | sed -E 's#/$##; s#https?://github\.com/[^/]+/([^/]+)$#\1#; s#\.git$##')"
+            token="$(github_app_installation_token "${owner}" "${repo}")"
+            with_retry 3 -- git clone --quiet "https://x-access-token:${token}@github.com/${owner}/${repo}.git" "${WS}"
             git -C "${WS}" checkout --quiet '$(params.git-revision)'
           fi
           if [[ -f "${CONFIG_FILE}" ]]; then
