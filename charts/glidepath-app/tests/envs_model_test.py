@@ -220,6 +220,56 @@ class PerEnvironmentCloudConfig(unittest.TestCase):
             jsonschema.validate(bad, SCHEMA)
 
 
+class DeployChart(unittest.TestCase):
+    """ADR-0023 slice 2: deploy.chart and environments[].chart."""
+
+    PIN = {"targetRevision": "v0.3.200"}
+    OWN = {"repoURL": "https://github.com/o/charts", "path": "charts/web", "targetRevision": "v1.0.0"}
+
+    def ok(self, deploy):
+        doc = cicd(BUILD_DEPLOY, deploy)
+        jsonschema.validate(doc, SCHEMA)
+        rc, _, err = render(doc)
+        self.assertEqual(rc, 0, err[:400])
+
+    def refused(self, deploy, message):
+        doc = cicd(BUILD_DEPLOY, deploy)
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate(doc, SCHEMA)
+        rc, _, err = render(doc)
+        self.assertNotEqual(rc, 0)
+        self.assertIn(message, err)
+
+    def test_app_wide_and_per_environment_charts_are_accepted(self):
+        self.ok({"chart": self.OWN, "environments": [{"name": "dev", "tier": "ground", "chart": self.PIN}]})
+        self.ok({"chart": self.PIN, "environments": [{"name": "dev", "tier": "ground"}]})
+        self.ok({"chart": {"repoURL": "oci://ghcr.io/o/charts", "chart": "web", "targetRevision": "1.2.3"}})
+
+    def test_a_cloud_app_has_no_chart(self):
+        lam = {"target": "aws-lambda", "lambda": {"functionName": "fn"}}
+        rc, _, err = render(cicd(BUILD_DEPLOY, {**lam, "chart": self.PIN}))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("deploy.chart is set, but deploy.target is aws-lambda", err)
+        rc, _, err = render(cicd(BUILD_DEPLOY, {**lam, "environments": [{"name": "dev", "tier": "ground", "chart": self.PIN}]}))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("environment 'dev' chart is set, but deploy.target is aws-lambda", err)
+
+    def test_path_and_chart_together_are_refused(self):
+        self.refused({"chart": {**self.OWN, "chart": "web"}}, "sets both path and chart")
+
+    def test_a_new_source_must_name_its_chart_and_version(self):
+        self.refused({"chart": {"repoURL": "https://github.com/o/charts", "targetRevision": "v1"}},
+                     "sets repoURL without path or chart")
+        self.refused({"chart": {"repoURL": "https://github.com/o/charts", "path": "charts/web"}},
+                     "sets repoURL without targetRevision")
+
+    def test_the_schema_refuses_unknown_keys_and_an_empty_block(self):
+        for bad in ({"version": "1"}, {}):
+            with self.subTest(bad):
+                with self.assertRaises(jsonschema.ValidationError):
+                    jsonschema.validate(cicd(BUILD_DEPLOY, {"chart": bad}), SCHEMA)
+
+
 class Schema(unittest.TestCase):
     def valid(self, doc):
         jsonschema.validate(doc, SCHEMA)

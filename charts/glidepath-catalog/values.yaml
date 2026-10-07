@@ -42,7 +42,7 @@ rbac:
 # 2026-09-27: bumped again for deploy.releaseFile (D9/AF-5's cicd.schema.json field,
 # schema-only so far - no Task reads it yet). Multi-arch (arm64+amd64), built via
 # `container build -a arm64 -a amd64` per the toolbox Dockerfile's own comment.
-toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-05-per-env-cloud-config
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-07-deploy-chart-b
 
 # The cluster's default environment chart (ADR-0023 slice 1). Set from the cluster repo's cluster-defaults.yaml
 # (the platform-cicd-catalog Application reads it as a value file), the same file the environment ApplicationSets

@@ -170,7 +170,36 @@ the source repo (ADR-0020), sets no cluster, and gets no Kubernetes artifacts (l
   {{- if and (eq .tier "flight") (not $k8s) .cluster -}}
     {{- fail (printf "deploy.environments: Flight environment '%s' sets cluster '%s', but deploy.target %s has no cluster: a cloud environment deploys through its per-environment cloud settings" .name .cluster $target) -}}
   {{- end -}}
+  {{- if hasKey $declaredEnv "chart" -}}
+    {{- include "glidepath-app.validateChartRef" (dict "ref" .chart "where" (printf "deploy.environments: environment '%s' chart" $envName) "k8s" $k8s "target" $target) -}}
+  {{- end -}}
 {{- end -}}
+{{- end -}}
+{{- with ((.Values.deploy).chart) -}}
+{{- include "glidepath-app.validateChartRef" (dict "ref" . "where" "deploy.chart" "k8s" (eq (include "glidepath-app.isKubernetesTarget" $) "true") "target" ($.Values.deploy.target | default "k8s-rollout")) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+glidepath-app.validateChartRef - deploy.chart or an environment's chart (ADR-0023): only a Kubernetes app has a
+chart; a different source names its chart by path (git) or chart (registry), not both.
+*/}}
+{{- define "glidepath-app.validateChartRef" -}}
+{{- $r := .ref -}}
+{{- if not .k8s -}}
+  {{- fail (printf "%s is set, but deploy.target is %s: only a Kubernetes app (k8s-rollout) renders a chart" .where .target) -}}
+{{- end -}}
+{{- if not (kindIs "map" $r) -}}
+  {{- fail (printf "%s must be an object with repoURL, path or chart, and targetRevision" .where) -}}
+{{- end -}}
+{{- if and $r.path $r.chart -}}
+  {{- fail (printf "%s sets both path and chart: path is for a git repoURL, chart for a Helm or OCI registry" .where) -}}
+{{- end -}}
+{{- if and $r.repoURL (not (or $r.path $r.chart)) -}}
+  {{- fail (printf "%s sets repoURL without path or chart: name the chart inside that source" .where) -}}
+{{- end -}}
+{{- if and $r.repoURL (not $r.targetRevision) -}}
+  {{- fail (printf "%s sets repoURL without targetRevision: a different source inherits nothing from the default chart" .where) -}}
 {{- end -}}
 {{- end -}}
 
