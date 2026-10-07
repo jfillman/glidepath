@@ -1,0 +1,10 @@
+# Rendered (not CreateNamespace=true) so the labels Glidepath injects reach it and pruning works.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "conformance-sample.namespace" . }}
+  labels:
+    {{- include "conformance-sample.labels" . | nindent 4 }}
+    {{- with .Values.namespace.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}

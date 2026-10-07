@@ -1,0 +1,32 @@
+{{- if eq (include "glidepath-app.isKubernetesTarget" .) "true" }}
+{{- $app := .Values.platformIdentity.appName }}
+{{- $repos := list (include "glidepath-app.defaultChart" . | fromYaml).repoURL .Values.platformIdentity.appRepoUrl .Values.platformCicdRepoUrl }}
+{{- with ((.Values.deploy).chart).repoURL }}{{ $repos = append $repos . }}{{ end }}
+{{- range ((.Values.deploy).environments) }}{{ with (.chart).repoURL }}{{ $repos = append $repos . }}{{ end }}{{ end }}
+# The Ground environments' AppProject (the lower-envs ApplicationSet's Applications run in it). ADR-0023 slice 5:
+# moved here from each cluster repo's tenant-appprojects chart so sourceRepos can follow cicd.yaml - an app that
+# renders its own chart (deploy.chart / environments[].chart) needs that chart's repo allowed. Same name and
+# namespace as before: this Application took over the existing AppProject in place.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: {{ $app }}-lower
+  namespace: argocd-apps
+  labels:
+    hangar.io/component: cluster-config
+    hangar.io/subcomponent: tenant-onboarding
+    hangar.io/app: {{ $app }}
+    hangar.io/env-tier: lower
+spec:
+  description: "Per-app lower-env (dev-cluster-only) AppProject for {{ $app }}, gitops-strategy.md §10"
+  sourceRepos:
+    {{- range ($repos | uniq) }}
+    - {{ . }}
+    {{- end }}
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: "app-{{ $app }}-*"
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+{{- end }}

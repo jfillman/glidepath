@@ -11,6 +11,11 @@
 # (files are relative to it), exit 0 = valid, non-zero = invalid, output shown in the check.
 # Which files: every `*values.yaml` this PR changes relative to main (merge-base), not just HEAD~1, so a human
 # or agent PR with several commits is fully covered. No matching file = the check passes with a note.
+#
+# An environment that renders its own chart (cicd.yaml deploy.chart / environments[].chart other than Airframe's,
+# ADR-0023 slice 5) is not given to the Airframe validator, whose strict keys and component checks describe a chart
+# it does not render. Its files get a plain `helm template` with that chart instead (step own-chart), plus the two
+# chart-contract checks a render can prove: a Namespace, and a Rollout named after the app.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -59,6 +64,12 @@ spec:
           value: $(params.repo-url)
         - name: REVISION
           value: $(params.revision)
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: DEFAULT_CHART_REPO_URL
+          value: {{ .Values.defaultChart.repoURL | quote }}
+        - name: DEFAULT_CHART_PATH
+          value: {{ .Values.defaultChart.path | quote }}
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -76,11 +87,70 @@ spec:
         git diff --name-only --diff-filter=AMR "${base}" HEAD | grep -E '(^|/)values\.yaml$' > /work/files.txt || true
         echo "values files changed in this PR: $(wc -l < /work/files.txt | tr -d ' ')"
         cat /work/files.txt
+
+        # Which chart each file's environment renders (<cluster>/<env>/values.yaml): the environment's chart over
+        # deploy.chart, glidepath-app.resolveChart's rules. An infra service's gitops repo is its own app repo and
+        # carries cicd.yaml; an app's gitops repo does not, so read the app repo's.
+        : > /work/own.txt
+        cicd=""
+        if [[ -f cicd.yaml ]]; then
+          cicd="$(cat cicd.yaml)"
+        elif [[ -n "${APP_NAME}" ]]; then
+          app_token="$(github_app_installation_token "${owner}" "${APP_NAME}" 2>/dev/null || true)"
+          cicd="$(curl -fsSL -H "Authorization: Bearer ${app_token}" -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/${owner}/${APP_NAME}/contents/cicd.yaml" 2>/dev/null || true)"
+        fi
+        if [[ -n "${cicd}" && -s /work/files.txt ]]; then
+          keep=()
+          while read -r f; do
+            cluster="$(echo "${f}" | cut -d/ -f1)"; env="$(echo "${f}" | cut -d/ -f2)"
+            resolved="$(echo "${cicd}" | yq -o json "{\"app\": (.deploy.chart // {}), \"env\": ((.deploy.environments // [])[] | select(.name == \"${env}\") | .chart // {}), \"target\": (.deploy.target // \"k8s-rollout\")}" 2>/dev/null \
+              | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" '
+                  def over($b; $o): if ($o.repoURL // "") != "" then $o
+                    else $b + ($o | with_entries(select(.value != null and .value != "")))
+                      | (if ($o.path // "") != "" then del(.chart) elif ($o.chart // "") != "" then del(.path) else . end) end;
+                  over(over({repoURL: $r, path: $p}; .app); .env) + {target}' 2>/dev/null || true)"
+            if [[ -n "${resolved}" && "$(echo "${resolved}" | jq -r --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" \
+                 '.target == "k8s-rollout" and (.repoURL != $r or (.chart // "") != "" or .path != $p)')" == "true" ]]; then
+              echo "${f}|${cluster}|${env}|${resolved}" >> /work/own.txt
+            else
+              keep+=("${f}")
+            fi
+          done < /work/files.txt
+          printf '%s\n' "${keep[@]+"${keep[@]}"}" | sed '/^$/d' > /work/files.txt
+        fi
+
+        # Fetch each distinct own chart once, into /work/charts/<n> (git) or /work/charts/<n>.tgz (OCI registry).
+        mkdir -p /work/charts
+        n=0
+        while IFS='|' read -r f cluster env chart; do
+          n=$((n + 1))
+          repo_url="$(echo "${chart}" | jq -r .repoURL)"; rev="$(echo "${chart}" | jq -r '.targetRevision // "main"')"
+          if [[ "${repo_url}" == oci://* ]]; then
+            name="$(echo "${chart}" | jq -r .chart)"
+            with_retry 3 -- oras pull "${repo_url#oci://}/${name}:${rev}" -o "/work/charts/${n}-oci" >/dev/null
+            mv "$(ls /work/charts/${n}-oci/*.tgz | head -1)" "/work/charts/${n}.tgz"
+            echo "${f}|${cluster}|${env}|/work/charts/${n}.tgz" >> /work/own-resolved.txt
+          else
+            path="$(echo "${chart}" | jq -r '.path // "."')"
+            clone_url="${repo_url%.git}.git"
+            gh_owner="$(echo "${repo_url}" | sed -nE 's#https?://github\.com/([^/]+)/.*#\1#p')"
+            gh_repo="$(echo "${repo_url}" | sed -nE 's#https?://github\.com/[^/]+/([^/.]+).*#\1#p')"
+            if [[ -n "${gh_owner}" ]] && t="$(github_app_installation_token "${gh_owner}" "${gh_repo}" 2>/dev/null)"; then
+              clone_url="https://x-access-token:${t}@github.com/${gh_owner}/${gh_repo}.git"
+            fi
+            with_retry 3 -- git clone --quiet "${clone_url}" "/work/charts/${n}"
+            git -C "/work/charts/${n}" checkout --quiet "${rev}"
+            rm -f "/work/charts/${n}/.git/config"
+            echo "${f}|${cluster}|${env}|/work/charts/${n}/${path}" >> /work/own-resolved.txt
+          fi
+          echo "own chart for ${f}: ${chart}"
+        done < /work/own.txt
         # The token-bearing .git config is not needed past this point. Do not chmod /work itself: it is the
         # volume mount root, owned by root, and this step runs as a non-root user (it fails with "Operation not
         # permitted"). Files this step creates are already world-readable; the validator image only reads them.
         rm -f .git/config
-        chmod -R a+rX /work/repo /work/files.txt 2>/dev/null || true
+        chmod -R a+rX /work/repo /work/files.txt /work/charts /work/own-resolved.txt 2>/dev/null || true
     - name: validate
       image: $(params.validator-image)
       imagePullPolicy: IfNotPresent
@@ -104,3 +174,53 @@ spec:
         mapfile -t files < /work/files.txt
         # The contract: the image provides an executable `validate-values` on its PATH.
         exec validate-values "${args[@]}" "${files[@]}"
+    - name: own-chart
+      # The validator image carries helm and python3 (the toolbox does not carry helm).
+      image: $(params.validator-image)
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      env:
+        - name: APP_NAME
+          value: $(params.app-name)
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        [[ -s /work/own-resolved.txt ]] || exit 0
+        cd /work/repo
+        rc=0
+        while IFS='|' read -r f cluster env chart; do
+          echo "== ${f}: helm template with ${chart}"
+          # Glidepath's injected values (chart-contract.md "What Glidepath injects"), then the same value files the
+          # Flight Application layers: <cluster>/base.yaml, the env file, its release.yaml.
+          printf 'appName: %s\ncluster: %s\nenvName: %s\nnamespace:\n  labels:\n    hangar.io/managed-secrets: "true"\n' \
+            "${APP_NAME}" "${cluster}" "${env}" > /tmp/injected.yaml
+          vf=()
+          for v in "${cluster}/base.yaml" "${cluster}/${env}/values.yaml" "${cluster}/${env}/release.yaml"; do
+            [[ -f "${v}" ]] && vf+=(-f "${v}")
+          done
+          if ! helm template "${APP_NAME}" "${chart}" --namespace "app-${APP_NAME}-${env}" "${vf[@]}" -f /tmp/injected.yaml > /tmp/out.yaml; then
+            echo "FAIL ${f}: helm template failed"; rc=1; continue
+          fi
+          python3 - "${APP_NAME}" "${f}" "${vf[@]+"${vf[@]}"}" <<'PY' || rc=1
+        import sys, yaml
+        app, f = sys.argv[1], sys.argv[2]
+        released = False  # before the first release a chart renders no workload (chart-contract.md, bootstrap)
+        for v in sys.argv[3:]:
+            if v != "-f":
+                doc = yaml.safe_load(open(v)) or {}
+                released = released or bool(((doc.get("release") or {}).get("image") or {}).get("repository"))
+        docs = [d for d in yaml.safe_load_all(open("/tmp/out.yaml")) if d]
+        kinds = {(d.get("kind"), (d.get("metadata") or {}).get("name")) for d in docs}
+        missing = []
+        if not any(k == "Namespace" for k, _ in kinds):
+            missing.append("a Namespace")
+        if released and ("Rollout", app) not in kinds:
+            missing.append(f"a Rollout named {app}")
+        if missing:
+            print(f"FAIL {f}: rendered {len(docs)} objects but no " + " or ".join(missing) + " (docs/admin/chart-contract.md)")
+            sys.exit(1)
+        print(f"ok   {f}: {len(docs)} objects")
+        PY
+        done < /work/own-resolved.txt
+        exit "${rc}"
