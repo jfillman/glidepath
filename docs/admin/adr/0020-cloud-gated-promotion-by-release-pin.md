@@ -1,6 +1,6 @@
 # ADR-0020: Cloud Flight environments are gated by a release pin PR on the source repo
 
-*Status: Accepted (2026-10-06). Slices 1-4 built (2026-10-07): pin PR, promote-<env> deploy on merge, gates on pin PRs, cloud Flight environments allowed. Slice 5 (Tower Promote/Roll back, pin PRs in the Pull requests tab and Release record) not started. The owner's decisions on the open questions are under [Decided at acceptance](#decided-at-acceptance-2026-10-06).*
+*Status: Accepted (2026-10-06). Slices 1-4 built (2026-10-07): pin PR, promote-<env> deploy on merge, gates on pin PRs, cloud Flight environments allowed. Slice 5 built (2026-10-07, Tower v0.25.0+, Backstage backend `/pin` routes): Promote and Roll back on the Cloud deployments tab, pin PRs with their checks in the Pull requests tab, cloud release records kept in the source repo. Its Tower click-through (Promote, merge, see the tab update) is owed by the owner; Backstage is not reachable from the build host. The owner's decisions on the open questions are under [Decided at acceptance](#decided-at-acceptance-2026-10-06).*
 
 ## Context
 
