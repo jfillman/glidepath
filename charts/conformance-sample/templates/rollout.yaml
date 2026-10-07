@@ -1,0 +1,44 @@
+{{- with .Values.release.image }}
+{{- if and .repository .tag }}
+# Named after the app: Glidepath's deploy stage waits for Rollout <appName> to report Healthy.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ $.Values.appName }}
+  namespace: {{ include "conformance-sample.namespace" $ }}
+  labels:
+    {{- include "conformance-sample.labels" $ | nindent 4 }}
+spec:
+  replicas: {{ $.Values.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $.Values.appName }}
+  strategy:
+    canary:
+      steps: []
+  template:
+    metadata:
+      labels:
+        {{- include "conformance-sample.labels" $ | nindent 8 }}
+    spec:
+      containers:
+        - name: app
+          image: "{{ .repository }}:{{ .tag }}"
+          ports:
+            - containerPort: {{ $.Values.port }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Values.appName }}
+  namespace: {{ include "conformance-sample.namespace" $ }}
+  labels:
+    {{- include "conformance-sample.labels" $ | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $.Values.appName }}
+  ports:
+    - port: {{ $.Values.port }}
+      targetPort: {{ $.Values.port }}
+{{- end }}
+{{- end }}

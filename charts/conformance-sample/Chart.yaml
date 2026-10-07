@@ -1,0 +1,9 @@
+apiVersion: v2
+name: conformance-sample
+description: >-
+  The smallest chart that meets docs/admin/chart-contract.md: a labeled Namespace, a Rollout named after the app
+  running release.image, and a Service. The reference for an app that brings its own chart (ADR-0023), and what
+  Glidepath's own tests deploy to prove deploy.chart end to end. Not Airframe: no components, no config sub-schema.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

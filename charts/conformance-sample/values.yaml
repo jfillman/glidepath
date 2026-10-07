@@ -1,0 +1,14 @@
+# Injected by Glidepath (chart-contract.md "What Glidepath injects").
+appName: ""
+cluster: ""
+envName: ""
+namespace:
+  labels: {}
+# Written by the deploy stage (the release file). Empty: render only the Namespace (bootstrap, before the first build).
+release:
+  image:
+    repository: ""
+    tag: ""
+# This chart's own knobs.
+replicas: 1
+port: 8080
