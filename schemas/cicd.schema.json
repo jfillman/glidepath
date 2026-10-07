@@ -129,7 +129,7 @@
               },
               "tier": {
                 "enum": ["ground", "flight"],
-                "description": "ground: deploys on every push. flight: deploys only through a release PR and its guardrails. A cloud target (aws-ecs, aws-lambda, azure-container-apps) supports ground only for now."
+                "description": "ground: deploys on every push. flight: deploys only through a release PR and its guardrails. For a cloud target (aws-ecs, aws-lambda, azure-container-apps) a flight environment is approved by a release pin PR on the source repo (glidepath/releases/<env>.yaml, ADR-0020) and sets no cluster."
               },
               "cluster": {
                 "type": "string",

@@ -35,8 +35,17 @@ spec:
       type: string
       default: ""
       description: "PaC's raw pull_request.number webhook body field - only used to post the PR comment in this Pipeline's finally block."
+    - name: commit-signature
+      type: string
+      default: "true"
+      description: >-
+        "false" skips the commit-signature half (verify-commit-signature) and keeps the image
+        provenance half. A cloud target's pin PR (ADR-0020) passes "false": commit signing is
+        not required for cloud targets, and a pin commit carries no X-App-Commit trailer.
   tasks:
     - name: verify
+      when:
+        - { input: $(params.commit-signature), operator: notin, values: ["false"] }
       taskRef:
         resolver: cluster
         params:

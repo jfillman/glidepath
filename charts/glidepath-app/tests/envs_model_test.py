@@ -165,12 +165,21 @@ class Validation(unittest.TestCase):
     def test_ground_with_cluster_is_not_supported_yet(self):
         self.assertIn("not supported yet", self.fails([{"name": "dev", "tier": "ground", "cluster": "kind-other"}]))
 
-    def test_cloud_target_refuses_flight(self):
+    def test_cloud_target_allows_flight_without_kubernetes_artifacts(self):
+        # ADR-0020: a cloud Flight environment is approved by a release pin PR on the source repo.
+        envs = [{"name": "dev", "tier": "ground"}, {"name": "prod", "tier": "flight"}]
+        rc, out, err = render(cicd(BUILD_DEPLOY, {"environments": envs, "target": "aws-lambda", "lambda": {"functionName": "f"}}))
+        self.assertEqual(rc, 0, err)
+        docs = [d for d in yaml.safe_load_all(out) if d]
+        self.assertFalse([d for d in docs if d["kind"] == "Application"], "no Argo CD Application for a cloud environment")
+        self.assertFalse([d for d in docs if d["kind"] in ("Role", "RoleBinding") and d["metadata"].get("namespace", "").endswith("-prod")])
+
+    def test_cloud_flight_refuses_a_cluster(self):
         err = self.fails(
-            [{"name": "dev", "tier": "ground"}, {"name": "prod", "tier": "flight"}],
+            [{"name": "dev", "tier": "ground"}, {"name": "prod", "tier": "flight", "cluster": "kind-prod"}],
             extra={"target": "aws-lambda", "lambda": {"functionName": "f"}},
         )
-        self.assertIn("not supported for deploy.target aws-lambda", err)
+        self.assertIn("has no cluster", err)
 
     def test_a_deploy_step_for_an_undeclared_env_still_fails_on_kubernetes(self):
         rc, _, err = render(cicd(BUILD_DEPLOY, {"environments": [{"name": "qa", "tier": "ground"}]}))
