@@ -689,6 +689,31 @@ spec:
           echo "app repo: generated .tekton/flow-${flow_name}.yaml (${trigger_event} -> ${root_stage})"
         done <<< "${flow_names}"
 
+        # Pipelines-as-Code runs a pull request's pipelines from the .tekton/ on the PR's own branch, so
+        # a PR opened before preview builds were enabled never builds its preview environment, even
+        # once flow-pr-build.yaml is on main (sky-marshall#8, 2026-10-07: the preview Application was
+        # generated, its image never built). Once the flow is on main, update each open same-repo PR
+        # that carries a preview label but not the flow from main; that push runs its preview build.
+        # Best effort: a PR that cannot be updated (conflicts, a fork) only logs. This runs on the
+        # resync that follows the flow's merge (onboarding-resync.yaml also fires on that file).
+        if [[ -f .tekton/flow-pr-build.yaml ]]; then
+          preview_labels_json="$(jq -c '[.[] | select((.trigger.event // .trigger.type) == "pull_request") | (.trigger.labels // [])[]] | unique' <<<"${pipelines_json}")"
+          gh_api() { curl --fail --silent --show-error --retry 3 --max-time 20 -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" "$@"; }
+          while IFS=$'\t' read -r pr_number pr_branch; do
+            [[ -z "${pr_number}" ]] && continue
+            if gh_api -o /dev/null "https://api.github.com/repos/${owner}/${repo}/contents/.tekton/flow-pr-build.yaml?ref=${pr_branch}" 2>/dev/null; then
+              continue
+            fi
+            if gh_api -X PUT -o /dev/null "https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/update-branch" 2>/dev/null; then
+              echo "app repo: updated preview PR #${pr_number} (${pr_branch}) from main so it picks up flow-pr-build.yaml"
+            else
+              echo "warn: could not update preview PR #${pr_number} (${pr_branch}) from main (conflicts?) - it builds once its branch includes .tekton/flow-pr-build.yaml" >&2
+            fi
+          done < <(gh_api "https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=100" \
+            | jq -r --arg full "${owner}/${repo}" --argjson labels "${preview_labels_json}" \
+              '.[] | select(.head.repo.full_name == $full) | select([.labels[].name] | any(. as $l | $labels | index($l))) | [.number, .head.ref] | @tsv')
+        fi
+
         # ADR-0020 slice 3: a cloud app with a Flight environment gets the release gates on its own
         # repo, for its release pin PRs only: the gitops repo's gate PipelineRuns, retargeted to
         # branches named glidepath-release-* (open-release-pin-pr.yaml) whose every changed file is
