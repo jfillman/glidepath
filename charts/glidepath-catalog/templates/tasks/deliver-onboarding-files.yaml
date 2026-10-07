@@ -63,6 +63,10 @@ spec:
     - name: onboarding-templates-gitops-repo
       configMap:
         name: onboarding-templates-gitops-repo
+    # deliver-app-repo-files leaves the app's deploy.target here for deliver-gitops-repo-files
+    # (steps don't share variables or their mktemp clones).
+    - name: step-handoff
+      emptyDir: {}
   steps:
     - name: deliver-app-repo-files
       image: {{ .Values.toolboxImage }}
@@ -74,6 +78,8 @@ spec:
         - name: onboarding-templates-app-repo
           mountPath: /opt/platform/onboarding-templates/app-repo
           readOnly: true
+        - name: step-handoff
+          mountPath: /handoff
         # ADR-0020: a cloud app's release pin PRs get the same gate PipelineRuns as a gitops repo.
         - name: onboarding-templates-gitops-repo
           mountPath: /opt/platform/onboarding-templates/gitops-repo
@@ -196,12 +202,21 @@ spec:
         # delivers the corrected trigger file as a PR; merging it and pushing cicd.yaml
         # again fires a second run that finally has the right value from the start. Same
         # "heals eventually, not instantly" shape as APP_TYPE's own fix.
+        #
+        # A cloud target's release stage opens a release pin PR on THIS repo (ADR-0020) and has
+        # no gitops repo at all, so nothing is derived for it.
         if [[ -z "${GITOPS_REPO_URL}" ]]; then
           has_release="$(echo "${pipelines_json}" | jq -r '[.[] | .steps[]? | select(.stage == "release")] | length > 0')"
-          if [[ "${has_release}" == "true" ]]; then
+          release_target="k8s-rollout"
+          [[ -f cicd.yaml ]] && release_target="$(yq -r '.deploy.target // "k8s-rollout"' cicd.yaml)"
+          if [[ "${has_release}" == "true" && "${release_target}" == "k8s-rollout" ]]; then
             GITOPS_REPO_URL="https://github.com/${GITHUB_OWNER}/gitops-${APP_NAME}"
             echo "gitops-repo-url not supplied but cicd.yaml declares a release stage - derived '${GITOPS_REPO_URL}' from the gitops-<app-name> convention"
           fi
+        fi
+        # ...and a URL an older trigger file still carries is dropped from the regenerated one.
+        if [[ -f cicd.yaml && "$(yq -r '.deploy.target // "k8s-rollout"' cicd.yaml)" != "k8s-rollout" ]]; then
+          GITOPS_REPO_URL=""
         fi
 
         # Only a Kubernetes app has an environments folder: a cloud target (aws-ecs, aws-lambda,
@@ -216,6 +231,7 @@ spec:
         if [[ "${DEPLOY_TARGET}" != "k8s-rollout" ]]; then
           echo "deploy.target is ${DEPLOY_TARGET}: not scaffolding environment files (no chart, no per-environment namespace)"
         fi
+        echo "${DEPLOY_TARGET}" > /handoff/deploy-target
 
         # ADR-0018: the environments folder is glidepath/ (every app moved off platform/ by
         # 2026-10-07; nothing reads platform/ any more).
@@ -801,6 +817,8 @@ spec:
         - name: onboarding-templates-gitops-repo
           mountPath: /opt/platform/onboarding-templates/gitops-repo
           readOnly: true
+        - name: step-handoff
+          mountPath: /handoff
       env:
         - name: GITHUB_TOKEN_BROKER_URL
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
@@ -816,6 +834,12 @@ spec:
 
         if [[ -z "${GITOPS_REPO_URL}" ]]; then
           echo "gitops repo: no gitops-repo-url param given (release stage not declared), skipping"
+          exit 0
+        fi
+        # A trigger file generated before cloud targets stopped deriving a URL still passes one.
+        deploy_target="$(cat /handoff/deploy-target 2>/dev/null || echo k8s-rollout)"
+        if [[ "${deploy_target}" != "k8s-rollout" ]]; then
+          echo "gitops repo: deploy.target is ${deploy_target} (no gitops repo; releases are pin PRs on the app repo), skipping"
           exit 0
         fi
         source "${PLATFORM_LIB}/github-app.sh"
