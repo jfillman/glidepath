@@ -9,11 +9,11 @@
 # release file's layout plus a digest, so extract-promoted-image.yaml and every gate built on it
 # read a pin PR unchanged.
 #
-# One open pin PR per environment: the branch is glidepath-release-<env>. A newer release resets
-# that branch to main and rewrites the pin, so an open PR always shows the latest candidate and
-# never a stack of them.
+# One open pin PR per environment: the branch is glidepath-release-<env>. A newer release moves
+# that branch to a fresh commit on main carrying the new pin, so an open PR always shows the
+# latest candidate and never a stack of them.
 #
-# Every write goes through the GitHub contents/refs API, never `git push`: GitHub signs commits
+# Every write goes through the GitHub git data API, never `git push`: GitHub signs commits
 # the App makes through the API, so a ruleset that requires signed commits accepts pin commits
 # (ADR-0020: no gitsign for cloud targets). The commit author is the App itself.
 apiVersion: tekton.dev/v1
@@ -135,14 +135,6 @@ spec:
         default_branch="$(gh_api GET "" | jq -r .default_branch)"
         base_sha="$(gh_api GET "/git/ref/heads/${default_branch}" | jq -r .object.sha)"
 
-        # Reset the pin branch to the default branch (create it the first time), so the PR's diff is
-        # only ever this one pin, whatever an earlier release left on the branch.
-        if gh_api GET "/git/ref/heads/${branch}" >/dev/null 2>&1; then
-          gh_api PATCH "/git/refs/heads/${branch}" "$(jq -n --arg sha "${base_sha}" '{sha: $sha, force: true}')" >/dev/null
-        else
-          gh_api POST "/git/refs" "$(jq -n --arg ref "refs/heads/${branch}" --arg sha "${base_sha}" '{ref: $ref, sha: $sha}')" >/dev/null
-        fi
-
         content="$(cat <<PINEOF
         # ${pin} - the release pin for ${ENV} (glidepath ADR-0020). Written by Glidepath; do not edit.
         # Merging the pull request that changes this file deploys exactly this digest to ${ENV}.
@@ -158,12 +150,31 @@ spec:
         # Fail before writing anything a deploy would later trip on.
         yq -e '.release.image.digest | test("^sha256:")' <<<"${content}" >/dev/null
 
-        existing_sha="$(gh_api GET "/contents/${pin}?ref=${default_branch}" 2>/dev/null | jq -r '.sha // empty' || true)"
+        # Already the pin on the default branch: a PR would have nothing to change.
+        current="$(gh_api GET "/contents/${pin}?ref=${default_branch}" 2>/dev/null | jq -r '.content // empty' | base64 -d 2>/dev/null || true)"
+        if [[ "${current}" == "$(printf '%s\n' "${content}")" ]]; then
+          echo "${ENV} is already pinned to ${digest} on ${default_branch} - no pin PR needed"
+          echo -n "" > "$(results.pr-url.path)"
+          echo -n "${digest}" > "$(results.digest.path)"
+          exit 0
+        fi
+
+        # One commit on top of the default branch (blob -> tree -> commit), then the pin branch is
+        # created or force-moved to it in a single ref update. Moving the branch to the default
+        # branch first and writing after left the PR with no diff for a moment, and GitHub closed it
+        # (smoke-az-fn#2, 2026-10-07). The PR's diff is always exactly this pin, against current main.
+        base_tree="$(gh_api GET "/git/commits/${base_sha}" | jq -r .tree.sha)"
+        blob_sha="$(gh_api POST "/git/blobs" "$(jq -n --arg c "$(printf '%s\n' "${content}" | base64 | tr -d '\n')" '{content: $c, encoding: "base64"}')" | jq -r .sha)"
+        tree_sha="$(gh_api POST "/git/trees" "$(jq -n --arg base "${base_tree}" --arg path "${pin}" --arg sha "${blob_sha}" \
+          '{base_tree: $base, tree: [{path: $path, mode: "100644", type: "blob", sha: $sha}]}')" | jq -r .sha)"
         message="Pin ${APP_NAME} ${ENV} to ${image_tag} (${digest:0:19})"
-        put_body="$(jq -n --arg m "${message}" --arg c "$(printf '%s\n' "${content}" | base64 | tr -d '\n')" \
-          --arg b "${branch}" --arg s "${existing_sha}" \
-          '{message: $m, content: $c, branch: $b} + (if $s == "" then {} else {sha: $s} end)')"
-        gh_api PUT "/contents/${pin}" "${put_body}" >/dev/null
+        commit_sha="$(gh_api POST "/git/commits" "$(jq -n --arg m "${message}" --arg t "${tree_sha}" --arg p "${base_sha}" \
+          '{message: $m, tree: $t, parents: [$p]}')" | jq -r .sha)"
+        if gh_api GET "/git/ref/heads/${branch}" >/dev/null 2>&1; then
+          gh_api PATCH "/git/refs/heads/${branch}" "$(jq -n --arg sha "${commit_sha}" '{sha: $sha, force: true}')" >/dev/null
+        else
+          gh_api POST "/git/refs" "$(jq -n --arg ref "refs/heads/${branch}" --arg sha "${commit_sha}" '{ref: $ref, sha: $sha}')" >/dev/null
+        fi
 
         pr_url="$(gh_api GET "/pulls?head=${owner}:${branch}&state=open" | jq -r '.[0].html_url // empty')"
         if [[ -n "${pr_url}" ]]; then
