@@ -1,0 +1,29 @@
+{{- $cicd := required "cicdNamespace must be set" .Values.cicdNamespace }}
+# deploy-manifests.yaml waits for the environment's Rollout to become Healthy after a glidepath/envs/<env>.yaml push,
+# so the pipeline runner (in the app's -cicd namespace) needs read access to Rollouts here. Rendered by this
+# environment's own Application, in the same sync that creates its namespace: when glidepath-app rendered it, a new
+# app's <app>-cicd sync failed with "error getting namespace" until the environment existed (ADR-0023).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: allow-pipeline-runner-deploy
+  labels:
+    app.kubernetes.io/part-of: glidepath
+    hangar.io/subcomponent: env
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["rollouts", "rollouts/status"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: allow-pipeline-runner-deploy
+  labels:
+    app.kubernetes.io/part-of: glidepath
+    hangar.io/subcomponent: env
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: allow-pipeline-runner-deploy }
+subjects:
+  - kind: ServiceAccount
+    name: pipeline-runner
+    namespace: {{ $cicd }}

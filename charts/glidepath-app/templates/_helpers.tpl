@@ -215,10 +215,9 @@ that (docs/admin/envs-overhaul-requirements.md, R5).
 {{- end -}}
 
 {{/*
-glidepath-app.localDeployEnvs - lowerEnvironments plus same-cluster
-upperEnvironments entries: every env that needs pipeline-runner RBAC into a local
-namespace. Cluster-mapped upper envs (docs/multi-cluster.md) are excluded - they have no
-local namespace to grant RBAC into.
+glidepath-app.localDeployEnvs - the same-cluster Flight (upper) environments: the ones whose pipeline-runner RBAC
+this chart still renders. Ground environments get theirs from their own Application (charts/glidepath-env, ADR-0023
+slice 3); cluster-mapped Flight environments (docs/multi-cluster.md) have no local namespace to grant RBAC into.
 
 Usage: {{ include "glidepath-app.localDeployEnvs" . | fromYamlArray }}
 */}}
@@ -227,7 +226,9 @@ Usage: {{ include "glidepath-app.localDeployEnvs" . | fromYamlArray }}
 {{- /* A cloud target has no namespace per environment, so there is nothing to grant RBAC into. */ -}}
 {{- list | toYaml -}}
 {{- else -}}
-{{- $envs := include "glidepath-app.lowerEnvNames" . | fromYamlArray -}}
+{{- /* Ground environments get it from their own Application (charts/glidepath-env, ADR-0023 slice 3); only
+       same-cluster Flight environments still get it here. */ -}}
+{{- $envs := list -}}
 {{- range include "glidepath-app.upperEntries" . | fromYamlArray -}}
   {{- if not .cluster -}}
     {{- $envs = append $envs .name -}}
@@ -676,4 +677,13 @@ ApplicationSet template.
   ref: appsrc
   directory:
     exclude: "*"
+{{- if eq (include "glidepath-app.hasStage" (dict "ctx" $ctx "name" "deploy")) "true" }}
+{{- /* The pipeline runner's deploy RBAC, synced with the namespace it targets (ADR-0023 slice 3). */}}
+- repoURL: {{ required "platformCicdRepoUrl must be set" $ctx.Values.platformCicdRepoUrl }}
+  targetRevision: main
+  path: charts/glidepath-env
+  helm:
+    valuesObject:
+      cicdNamespace: {{ include "glidepath-app.namespace" $ctx }}
+{{- end }}
 {{- end -}}

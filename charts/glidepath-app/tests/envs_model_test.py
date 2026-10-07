@@ -133,7 +133,10 @@ class RenderEquivalence(unittest.TestCase):
         rc, out, err = render(new)
         self.assertEqual(rc, 0, err[:400])
         names = {(d["kind"], d["metadata"]["name"]) for d in docs(out)}
-        self.assertIn(("Role", "allow-pipeline-runner-deploy"), names)  # the Ground env still gets its RBAC
+        # The Ground env's deploy RBAC now comes from its own Application (ADR-0023 slice 3): the Ground
+        # ApplicationSet carries the glidepath-env source, and this chart renders no Role for it.
+        self.assertNotIn(("Role", "allow-pipeline-runner-deploy"), names)
+        self.assertIn("charts/glidepath-env", out)
         flat = out
         self.assertIn("kind-prod", flat)
 
@@ -316,6 +319,25 @@ class LowerEnvsChart(unittest.TestCase):
 
     def test_a_cloud_app_has_no_ground_applicationset(self):
         self.assertIsNone(lower_envs(cicd(BUILD_DEPLOY, {"target": "aws-lambda", "lambda": {"functionName": "f"}})))
+
+
+class DeployRbacMove(unittest.TestCase):
+    """ADR-0023 slice 3b: Ground deploy RBAC rides with the environment's Application."""
+
+    def test_same_cluster_flight_keeps_its_rbac_here(self):
+        rc, out, err = render(cicd(WITH_RELEASE, {"environments": [{"name": "dev", "tier": "ground"}, {"name": "staging", "tier": "flight"}]}))
+        self.assertEqual(rc, 0, err[:400])
+        roles = [d for d in docs(out) if d["kind"] == "Role" and d["metadata"]["name"] == "allow-pipeline-runner-deploy"]
+        self.assertEqual([r["metadata"]["namespace"] for r in roles], ["app-sample-staging"])
+
+    def test_no_deploy_stage_means_no_rbac_source(self):
+        a = lower_envs(cicd([{"stage": "build"}], {"environments": [{"name": "dev", "tier": "ground"}]}))
+        self.assertNotIn("charts/glidepath-env", yaml.safe_dump(a))
+
+    def test_rbac_source_names_the_cicd_namespace(self):
+        a = lower_envs(cicd(BUILD_DEPLOY, {"environments": [{"name": "dev", "tier": "ground"}]}))
+        rbac = [s for s in a["spec"]["template"]["spec"]["sources"] if s.get("path") == "charts/glidepath-env"]
+        self.assertEqual(rbac[0]["helm"]["valuesObject"]["cicdNamespace"], "app-sample-cicd")
 
 
 class Schema(unittest.TestCase):
