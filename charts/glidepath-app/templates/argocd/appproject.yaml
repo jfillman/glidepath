@@ -103,10 +103,10 @@ spec:
     - { group: "", kind: Namespace }
   # No namespaceResourceWhitelist, deliberately - matches appproject-lower.yaml's own
   # shape for the same reason: airframe-application renders far more than Deployment/Service
-  # depending on what platform/pr-env.yaml turns on (Rollout, ServiceAccount, ConfigMap,
+  # depending on what glidepath/pr-env.yaml turns on (Rollout, ServiceAccount, ConfigMap,
   # Secret, NetworkPolicy, ServiceMonitor, ...), and an absent namespaceResourceWhitelist
   # defaults to allow-all for namespaced kinds (the opposite default from cluster-scoped
   # kinds above) - narrowing it here would just mean re-widening it piecemeal every time
-  # a developer's own platform/pr-env.yaml turns on a chart feature this project hasn't
+  # a developer's own glidepath/pr-env.yaml turns on a chart feature this project hasn't
   # seen yet.
 {{- end }}

@@ -49,29 +49,17 @@ glidepath/
   same commit. `deploy.releaseFile` may only name that same path (`{env}` placeholder); any
   other path is refused, because the lower-envs ApplicationSet would never read it.
 
-### Dual-path window (`platform/` to `glidepath/`)
+### Folder: `glidepath/` (formerly `platform/`)
 
-Until every app repo has moved, the folder is either `platform/` (the old name) or
-`glidepath/`. The rule, used by every reader and writer: **a repo uses `glidepath/` once
-it has a `glidepath/` directory, and `platform/` until then.** A brand-new repo is
-scaffolded into `glidepath/` (since 2026-10-06, after sky-marshall's move was verified).
+The environments folder is `glidepath/`. Every app repo moved off `platform/` by
+2026-10-07 and the dual-path shims were removed then: the ApplicationSets, the catalog
+Tasks, Backstage and Tower read and write only `glidepath/`. A repo still carrying a
+`platform/` folder deploys nothing from it.
 
-- The lower-envs ApplicationSet watches `platform/envs/*.yaml` and `glidepath/envs/*.yaml`,
-  and takes `base.yaml` and the release file from the matched file's own folder.
-- The ephemeral-envs ApplicationSet lists both `pr-env.yaml` paths and ignores the missing one.
-- `deploy-manifests`, `deliver-onboarding-files` (scaffolds) and `run-testworkflow` resolve
-  the folder in the cloned repo. `deploy-manifests` refuses an env with a file in both
-  folders, and rewrites a `deploy.releaseFile` that still names `platform/` in a repo that
-  has moved (with a warning: update `cicd.yaml`).
-- The PaC config-only-push exemption skips builds for pushes that only touch `cicd.yaml`,
-  `platform/` or `glidepath/`. Existing apps get this when their `.tekton/` is next
-  re-synced (any `cicd.yaml` change).
-- Backstage and Tower resolve the folder per repo through the GitHub API with the same rule.
-
-To move an app: one commit that `git mv platform glidepath`, plus a `cicd.yaml` change
-(update `deploy.releaseFile` if it is set, which also re-syncs `.tekton/`). Never leave
-both folders in place: the same `envName` in both is two Applications with one name, and
-that app's ApplicationSet stops updating until one copy is removed.
+The PaC config-only-push exemption skips builds for pushes that only touch `cicd.yaml`,
+`glidepath/` or `.tekton/` (the generated boilerplate, so merging an onboarding-resync PR
+does not build). An app gets the current exemption when its `.tekton/` is next re-synced
+(any `cicd.yaml` change).
 
 ## Values merge order
 

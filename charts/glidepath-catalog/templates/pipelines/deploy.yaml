@@ -2,7 +2,7 @@
 #
 # Third stage of the flow (of four - see release.yaml). Normally event-chained, fired by
 # test's testcaserun.finished event; deploys to dev via a direct commit to the app's own
-# repo (platform/envs/<env>.yaml), picked up by argocd-apps' selfHeal. Deliberately not
+# repo (glidepath/envs/<env>.yaml), picked up by argocd-apps' selfHeal. Deliberately not
 # PR-gated like release.yaml's staging promotion - dev favors fast inner-loop feedback
 # over governance. See catalog/tasks/deploy-manifests.yaml and docs/release.md.
 #

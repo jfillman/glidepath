@@ -26,7 +26,7 @@ developer adds the `preview` label to a PR on nodejs-demo-app
   -> generates an Application named nodejs-demo-app-pr-<number>, with two sources:
      airframe's airframe-application chart (envName/rollout.image stamped per-PR
      via valuesObject) plus a ref-only source into nodejs-demo-app's own repo, pinned to
-     that PR's head SHA, for platform/pr-env.yaml's values
+     that PR's head SHA, for glidepath/pr-env.yaml's values
   -> a separate, dedicated pull_request-triggered flow (cicd.yaml's own pipelines: entry
      for it) builds and pushes that PR's image, tagged with a bare 12-char sha (not the
      normal <version>-<short-sha> scheme - see "Image tagging: sha-only for PR builds"
@@ -57,20 +57,20 @@ behaves like every other tier instead of a bespoke, Kustomize-only path:
   `rollout.image.{repository,tag}` per-PR - these three fields can't be overridden by a
   developer's own values file, since `valuesObject` wins over `valueFiles`.
 - **Source 1**: a `directory`-only, `ref: appsrc` source into the app's own repo, pinned
-  to that PR's `head_sha` (not `main`), so `platform/pr-env.yaml` (see below) is read
+  to that PR's `head_sha` (not `main`), so `glidepath/pr-env.yaml` (see below) is read
   from the PR branch itself - editing that file inside a PR customizes that PR's own
   preview environment.
 
-**`platform/pr-env.yaml`, not `platform/envs/pr.yaml`.** The lower-env tier's own
-`lower-envs-applicationset.yaml` already watches `platform/envs/*.yaml` (a `git: files:`
-generator) for the dev-tier lower env - a file at `platform/envs/pr.yaml` would also
+**`glidepath/pr-env.yaml`, not `glidepath/envs/pr.yaml`.** The lower-env tier's own
+`lower-envs-applicationset.yaml` already watches `glidepath/envs/*.yaml` (a `git: files:`
+generator) for the dev-tier lower env - a file at `glidepath/envs/pr.yaml` would also
 match that glob and spawn a bogus static `pr` lower env on top of this feature's real
-per-PR-numbered ones. `platform/pr-env.yaml`, one level up, avoids the collision. This is
-a single, static file per app (unlike `platform/envs/<name>.yaml`, one file per lower
+per-PR-numbered ones. `glidepath/pr-env.yaml`, one level up, avoids the collision. This is
+a single, static file per app (unlike `glidepath/envs/<name>.yaml`, one file per lower
 env) - a PR number isn't a fixed filename, so per-PR identity is stamped by the
 ApplicationSet's own `valuesObject` instead of by which file matched.
 
-`k8s/ephemeral/` is gone entirely from onboarded app repos - `platform/pr-env.yaml`
+`k8s/ephemeral/` is gone entirely from onboarded app repos - `glidepath/pr-env.yaml`
 replaces it.
 
 ## Image tagging: sha-only for PR builds
@@ -268,7 +268,7 @@ needs to happen once per app.)
 
 One-time setup per app, same spirit as the release stage's onboarding steps.
 
-1. **Push `nodejs-demo-app`'s new `platform/pr-env.yaml`** (see "Deploying through
+1. **Push `nodejs-demo-app`'s new `glidepath/pr-env.yaml`** (see "Deploying through
    airframe-application, not raw Kustomize" above for its shape) - no PR needed unless the
    repo has branch protection configured (it doesn't currently, unlike
    `gitops-nodejs-demo-app`).

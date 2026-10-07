@@ -126,7 +126,7 @@ spec:
         # tested elsewhere in this project) as the lower-env tier's own
         # lower-envs-applicationset.yaml. envName/rollout.image are stamped here,
         # per-PR, computed rather than developer-supplied - they can't be overridden by
-        # platform/pr-env.yaml below, only everything else can.
+        # glidepath/pr-env.yaml below, only everything else can.
         - repoURL: {{ .Values.idpServiceCatalog.repoUrl }}
           targetRevision: {{ .Values.idpServiceCatalog.chartVersion }}
           path: charts/airframe-application
@@ -152,28 +152,22 @@ spec:
                   # this namespace so the private ghcr.io/<owner>/<app>-pr image can
                   # actually be pulled.
                   hangar.io/managed-secrets: "true"
-            # ADR-0018 dual-path window: an app repo has pr-env.yaml in platform/ or glidepath/,
-            # never both. Listing both and ignoring the missing one is the only way to pick the
-            # folder here (this generator has no file-path params). It also means a repo with
-            # neither file renders chart defaults instead of a ComparisonError.
-            ignoreMissingValueFiles: true
             valueFiles:
-              # Not platform/envs/pr.yaml - lower-envs-applicationset.yaml's own git
-              # generator already watches platform/envs/*.yaml on every onboarded app's
+              # Not glidepath/envs/pr.yaml - lower-envs-applicationset.yaml's own git
+              # generator already watches glidepath/envs/*.yaml on every onboarded app's
               # repo (for the dev-tier lower env), so a file there would ALSO spawn a
               # bogus static "pr" lower env via THAT ApplicationSet, on top of this
-              # one's real per-PR-numbered ones. platform/pr-env.yaml, one level up,
-              # avoids the collision while staying next to platform/envs/dev.yaml's
+              # one's real per-PR-numbered ones. glidepath/pr-env.yaml, one level up,
+              # avoids the collision while staying next to glidepath/envs/dev.yaml's
               # own convention. Read from the PR's own head_sha (not main, see source 1
               # below), so editing this file inside a PR customizes that PR's own
               # preview environment - ports/probes/resources/secrets/etc, anything
               # except envName/rollout.image above.
-              - $appsrc/platform/pr-env.yaml
               - $appsrc/glidepath/pr-env.yaml
         # Source 1: $ref-only into the same app repo the pullRequest generator above
         # already reads from - same "referenced values file needs its own source"
         # multi-source pattern lower-envs-applicationset.yaml uses, pinned to this PR's
-        # own commit (not main) so platform/pr-env.yaml is read from the PR branch.
+        # own commit (not main) so glidepath/pr-env.yaml is read from the PR branch.
         - repoURL: {{ .Values.platformIdentity.appRepoUrl }}
           targetRevision: "{{ "{{" }}.head_sha{{ "}}" }}"
           ref: appsrc

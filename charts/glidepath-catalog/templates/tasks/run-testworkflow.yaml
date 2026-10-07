@@ -2,14 +2,14 @@
 #
 # Deliberately not "run-integration-tests" (its original name through 2026-08-24) - a
 # TestWorkflow isn't necessarily a test. It's whatever the app repo's own
-# platform/<name>.yaml declares: an integration test, a smoke check, or an ops action
+# glidepath/<name>.yaml declares: an integration test, a smoke check, or an ops action
 # with no assertions at all (clearing a cache before release, warming something up,
 # etc). This Task's job is "run the named TestWorkflow and report pass/fail," not
 # "test the code" specifically.
 #
 # Two ways a named TestWorkflow can run, tried in this order:
 #
-# 1. Testkube (real integration, 2026-08-24): if the app repo has platform/<name>.yaml,
+# 1. Testkube (real integration, 2026-08-24): if the app repo has glidepath/<name>.yaml,
 #    it's applied as a TestWorkflow into Testkube CE's single shared `testkube`
 #    namespace (see gitops-cluster-dev/50-platform-cicd/testkube/application.yaml's own
 #    header for why it's one shared namespace, not one per tenant - executionNamespaces
@@ -25,7 +25,7 @@
 #    secret name before applying, so the workflow file itself never needs to know or
 #    hardcode this Application's own name.
 #
-#    metadata.name in platform/<name>.yaml is ALWAYS overwritten to
+#    metadata.name in glidepath/<name>.yaml is ALWAYS overwritten to
 #    "<app-name>-<test-name>" before applying, regardless of what's in the file -
 #    Testkube's shared namespace means TestWorkflow names must be unique across every
 #    onboarded Application, and app-name here comes from the PipelineRun's own trusted
@@ -33,7 +33,7 @@
 #    this can't be spoofed by editing the workflow file itself.
 #
 # 2. Phase 1 fallback (original mechanism, kept for Applications not yet migrated): if
-#    there's no platform/<name>.yaml but ./integration-test.sh exists, run that
+#    there's no glidepath/<name>.yaml but ./integration-test.sh exists, run that
 #    against the freshly built image, in the Application's own agent-image (unlike the
 #    Testkube step above, which runs in the shared toolboxImage since it only needs
 #    kubectl/yq/testkube CLI, never the app's own runtime).
@@ -128,9 +128,7 @@ spec:
           exit 0
         fi
 
-        # ADR-0018 dual-path window: glidepath/ once the repo has one, platform/ until then.
-        WORKFLOW_FILE="platform/${TEST_NAME}.yaml"
-        [[ -d glidepath ]] && WORKFLOW_FILE="glidepath/${TEST_NAME}.yaml"
+        WORKFLOW_FILE="glidepath/${TEST_NAME}.yaml"
         if [[ ! -f "${WORKFLOW_FILE}" ]]; then
           echo "no ${WORKFLOW_FILE} - falling back to ./integration-test.sh if present"
           echo -n "true" | tee "$(step.results.fallback-needed.path)"
@@ -251,7 +249,7 @@ spec:
           exit 0
         fi
         if [[ ! -f ./integration-test.sh ]]; then
-          echo "warn: no ${TEST_NAME}.yaml under glidepath/ or platform/ and no ./integration-test.sh found at repo root - skipping, not failing" >&2
+          echo "warn: no ${TEST_NAME}.yaml under glidepath/ and no ./integration-test.sh found at repo root - skipping, not failing" >&2
           echo -n "skipped" | tee "$(results.outcome.path)"
           exit 0
         fi
