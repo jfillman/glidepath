@@ -127,9 +127,10 @@ spec:
         # lower-envs-applicationset.yaml. envName/rollout.image are stamped here,
         # per-PR, computed rather than developer-supplied - they can't be overridden by
         # glidepath/pr-env.yaml below, only everything else can.
-        - repoURL: {{ .Values.idpServiceCatalog.repoUrl }}
-          targetRevision: {{ .Values.idpServiceCatalog.chartVersion }}
-          path: charts/airframe-application
+        {{- $chart := include "glidepath-app.defaultChart" . | fromYaml }}
+        - repoURL: {{ $chart.repoURL }}
+          targetRevision: {{ $chart.targetRevision }}
+          path: {{ $chart.path }}
           helm:
             valuesObject:
               appName: {{ .Values.platformIdentity.appName }}

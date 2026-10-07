@@ -44,11 +44,21 @@ rbac:
 # `container build -a arm64 -a amd64` per the toolbox Dockerfile's own comment.
 toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-05-per-env-cloud-config
 
+# The cluster's default environment chart (ADR-0023 slice 1). Set from the cluster repo's cluster-defaults.yaml
+# (the platform-cicd-catalog Application reads it as a value file), the same file the environment ApplicationSets
+# and glidepath-app read, so the values gate validates against the chart environments actually render.
+defaultChart:
+  repoURL: https://github.com/jfillman/airframe.git
+  path: charts/airframe-application
+  targetRevision: v0.3.118
+
 # The image the values-validation gate (tasks/validate-values.yaml) runs against a gitops PR's values files.
-# It must provide `validate-values [--app NAME] FILE...` on its PATH, exit 0 = valid. The default is Airframe's own validator, published from an
-# Airframe release tag (workflow airframe-validate-image); it carries the chart of that tag, so keep it in step
-# with the airframe-application chartVersion pinned in glidepath-app. Public, like the toolbox image.
-valuesValidatorImage: ghcr.io/jfillman/airframe-validate:v0.3.97
+# It must provide `validate-values [--app NAME] FILE...` on its PATH, exit 0 = valid. Empty (the default) means
+# Airframe's own validator at the default chart's tag: workflow airframe-validate-image publishes
+# <valuesValidatorRepository>:<tag> for every Airframe release tag, carrying that tag's chart. Set it only for a
+# validator that does not follow the chart tag. Public, like the toolbox image.
+valuesValidatorRepository: ghcr.io/jfillman/airframe-validate
+valuesValidatorImage: ""
 
 # Base URL of the Backstage backend that notify-backstage.yaml POSTs to. One Backstage
 # instance platform-wide (not one per cluster, not one per Application), so this is a

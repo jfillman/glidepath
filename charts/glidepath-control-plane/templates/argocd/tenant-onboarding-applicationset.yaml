@@ -107,6 +107,10 @@ spec:
                 appRepoUrl: "{{ "{{" }}.platformIdentity.appRepoUrl{{ "}}" }}"
                 githubOwner: "{{ "{{" }}.platformIdentity.githubOwner{{ "}}" }}"
                 catalogNamespace: "{{ "{{" }}.platformIdentity.catalogNamespace{{ "}}" }}"
+              {{- with .Values.defaultChart }}
+              defaultChart:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
             valueFiles:
               # $ref value files resolve relative to that source's checkout root -
               # cicd.yaml always lives at the app repo's own root, identity.yaml at
