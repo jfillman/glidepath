@@ -110,14 +110,15 @@ jobs:
             'build: { cache: { enabled: true, size: large } }' \
             > /tmp/fixtures/full-pipeline.yaml
 
-      - name: 'Fixture: build-only - test/deploy/release/argocd resources must be ABSENT (policy ConfigMap + build-cache PVC are unconditional, always present - see docs/onboarding.md)'
+      - name: 'Fixture: build-only - test/deploy/release/argocd resources must be ABSENT (policy ConfigMap, build-cache PVC and the Ground ApplicationSet, ADR-0023 slice 3, are unconditional - see docs/onboarding.md)'
         run: |
           helm template t charts/glidepath-app \
             -f /tmp/fixtures/build-only.yaml -f /tmp/fixtures/platform-identity.yaml \
             > /tmp/rendered-build-only.yaml
           python3 hack/ci/assert_app_render.py /tmp/rendered-build-only.yaml \
             --absent Trigger:flow-ci-1-test Trigger:flow-ci-2-deploy Trigger:flow-ci-3-release \
-            --absent AppProject ApplicationSet Application \
+            --absent AppProject ApplicationSet:fixture-app-pr-envs Application \
+            --present ApplicationSet:fixture-app-lower-envs \
             --present ServiceAccount:pipeline-runner \
             --present ConfigMap:fixture-app-policy-config \
             --present PersistentVolumeClaim:build-cache-fixture-app
@@ -130,7 +131,8 @@ jobs:
           python3 hack/ci/assert_app_render.py /tmp/rendered-build-test.yaml \
             --present Trigger:flow-ci-1-test \
             --absent Trigger:flow-ci-2-deploy Trigger:flow-ci-3-release \
-            --absent AppProject ApplicationSet Application
+            --absent AppProject ApplicationSet:fixture-app-pr-envs Application \
+            --present ApplicationSet:fixture-app-lower-envs
 
       - name: 'Fixture: full-pipeline - every stage-gated resource must be PRESENT, sized correctly'
         run: |
