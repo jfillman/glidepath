@@ -135,8 +135,9 @@ needs the owner's go-ahead.
   both the rollback rule (ADR-0021) and which gates a release or pin PR waits for and shows.
   For a cloud pin PR: integrity = image provenance and "digest still in the registry"
   (`values` is `k8s-rollout` only, commit signing is off for cloud); content = `sast`,
-  `sbom`, `image-scan`, unchanged (they read `release.image` from the pin); process = as for
-  Kubernetes; approval = CODEOWNERS review on `glidepath/releases/`. Built in slice 3.
+  `sbom`, `image-scan`, unchanged (they read `release.image` from the pin); process = `itsm`,
+  `qa`, `image-promotion` (`policy-validation` checks a rendered Kubernetes manifest, so it is
+  `targets: [k8s-rollout]` like `values`; owner, 2026-10-07); approval = CODEOWNERS review on `glidepath/releases/`. Built in slice 3.
 - **As built (2026-10-07).** The gates find the image in `glidepath/releases/*.yaml` as a third
   fallback beside `*/release.yaml` and `*/values.yaml` (extract-promoted-image, verify-image-provenance);
   the pin layout alone was not enough, those two only matched gitops paths. Onboarding writes
