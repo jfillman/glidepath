@@ -117,15 +117,10 @@ spec:
         image_repo="${IMAGE_REF%:*}"
         image_tag="${IMAGE_REF##*:}"
 
-        # deploy.releaseFile (D9/AF-5, schemas/cicd.schema.json) opts an app into the
-        # release-file split: release.image lives in its own machine-owned file instead
-        # of platform/envs/${ENV}.yaml. Unset (the common case today - no live app has
-        # set it yet) means "not split yet", so this falls all the way back to the
-        # pre-split behavior of writing straight into the human env file - changing that
-        # default here would silently break every live app's Ground sync, since the
-        # lower-envs ApplicationSet doesn't read a separate release file until D9 step
-        # 3's ApplicationSet change lands too. See hangar/docs/autopilot/
-        # release-file-split.md.
+        # Release-file split (D9/AF-5, ADR-0018): release.image lives in a machine-owned
+        # <folder>/envs/<env>.release.yaml beside the human env file, which the lower-envs
+        # ApplicationSet layers last. deploy.releaseFile overrides the path; unset means that
+        # default (since 2026-10-06; before, unset wrote into the env file itself).
         release_file_template=""
         if [[ -f cicd.yaml ]]; then
           release_file_template="$(yq -r '.deploy.releaseFile // ""' cicd.yaml)"
@@ -148,27 +143,39 @@ spec:
           release_file_template="glidepath/${release_file_template#platform/}"
         fi
 
+        default_release_file="${envs_root}/envs/${ENV}.release.yaml"
         if [[ -z "${release_file_template}" ]]; then
-          manifest="${envs_root}/envs/${ENV}.yaml"
-          yq -i -e "
-            .release.image.repository = \"${image_repo}\" |
-            .release.image.tag = \"${image_tag}\" |
-            del(.rollout.image) |
-            del(.rollout | select(. == null))
-          " "${manifest}"
-          # release.image (airframe-application v0.3.92+) replaces the deprecated rollout.image. A bootstrap
-          # "rollout: null" is dropped too: with a real image the chart needs its rollout defaults, and null
-          # means "no workload" to it.
-          git add "${manifest}"
+          manifest="${default_release_file}"
         else
           manifest="${release_file_template//\{env\}/${ENV}}"
-          mkdir -p "$(dirname "${manifest}")"
-          [[ -f "${manifest}" ]] || printf '# machine-owned: written by deploy-manifests.yaml (D9/AF-5) - do not hand-edit\n' > "${manifest}"
-          yq -i -e "
-            .release.image.repository = \"${image_repo}\" |
-            .release.image.tag = \"${image_tag}\"
-          " "${manifest}"
-          git add "${manifest}"
+        fi
+        # The lower-envs ApplicationSet layers only <folder>/envs/<env>.release.yaml over the env
+        # file. A release file anywhere else would be a deploy that changes nothing.
+        if [[ "${manifest}" != "${default_release_file}" ]]; then
+          echo "error: deploy.releaseFile writes ${manifest}, but ${ENV} deploys from ${default_release_file} (the lower-envs ApplicationSet reads only that path) - set deploy.releaseFile to '${envs_root}/envs/{env}.release.yaml' or remove it" >&2
+          exit 1
+        fi
+        mkdir -p "$(dirname "${manifest}")"
+        [[ -f "${manifest}" ]] || printf '# machine-owned: written by deploy-manifests.yaml (D9/AF-5) - do not hand-edit\n' > "${manifest}"
+        yq -i -e "
+          .release.image.repository = \"${image_repo}\" |
+          .release.image.tag = \"${image_tag}\"
+        " "${manifest}"
+        git add "${manifest}"
+
+        # Moving an app onto the split: the env file may still carry the image an earlier deploy
+        # wrote there (release.image, or the deprecated rollout.image) and a bootstrap
+        # "rollout: null" (null means "no workload" to the chart, and the release file sets no
+        # rollout to override it). Drop exactly those, once, in this same commit.
+        env_file="${envs_root}/envs/${ENV}.yaml"
+        # Checked first so yq never rewrites (and re-formats) a human file that has none of them.
+        if [[ -f "${env_file}" && "$(yq '(.release.image != null) or (.rollout.image != null) or (has("rollout") and .rollout == null)' "${env_file}")" == "true" ]]; then
+          yq -i '
+            del(.release.image) | del(.release | select(length == 0)) |
+            del(.rollout.image) | del(.rollout | select(. == null))
+          ' "${env_file}"
+          echo "moved the image out of ${env_file} into ${manifest}"
+          git add "${env_file}"
         fi
 
         git config user.name "glidepath deploy automation"
