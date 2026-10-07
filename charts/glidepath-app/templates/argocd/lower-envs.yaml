@@ -1,0 +1,81 @@
+{{- if eq (include "glidepath-app.isKubernetesTarget" .) "true" }}
+{{- $app := .Values.platformIdentity.appName }}
+{{- $default := include "glidepath-app.defaultChart" . | fromYaml }}
+{{- $appChart := include "glidepath-app.resolveChart" (dict "base" $default "over" ((.Values.deploy).chart)) | fromYaml }}
+{{- $overrides := list }}
+{{- range ((.Values.deploy).environments) }}
+{{- if and (eq .tier "ground") .chart }}
+{{- $overrides = append $overrides (dict "name" .name "chart" (include "glidepath-app.resolveChart" (dict "base" $appChart "over" .chart) | fromYaml)) }}
+{{- end }}
+{{- end }}
+# The Ground (lower) environments: one Application per glidepath/envs/<env>.yaml in the app repo (the file's
+# envName names the environment; <env>.release.yaml beside it is layered last and never generates one).
+#
+# ADR-0023 slice 3: moved here from each cluster repo's tenant-appprojects chart, so the chart an environment
+# renders is resolved from cicd.yaml by plain Helm templating - the environment's chart over deploy.chart over the
+# cluster default (defaultChart, from the cluster repo's cluster-defaults.yaml). No generator reads cicd.yaml, so
+# a broken cicd.yaml fails this render instead of producing zero environments. Same name and namespace as before:
+# this Application took over the existing ApplicationSet in place.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: {{ $app }}-lower-envs
+  namespace: argocd-apps
+  labels:
+    hangar.io/component: cluster-config
+    hangar.io/subcomponent: tenant-onboarding
+    hangar.io/app: {{ $app }}
+    hangar.io/env-tier: lower
+spec:
+  # Deleting or replacing this ApplicationSet must not delete the environments' workloads.
+  syncPolicy:
+    preserveResourcesOnDeletion: true
+  goTemplate: true
+  goTemplateOptions: ["missingkey=invalid"]
+  generators:
+    - git:
+        repoURL: {{ .Values.platformIdentity.appRepoUrl }}
+        revision: main
+        files:
+          # A bare * also matches the dot in <env>.release.yaml, so the release file is excluded explicitly.
+          - path: "glidepath/envs/*.yaml"
+          - path: "glidepath/envs/*.release.yaml"
+            exclude: true
+  template:
+    metadata:
+      name: "{{ $app }}-{{ "{{" }}.envName{{ "}}" }}"
+      labels:
+        hangar.io/component: cluster-config
+        hangar.io/subcomponent: tenant-onboarding
+        hangar.io/app: {{ $app }}
+        hangar.io/env: "{{ "{{" }}.envName{{ "}}" }}"
+        hangar.io/env-tier: lower
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+      namespace: argocd-apps
+    spec:
+      project: {{ $app }}-lower
+      sources:
+        {{- include "glidepath-app.lowerEnvSources" (dict "ctx" . "chart" $appChart) | nindent 8 }}
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "app-{{ $app }}-{{ "{{" }}.envName{{ "}}" }}"
+      syncPolicy:
+        automated:
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+  {{- if $overrides }}
+  # Environments with their own chart (deploy.environments[].chart): the whole sources list is replaced for them.
+  templatePatch: |
+    {{- range $i, $o := $overrides }}
+    {{ "{{" }}- {{ if $i }}else {{ end }}if eq .envName {{ $o.name | quote }} {{ "}}" }}
+    spec:
+      sources:
+        {{- include "glidepath-app.lowerEnvSources" (dict "ctx" $ "chart" $o.chart) | nindent 8 }}
+    {{- end }}
+    {{ "{{" }}- else {{ "}}" }}
+    {}
+    {{ "{{" }}- end {{ "}}" }}
+  {{- end }}
+{{- end }}

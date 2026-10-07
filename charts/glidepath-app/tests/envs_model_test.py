@@ -270,6 +270,54 @@ class DeployChart(unittest.TestCase):
                     jsonschema.validate(cicd(BUILD_DEPLOY, {"chart": bad}), SCHEMA)
 
 
+def lower_envs(config):
+    rc, out, err = render(config)
+    assert rc == 0, err[:400]
+    sets = [d for d in yaml.safe_load_all(out) if d and d.get("kind") == "ApplicationSet" and d["metadata"]["name"].endswith("-lower-envs")]
+    return sets[0] if sets else None
+
+
+class LowerEnvsChart(unittest.TestCase):
+    """ADR-0023 slice 3: the Ground ApplicationSet renders the chart resolved from cicd.yaml."""
+
+    def chart_of(self, appset):
+        return appset["spec"]["template"]["spec"]["sources"][0]
+
+    def test_unset_renders_the_cluster_default_with_no_patch(self):
+        a = lower_envs(cicd(BUILD_DEPLOY, {"environments": [{"name": "dev", "tier": "ground"}]}))
+        src = self.chart_of(a)
+        self.assertEqual((src["repoURL"], src["path"]), ("https://github.com/jfillman/airframe.git", "charts/airframe-application"))
+        self.assertNotIn("templatePatch", a["spec"])
+        self.assertTrue(a["spec"]["syncPolicy"]["preserveResourcesOnDeletion"])
+
+    def test_deploy_chart_version_pin_keeps_the_default_source(self):
+        a = lower_envs(cicd(BUILD_DEPLOY, {"chart": {"targetRevision": "v9.9.9"}, "environments": [{"name": "dev", "tier": "ground"}]}))
+        src = self.chart_of(a)
+        self.assertEqual((src["targetRevision"], src["path"]), ("v9.9.9", "charts/airframe-application"))
+
+    def test_a_registry_chart_replaces_path(self):
+        own = {"repoURL": "oci://ghcr.io/o/charts", "chart": "web", "targetRevision": "1.2.3"}
+        src = self.chart_of(lower_envs(cicd(BUILD_DEPLOY, {"chart": own, "environments": [{"name": "dev", "tier": "ground"}]})))
+        self.assertEqual(src["chart"], "web")
+        self.assertNotIn("path", src)
+
+    def test_an_environment_override_patches_only_that_environment(self):
+        a = lower_envs(cicd(BUILD_DEPLOY, {"chart": {"targetRevision": "v2"}, "environments": [
+            {"name": "dev", "tier": "ground"},
+            {"name": "test", "tier": "ground", "chart": {"targetRevision": "v3-canary"}},
+            {"name": "staging", "tier": "flight", "cluster": "kind-prod", "chart": {"targetRevision": "v4"}},
+        ]}))
+        self.assertEqual(self.chart_of(a)["targetRevision"], "v2")
+        patch = a["spec"]["templatePatch"]
+        self.assertIn('if eq .envName "test"', patch)
+        self.assertIn("targetRevision: v3-canary", patch)
+        self.assertNotIn("staging", patch)  # Flight environments are not this ApplicationSet's
+        self.assertIn("{}", patch)
+
+    def test_a_cloud_app_has_no_ground_applicationset(self):
+        self.assertIsNone(lower_envs(cicd(BUILD_DEPLOY, {"target": "aws-lambda", "lambda": {"functionName": "f"}})))
+
+
 class Schema(unittest.TestCase):
     def valid(self, doc):
         jsonschema.validate(doc, SCHEMA)
