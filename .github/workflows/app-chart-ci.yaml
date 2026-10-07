@@ -157,7 +157,9 @@ jobs:
           # after the braces, a bare lower-case name) because those files are delivered to a
           # repo and evaluated by PaC there. A Helm leak looks different ({{ .Values.x }}, a
           # leading dot), so only the PaC shape is allowed. Anything else is a real bug.
-          if grep -n '{{' /tmp/rendered-full.yaml | grep -v '{{\.\(number\|head_sha\)\|trunc 12 \.head_sha' | grep -v -E '\{\{ [a-z_][a-z_0-9.]* \}\}'; then
+          # lower-envs.yaml (ADR-0023 slice 3) likewise emits {{.envName}} and {{.path.path}}/{{.path.filename}} for
+          # its git-files generator.
+          if grep -n '{{' /tmp/rendered-full.yaml | grep -v '{{\.\(number\|head_sha\|envName\|path\.path\|path\.filename\)\|trunc 12 \.head_sha' | grep -v -E '\{\{ [a-z_][a-z_0-9.]* \}\}'; then
             echo "ERROR: unexpected stray '{{' in rendered output"
             exit 1
           fi
