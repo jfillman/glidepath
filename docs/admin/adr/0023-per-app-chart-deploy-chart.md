@@ -1,6 +1,6 @@
 # ADR-0023: Per-app chart through `deploy.chart`
 
-*Status: Accepted (2026-10-06). Slice 1 built and live (2026-10-07: `cluster-defaults.yaml` per cluster; the values gate follows it). Slice 2 built (2026-10-07: schema and validator; nothing renders the field until slices 3 and 4). Requirement R6 of
+*Status: Accepted (2026-10-06). Slice 1 built and live (2026-10-07: `cluster-defaults.yaml` per cluster; the values gate follows it). Slice 2 live (2026-10-07: schema and validator). Slice 3 live (2026-10-07: the Ground ApplicationSet is rendered by glidepath-app and resolves `deploy.chart`/`environments[].chart`; it took over each live ApplicationSet in place; the deploy RBAC comes from `charts/glidepath-env` in each Ground environment's Application). Requirement R6 of
 [envs-overhaul-requirements.md](../envs-overhaul-requirements.md); phase 8.*
 
 ## Context

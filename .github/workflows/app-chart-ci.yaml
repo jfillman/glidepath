@@ -134,7 +134,7 @@ jobs:
             --absent AppProject ApplicationSet:fixture-app-pr-envs Application \
             --present ApplicationSet:fixture-app-lower-envs
 
-      - name: 'Fixture: full-pipeline - every stage-gated resource must be PRESENT, sized correctly'
+      - name: 'Fixture: full-pipeline - every stage-gated resource must be PRESENT, sized correctly (deploy RBAC: only the same-cluster Flight env prod; Ground dev/qa get theirs from their own Application, ADR-0023 slice 3)'
         run: |
           helm template t charts/glidepath-app \
             -f /tmp/fixtures/full-pipeline.yaml -f /tmp/fixtures/platform-identity.yaml \
@@ -145,7 +145,7 @@ jobs:
             --present ConfigMap:fixture-app-policy-config \
             --present PersistentVolumeClaim:build-cache-fixture-app \
             --present Role:allow-pipeline-runner-deploy \
-            --count Role:allow-pipeline-runner-deploy 3 \
+            --count Role:allow-pipeline-runner-deploy 1 \
             --pvc-size PersistentVolumeClaim:build-cache-fixture-app 5Gi
 
       - name: No stray unrendered Helm template syntax (excluding the deliberately-escaped ArgoCD ApplicationSet vars)

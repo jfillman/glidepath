@@ -1,0 +1,2 @@
+# The namespace of the app's pipeline runner ServiceAccount (<type>-<app>-cicd). Required.
+cicdNamespace: ""
