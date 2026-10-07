@@ -81,6 +81,9 @@ metadata:
   labels:
     {{- include "glidepath-app.labels" . | nindent 4 }}
     hangar.io/subcomponent: "argocd"
+  annotations:
+    # After the token Job (wave 0): a missing pr-generator-token fails this ApplicationSet, and Argo CD the whole sync.
+    argocd.argoproj.io/sync-wave: "1"
   namespace: {{ $appNamespace }}
 spec:
   goTemplate: true
@@ -227,6 +230,8 @@ metadata:
   labels:
     {{- include "glidepath-app.labels" . | nindent 4 }}
     hangar.io/subcomponent: "argocd"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
   namespace: {{ $appNamespace }}
 ---
 # Lets this SA write (not read/list arbitrary) exactly one named Secret. `create` can't
@@ -239,6 +244,8 @@ metadata:
   labels:
     {{- include "glidepath-app.labels" . | nindent 4 }}
     hangar.io/subcomponent: "argocd"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
   namespace: {{ $appNamespace }}
 rules:
   - apiGroups: [""]
@@ -256,6 +263,8 @@ metadata:
   labels:
     {{- include "glidepath-app.labels" . | nindent 4 }}
     hangar.io/subcomponent: "argocd"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
   namespace: {{ $appNamespace }}
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: allow-pr-token-refresher-{{ .Values.platformIdentity.appName }} }
 subjects:
@@ -281,7 +290,8 @@ spec:
         spec:
           {{- include "glidepath-app.prTokenRefresherPod" (dict "ctx" . "ns" $appNamespace) | nindent 10 }}
 ---
-# Mints the token after each sync (Argo CD PostSync hook: its ServiceAccount and Role exist by then); the CronJob keeps it fresh.
+# Mints the token on every sync, between its RBAC (wave -1) and the ApplicationSet that reads it (wave 1). Not PostSync:
+# the ApplicationSet failing on the missing Secret fails the sync, and PostSync never runs. The CronJob keeps it fresh.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -291,7 +301,8 @@ metadata:
     hangar.io/subcomponent: "argocd"
   namespace: {{ $appNamespace }}
   annotations:
-    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "0"
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
   backoffLimit: 2
