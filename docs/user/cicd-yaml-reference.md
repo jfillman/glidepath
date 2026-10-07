@@ -564,6 +564,33 @@ leave it empty (the default) for an app where every env really is covered by pip
 automation - a consumer with no `promotionOrder` to go on falls back to inferring order
 from `pipelines:` the same way it always has.
 
+### `chart` - the Helm chart your environments render
+
+Unset (every app today), each environment renders the cluster's default chart, Airframe's
+`airframe-application` at the version the platform team pins in the cluster's
+`cluster-defaults.yaml`. Set `deploy.chart` to pin another version or your own chart, and an
+environment's `chart` to change one environment only (a canary of a new chart version):
+
+```yaml
+deploy:
+  chart:                                   # app-wide; fields not set come from the cluster default
+    repoURL: https://github.com/<owner>/<repo>
+    path: charts/<chart>                   # a git source; or `chart: <name>` for a Helm/OCI registry
+    targetRevision: v1.2.3
+  environments:
+    - name: dev
+      tier: ground
+      chart: { targetRevision: v1.2.4 }    # this environment only, merged over deploy.chart
+```
+
+Precedence, highest first: the environment's `chart`, then `deploy.chart`, then the cluster
+default. Pinning a newer Airframe chart is just `targetRevision`. A chart from another source
+needs `repoURL`, `targetRevision`, and `path` (git) or `chart` (registry), never both (it inherits nothing from the default), and must meet the
+[chart contract](../admin/chart-contract.md). Only a Kubernetes app (`target: k8s-rollout`) has a
+chart. Design: [ADR-0023](../admin/adr/0023-per-app-chart-deploy-chart.md). The field is accepted
+and validated now; environments start rendering it as ADR-0023's later slices land (Ground
+environments in slice 3, Flight in slice 4).
+
 ### `target` - deploying somewhere other than this cluster
 
 Optional, defaults to `k8s-rollout` - every existing app is unaffected. Set

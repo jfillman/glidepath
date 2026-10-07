@@ -146,6 +146,10 @@
               "azureContainerApps": {
                 "$ref": "#/properties/deploy/properties/azureContainerApps",
                 "description": "Cloud targets only. Overrides fields of deploy.azureContainerApps for this environment (for example appName); fields it does not set come from deploy.azureContainerApps. Only valid when deploy.target is azure-container-apps."
+              },
+              "chart": {
+                "$ref": "#/properties/deploy/properties/chart",
+                "description": "Kubernetes apps only. Overrides fields of deploy.chart (and through it the cluster default) for this environment, for example a newer targetRevision as a canary. Fields it does not set come from deploy.chart, then the cluster default."
               }
             }
           }
@@ -197,6 +201,21 @@
           "enum": ["k8s-rollout", "aws-ecs", "aws-lambda", "azure-container-apps"],
           "default": "k8s-rollout",
           "description": "Where deploy.yaml's `deploy` stage actually deploys to. k8s-rollout (default) is the only target every existing app uses - deploy-manifests.yaml, Argo Rollouts via airframe-application, zero behavior change for an app that doesn't set this. The three cloud targets (added 2026-10-03/04) each require a matching config block below plus this app's own `secrets:` entries for cloud credentials (see docs/admin/app-secrets.md) - none are live-verified against a real account, see docs/admin/known-gaps.md. All three resolve correctly even for a git-rooted deploy (no build/test in that run) - resolve-deploy-target.yaml clones cicd.yaml directly via the GitHub App token broker in that case, rather than trusting an unpopulated config-json. - aws-ecs (deploy-ecs.yaml): registers a new ECS task-definition revision and updates the named service. Requires `deploy.ecs` and secrets `aws-access-key-id`/`aws-secret-access-key`. - aws-lambda (deploy-lambda.yaml): updates an existing function's container image. Requires `deploy.lambda` and the same AWS secrets as aws-ecs. Hard AWS constraint: image-repo must resolve to an Amazon ECR URI - Lambda cannot pull from an external registry like ghcr.io. - azure-container-apps (deploy-azure-container-apps.yaml): updates an existing Container App's image to a new revision. Requires `deploy.azureContainerApps` and secrets `azure-client-id`/`azure-client-secret`/`azure-tenant-id`."
+        },
+        "chart": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "description": "The Helm chart this app's environments render (ADR-0023). Unset: the cluster's default chart (Airframe's airframe-application). Fields not set here come from the cluster default, so pinning the default chart to another version is just targetRevision. A chart from another source sets repoURL, targetRevision, and path (git) or chart (a Helm or OCI registry); nothing is inherited from the default then. Only deploy.target k8s-rollout has a chart. A chart other than Airframe's must meet docs/admin/chart-contract.md.",
+          "properties": {
+            "repoURL": { "type": "string", "minLength": 1, "description": "A git repository, or a Helm or OCI chart registry." },
+            "path": { "type": "string", "minLength": 1, "description": "The chart directory inside a git repoURL, for example charts/my-chart." },
+            "chart": { "type": "string", "minLength": 1, "description": "The chart name in a Helm or OCI registry repoURL." },
+            "targetRevision": { "type": "string", "minLength": 1, "description": "A git tag, branch or commit; for a registry, the chart version. Pin a tag." }
+          },
+          "not": { "required": ["path", "chart"] },
+          "if": { "required": ["repoURL"] },
+          "then": { "required": ["targetRevision"], "anyOf": [{ "required": ["path"] }, { "required": ["chart"] }] }
         },
         "ecs": {
           "type": "object",
