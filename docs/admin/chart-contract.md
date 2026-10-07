@@ -81,6 +81,12 @@ The chart must render its own Namespace object (not rely on `CreateNamespace=tru
 tracked so that pruning works, and label it as above. Otherwise the labels are lost and
 registry credentials never reach the namespace.
 
+The labeled namespace receives a `kubernetes.io/dockerconfigjson` Secret named
+`registry-credentials` (Glidepath's ClusterExternalSecret). The workload must pull with it,
+through the pod's `imagePullSecrets` or its ServiceAccount's; app images are private, so a
+chart that leaves it out deploys a pod stuck in `ImagePullBackOff` (found by the
+conformance-sample canary, 2026-10-07).
+
 ## The release keys (the only values Glidepath writes)
 
 Glidepath's deploy stage writes exactly these into the release file and nothing else:
@@ -138,6 +144,7 @@ A chart conforms if all of the following hold:
 
 - [ ] It accepts `appName`, `cluster`, `envName`, `namespace.labels`, `release.image`.
 - [ ] It renders a labeled Namespace and a Rollout named `<appName>`.
+- [ ] The Rollout's pods pull with the `registry-credentials` Secret.
 - [ ] `helm template` with only `base.yaml` plus one env file plus a release file succeeds.
 - [ ] Rendering with the release file removed still succeeds (bootstrap, before the first build).
 - [ ] An unknown key in a values file fails loudly or is documented as ignored.

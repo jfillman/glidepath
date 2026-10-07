@@ -21,6 +21,9 @@ spec:
       labels:
         {{- include "conformance-sample.labels" $ | nindent 8 }}
     spec:
+      # The platform copies this pull secret into every namespace labeled hangar.io/managed-secrets (chart-contract.md).
+      imagePullSecrets:
+        - name: registry-credentials
       containers:
         - name: app
           image: "{{ .repository }}:{{ .tag }}"
