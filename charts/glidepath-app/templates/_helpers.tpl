@@ -623,3 +623,57 @@ repoURL: {{ $d.repoURL | default .Values.idpServiceCatalog.repoUrl }}
 path: {{ $d.path | default "charts/airframe-application" }}
 targetRevision: {{ $d.targetRevision | default .Values.idpServiceCatalog.chartVersion }}
 {{- end }}
+
+{{/*
+glidepath-app.resolveChart - one level of ADR-0023's chart precedence: `over` (deploy.chart, or an environment's
+chart) on top of `base` (the cluster default, or deploy.chart). A different repoURL is a different source and
+inherits nothing; otherwise only the fields `over` sets change, and path and chart replace each other.
+Usage: {{ include "glidepath-app.resolveChart" (dict "base" $base "over" $over) | fromYaml }}
+*/}}
+{{- define "glidepath-app.resolveChart" -}}
+{{- $o := .over | default dict -}}
+{{- if $o.repoURL -}}
+{{- $o | toYaml -}}
+{{- else -}}
+{{- $r := deepCopy .base -}}
+{{- if $o.path -}}{{- $_ := set $r "path" $o.path -}}{{- $_ := unset $r "chart" -}}{{- end -}}
+{{- if $o.chart -}}{{- $_ := set $r "chart" $o.chart -}}{{- $_ := unset $r "path" -}}{{- end -}}
+{{- if $o.targetRevision -}}{{- $_ := set $r "targetRevision" $o.targetRevision -}}{{- end -}}
+{{- $r | toYaml -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+glidepath-app.lowerEnvSources - the `sources:` list of one Ground environment's Application, rendering `chart`
+(a resolved {repoURL, path | chart, targetRevision}). ArgoCD's own {{ }} is escaped: this text lands inside an
+ApplicationSet template.
+*/}}
+{{- define "glidepath-app.lowerEnvSources" -}}
+{{- $ctx := .ctx -}}
+{{- $c := .chart -}}
+- repoURL: {{ $c.repoURL }}
+  targetRevision: {{ $c.targetRevision }}
+  {{- if $c.chart }}
+  chart: {{ $c.chart }}
+  {{- else }}
+  path: {{ $c.path }}
+  {{- end }}
+  helm:
+    valuesObject:
+      appName: {{ $ctx.Values.platformIdentity.appName }}
+      cluster: {{ $ctx.Values.devClusterName }}
+      envName: "{{ "{{" }}.envName{{ "}}" }}"
+      namespace:
+        labels:
+          hangar.io/managed-secrets: "true"
+    ignoreMissingValueFiles: true
+    valueFiles:
+      - $appsrc/glidepath/base.yaml
+      - $appsrc/{{ "{{" }}.path.path{{ "}}" }}/{{ "{{" }}.path.filename{{ "}}" }}
+      - $appsrc/{{ "{{" }}.path.path{{ "}}" }}/{{ "{{" }}.envName{{ "}}" }}.release.yaml
+- repoURL: {{ $ctx.Values.platformIdentity.appRepoUrl }}
+  targetRevision: main
+  ref: appsrc
+  directory:
+    exclude: "*"
+{{- end -}}
