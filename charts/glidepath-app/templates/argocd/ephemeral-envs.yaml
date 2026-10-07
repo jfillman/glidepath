@@ -1,3 +1,57 @@
+{{- /* The pr-generator token refresher's pod. Shared by the CronJob (keeps the token fresh) and a Sync hook Job (mints it
+when the app first syncs, so a newly enabled preview-env ApplicationSet does not fail for up to 20 minutes on a missing
+Secret, sky-marshall 2026-10-07). */ -}}
+{{- define "glidepath-app.prTokenRefresherPod" -}}
+{{- $ctx := .ctx -}}
+{{- $ns := .ns -}}
+serviceAccountName: pr-env-token-refresher
+restartPolicy: Never
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  seccompProfile: { type: RuntimeDefault }
+volumes:
+  - name: github-token-broker-token
+    projected:
+      sources:
+        - serviceAccountToken:
+            path: github-token-broker-token
+            audience: github-installation-token
+            expirationSeconds: 600
+containers:
+  - name: refresh
+    image: {{ $ctx.Values.toolboxImage }}
+    imagePullPolicy: IfNotPresent
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities: { drop: ["ALL"] }
+    volumeMounts:
+      - name: github-token-broker-token
+        mountPath: /var/run/secrets/platform
+        readOnly: true
+    env:
+      - name: GITHUB_TOKEN_BROKER_URL
+        value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+    command: ["/bin/bash", "-c"]
+    args:
+      - |
+        set -euo pipefail
+        sa_token="$(cat /var/run/secrets/platform/github-token-broker-token)"
+        resp="$(curl --fail --silent --show-error --max-time 15 \
+          -X POST "${GITHUB_TOKEN_BROKER_URL}" \
+          -H "Authorization: Bearer ${sa_token}" \
+          -H "Content-Type: application/json" \
+          -d '{"owner":"{{ $ctx.Values.platformIdentity.githubOwner }}","repo":"{{ $ctx.Values.platformIdentity.appName }}"}')"
+        token="$(jq -er '.token' <<<"${resp}")"
+        # scm-creds label required by ArgoCD's tokenRef strict mode for a
+        # Secret read by an ApplicationSet outside the argocd namespace.
+        kubectl create secret generic {{ $ctx.Values.platformIdentity.appName }}-pr-generator-token \
+          -n {{ $ns }} --from-literal=token="${token}" \
+          --dry-run=client -o yaml \
+          | kubectl label --local -f - argocd.argoproj.io/secret-type=scm-creds -o yaml \
+          | kubectl apply -f -
+{{- end -}}
 {{- if and .Values.ephemeralEnvironments .Values.ephemeralEnvironments.pullRequest .Values.ephemeralEnvironments.pullRequest.enabled }}
 {{- $appNamespace := include "glidepath-app.namespace" . }}
 # Rendered only if ephemeralEnvironments.pullRequest.enabled.
@@ -225,51 +279,23 @@ spec:
       backoffLimit: 2
       template:
         spec:
-          serviceAccountName: pr-env-token-refresher
-          restartPolicy: Never
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 65532
-            seccompProfile: { type: RuntimeDefault }
-          volumes:
-            - name: github-token-broker-token
-              projected:
-                sources:
-                  - serviceAccountToken:
-                      path: github-token-broker-token
-                      audience: github-installation-token
-                      expirationSeconds: 600
-          containers:
-            - name: refresh
-              image: {{ .Values.toolboxImage }}
-              imagePullPolicy: IfNotPresent
-              securityContext:
-                allowPrivilegeEscalation: false
-                readOnlyRootFilesystem: true
-                capabilities: { drop: ["ALL"] }
-              volumeMounts:
-                - name: github-token-broker-token
-                  mountPath: /var/run/secrets/platform
-                  readOnly: true
-              env:
-                - name: GITHUB_TOKEN_BROKER_URL
-                  value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
-              command: ["/bin/bash", "-c"]
-              args:
-                - |
-                  set -euo pipefail
-                  sa_token="$(cat /var/run/secrets/platform/github-token-broker-token)"
-                  resp="$(curl --fail --silent --show-error --max-time 15 \
-                    -X POST "${GITHUB_TOKEN_BROKER_URL}" \
-                    -H "Authorization: Bearer ${sa_token}" \
-                    -H "Content-Type: application/json" \
-                    -d '{"owner":"{{ .Values.platformIdentity.githubOwner }}","repo":"{{ .Values.platformIdentity.appName }}"}')"
-                  token="$(jq -er '.token' <<<"${resp}")"
-                  # scm-creds label required by ArgoCD's tokenRef strict mode for a
-                  # Secret read by an ApplicationSet outside the argocd namespace.
-                  kubectl create secret generic {{ .Values.platformIdentity.appName }}-pr-generator-token \
-                    -n {{ $appNamespace }} --from-literal=token="${token}" \
-                    --dry-run=client -o yaml \
-                    | kubectl label --local -f - argocd.argoproj.io/secret-type=scm-creds -o yaml \
-                    | kubectl apply -f -
+          {{- include "glidepath-app.prTokenRefresherPod" (dict "ctx" . "ns" $appNamespace) | nindent 10 }}
+---
+# Mints the token after each sync (Argo CD PostSync hook: its ServiceAccount and Role exist by then); the CronJob keeps it fresh.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Values.platformIdentity.appName }}-pr-token-bootstrap
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "argocd"
+  namespace: {{ $appNamespace }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      {{- include "glidepath-app.prTokenRefresherPod" (dict "ctx" . "ns" $appNamespace) | nindent 6 }}
 {{- end }}
