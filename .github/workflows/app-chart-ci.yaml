@@ -110,14 +110,15 @@ jobs:
             'build: { cache: { enabled: true, size: large } }' \
             > /tmp/fixtures/full-pipeline.yaml
 
-      - name: 'Fixture: build-only - test/deploy/release/argocd resources must be ABSENT (policy ConfigMap + build-cache PVC are unconditional, always present - see docs/onboarding.md)'
+      - name: 'Fixture: build-only - test/deploy/release/argocd resources must be ABSENT (policy ConfigMap, build-cache PVC and the Ground ApplicationSet, ADR-0023 slice 3, are unconditional - see docs/onboarding.md)'
         run: |
           helm template t charts/glidepath-app \
             -f /tmp/fixtures/build-only.yaml -f /tmp/fixtures/platform-identity.yaml \
             > /tmp/rendered-build-only.yaml
           python3 hack/ci/assert_app_render.py /tmp/rendered-build-only.yaml \
             --absent Trigger:flow-ci-1-test Trigger:flow-ci-2-deploy Trigger:flow-ci-3-release \
-            --absent AppProject ApplicationSet Application \
+            --absent AppProject ApplicationSet:fixture-app-pr-envs Application \
+            --present ApplicationSet:fixture-app-lower-envs \
             --present ServiceAccount:pipeline-runner \
             --present ConfigMap:fixture-app-policy-config \
             --present PersistentVolumeClaim:build-cache-fixture-app
@@ -130,7 +131,8 @@ jobs:
           python3 hack/ci/assert_app_render.py /tmp/rendered-build-test.yaml \
             --present Trigger:flow-ci-1-test \
             --absent Trigger:flow-ci-2-deploy Trigger:flow-ci-3-release \
-            --absent AppProject ApplicationSet Application
+            --absent AppProject ApplicationSet:fixture-app-pr-envs Application \
+            --present ApplicationSet:fixture-app-lower-envs
 
       - name: 'Fixture: full-pipeline - every stage-gated resource must be PRESENT, sized correctly'
         run: |
@@ -155,7 +157,9 @@ jobs:
           # after the braces, a bare lower-case name) because those files are delivered to a
           # repo and evaluated by PaC there. A Helm leak looks different ({{ .Values.x }}, a
           # leading dot), so only the PaC shape is allowed. Anything else is a real bug.
-          if grep -n '{{' /tmp/rendered-full.yaml | grep -v '{{\.\(number\|head_sha\)\|trunc 12 \.head_sha' | grep -v -E '\{\{ [a-z_][a-z_0-9.]* \}\}'; then
+          # lower-envs.yaml (ADR-0023 slice 3) likewise emits {{.envName}} and {{.path.path}}/{{.path.filename}} for
+          # its git-files generator.
+          if grep -n '{{' /tmp/rendered-full.yaml | grep -v '{{\.\(number\|head_sha\|envName\|path\.path\|path\.filename\)\|trunc 12 \.head_sha' | grep -v -E '\{\{ [a-z_][a-z_0-9.]* \}\}'; then
             echo "ERROR: unexpected stray '{{' in rendered output"
             exit 1
           fi
