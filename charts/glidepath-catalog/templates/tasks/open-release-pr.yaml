@@ -248,7 +248,7 @@ spec:
         # <cluster>/<env>/values.yaml - airframe-application's Helm values (scaffolded by
         # airframe), not a raw Deployment manifest. repository/tag are split
         # fields in that schema, not a single image: string - same split
-        # deploy-manifests.yaml uses for platform/envs/<env>.yaml.
+        # deploy-manifests.yaml uses for glidepath/envs/<env>.yaml.
         image_repo="${IMAGE_REF%:*}"
         image_tag="${IMAGE_REF##*:}"
 

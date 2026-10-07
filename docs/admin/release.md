@@ -43,7 +43,7 @@ deploy (dev) succeeds
 ## Performance: no clone, no schema re-validation, for the common (event-chained) case
 
 Neither `deploy.yaml` (`deploy-manifests.yaml` does its own separate clone of the *app*
-repo itself, via the GitHub App token broker, to commit `platform/envs/<env>.yaml`) nor
+repo itself, via the GitHub App token broker, to commit `glidepath/envs/<env>.yaml`) nor
 `release.yaml` (`open-release-pr.yaml` does its own separate clone of the *gitops* repo,
 a different repo entirely) ever reads from the app repo's source tree through this
 Pipeline's own `source` workspace. Both used to

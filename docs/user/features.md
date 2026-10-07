@@ -14,7 +14,7 @@ order, under `pipelines:` in `cicd.yaml`.
 |---|---|---|
 | `build` | Compiles/packages your app, runs unit tests, builds and pushes a container image | `push`, `pull_request`, or `tag` |
 | `test` | Runs `./integration-test.sh` against the built image | Chained from `build` |
-| `deploy` | Commits straight to your repo's `platform/envs/<env>.yaml`, picked up by ArgoCD - fast, ungated, for inner-loop feedback | Chained from `test` |
+| `deploy` | Commits straight to your repo's `glidepath/envs/<env>.yaml`, picked up by ArgoCD - fast, ungated, for inner-loop feedback | Chained from `test` |
 | `release` | Opens a PR against your `gitops-<app>` repo, gated by governance checks + human review - never touches the cluster directly | Chained from `deploy`, or git-rooted on a tag |
 
 ## Two very different deploy paths, on purpose

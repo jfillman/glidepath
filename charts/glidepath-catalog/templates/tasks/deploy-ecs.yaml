@@ -6,7 +6,7 @@
 # (aws ecs wait services-stable) instead of polling an Argo Rollout's .status.phase.
 #
 # Deliberately does NOT replicate deploy-manifests.yaml's app-repo git-commit step
-# (platform/envs/<env>.yaml / deploy.releaseFile) - that file exists so ArgoCD/
+# (glidepath/envs/<env>.yaml / deploy.releaseFile) - that file exists so ArgoCD/
 # airframe-application's chart knows what image to render into a Rollout. There is no
 # equivalent GitOps-pull reconciler for ECS here; the ECS API call below IS the
 # deployment, so writing a release-tracking file nothing reads would be misleading, not

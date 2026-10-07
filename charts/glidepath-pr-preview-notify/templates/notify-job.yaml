@@ -101,7 +101,7 @@ spec:
               else
                 # No RBAC to look the real port up ourselves (deliberately - see this
                 # chart's own header) - the port varies by what a developer's own
-                # platform/pr-env.yaml declares, so ask them to check it with their own
+                # glidepath/pr-env.yaml declares, so ask them to check it with their own
                 # kubectl access rather than guessing/hardcoding a number here.
                 preview_url_line="**Preview URL:** not available yet - no ingress configured for ephemeral environments on this cluster. Access via:
               \`\`\`

@@ -8,7 +8,7 @@ namespace to grant access into (docs/multi-cluster.md). */ -}}
 # One copy per declared deploy env, rendered only if cicd.yaml declares a "deploy" stage.
 #
 # Without this, deploy-manifests.yaml's `kubectl get rollout` (waiting for Healthy after
-# a platform/envs/<env>.yaml push) fails Forbidden - pipeline-runner's Role only grants
+# a glidepath/envs/<env>.yaml push) fails Forbidden - pipeline-runner's Role only grants
 # rights in the Application's own namespace, and the deploy namespace is a separate peer
 # under the flat <type>-<app-name>-<env> pattern.
 #

@@ -413,10 +413,10 @@ success without having tested anything.
 
 Whatever name is in effect resolves to one of two things, checked in this order:
 
-1. **`platform/<name>.yaml` (Testkube, preferred)** - if this file exists, it's applied
+1. **`glidepath/<name>.yaml` (Testkube, preferred)** - if this file exists, it's applied
    as a Testkube `TestWorkflow` and run for real. It doesn't have to be a test in the
    strict sense - a TestWorkflow is just "a thing that runs and reports pass/fail," so
-   `platform/<name>.yaml` is equally at home clearing a cache or running some other ops
+   `glidepath/<name>.yaml` is equally at home clearing a cache or running some other ops
    action before release as it is running assertions against your code. Testkube CE
    installs into one shared `testkube` namespace on this cluster (not one per
    Application - cross-namespace execution is a Testkube Pro/Enterprise-only feature),
@@ -443,12 +443,12 @@ Whatever name is in effect resolves to one of two things, checked in this order:
    - See the TestWorkflow CRD docs (docs.testkube.io) for the rest of `spec:` - image,
      command, assertions, etc. are all standard Testkube, nothing platform-specific
      beyond the two rules above.
-2. **`./integration-test.sh` (fallback)** - if there's no `platform/<name>.yaml`, this
+2. **`./integration-test.sh` (fallback)** - if there's no `glidepath/<name>.yaml`, this
    runs instead, in your own `build.agent` image. Whatever name is in effect, plus the
    step's `env` and the image reference under test, reach it as
    `TEST_NAME`/`TEST_ENV`/`IMAGE_REF` environment variables. This is the original,
    pre-Testkube mechanism - kept working for Applications that haven't added a
-   `platform/<name>.yaml` yet, not the recommended path for a new Application.
+   `glidepath/<name>.yaml` yet, not the recommended path for a new Application.
 
 Neither present: the stage still runs (span, CDEvent, notification) but reports success
 without having tested anything, same as `enabled: false`.

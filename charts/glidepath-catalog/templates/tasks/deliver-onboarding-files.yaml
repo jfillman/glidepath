@@ -217,17 +217,13 @@ spec:
           echo "deploy.target is ${DEPLOY_TARGET}: not scaffolding environment files (no chart, no per-environment namespace)"
         fi
 
-        # ADR-0018 dual-path window: an existing repo keeps platform/ until it moves; every
-        # other repo (moved, or brand new: the rename was proven on sky-marshall 2026-10-06) gets
-        # glidepath/. Once scaffolded, every reader resolves the same folder ("glidepath/ if it
-        # exists, else platform/"). Never scaffold into the other folder, or the lower-envs
-        # ApplicationSet sees two copies of one environment.
+        # ADR-0018: the environments folder is glidepath/ (every app moved off platform/ by
+        # 2026-10-07; nothing reads platform/ any more).
         ENVS_ROOT=glidepath
-        [[ -d platform && ! -d glidepath ]] && ENVS_ROOT=platform
 
         # known-gap #17: ephemeralEnvironments.pullRequest.enabled alone was already
         # enough to synthesize a working pr-build flow and ApplicationSet trigger above,
-        # but ephemeral-envs.yaml's ApplicationSet has always required platform/pr-env.yaml
+        # but ephemeral-envs.yaml's ApplicationSet has always required glidepath/pr-env.yaml
         # as its second Helm source too - nothing ever created that file, so the resulting
         # preview Application sat in ComparisonError ("no such file or directory") forever,
         # with no self-heal path. Found live 2026-09-27 on baggage-api-pr-2; boarding-api
@@ -314,7 +310,7 @@ spec:
         # .tekton/ files - the trigger that re-invokes this mechanism next time cicd.yaml
         # changes. Everything else under .tekton/ is app-specific behavior, generated
         # below from cicd.yaml's own `pipelines:` section; there's no implicit "push to
-        # main always builds" default. platform/pr-env.yaml (above) is a separate,
+        # main always builds" default. glidepath/pr-env.yaml (above) is a separate,
         # one-time scaffold outside .tekton/ entirely.
         sed \
           -e "s|<APP_NAMESPACE>|${APP_NAMESPACE}|g" \
@@ -425,7 +421,7 @@ spec:
               fi
               # Guard against deploy-manifests.yaml's own commits re-triggering this flow -
               # a real infinite loop hit live on checkout-api: that Task commits to
-              # platform/envs/<env>.yaml on this same branch, which is itself a push to
+              # glidepath/envs/<env>.yaml on this same branch, which is itself a push to
               # main, which re-triggered build, which deployed again, forever.
               #
               # Uses a CEL expression rather than the separate on-path-change-ignore
@@ -439,7 +435,7 @@ spec:
               # before...after range, not each commit individually. Once deploy-manifests.yaml
               # pushes its commit straight to main, the developer's next `git push` needs a
               # merge/rebase first, so their push's range ends up containing BOTH their own
-              # commit and the bot's platform/envs/ commit - pathChanged() then matches on
+              # commit and the bot's glidepath/envs/ commit - pathChanged() then matches on
               # the bot's file and skips the developer's push too, silently, until they push
               # again (by which point the bot's commit is no longer in the new range).
               #
@@ -452,9 +448,10 @@ spec:
               # cicd.yaml file or any files under the platform/ folder, a build is
               # triggered... we want to exempt those changes" - a regression of an earlier
               # fix). cicd.yaml is pipeline config (its own change is handled by
-              # onboarding-resync.yaml, not a rebuild) and platform/ holds per-env deploy
-              # values (platform/envs/*.yaml, written by deploy-manifests.yaml and the
-              # Config tab), neither of which changes what gets built.
+              # onboarding-resync.yaml, not a rebuild), glidepath/ holds per-env deploy
+              # values (glidepath/envs/*.yaml, written by deploy-manifests.yaml and the
+              # Config tab), and .tekton/ is this generated boilerplate (merging an
+              # onboarding-resync PR re-builds nothing) - none of them changes what gets built.
               #
               # Skips a push ONLY when EVERY changed file in it is exempt - `files.all` is
               # the whole push's changed-file list, so it is range-safe in the direction
@@ -465,7 +462,7 @@ spec:
               # silently dropped a developer's push when a bot commit shared its range.)
               # size() > 0 keeps a push with an empty file list (nothing to classify)
               # building as before rather than vacuously matching `all`.
-              local exempt_guard='!(size(files.all) > 0 && files.all.all(f, f == "cicd.yaml" || f.startsWith("platform/") || f.startsWith("glidepath/")))'
+              local exempt_guard='!(size(files.all) > 0 && files.all.all(f, f == "cicd.yaml" || f.startsWith("glidepath/") || f.startsWith(".tekton/")))'
               [[ -z "${pin_file}" ]] && loop_guard="${loop_guard} && ${exempt_guard}"
               # Same on-cel-expression-drops-on-event/on-target-branch gap as the
               # pull_request case below, hit live 2026-08-24: this flow's on-target-branch

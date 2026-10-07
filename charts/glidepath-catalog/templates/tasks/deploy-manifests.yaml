@@ -1,12 +1,12 @@
 # catalog/tasks/deploy-manifests.yaml
 #
-# Phase 2: writes the app's own self-service `platform/envs/<env>.yaml` (idp/docs/
+# Phase 2: writes the app's own self-service `glidepath/envs/<env>.yaml` (idp/docs/
 # gitops-strategy.md §10) instead of patching a Deployment directly via kubectl. The
 # dev environment used to be a bare Deployment this Task owned outright
 # (`kubectl set image` + `rollout status`) - that's gone. It's now provisioned by
 # airframe's `airframe-application` chart (an Argo `Rollout`, not a Deployment)
 # via an ArgoCD Application (in the separate argocd-apps namespace/instance - see
-# idp/docs/gitops-strategy.md) that reads `platform/envs/<env>.yaml` straight out of
+# idp/docs/gitops-strategy.md) that reads `glidepath/envs/<env>.yaml` straight out of
 # the app's own repo as a Helm values file, `automated.selfHeal: true`. A real, live
 # gap found running this Task against checkout-api: `kubectl set image deployment/...`
 # started failing with "deployments.apps \"checkout-api\" not found" once that old bare
@@ -14,7 +14,7 @@
 # had stopped existing.
 #
 # Still deliberately NOT GitOps/PR-gated (see deploy.yaml's own header) - a direct
-# commit to the app repo's main branch, no branch, no PR, matching platform/envs/
+# commit to the app repo's main branch, no branch, no PR, matching glidepath/envs/
 # dev.yaml's own documented "a developer commits straight here" self-service
 # philosophy. This Task is just automating the same commit a developer would make by
 # hand. Contrast with catalog/tasks/open-release-pr.yaml, which promotes to an upper
@@ -39,8 +39,8 @@
 #
 # release.image lands in cicd.yaml's deploy.releaseFile path (D9/AF-5,
 # release-file-split.md) once an app sets that field - its own machine-owned file,
-# `platform/envs/<env>.yaml` left untouched. Unset (every live app today) falls back to
-# writing release.image straight into platform/envs/<env>.yaml, exactly as before -
+# `glidepath/envs/<env>.yaml` left untouched. Unset (every live app today) falls back to
+# writing release.image straight into glidepath/envs/<env>.yaml, exactly as before -
 # changing that default would break Ground sync for every app until the
 # lower-envs ApplicationSet's own D9 step 3 change (3 valueFiles) lands too.
 apiVersion: tekton.dev/v1
@@ -126,22 +126,9 @@ spec:
           release_file_template="$(yq -r '.deploy.releaseFile // ""' cicd.yaml)"
         fi
 
-        # ADR-0018 dual-path window: the environments folder is glidepath/ once the repo has
-        # one, platform/ until then (same rule as deliver-onboarding-files.yaml). The lower-envs
-        # ApplicationSet watches both, so an env file in both folders would be two Applications
-        # with one name: refuse instead of writing to either.
-        envs_root=platform
-        [[ -d glidepath ]] && envs_root=glidepath
-        if [[ -f "platform/envs/${ENV}.yaml" && -f "glidepath/envs/${ENV}.yaml" ]]; then
-          echo "error: ${ENV} has a values file in both platform/envs/ and glidepath/envs/ - finish the platform/ -> glidepath/ move (delete the platform/ copy) before deploying" >&2
-          exit 1
-        fi
-        # A releaseFile still naming platform/ after the move would recreate platform/ beside
-        # glidepath/; the ApplicationSet reads the release file from the env file's own folder.
-        if [[ "${envs_root}" == "glidepath" && "${release_file_template}" == platform/* ]]; then
-          echo "warn: deploy.releaseFile '${release_file_template}' still names platform/ but this repo uses glidepath/ - writing under glidepath/ instead; update cicd.yaml" >&2
-          release_file_template="glidepath/${release_file_template#platform/}"
-        fi
+        # ADR-0018: the environments folder is glidepath/ (the lower-envs ApplicationSet reads
+        # only glidepath/envs/).
+        envs_root=glidepath
 
         default_release_file="${envs_root}/envs/${ENV}.release.yaml"
         if [[ -z "${release_file_template}" ]]; then
