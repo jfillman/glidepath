@@ -107,7 +107,9 @@ spec:
 
         image_repo="${IMAGE_REF%:*}"
         image_tag="${IMAGE_REF##*:}"
-        digest="$(crane digest "${IMAGE_REF}" | tr -d '\n')"
+        # oras, not crane: crane is not in the toolbox (build-image runs it from its own image).
+        # For a multi-arch image this is the index digest, the same one build-image pins.
+        digest="$(oras resolve "${IMAGE_REF}" | tr -d '\n')"
         [[ "${digest}" == sha256:* ]] || { echo "error: could not resolve a digest for ${IMAGE_REF} (got '${digest}')" >&2; exit 1; }
 
         # The previous environment in cicd.yaml's order (deploy.environments, else promotionOrder,
