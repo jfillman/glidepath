@@ -88,6 +88,11 @@ clusterName: ""
 # explicitly set here.
 tenantsRepoUrl: ""
 
+# The cluster's default environment chart ({repoURL, path, targetRevision}), from the cluster repo's
+# cluster-defaults.yaml (the control plane Application reads it as a value file). Forwarded to every app's
+# glidepath-app; empty leaves glidepath-app's own fallback (ADR-0023 slice 1).
+defaultChart: {}
+
 # See templates/argocd/tenant-onboarding-applicationset.yaml's own header comment for
 # the real name collision this guards against and why it's a value, not an in-place
 # rename.

@@ -583,3 +583,14 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 hangar.io/component: app
 hangar.io/app: {{ .Values.platformIdentity.appName }}
 {{- end -}}
+
+{{/*
+The cluster's default environment chart (ADR-0023 slice 1): `defaultChart`, which the control plane passes in from the
+cluster repo's cluster-defaults.yaml. Falls back to idpServiceCatalog for an install that does not pass it.
+*/}}
+{{- define "glidepath-app.defaultChart" -}}
+{{- $d := .Values.defaultChart | default dict -}}
+repoURL: {{ $d.repoURL | default .Values.idpServiceCatalog.repoUrl }}
+path: {{ $d.path | default "charts/airframe-application" }}
+targetRevision: {{ $d.targetRevision | default .Values.idpServiceCatalog.chartVersion }}
+{{- end }}

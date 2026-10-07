@@ -29,7 +29,7 @@ spec:
       description: The PR head commit - PaC's revision.
     - name: validator-image
       type: string
-      default: {{ .Values.valuesValidatorImage | quote }}
+      default: {{ .Values.valuesValidatorImage | default (printf "%s:%s" .Values.valuesValidatorRepository (required "defaultChart.targetRevision must be set" .Values.defaultChart.targetRevision)) | quote }}
       description: The validator image. Must provide `validate-values [--app NAME] FILE...` on its PATH.
     - name: app-name
       type: string
