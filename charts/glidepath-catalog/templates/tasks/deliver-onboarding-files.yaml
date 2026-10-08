@@ -142,10 +142,9 @@ spec:
           # right cluster instead of silently falling through to same-cluster (a real bug
           # that hit flow-triggers.yaml's Go-template equivalent too).
           #
-          # Both shapes of the environment list (deploy.environments, or the older
-          # lowerEnvironments/upperEnvironments), normalized to [{name, tier, cluster}] the same way
+          # deploy.environments (unset: one Ground env, dev), normalized to [{name, tier, cluster}] the same way
           # glidepath-app.envEntries does it (docs/admin/envs-overhaul-requirements.md, R12).
-          envs_json="$(yq -o=json '.deploy // {}' cicd.yaml | jq -c 'if (.environments // null) != null then [.environments[] | {name: .name, tier: .tier, cluster: (.cluster // "")}] else [((.lowerEnvironments // ["dev"])[] | {name: ., tier: "ground", cluster: ""}), ((.upperEnvironments // [])[] | if type == "object" then {name: .name, tier: "flight", cluster: (.cluster // "")} else {name: ., tier: "flight", cluster: ""} end)] end')"
+          envs_json="$(yq -o=json '.deploy // {}' cicd.yaml | jq -c '[(.environments // [{name: "dev", tier: "ground"}])[] | {name: .name, tier: .tier, cluster: (.cluster // "")}]')"
           upper_env_clusters_json="$(echo "${envs_json}" | jq 'map(select(.tier == "flight") | {(.name): .cluster}) | add // {}')"
 
           # Synthesize a pr-build flow from ephemeralEnvironments.pullRequest when the
@@ -319,7 +318,7 @@ spec:
         envName: ${lower_env}
         ENVEOF
             echo "app repo: scaffolded ${ENVS_ROOT}/envs/${lower_env}.yaml (file was missing)"
-          done < <(yq -o=json '.deploy // {}' cicd.yaml | jq -r 'if (.environments // null) != null then [.environments[] | select(.tier == "ground") | .name] else (.lowerEnvironments // ["dev"]) end | .[]')
+          done < <(yq -o=json '.deploy // {}' cicd.yaml | jq -r '[(.environments // [{name: "dev", tier: "ground"}])[] | select(.tier == "ground") | .name] | .[]')
         fi
 
         # onboarding-resync.yaml is the only file delivered unconditionally among
@@ -655,9 +654,7 @@ spec:
               --arg branch "${promote_branch}" --arg pin "${pin_path}" \
               '. + {($n): {trigger: {source: "git", event: "push", branch: $branch, filePathPattern: [$pin]}, steps: [{stage: "deploy", env: $env}], pinFile: $pin}}')"
             echo "cicd.yaml: cloud Flight environment ${flight_env} - synthesized promote-${flight_env} (deploys ${pin_path} on merge)"
-          done < <(yq -o=json '.deploy // {}' cicd.yaml | jq -r '
-            if (.environments // null) != null then [.environments[] | select(.tier == "flight") | .name]
-            else [(.upperEnvironments // [])[] | if type == "object" then .name else . end] end | .[]')
+          done < <(yq -o=json '.deploy // {}' cicd.yaml | jq -r '[(.environments // [])[] | select(.tier == "flight") | .name] | .[]')
         fi
 
         flow_names="$(echo "${pipelines_json}" | jq -r 'keys[]' 2>/dev/null || true)"

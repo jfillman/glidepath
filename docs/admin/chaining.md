@@ -92,7 +92,7 @@ separate, PEER namespaces with different jobs, not a base-plus-suffix pair:
   long-lived `Deployment`/`Service` serving traffic. `deploy-manifests.yaml` derives
   this name directly from `app-type`/`app-name`/`env` params (never by suffixing the
   cicd namespace) specifically so each environment (`dev`, and later `staging`/`prod`
-  per `cicd.yaml`'s `deploy.upperEnvironments`) gets its own isolated namespace, rather
+  per `cicd.yaml`'s `deploy.environments`) gets its own isolated namespace, rather
   than every environment's Deployment colliding in one namespace.
 
 The split matters for RBAC, not just tidiness: `pipeline-runner`'s Role in

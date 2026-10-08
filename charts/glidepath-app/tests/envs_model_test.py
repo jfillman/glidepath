@@ -2,7 +2,8 @@
 """Tests for the environments model (ADR-0019, phase 2).
 
 Two shapes of cicd.yaml describe the same environments:
-  old: deploy.lowerEnvironments / upperEnvironments / promotionOrder
+  old: deploy.lowerEnvironments / upperEnvironments / promotionOrder (removed 2026-10-07; the chart and the
+       schema now refuse them)
   new: deploy.environments: [{name, tier, cluster?}]
 The chart must render *identically* for a config and its twin, and refuse the combinations the
 model does not support. The schema must accept the new shape and refuse mixing the two.
@@ -114,17 +115,20 @@ TWINS = [
 
 
 class RenderEquivalence(unittest.TestCase):
-    def test_old_and_new_shape_render_identically(self):
+    def test_every_shape_renders_and_the_removed_keys_are_refused(self):
+        # The pre-ADR-0019 keys were removed 2026-10-07 (every app migrated, each proven render-identical first).
+        # Ignoring them would silently change an app's environments, so the chart refuses them instead.
         for name, steps, old, envs in TWINS:
             with self.subTest(name):
                 new = {k: v for k, v in old.items() if k not in ("lowerEnvironments", "upperEnvironments", "promotionOrder")}
                 new["environments"] = envs
-                rc_old, out_old, err_old = render(cicd(steps, old))
                 rc_new, out_new, err_new = render(cicd(steps, new))
-                self.assertEqual(rc_old, 0, err_old[:400])
                 self.assertEqual(rc_new, 0, err_new[:400])
-                self.assertGreater(len(docs(out_old)), 5)  # it rendered a real chart, not nothing
-                self.assertEqual(out_old, out_new)
+                self.assertGreater(len(docs(out_new)), 5)
+                if any(k in old for k in ("lowerEnvironments", "upperEnvironments", "promotionOrder")):
+                    rc_old, _, err_old = render(cicd(steps, old))
+                    self.assertNotEqual(rc_old, 0)
+                    self.assertIn("was replaced by deploy.environments", err_old)
 
     def test_cluster_mapped_flight_still_renders_the_registry_rbac(self):
         # The new shape must keep driving the same switches, not just render the same bytes by accident.
@@ -140,9 +144,9 @@ class RenderEquivalence(unittest.TestCase):
         flat = out
         self.assertIn("kind-prod", flat)
 
-    def test_cloud_target_gets_no_deploy_rbac_in_either_shape(self):
+    def test_cloud_target_gets_no_deploy_rbac(self):
         _, steps, old, envs = TWINS[5]
-        for config in (cicd(steps, old), cicd(steps, {"target": "aws-lambda", "lambda": old["lambda"], "environments": envs})):
+        for config in (cicd(steps, {"target": "aws-lambda", "lambda": old["lambda"], "environments": envs}),):
             rc, out, err = render(config)
             self.assertEqual(rc, 0, err[:400])
             self.assertFalse([d for d in docs(out) if d["metadata"].get("name") == "allow-pipeline-runner-deploy"])
@@ -352,10 +356,10 @@ class Schema(unittest.TestCase):
         self.valid(cicd(BUILD_DEPLOY, {"environments": [{"name": "dev", "tier": "ground"},
                                                          {"name": "staging", "tier": "flight", "cluster": "kind-prod"}]}))
 
-    def test_old_shape_is_still_accepted(self):
-        self.valid(cicd(WITH_RELEASE, {"lowerEnvironments": ["dev"],
-                                       "upperEnvironments": [{"name": "staging", "cluster": "kind-prod"}],
-                                       "promotionOrder": ["dev", "staging"]}))
+    def test_old_shape_is_refused(self):
+        self.invalid(cicd(WITH_RELEASE, {"lowerEnvironments": ["dev"],
+                                         "upperEnvironments": [{"name": "staging", "cluster": "kind-prod"}],
+                                         "promotionOrder": ["dev", "staging"]}))
 
     def test_mixing_the_shapes_is_refused(self):
         envs = [{"name": "dev", "tier": "ground"}]

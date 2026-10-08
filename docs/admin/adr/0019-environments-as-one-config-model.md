@@ -5,6 +5,11 @@ answered (see [requirements §6](../envs-overhaul-requirements.md#6-decisions-an
 Q3 (a Ground env on another cluster) is proposed and awaiting confirmation, so the status
 stays Proposed until it is.
 
+**Migration done (2026-10-07).** Every app moved to `deploy.environments` (each change proven
+render-identical first), then the old `lowerEnvironments` / `upperEnvironments` /
+`promotionOrder` fields were removed: the schema, `validate-cicd-config` and the chart refuse
+them, and Backstage and Tower read only the new list.
+
 ## Context
 
 An environment is not an object today. It is whatever `deploy.lowerEnvironments`,

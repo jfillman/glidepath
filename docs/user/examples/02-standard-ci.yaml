@@ -15,20 +15,17 @@
 # "How flows work" for the two different mechanisms behind this.
 apiVersion: platform/v1
 kind: PipelineConfig
-
 build:
   agent: nodejs-20
   script: ./build.sh
-  containerfile: ./Containerfile   # thin packaging Containerfile - copies build.sh's output in
-
+  containerfile: ./Containerfile # thin packaging Containerfile - copies build.sh's output in
 test:
-  name: integration   # the TestWorkflow name this flow's `test` step inherits, since it
-                       # doesn't set its own `testName` below
-
+  name: integration # the TestWorkflow name this flow's `test` step inherits, since it
+  # doesn't set its own `testName` below
 deploy:
-  lowerEnvironments: [dev]   # this is the default - shown explicitly since the
-                              # `deploy` step below targets `dev`
-
+  environments:
+    - name: dev
+      tier: ground
 pipelines:
   ci:
     trigger:
@@ -38,9 +35,9 @@ pipelines:
     steps:
       - stage: build
       - stage: test
-        env: dev   # REQUIRED on every test step - which build's env this run is
-                   # actually exercising
+        env: dev # REQUIRED on every test step - which build's env this run is
+        # actually exercising
       - stage: deploy
-        env: dev   # REQUIRED on deploy - must appear in deploy.lowerEnvironments/
-                   # upperEnvironments above, or validate-cicd-config rejects this
-                   # flow before anything runs
+        env: dev # REQUIRED on deploy - must be listed in deploy.environments,
+        # or validate-cicd-config rejects this
+        # flow before anything runs

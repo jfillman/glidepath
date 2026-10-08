@@ -81,7 +81,8 @@ name are both required on every test step - see
 
 ```yaml
 deploy:
-  lowerEnvironments: [dev]   # this is the default - shown for clarity
+  environments:              # this is the default - shown for clarity
+    - { name: dev, tier: ground }
 
 pipelines:
   ci:
@@ -96,7 +97,7 @@ pipelines:
 
 Same idea: `deploy` fires automatically once `test` reports success. Your app now has a
 real, standing dev deployment that updates on every push to `main`. `env: dev` must
-appear in `deploy.lowerEnvironments` (or `upperEnvironments`) - that's what actually
+be listed in `deploy.environments` - that's what actually
 provisions the RBAC letting the pipeline touch that namespace. See
 [examples/02-standard-ci.yaml](examples/02-standard-ci.yaml) for the complete version of
 where you are at this point.

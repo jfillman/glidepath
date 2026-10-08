@@ -17,18 +17,17 @@
 # bugs found" section.
 apiVersion: platform/v1
 kind: PipelineConfig
-
 build:
   agent: nodejs-20
   script: ./build.sh
-
 test:
   name: integration
-
 deploy:
-  lowerEnvironments: [dev]
-  upperEnvironments: [staging]
-
+  environments:
+    - name: dev
+      tier: ground
+    - name: staging
+      tier: flight
 pipelines:
   main-flow:
     trigger:
@@ -41,14 +40,13 @@ pipelines:
         env: dev
       - stage: deploy
         env: dev
-
   release-flow:
     trigger:
       source: git
       event: branch.created
-      branch: "release/*"   # glob pattern - matches release/1.2, release/hotfix-1,
-                             # anything under release/. Same syntax push/pull_request
-                             # accept via `branch:`.
+      branch: "release/*" # glob pattern - matches release/1.2, release/hotfix-1,
+      # anything under release/. Same syntax push/pull_request
+      # accept via `branch:`.
     steps:
       - stage: build
       - stage: deploy

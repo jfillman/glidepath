@@ -112,14 +112,9 @@ spec:
         digest="$(oras resolve "${IMAGE_REF}" | tr -d '\n')"
         [[ "${digest}" == sha256:* ]] || { echo "error: could not resolve a digest for ${IMAGE_REF} (got '${digest}')" >&2; exit 1; }
 
-        # The previous environment in cicd.yaml's order (deploy.environments, else promotionOrder,
-        # else lower ++ upper), or empty when ENV is first or not listed.
+        # The previous environment in deploy.environments' order, or empty when ENV is first or not listed.
         promoted_from="$(jq -r --arg env "${ENV}" '
-          (.deploy // {}) as $d
-          | (if ($d.environments // null) != null then [$d.environments[].name]
-             elif (($d.promotionOrder // []) | length) > 0 then $d.promotionOrder
-             else (($d.lowerEnvironments // []) + [($d.upperEnvironments // [])[] | if type == "object" then .name else . end])
-             end) as $order
+          [((.deploy // {}).environments // [])[].name] as $order
           | ($order | index($env)) as $i
           | if $i == null or $i == 0 then "" else $order[$i - 1] end
         ' <<<"${CONFIG_JSON}")"

@@ -97,26 +97,11 @@
     "deploy": {
       "type": "object",
       "additionalProperties": false,
-      "allOf": [
-        {
-          "$comment": "deploy.environments replaces lowerEnvironments + upperEnvironments + promotionOrder (ADR-0019). Using both is ambiguous, so it is refused rather than one silently winning.",
-          "if": { "required": ["environments"] },
-          "then": {
-            "not": {
-              "anyOf": [
-                { "required": ["lowerEnvironments"] },
-                { "required": ["upperEnvironments"] },
-                { "required": ["promotionOrder"] }
-              ]
-            }
-          }
-        }
-      ],
       "properties": {
         "environments": {
           "type": "array",
           "minItems": 1,
-          "description": "The app's environments, defined once, in promotion order (the order of this list is the order a release walks). Replaces lowerEnvironments, upperEnvironments and promotionOrder, which cannot be used alongside it. Each entry is a Ground environment (deployed automatically on push) or a Flight environment (deployed only through an approved release). Names must be unique. See docs/admin/adr/0019-environments-as-one-config-model.md.",
+          "description": "The app's environments, defined once, in promotion order (the order of this list is the order a release walks). Unset: one Ground environment, dev. (It replaced lowerEnvironments, upperEnvironments and promotionOrder, removed 2026-10-07.) Each entry is a Ground environment (deployed automatically on push) or a Flight environment (deployed only through an approved release). Names must be unique. See docs/admin/adr/0019-environments-as-one-config-model.md.",
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -133,7 +118,7 @@
               },
               "cluster": {
                 "type": "string",
-                "description": "Flight only, and only when the environment runs on a different cluster than the app's own (the same meaning as the cluster of an upperEnvironments object entry). A Ground environment cannot set it yet."
+                "description": "Flight only, and only when the environment runs on a different cluster than the app's own (a cluster name from the platform cluster registry). A Ground environment cannot set it yet."
               },
               "ecs": {
                 "$ref": "#/properties/deploy/properties/ecs",
@@ -154,41 +139,11 @@
             }
           }
         },
-        "lowerEnvironments": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": ["dev"]
-        },
-        "upperEnvironments": {
-          "type": "array",
-          "items": {
-            "oneOf": [
-              { "type": "string", "description": "Same-cluster upper env (today's default/only behavior) - RBAC is provisioned into a same-cluster namespace exactly like a lowerEnvironments entry." },
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["name", "cluster"],
-                "properties": {
-                  "name": { "type": "string", "description": "The env name release steps refer to via their own env: field, e.g. \"staging\"." },
-                  "cluster": { "type": "string", "description": "Name of an entry in the control-plane chart's clusters: registry (see docs/multi-cluster.md) - the physical cluster this env's ArgoCD Application actually lives on. Setting this means no same-cluster RBAC is provisioned for this env (there's no local namespace for it) and release promotions for it go through the GitOps app-of-apps delivery path instead of a direct in-cluster apply." }
-                }
-              }
-            ]
-          },
-          "default": [],
-          "description": "Which upper (release-stage) environments this app has, and optionally which cluster each one lives on. A release step's env: must name one of these; if that entry is the object form, the step's own optional cluster: (if set) must agree with it. See docs/multi-cluster.md."
-        },
         "strategy": {
           "type": "string",
           "enum": ["deployment", "rollout"],
           "default": "rollout",
           "description": "deployment = native k8s Deployment rollout; rollout = Argo Rollouts (canary/blue-green). Rollout support has since landed and is the only strategy actually implemented (deploy-manifests.yaml manages an Argo Rollout unconditionally via the airframe-application chart - confirmed live, 2026-09-17): `deployment` is schema-valid but has NO effect - nothing renders a plain Deployment anymore. This is the reverse of this field's original meaning when it was first added (rollout was the future, unimplemented option then); kept as a two-value enum, default flipped, so an existing cicd.yaml that explicitly sets `strategy: deployment` still validates rather than breaking, even though it no longer describes real behavior."
-        },
-        "promotionOrder": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [],
-          "description": "Optional, full ordered list of every env (lower AND upper) a release should pass through, e.g. [dev, test, rel, staging, pre-prod, prod]. Not enforced by platform-cicd's own automation - no Task or Trigger reads this today, and it does not need to equal what any single pipeline's own deploy/release steps cover. It exists as an explicit, authoritative declaration of the full intended promotion sequence for consumers that need it (Backstage's Glidepath plugin: it otherwise has to infer env order by finding whichever pipeline has the most deploy/release steps, which silently breaks once a pipeline legitimately covers only part of the sequence - e.g. build/test/deploy-to-dev only, leaving every later stage to a manual promotion path). Every entry should name an env declared in this app's own lowerEnvironments or upperEnvironments; a consumer encountering an unrecognized entry should treat the whole list as unusable and fall back to its own inference rather than trust a partial/stale list. Not cross-validated against lowerEnvironments/upperEnvironments by validate-cicd-config today."
         },
         "releaseFile": {
           "type": "string",

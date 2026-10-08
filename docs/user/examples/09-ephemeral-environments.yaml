@@ -13,31 +13,28 @@
 # available.
 apiVersion: platform/v1
 kind: PipelineConfig
-
 build:
   agent: nodejs-20
   script: ./build.sh
-
 test:
   name: integration
-
 deploy:
-  lowerEnvironments: [dev]
-
+  environments:
+    - name: dev
+      tier: ground
 ephemeralEnvironments:
   pullRequest:
     enabled: true
-    labels: ["preview"]     # add this label to a PR on GitHub to get it a live,
-                             # dedicated environment - remove the label (or close/merge
-                             # the PR) and it tears down
+    labels: ["preview"] # add this label to a PR on GitHub to get it a live,
+    # dedicated environment - remove the label (or close/merge
+    # the PR) and it tears down
   branch:
     enabled: true
-    patterns: ["preview/*"]  # any branch matching this glob also gets its own
-                              # environment, independent of any PR
-  ttl: 3d                    # torn down automatically 3 days after its LAST successful
-                              # deploy, not 3 days after creation - pushing new commits
-                              # resets the clock
-
+    patterns: ["preview/*"] # any branch matching this glob also gets its own
+    # environment, independent of any PR
+  ttl: 3d # torn down automatically 3 days after its LAST successful
+  # deploy, not 3 days after creation - pushing new commits
+  # resets the clock
 pipelines:
   ci:
     trigger:
@@ -50,17 +47,16 @@ pipelines:
         env: dev
       - stage: deploy
         env: dev
-
   pr-check:
     trigger:
       source: git
       event: pull_request
       branch: main
-      labels: ["preview"]      # only build for PRs that actually get a preview
-                                # environment - matches ephemeralEnvironments.pullRequest.
-                                # labels above. Omit this and every PR triggers a build,
-                                # not just labeled ones.
+      labels: ["preview"] # only build for PRs that actually get a preview
+      # environment - matches ephemeralEnvironments.pullRequest.
+      # labels above. Omit this and every PR triggers a build,
+      # not just labeled ones.
     steps:
       - stage: build
-      # this build's image is what a PR-preview environment (above) actually deploys
-      # once you label the PR "preview"
+    # this build's image is what a PR-preview environment (above) actually deploys
+    # once you label the PR "preview"

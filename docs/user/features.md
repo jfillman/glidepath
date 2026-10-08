@@ -25,9 +25,8 @@ questions:
 
 ![deploy is a fast, ungated inner loop; release is a governed promotion gated by checks and human review](diagrams/deploy-vs-release.svg)
 
-This is why `deploy`'s target environments (`deploy.lowerEnvironments`) and `release`'s
-(conceptually "upper" environments, though `env` on a release step has no live effect
-yet) are configured separately - see
+This is why `deploy`'s target environments (`tier: ground` in `deploy.environments`) and
+`release`'s (`tier: flight`) are told apart - see
 [cicd-yaml-reference.md](cicd-yaml-reference.md#the-deploy-block). Full detail on the
 release mechanics in [../admin/release.md](../admin/release.md).
 
@@ -132,6 +131,6 @@ typos:
   validates.
 - **`build.sonar`** - reserved, no current effect.
 
-Multi-cluster releases (`deploy.upperEnvironments`' `{name, cluster}` form,
+Multi-cluster releases (`cluster:` on a `tier: flight` entry of `deploy.environments`,
 `pipelines.*.steps[].cluster`) are real and live - see
 [multi-cluster.md](../admin/multi-cluster.md), not this list.

@@ -150,7 +150,7 @@ spec:
     - { name: pipeline-run-name, value: {{ printf "%s-%d-%s-$(body.customData.platform.chain_slug)-$(body.context.id)" $flowName $index $stageName | quote }} }
     - { name: env, value: {{ $step.env | default "dev" | quote }} }
     - { name: test-name, value: {{ $effectiveTestName | quote }} }
-    {{/* $step.cluster if set, else resolved from upperEnvironments - see _helpers.tpl's
+    {{/* $step.cluster if set, else resolved from deploy.environments - see _helpers.tpl's
     resolveStepCluster. */}}
     - { name: cluster, value: {{ include "glidepath-app.resolveStepCluster" (list $ $step) | quote }} }
     - { name: name, value: {{ $step.name | default "" | quote }} }

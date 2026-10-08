@@ -16,18 +16,16 @@
 # own Trigger/TriggerBinding/TriggerTemplate object rather than colliding.
 apiVersion: platform/v1
 kind: PipelineConfig
-
 build:
   agent: nodejs-20
   script: ./build.sh
-
 test:
-  name: integration   # the fallback/default - only actually used if a test step
-                       # omits its own `testName`, which neither one does below
-
+  name: integration # the fallback/default - only actually used if a test step
+  # omits its own `testName`, which neither one does below
 deploy:
-  lowerEnvironments: [dev]
-
+  environments:
+    - name: dev
+      tier: ground
 pipelines:
   ci:
     trigger:
@@ -38,10 +36,10 @@ pipelines:
       - stage: build
       - stage: test
         env: dev
-        testName: smoke      # overrides the top-level test.name for this step -
-                              # platform/smoke.yaml is what actually runs
+        testName: smoke # overrides the top-level test.name for this step -
+        # platform/smoke.yaml is what actually runs
       - stage: test
         env: dev
-        testName: integration   # a second, independent test step - platform/integration.yaml
+        testName: integration # a second, independent test step - platform/integration.yaml
       - stage: deploy
         env: dev
