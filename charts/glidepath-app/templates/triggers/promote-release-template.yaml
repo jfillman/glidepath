@@ -1,0 +1,75 @@
+{{- /*
+The PipelineRun Tower's Promote button starts (Backstage backend glidepathPromote.ts): the app's own `release`
+Pipeline for one Flight environment, so a promotion from Tower takes the same path as a release step in a flow -
+open-release-pr opens the gitops PR and writes the release-tracking record the relay needs (before this, Tower opened
+the PR itself and wrote no record, so the relay dropped every fact for those releases).
+
+No Trigger points at it. Backstage reads this template and fills in its params; the PipelineRun's shape (Pipeline,
+service account, labels, the notify-backstage host alias) stays Glidepath's, next to the flow triggers it mirrors.
+A source workspace is bound (emptyDir) so resolve-notify-config reads cicd.yaml at git-revision, as a git-rooted
+release does; there is no upstream stage to forward it.
+*/ -}}
+{{- if eq (include "glidepath-app.isKubernetesTarget" .) "true" }}
+{{- $appNamespace := include "glidepath-app.namespace" . }}
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: promote-release
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "triggers"
+    hangar.io/stage: release
+    hangar.io/purpose: promote
+spec:
+  params:
+    - name: pipeline-run-name
+    - name: env
+    - name: cluster
+    - name: git-url
+    - name: git-revision
+    - name: image-ref
+    - name: initiator
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        name: $(tt.params.pipeline-run-name)
+        labels:
+          hangar.io/app: {{ .Values.platformIdentity.appName }}
+          hangar.io/flow: promote
+          hangar.io/stage: release
+        annotations:
+          hangar.io/initiator: $(tt.params.initiator)
+      spec:
+        pipelineRef:
+          resolver: cluster
+          params:
+            - { name: kind, value: pipeline }
+            - { name: name, value: release }
+            - { name: namespace, value: {{ .Values.platformIdentity.catalogNamespace }} }
+        params:
+          - { name: is-flow-root, value: "true" }
+          - { name: is-flow-terminal, value: "true" }
+          - { name: app-namespace, value: {{ $appNamespace }} }
+          - { name: app-name, value: {{ .Values.platformIdentity.appName }} }
+          - { name: app-type, value: {{ .Values.platformIdentity.type }} }
+          - { name: env, value: $(tt.params.env) }
+          - { name: cluster, value: $(tt.params.cluster) }
+          - { name: git-url, value: $(tt.params.git-url) }
+          - { name: git-revision, value: $(tt.params.git-revision) }
+          - { name: image-ref, value: $(tt.params.image-ref) }
+        workspaces:
+          - name: source
+            emptyDir: {}
+        taskRunTemplate: { serviceAccountName: pipeline-runner }
+        {{- if .Values.backstageHostAliasIP }}
+        taskRunSpecs:
+          - pipelineTaskName: notify-backstage
+            podTemplate:
+              hostAliases:
+                - ip: {{ .Values.backstageHostAliasIP }}
+                  hostnames:
+                    - backstage.prod.kiac.local
+        {{- end }}
+{{- end }}
