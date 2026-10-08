@@ -1,4 +1,4 @@
-# Only rendered when this app has a cluster-mapped deploy.upperEnvironments entry
+# Only rendered when this app has a Flight environment on another cluster (deploy.environments[].cluster)
 # (docs/multi-cluster.md). Lets pipeline-runner read the control-plane chart's
 # cluster-registry ConfigMap (platform-system) so open-release-pr.yaml can confirm a
 # target cluster is registered before opening a release PR. get-only, scoped to this one

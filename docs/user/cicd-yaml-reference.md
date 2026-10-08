@@ -79,17 +79,13 @@ test:
 
 # --- deploy: optional block. See "The deploy: block" below. ---
 deploy:
-  lowerEnvironments: [dev]       # Optional, default [dev]. Which env namespaces get
-                                 # pipeline-runner RBAC provisioned. A deploy step's
-                                 # `env` (below, under pipelines:) MUST appear in this
-                                 # list or upperEnvironments, or validate-cicd-config
-                                 # rejects the flow before anything runs.
-  upperEnvironments: []          # Optional, default []. Which upper (release-stage)
-                                 # envs this app has - a release step's `env` (below,
-                                 # under pipelines:) MUST appear here. Each entry is
-                                 # either a plain name (same-cluster, e.g. "staging") or
-                                 # {name, cluster} if that env is hosted on a different
-                                 # physical cluster - see docs/multi-cluster.md.
+  environments:                  # Optional, default [{name: dev, tier: ground}]. Every
+    - { name: dev, tier: ground } # environment, once, in promotion order. A deploy step's
+                                 # `env` (below, under pipelines:) MUST be listed here, a
+                                 # release step's must be tier: flight, or
+                                 # validate-cicd-config rejects the flow before anything
+                                 # runs. A flight env on another physical cluster sets
+                                 # cluster: - see docs/multi-cluster.md.
   strategy: rollout               # Optional, default "rollout" (Argo Rollouts
                                  # canary/blue-green) - the only strategy actually
                                  # implemented. "deployment" is still schema-valid
@@ -227,7 +223,7 @@ pipelines:
                                    # block above. Not called `name` - see below.
         cluster: prod-cluster     # Only valid on a release step. Optional - only set
                                    # this if you want an explicit consistency check
-                                   # against deploy.upperEnvironments' own mapping for
+                                   # against deploy.environments' own cluster for
                                    # this env (they must agree); normally the cluster
                                    # resolves from there and this can be omitted. See
                                    # docs/multi-cluster.md.
@@ -457,35 +453,30 @@ without having tested anything, same as `enabled: false`.
 
 ```yaml
 deploy:
-  lowerEnvironments: [dev]      # default
-  upperEnvironments: []         # default
   strategy: rollout             # default; the only strategy actually implemented -
                                  # every deploy provisions an Argo Rollout.
-                                 # "deployment" is still schema-valid but has NO
-                                 # effect today.
-  promotionOrder: []            # default; optional, see below
+  environments:                  # default: one Ground environment, dev
+    - { name: dev, tier: ground }
 ```
 
-`lowerEnvironments`/`upperEnvironments` aren't the thing that decides where a flow
-deploys - that's each `deploy`/`release` step's own `env:` under `pipelines:` (below). A
-`deploy` step's `env` must appear in `lowerEnvironments` or `upperEnvironments`, and a
-`release` step's `env` must appear in `upperEnvironments` specifically - either is a
+`environments` (below) is not the thing that decides where a flow deploys - that is each
+`deploy`/`release` step's own `env:` under `pipelines:` (below). A `deploy` step's `env` must
+be listed in `environments`, and a `release` step's `env` must be a `flight` one - either is a
 `validate-cicd-config` rejection before anything runs, rather than failing later (a bare
 `Forbidden` deep inside the deploy Task, in the deploy case).
 
-For `deploy`, this list only provisions RBAC (one `Role`/`RoleBinding` granting
-`pipeline-runner` access per listed env) - `deploy` always stays on this cluster. For
-`release`, an `upperEnvironments` entry can additionally be `{name, cluster}` instead of
-a plain string, naming a different physical cluster that env's ArgoCD Application
-actually lives on (resolved against the control-plane chart's own cluster registry) -
-see [multi-cluster.md](../admin/multi-cluster.md) for the full mechanism, including how the
-release PR delivery and ArgoCD feedback path differ for a cluster-mapped env.
+For `deploy`, the list provisions RBAC (the pipeline runner's read access to the Rollout, per
+environment) - `deploy` always stays on this cluster. A `flight` environment can set `cluster`,
+naming a different physical cluster its ArgoCD Application lives on (resolved against the
+control-plane chart's own cluster registry) - see [multi-cluster.md](../admin/multi-cluster.md)
+for how the release PR delivery and ArgoCD feedback path differ for such an environment.
 
 ### `environments` - the environments, defined once
 
-`deploy.environments` is the newer way to declare environments. It replaces
-`lowerEnvironments`, `upperEnvironments` and `promotionOrder` (ADR-0019); the older fields
-keep working, and using both in one file is refused by the schema.
+`deploy.environments` declares every environment once, in promotion order (ADR-0019). It
+replaced `lowerEnvironments`, `upperEnvironments` and `promotionOrder`, which were removed on
+2026-10-07 after every app moved; `validate-cicd-config` and the chart now refuse them with a
+pointer here.
 
 ```yaml
 deploy:
@@ -499,17 +490,11 @@ deploy:
 | Field | Meaning |
 |---|---|
 | `name` | Lowercase letters, digits and `-`, starting with a letter, at most 31 characters; unique. |
-| `tier` | `ground`: deployed automatically on every push (the old `lowerEnvironments`). `flight`: deployed only through a release PR and its guardrails (the old `upperEnvironments`). |
-| `cluster` | Flight only, and only when the environment runs on another cluster than the app's own. Same meaning as the `cluster` of an `upperEnvironments` object entry. A Ground environment cannot set it yet. |
+| `tier` | `ground`: deployed automatically on every push. `flight`: deployed only through a release PR and its guardrails (a release pin PR for a cloud target, ADR-0020). |
+| `cluster` | Flight only, and only when the environment runs on another cluster than the app's own. A Ground environment cannot set it yet. |
 
-Mapping from the older fields: each `lowerEnvironments` entry is a `ground` environment, each
-`upperEnvironments` entry a `flight` one (a plain name has no `cluster`), in that order, which is
-what `promotionOrder` always was in practice. A config and its twin in the other shape render the
-same resources; `charts/glidepath-app/tests/envs_model_test.py` checks that.
-
-Limits for now: a cloud target (`aws-ecs`, `aws-lambda`, `azure-container-apps`) supports `ground`
-environments only, because a Flight environment needs an approval path that does not exist for
-them yet (ADR-0019, open work).
+The list order is the promotion order: Tower promotes from each environment to the next, and a
+release names the environment it came from by it.
 
 #### Per-environment cloud resources
 
@@ -535,34 +520,6 @@ app is refused), and the target itself is per app, not per environment. The depl
 environment `test` resolves to `orders-fn-test` in `us-east-1`. The resources must already exist,
 as before: Glidepath only updates what is there. Credentials are still one set per app, so every
 environment must be reachable with them.
-
-### `promotionOrder` - declaring the full release sequence explicitly
-
-No `pipelines:` flow has to cover every env this app declares. A perfectly normal setup
-is a single automated flow that only takes a build as far as `dev`, leaving every later
-env - another lower env like `test`/`rel`, and every upper env - to a manual promotion
-(e.g. Backstage's Glidepath "Promote" button) rather than more pipeline automation.
-
-That's a problem for anything trying to infer "what order do this app's envs promote
-in?" from `pipelines:` alone: a flow's own step list only reflects what's automated, not
-the app's full intended sequence. `promotionOrder` is the fix - declare the whole
-sequence once, explicitly:
-
-```yaml
-deploy:
-  lowerEnvironments: [dev, test, rel]
-  upperEnvironments: [staging, pre-prod, prod]
-  promotionOrder: [dev, test, rel, staging, pre-prod, prod]
-```
-
-This is metadata only - platform-cicd's own Tasks/Triggers don't read it, and it isn't
-required to match any single pipeline's step coverage. It exists for external consumers
-(today: Glidepath) that need to know the real full promotion path, including the parts
-that only ever happen through a manual promotion rather than pipeline automation. Every
-entry should be a name already declared in `lowerEnvironments`/`upperEnvironments` above;
-leave it empty (the default) for an app where every env really is covered by pipeline
-automation - a consumer with no `promotionOrder` to go on falls back to inferring order
-from `pipelines:` the same way it always has.
 
 ### `chart` - the Helm chart your environments render
 
@@ -792,11 +749,10 @@ set `test.name` once and every test step inherits it. Both `env` and the resolve
 name, along with the image reference under test, reach your own `./integration-test.sh`
 as `TEST_ENV`, `TEST_NAME`, and `IMAGE_REF` environment variables.
 
-**A `deploy` step's `env` must be provisioned.** It has to appear in
-`deploy.lowerEnvironments` or `deploy.upperEnvironments` (see above) - that's the list
-`deploy-rbac.yaml` actually grants `pipeline-runner` access into. Declaring
-`env: staging` on a deploy step without also listing `staging` under
-`deploy.upperEnvironments` is now rejected at `validate-cicd-config` time, instead of
+**A `deploy` step's `env` must be provisioned.** It has to be listed in
+`deploy.environments` (see above) - that's the list the pipeline runner is granted access
+into. Declaring `env: staging` on a deploy step without also listing `staging` under
+`deploy.environments` is rejected at `validate-cicd-config` time, instead of
 failing later with a bare `Forbidden` RBAC error deep inside the deploy Task.
 
 ### Event-chained flows (downstream chaining)

@@ -73,15 +73,9 @@ Usage: {{ include "glidepath-app.envNamespace" (list $ "staging") }}
 
 {{/*
 glidepath-app.envEntries - the app's environments as one normalized list of
-{name, tier, cluster}, whichever shape cicd.yaml uses (docs/admin/envs-overhaul-requirements.md,
-R1/R12, ADR-0019):
-
-  new:  deploy.environments: [{name, tier: ground|flight, cluster?}, ...]   (wins when present)
-  old:  deploy.lowerEnvironments (Ground) + deploy.upperEnvironments (Flight, a plain name or
-        {name, cluster}), in that order
-
-An empty cluster means "the app's own cluster". Every reader of the environment lists goes
-through this, so the two shapes cannot disagree.
+{name, tier, cluster}, from deploy.environments (docs/admin/envs-overhaul-requirements.md, R1/R12,
+ADR-0019); unset means one Ground environment, dev. An empty cluster means "the app's own
+cluster". Every reader of the environment lists goes through this.
 
 Usage: {{ include "glidepath-app.envEntries" . | fromYamlArray }}
 */}}
@@ -93,16 +87,7 @@ Usage: {{ include "glidepath-app.envEntries" . | fromYamlArray }}
     {{- $out = append $out (dict "name" .name "tier" .tier "cluster" (.cluster | default "")) -}}
   {{- end -}}
 {{- else -}}
-  {{- range ((.Values.deploy).lowerEnvironments | default (list)) -}}
-    {{- $out = append $out (dict "name" . "tier" "ground" "cluster" "") -}}
-  {{- end -}}
-  {{- range ((.Values.deploy).upperEnvironments | default (list)) -}}
-    {{- if kindIs "map" . -}}
-      {{- $out = append $out (dict "name" .name "tier" "flight" "cluster" (.cluster | default "")) -}}
-    {{- else -}}
-      {{- $out = append $out (dict "name" . "tier" "flight" "cluster" "") -}}
-    {{- end -}}
-  {{- end -}}
+  {{- $out = list (dict "name" "dev" "tier" "ground" "cluster" "") -}}
 {{- end -}}
 {{- $out | toYaml -}}
 {{- end -}}
@@ -137,6 +122,11 @@ later phase, ADR-0019). A cloud target's Flight environment is approved by a rel
 the source repo (ADR-0020), sets no cluster, and gets no Kubernetes artifacts (localUpperEnvs).
 */}}
 {{- define "glidepath-app.validateEnvironments" -}}
+{{- range $old := list "lowerEnvironments" "upperEnvironments" "promotionOrder" -}}
+  {{- if hasKey ($.Values.deploy | default dict) $old -}}
+    {{- fail (printf "deploy.%s was replaced by deploy.environments (list each environment once, in promotion order, with tier: ground or flight; ADR-0019). Ignoring it would silently change this app's environments" $old) -}}
+  {{- end -}}
+{{- end -}}
 {{- $declared := ((.Values.deploy).environments) -}}
 {{- if $declared -}}
 {{- $seen := dict -}}
@@ -239,8 +229,8 @@ Usage: {{ include "glidepath-app.localDeployEnvs" . | fromYamlArray }}
 {{- end -}}
 
 {{/*
-glidepath-app.localUpperEnvs - same-cluster upperEnvironments entries only, no
-lowerEnvironments mixed in. Used by release-application.yaml/appproject.yaml: one ArgoCD
+glidepath-app.localUpperEnvs - same-cluster Flight environments only, no Ground ones
+mixed in. Used by release-application.yaml/appproject.yaml: one ArgoCD
 Application/destination per local upper env ("dev" is a deploy-stage concept, never an
 ArgoCD one). Cluster-mapped entries get no local Application; theirs is delivered via
 GitOps instead (docs/multi-cluster.md).
@@ -262,8 +252,7 @@ Usage: {{ include "glidepath-app.localUpperEnvs" . | fromYamlArray }}
 
 {{/*
 glidepath-app.upperEnvClusters - env name -> cluster map ("" = same-cluster) built
-from deploy.upperEnvironments, normalizing the plain-string vs {name, cluster} shape
-once. Shared by validateFlows's consistency check and by the renderers that resolve a
+from the Flight entries of deploy.environments. Shared by validateFlows's consistency check and by the renderers that resolve a
 release step's cluster when the step omits cluster: - without this shared fallback, an
 omitted cluster: silently produced a same-cluster release instead of the tenant's
 declared cluster-mapped one.
@@ -299,7 +288,7 @@ Usage: {{ include "glidepath-app.resolveStepCluster" (list $ $step) }}
 
 {{/*
 glidepath-app.hasClusterMappedUpperEnv - "true"/"false": does any
-deploy.upperEnvironments entry map to a different physical cluster? Gates whether
+Flight environment in deploy.environments map to a different physical cluster? Gates whether
 templates/clusters/read-registry-rbac.yaml renders at all - most apps don't need it.
 
 Usage: {{ include "glidepath-app.hasClusterMappedUpperEnv" . }}
@@ -499,7 +488,7 @@ glidepath-app.validateFlows - validates pipeline flow definitions. Rules:
   step's actual predecessor, not a fixed slot.
 - cluster: is only valid on a release step.
 - env: is required for deploy, release, and test steps.
-- A deploy step's env must be listed under deploy.lowerEnvironments/upperEnvironments -
+- A deploy step's env must be listed under deploy.environments -
   deploy-rbac.yaml only grants pipeline-runner access to envs from that list, so this
   catches what would otherwise be a late, bare Forbidden RBAC error.
 - A test step needs a resolvable test name (its own `testName` or top-level
@@ -514,8 +503,7 @@ Fails fast with a descriptive message if violated.
 {{- $defaultTestName := .Values.test.name | default "" -}}
 {{- include "glidepath-app.validateEnvironments" . -}}
 {{- $lowerEnvs := include "glidepath-app.lowerEnvNames" . | fromYamlArray -}}
-{{- /* upperEnvironments entries are a plain string (same-cluster) or a {name, cluster}
-object (docs/multi-cluster.md); upperEnvClusters normalizes both shapes. */ -}}
+{{- /* Flight environment -> cluster ("" = same cluster, docs/multi-cluster.md). */ -}}
 {{- $upperEnvClusters := fromYaml (include "glidepath-app.upperEnvClusters" .) -}}
 {{- $upperEnvs := keys $upperEnvClusters -}}
 {{- $deployEnvs := concat $lowerEnvs $upperEnvs -}}
@@ -555,10 +543,9 @@ object (docs/multi-cluster.md); upperEnvClusters normalizes both shapes. */ -}}
         {{- end -}}
       {{- end -}}
 
-      {{- /* deploy-rbac.yaml only grants access to envs listed under
-      deploy.lowerEnvironments/upperEnvironments */ -}}
+      {{- /* deploy RBAC is only granted for envs listed under deploy.environments */ -}}
       {{- if and (eq $stageName "deploy") $step.env (eq (include "glidepath-app.isKubernetesTarget" $) "true") (not (has $step.env $deployEnvs)) -}}
-        {{- fail (printf "Flow '%s' step %d: deploy env '%s' is not listed under deploy.lowerEnvironments or deploy.upperEnvironments - pipeline-runner has no RBAC into that namespace, this would fail at deploy time with a Forbidden error instead. Add it to one of those lists." $flowName (add $index 1) $step.env) -}}
+        {{- fail (printf "Flow '%s' step %d: deploy env '%s' is not listed under deploy.environments - pipeline-runner has no RBAC into that namespace, this would fail at deploy time with a Forbidden error instead. Add it there." $flowName (add $index 1) $step.env) -}}
       {{- end -}}
 
       {{- if eq $stageName "test" -}}
@@ -571,15 +558,15 @@ object (docs/multi-cluster.md); upperEnvClusters normalizes both shapes. */ -}}
         {{- fail (printf "Flow '%s' step %d: cluster is only valid for release stage, not %s" $flowName (add $index 1) $stageName) -}}
       {{- end -}}
 
-      {{- /* upperEnvironments is the single source of truth for env->cluster; a step's
+      {{- /* deploy.environments is the single source of truth for env->cluster; a step's
       own cluster: (if set) is only checked for consistency, not a second input. */ -}}
       {{- if and (eq $stageName "release") $step.env -}}
         {{- if not (has $step.env $upperEnvs) -}}
-          {{- fail (printf "Flow '%s' step %d: release env '%s' is not listed under deploy.upperEnvironments. Add it there (as a plain name for a same-cluster env, or {name, cluster} for one hosted on a different cluster - see docs/multi-cluster.md)." $flowName (add $index 1) $step.env) -}}
+          {{- fail (printf "Flow '%s' step %d: release env '%s' is not a Flight environment in deploy.environments. Add it there ({name, tier: flight}, plus cluster: for one hosted on a different cluster - see docs/multi-cluster.md)." $flowName (add $index 1) $step.env) -}}
         {{- end -}}
         {{- $registeredCluster := get $upperEnvClusters $step.env -}}
         {{- if and $step.cluster (ne $step.cluster $registeredCluster) -}}
-          {{- fail (printf "Flow '%s' step %d: release step declares cluster '%s' but deploy.upperEnvironments has env '%s' mapped to cluster '%s' - these must agree. Prefer omitting the step's own cluster: and letting it resolve from upperEnvironments." $flowName (add $index 1) $step.cluster $step.env $registeredCluster) -}}
+          {{- fail (printf "Flow '%s' step %d: release step declares cluster '%s' but deploy.environments has env '%s' on cluster '%s' - these must agree. Prefer omitting the step's own cluster: and letting it resolve from deploy.environments." $flowName (add $index 1) $step.cluster $step.env $registeredCluster) -}}
         {{- end -}}
       {{- end -}}
 

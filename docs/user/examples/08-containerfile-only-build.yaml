@@ -24,27 +24,25 @@
 # is the build strategy itself)
 apiVersion: platform/v1
 kind: PipelineConfig
-
 build:
-  agent: nodejs-20         # still required - unit tests run in this image regardless
+  agent: nodejs-20 # still required - unit tests run in this image regardless
   # script: omitted on purpose - the whole build happens in Containerfile below
-  containerfile: ./Containerfile  # expected to be a real multi-stage build, e.g.:
-                            #   FROM node:20 AS builder
-                            #   WORKDIR /app
-                            #   COPY package*.json .
-                            #   RUN npm ci
-                            #   COPY . .
-                            #   RUN npm run build
-                            #   FROM node:20-slim
-                            #   COPY --from=builder /app/dist ./dist
-                            #   CMD ["node", "dist/index.js"]
-
+  containerfile: ./Containerfile # expected to be a real multi-stage build, e.g.:
+  #   FROM node:20 AS builder
+  #   WORKDIR /app
+  #   COPY package*.json .
+  #   RUN npm ci
+  #   COPY . .
+  #   RUN npm run build
+  #   FROM node:20-slim
+  #   COPY --from=builder /app/dist ./dist
+  #   CMD ["node", "dist/index.js"]
 test:
   name: integration
-
 deploy:
-  lowerEnvironments: [dev]
-
+  environments:
+    - name: dev
+      tier: ground
 pipelines:
   ci:
     trigger:

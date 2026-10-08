@@ -1,7 +1,7 @@
 # catalog/tasks/open-release-pr.yaml
 #
 # Opens a PR against the app's GitOps repo, promoting an already-built image to the
-# declared upper env (validated against deploy.upperEnvironments - see
+# declared upper env (validated against deploy.environments - see
 # docs/multi-cluster.md). A surgical `yq` patch of the manifest's image field, not a full
 # re-render, then a plain GitHub REST PR creation call. ArgoCD does the actual deploy once
 # the PR merges - this Task never touches the cluster directly. Uses a fresh,
@@ -71,7 +71,7 @@ spec:
         Name of the physical cluster this env is provisioned on (airframe's
         ApplicationEnvironment.spec.cluster). Required: the gitops-<app-name> repo's
         layout is <cluster>/<env>/values.yaml, so there's no manifest path without it.
-        Threaded through from cicd.yaml's deploy.upperEnvironments object form, not
+        Threaded through from cicd.yaml's deploy.environments[].cluster, not
         derived - this Task doesn't read idp's own cluster registry (a deliberately
         separate source of truth). It does read glidepath's own cluster registry
         live, but only to confirm the cluster is registered.
@@ -187,7 +187,7 @@ spec:
         }
 
         if [[ -z "${CLUSTER}" ]]; then
-          echo "error: cluster is required - gitops-${APP_NAME}'s layout is <cluster>/<env>/values.yaml, there's no manifest path to write without one. Set deploy.upperEnvironments' object form ({ name: ${ENV}, cluster: <cluster-name> }) in this app's cicd.yaml." >&2
+          echo "error: cluster is required - gitops-${APP_NAME}'s layout is <cluster>/<env>/values.yaml, there's no manifest path to write without one. Set cluster: <cluster-name> on the ${ENV} entry of deploy.environments in this app's cicd.yaml." >&2
           exit 1
         fi
 

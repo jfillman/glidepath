@@ -47,7 +47,7 @@ still current.
 
 ## Terminology
 
-- **env** - a logical upper-environment name from `cicd.yaml` (`deploy.upperEnvironments`,
+- **env** - a logical Flight environment name from `cicd.yaml` (`deploy.environments`,
   a release step's own `env:` field). Not tied to any particular cluster by name -
   `staging` is just whatever name a tenant's `cicd.yaml` uses.
 - **cluster** - which physical Kubernetes cluster hosts a given env, named via a release
@@ -105,16 +105,16 @@ equivalent caveat already documented for the dev cluster).
 
 ## The cluster registry and config-driven envs
 
-`cicd.yaml`'s `deploy.upperEnvironments` (already existed, previously RBAC-only) is now
-the single source of truth for which upper envs an app has and, optionally, which
-cluster each one lives on:
+`cicd.yaml`'s `deploy.environments` is the single source of truth for which Flight
+environments an app has and, optionally, which cluster each one lives on (it replaced the
+older `upperEnvironments`, ADR-0019):
 
 ```yaml
 deploy:
-  lowerEnvironments: [dev]
-  upperEnvironments:
-    - staging                          # same-cluster (today's only previous behavior)
-    - { name: prod, cluster: prod-2 }  # hosted on a different cluster
+  environments:
+    - { name: dev, tier: ground }
+    - { name: staging, tier: flight }                  # same cluster
+    - { name: prod, tier: flight, cluster: prod-2 }    # hosted on a different cluster
 ```
 
 A release step's own `env:` must name one of these; its optional `cluster:` (if set)
@@ -132,7 +132,7 @@ nothing for it at all - see the GitOps delivery section below (added once Phase 
 lands).
 
 **A real gap this closed**: before this session, a release step's `env` was required by
-schema but never checked against `upperEnvironments` at all (unlike `deploy`, which
+schema but never checked against the declared upper environments at all (unlike `deploy`, which
 already had this check) - `cicd-flow-test-app`'s own real, live config had two release
 flows using `env: staging` with `upperEnvironments: []`, silently relying on nothing.
 Fixed both the check and that tenant's config.

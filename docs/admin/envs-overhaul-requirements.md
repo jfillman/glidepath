@@ -233,8 +233,8 @@ Each phase is independently shippable and leaves existing apps unchanged.
 | 5 | Tower: add/edit/delete flow and shared form (R21, R22, R24, R18, R19) | Includes the delete impact preview. Ground add = one `cicd.yaml` PR (resync scaffolds the file); Flight add = `cicd.yaml` PR plus the ApplicationEnvironment template launched through the scaffolder API. No backend change: the existing cicd.yaml change route takes a `deploy` patch |
 | 6 | Cloud gated promotion (R9-R11) | [ADR-0020](adr/0020-cloud-gated-promotion-by-release-pin.md), accepted; all five slices built (2026-10-07). Slices 1-4 verified live on smoke-az-fn (deploy fails only at Azure: no infra); slice 5 Tower click-through owed |
 | 7 | Folder rename `platform/` to `glidepath/` (R14) | Done 2026-10-07: every app moved, dual-path shims removed (see [chart-contract.md](chart-contract.md#folder-glidepath-formerly-platform)) |
-| 8 | `deploy.chart` (R6) | [ADR-0023](adr/0023-per-app-chart-deploy-chart.md): Ground ApplicationSet moves into `glidepath-app`; Flight chart recorded in `identity.yaml` |
-| 9 | Migration PRs, then drop the old shape (R13, R15) | Only after every app is on the new shape |
+| 8 | `deploy.chart` (R6) | Done 2026-10-07: [ADR-0023](adr/0023-per-app-chart-deploy-chart.md) slices 1-5, end-to-end canary on travel-agent-api (`chartcanary` renders `charts/conformance-sample`) |
+| 9 | Migration PRs, then drop the old shape (R13, R15) | Done 2026-10-07: 10 apps migrated (render-identical each), old fields removed from the schema, chart, Tasks, Backstage and Tower |
 
 Phases 1 and 3 are low risk and visible; 2 is the one that could surprise existing apps,
 which is why it is read-only until the mapping has been checked against real repos.

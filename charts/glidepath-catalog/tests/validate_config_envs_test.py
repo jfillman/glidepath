@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """validate-cicd-config must hand every Task a config-json whose environment fields agree (ADR-0019).
 
-The Task fills in schema defaults, which adds lowerEnvironments: [dev], upperEnvironments: [] and
-promotionOrder: [] even for a file that declares deploy.environments. The normalization step
-that follows has to make the list and the three older fields consistent, whichever shape the
-developer wrote. This runs the Task's own jq programs (extracted from the rendered Task), not a copy.
+deploy.environments is passed through as declared, or defaults to one Ground environment, dev. The
+pre-ADR-0019 fields (lowerEnvironments, upperEnvironments, promotionOrder) were removed 2026-10-07 and
+are never filled in. This runs the Task's own jq programs (extracted from the rendered Task), not a copy.
 
 Run:  python3 charts/glidepath-catalog/tests/validate_config_envs_test.py   (needs helm, jq, pyyaml)
 """
@@ -62,49 +61,24 @@ def config_json(user_doc):
 
 
 BASE = {"apiVersion": "platform/v1", "kind": "PipelineConfig", "build": {"agent": "nodejs-22"}}
+OLD_KEYS = ("lowerEnvironments", "upperEnvironments", "promotionOrder")
 
 
 class ConfigJsonEnvironments(unittest.TestCase):
-    def test_new_shape_carries_consistent_old_fields(self):
-        d = config_json({**BASE, "deploy": {"environments": [
-            {"name": "dev", "tier": "ground"},
-            {"name": "test", "tier": "ground"},
-            {"name": "staging", "tier": "flight", "cluster": "kind-prod"},
-            {"name": "prod", "tier": "flight"},
-        ]}})
-        self.assertEqual(d["lowerEnvironments"], ["dev", "test"])  # not the schema default ["dev"]
-        self.assertEqual(d["upperEnvironments"], [{"name": "staging", "cluster": "kind-prod"}, "prod"])
-        self.assertEqual(d["promotionOrder"], ["dev", "test", "staging", "prod"])
-        self.assertEqual([e["name"] for e in d["environments"]], ["dev", "test", "staging", "prod"])
-
-    def test_old_shape_gains_the_equivalent_list(self):
-        d = config_json({**BASE, "deploy": {
-            "lowerEnvironments": ["dev", "test"],
-            "upperEnvironments": [{"name": "staging", "cluster": "kind-prod"}, "prod"],
-            "promotionOrder": ["dev", "test", "staging", "prod"],
-        }})
-        self.assertEqual(d["environments"], [
-            {"name": "dev", "tier": "ground"},
-            {"name": "test", "tier": "ground"},
-            {"name": "staging", "tier": "flight", "cluster": "kind-prod"},
-            {"name": "prod", "tier": "flight"},
-        ])
-        self.assertEqual(d["lowerEnvironments"], ["dev", "test"])  # untouched
-        self.assertEqual(d["promotionOrder"], ["dev", "test", "staging", "prod"])
-
-    def test_both_shapes_of_the_same_environments_agree_on_everything(self):
-        old = config_json({**BASE, "deploy": {
-            "lowerEnvironments": ["dev"], "upperEnvironments": [{"name": "staging", "cluster": "kind-prod"}],
-            "promotionOrder": ["dev", "staging"]}})
-        new = config_json({**BASE, "deploy": {"environments": [
-            {"name": "dev", "tier": "ground"}, {"name": "staging", "tier": "flight", "cluster": "kind-prod"}]}})
-        for key in ("environments", "lowerEnvironments", "upperEnvironments", "promotionOrder"):
-            self.assertEqual(old[key], new[key], key)
+    def test_the_declared_list_is_passed_through(self):
+        envs = [{"name": "dev", "tier": "ground"}, {"name": "staging", "tier": "flight", "cluster": "kind-prod"}]
+        d = config_json({**BASE, "deploy": {"environments": envs}})
+        self.assertEqual(d["environments"], envs)
 
     def test_nothing_declared_means_the_default_ground_dev(self):
         d = config_json(BASE)  # no deploy block at all
         self.assertEqual(d["environments"], [{"name": "dev", "tier": "ground"}])
-        self.assertEqual(d["lowerEnvironments"], ["dev"])
+
+    def test_the_removed_fields_are_not_filled_in(self):
+        # The schema no longer declares them, so apply-defaults has nothing to add (removed 2026-10-07).
+        d = config_json({**BASE, "deploy": {"environments": [{"name": "dev", "tier": "ground"}]}})
+        for key in OLD_KEYS:
+            self.assertNotIn(key, d)
 
     def test_a_cloud_app_keeps_its_target(self):
         d = config_json({**BASE, "deploy": {"target": "aws-lambda", "lambda": {"functionName": "f"},

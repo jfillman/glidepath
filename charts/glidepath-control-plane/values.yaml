@@ -7,7 +7,7 @@
 # own toolboxImage - kept in sync deliberately, not duplicated by accident. Defaults to
 # this repo's own published image (real, public, working) - override if you've built
 # and published your own copy.
-toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-07-deploy-chart-b
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-07-envs-only
 
 # The single shared namespace Testkube CE installs into on this cluster (see
 # gitops-cluster-dev/50-platform-cicd/testkube/application.yaml's own header for why
@@ -210,7 +210,7 @@ secretStore:
 
 # The cluster registry: an app's cicd.yaml never names infrastructure directly - a
 # release step's env: (e.g. "staging") is a tenant-facing config concept,
-# deploy.upperEnvironments maps that name to a cluster NAME (e.g. "kind-prod"), and
+# deploy.environments[].cluster maps that environment to a cluster NAME (e.g. "kind-prod"), and
 # THIS list is what that cluster name actually resolves to. Adding a cluster here is a
 # deliberate, operator-driven step, not something tenant onboarding does. Rendered
 # into a ConfigMap (templates/clusters/cluster-registry.yaml) that pipeline Tasks and

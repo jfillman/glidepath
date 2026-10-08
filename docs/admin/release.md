@@ -149,8 +149,8 @@ scaffolds `gitops-<app-name>` with the `<cluster>/<env>/values.yaml` layout
 Deployment manifest), and its own tenant-onboarding `ApplicationSet` already creates and
 owns the ArgoCD `Application` generically for every env - steps 2 and 5 below (manually
 pushing `deployment.yaml`, applying `release-application.yaml`) don't apply and would
-actively conflict with idp's mechanism. `cicd.yaml`'s `deploy.upperEnvironments` must use
-the `{ name: <env>, cluster: <cluster> }` object form, matching that
+actively conflict with idp's mechanism. The environment's `deploy.environments` entry in `cicd.yaml` must set
+`cluster: <cluster>` (with `tier: flight`), matching that
 `ApplicationEnvironment`'s own `spec.cluster` - see `open-release-pr.yaml`'s own
 2026-08-16 header for the full story. See idp's own docs for that onboarding path.
 

@@ -22,40 +22,34 @@
 #
 apiVersion: platform/v1
 kind: PipelineConfig
-
 build:
   agent: nodejs-20
   script: ./build.sh
   cache:
-    enabled: true   # promotion pipelines rebuild often - worth the dependency cache
+    enabled: true # promotion pipelines rebuild often - worth the dependency cache
     size: medium
-
 test:
   name: integration
-
 deploy:
-  lowerEnvironments: [dev]
-  upperEnvironments: [staging]   # REQUIRED here - the deploy step below targets
-                                  # staging, and that env must be listed in one of
-                                  # these two lists or validate-cicd-config rejects
-                                  # the flow
-
+  environments:
+    - name: dev
+      tier: ground
+    - name: staging
+      tier: flight
 governance:
-  sast: true          # real Semgrep scan, required to pass before the release PR merges
-  imageScan: true      # real Trivy scan
-  sbom: true            # real cosign SBOM attestation
-  policyCheck: false    # only controls a build-time shift-left copy of this check, if
-                         # one exists - the release-gate commit-signature check itself
-                         # always runs regardless of this flag (release gates are
-                         # enforced, not app-configurable), so allowedCommitSigners
-                         # still needs real entries or every release fails that gate -
-                         # see 10-production-grade.yaml
-
+  sast: true # real Semgrep scan, required to pass before the release PR merges
+  imageScan: true # real Trivy scan
+  sbom: true # real cosign SBOM attestation
+  policyCheck: false # only controls a build-time shift-left copy of this check, if
+  # one exists - the release-gate commit-signature check itself
+  # always runs regardless of this flag (release gates are
+  # enforced, not app-configurable), so allowedCommitSigners
+  # still needs real entries or every release fails that gate -
+  # see 10-production-grade.yaml
 notifications:
   slack:
     enabled: true
     channel: "#team-releases"
-
 pipelines:
   main-ci-cd:
     trigger:
@@ -71,7 +65,7 @@ pipelines:
       - stage: deploy
         env: staging
       - stage: release
-        env: staging   # REQUIRED on release too, same as deploy - but note it has
-                        # no live routing effect yet (every release promotes to the
-                        # same target regardless of this value) - see
-                        # ../features.md's "What's schema-accepted but not live yet"
+        env: staging # REQUIRED on release too, same as deploy - but note it has
+        # no live routing effect yet (every release promotes to the
+        # same target regardless of this value) - see
+        # ../features.md's "What's schema-accepted but not live yet"

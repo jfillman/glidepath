@@ -10,7 +10,7 @@
 # the field that would have made image-based correlation possible, is empty on this
 # ArgoCD install - checked live, not assumed).
 #
-# Same-cluster envs only (no cluster: set in deploy.upperEnvironments, see
+# Same-cluster envs only (no cluster: set on the deploy.environments entry, see
 # docs/multi-cluster.md) - this Task's direct kubectl patch assumes the Application
 # object lives on THIS cluster, which is only true for the same-cluster case; a
 # cluster-mapped env's tracking annotations are set a different way instead (via the

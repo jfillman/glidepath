@@ -103,7 +103,7 @@ spec:
       default: "staging"
       description: >-
         The upper environment being promoted to (this release step's own cicd.yaml
-        env:, already validated against deploy.upperEnvironments by validateFlows).
+        env:, already validated against deploy.environments by validateFlows).
         Already threaded through unconditionally by flow-triggers.yaml/
         deliver-onboarding-files.yaml for every stage - this Pipeline just didn't
         declare (or use) it before. See docs/multi-cluster.md.

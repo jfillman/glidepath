@@ -104,7 +104,7 @@ jobs:
             '    trigger:' \
             '      source: event' \
             '      event: artifact.published' \
-            'deploy: { lowerEnvironments: [dev, qa], upperEnvironments: [prod] }' \
+            'deploy: { environments: [{ name: dev, tier: ground }, { name: qa, tier: ground }, { name: prod, tier: flight }] }' \
             'governance: { policyCheck: true, allowedCommitSigners: [dev@example.com] }' \
             'ephemeralEnvironments: { pullRequest: { enabled: true } }' \
             'build: { cache: { enabled: true, size: large } }' \

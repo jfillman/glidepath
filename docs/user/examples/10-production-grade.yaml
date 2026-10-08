@@ -16,7 +16,6 @@
 #
 apiVersion: platform/v1
 kind: PipelineConfig
-
 build:
   agent: nodejs-20
   script: ./build.sh
@@ -27,40 +26,38 @@ build:
   cache:
     enabled: true
     size: medium
-
 test:
-  name: integration   # fallback default; the flow below overrides per-step anyway
-
+  name: integration # fallback default; the flow below overrides per-step anyway
 deploy:
-  lowerEnvironments: [dev]
-  upperEnvironments: [staging]
-
+  environments:
+    - name: dev
+      tier: ground
+    - name: staging
+      tier: flight
 governance:
   sast: true
   imageScan: true
-  policyCheck: true                        # requires signed commits - see below
+  policyCheck: true # requires signed commits - see below
   sbom: true
   allowedCommitSigners:
     - alice@example.com
     - bob@example.com
-
 notifications:
   slack:
     enabled: true
     channel: "#team-releases"
-    scanResults: true   # separate pings the moment sast/imageScan produce a result,
-                         # not just the general pass/fail per stage
-
+    scanResults: true # separate pings the moment sast/imageScan produce a result,
+    # not just the general pass/fail per stage
 pipelines:
   ci:
     trigger:
       source: git
       event: push
       branch: main
-      filePathPattern: ["api/**", "build.sh"]   # skip the whole flow entirely if a
-                                                  # push touches neither - useful in a
-                                                  # monorepo where this app is one of
-                                                  # several under one repo
+      filePathPattern: ["api/**", "build.sh"] # skip the whole flow entirely if a
+      # push touches neither - useful in a
+      # monorepo where this app is one of
+      # several under one repo
     steps:
       - stage: build
       - stage: test
@@ -74,12 +71,11 @@ pipelines:
       - stage: deploy
         env: staging
       - stage: release
-        env: staging   # promotes to the governed release path - the required GitHub
-                        # status checks in .Values.releaseGuardrails (sast/image-scan/
-                        # provenance/sbom today, see docs/admin/release-guardrails.md)
-                        # plus your gitops repo's own required-reviewer branch
-                        # protection have to pass before this can merge
-
+        env: staging # promotes to the governed release path - the required GitHub
+        # status checks in .Values.releaseGuardrails (sast/image-scan/
+        # provenance/sbom today, see docs/admin/release-guardrails.md)
+        # plus your gitops repo's own required-reviewer branch
+        # protection have to pass before this can merge
   pr-check:
     trigger:
       source: git
