@@ -8,7 +8,7 @@
 # the relay-secret names declared in .Values.clusters, plus the cluster-registry
 # ConfigMap. Adding a cluster later needs a `helm upgrade` here - accepted, matches this
 # platform's "manual by design" posture for infra-level config.
-{{- if .Values.clusters }}
+{{- if (include "glidepath-control-plane.remoteClusters" . | fromJson).items }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -34,7 +34,7 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     resourceNames:
-      {{- range .Values.clusters }}
+      {{- range (include "glidepath-control-plane.remoteClusters" . | fromJson).items }}
       - {{ .relaySecretName | quote }}
       {{- end }}
     verbs: ["get"]

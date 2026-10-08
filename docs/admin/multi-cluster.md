@@ -105,7 +105,9 @@ equivalent caveat already documented for the dev cluster).
 
 ## The cluster registry and config-driven envs
 
-**Cluster taxonomy (2026-10-08, [ADR-0024](adr/0024-cluster-taxonomy-zone-roles-tier.md)).** Each registry entry has a
+**One record per cluster (2026-10-08, [ADR-0024](adr/0024-cluster-taxonomy-zone-roles-tier.md)).** The registry is
+the hub cluster repo's `clusters.yaml`, passed to the control plane as a value file and read by Airframe's
+`charts/cluster-registry` too; a cluster is declared once. Each registry entry has a
 `zone` (`upper` by default: nothing below it can write to it; changes arrive only as reviewed merges its own Argo CD
 syncs) and `roles` (`workloads`, `platform-services`). The control plane's own cluster is described by
 `clusterZone: lower` and `clusterRoles` (including `control-plane`) instead of an entry. Apps receive the zones as
