@@ -74,11 +74,11 @@ platformCicdRepoUrl: ""
 # separately.
 clusterName: ""
 
-# This cluster's place in the cluster taxonomy (ADR-0024). zone: lower or upper - upper means nothing below it holds
-# a write credential to it and changes reach it only through a reviewed merge to a repo it watches. roles: what runs
-# here, any of control-plane (Tekton, Pipelines-as-Code, Results, the relay), workloads (application environments),
-# platform-services (Backstage, observability). The cluster running this chart is the control plane, so its own
-# zone is lower and its roles include control-plane.
+# This cluster's place in the cluster taxonomy (ADR-0024), used only when `clusters` below has no record named
+# clusterName (a record there wins). zone: lower or upper - upper means nothing below it holds a write credential to it
+# and changes reach it only through a reviewed merge to a repo it watches. roles: control-plane (Tekton,
+# Pipelines-as-Code, Results, the relay), workloads (application environments), platform-services (Backstage,
+# observability). The cluster running this chart is the control plane: zone lower, roles include control-plane.
 clusterZone: lower
 clusterRoles: [control-plane, workloads]
 
@@ -216,38 +216,35 @@ secretStore:
 # references idp's ClusterSecretStore directly by its own computed name - see that
 # file's header. See docs/admin/app-secrets.md for the full history of this mechanism.
 
-# The cluster registry: an app's cicd.yaml never names infrastructure directly - a
-# release step's env: (e.g. "staging") is a tenant-facing config concept,
-# deploy.environments[].cluster maps that environment to a cluster NAME (e.g. "kind-prod"), and
-# THIS list is what that cluster name actually resolves to. Adding a cluster here is a
-# deliberate, operator-driven step, not something tenant onboarding does. Rendered
-# into a ConfigMap (templates/clusters/cluster-registry.yaml) that pipeline Tasks and
-# the ArgoCD-outcome relay both resolve live against, rather than being duplicated
-# into every app's own Helm values - see that file's header for why.
+# The cluster registry: the fleet's cluster records, normally the hub cluster repo's clusters.yaml passed as a value
+# file (one record per cluster; Airframe's charts/cluster-registry reads the same file, so a cluster is declared once -
+# ADR-0024, amended 2026-10-08). An app's cicd.yaml names clusters only by name (deploy.environments[].cluster); this is
+# what a name resolves to. Rendered into the cluster-registry ConfigMap (templates/clusters/cluster-registry.yaml) that
+# pipeline Tasks and the release relay read.
 #
-# relaySecretName: name of a Secret in THIS namespace holding the shared bearer token
-# that cluster's notifications (Argo Rollouts and Argo CD) present to the release relay at
-# /facts/<cluster> and /argocd/<cluster>. ESO-backed - see templates/clusters/
-# relay-token-external-secret.yaml, synced from this control plane's own Infisical
-# project (a small number of platform-wide tokens, one per registered cluster - not an
-# app secret, so it lives in platform-cicd-kind-dev, not any app's own project).
-# The cluster's own copy of the token is what its notification config reads (docs/admin/release-state.md).
+# Per record, this chart reads:
+#   name                       the cluster's name (clusterName above for this control plane's own record)
+#   zone                       lower | upper. Remote default upper: every cluster registered before the taxonomy
+#                              received releases only through its own Argo CD (ADR-0005). This control plane's record
+#                              must be lower.
+#   roles                      control-plane (this control plane's record only), workloads, platform-services.
+#                              Remote default [workloads].
+#   glidepath.relaySecretName  remote clusters, required: the Secret (in this namespace, ESO-backed from this control
+#                              plane's Infisical project, see templates/clusters/relay-token-external-secret.yaml)
+#                              holding the token that cluster's notifications present to the relay at
+#                              /facts/<cluster> and /argocd/<cluster>. The older top-level relaySecretName still works.
+# Everything else (aliases, tenantsRepo, the airframe: section) is ignored here.
 #
-# zone (ADR-0024): lower or upper. Default upper - every cluster registered before the taxonomy existed received
-# releases only through its own Argo CD (ADR-0005). A lower cluster is valid but nothing deploys Ground environments to
-# one yet (multi-cluster Ground, known-gaps.md).
-# roles (ADR-0024): any of workloads, platform-services. Default [workloads]. control-plane is not allowed here:
-# one control plane, the cluster running this chart.
+# Without a record for this control plane's own cluster, clusterZone/clusterRoles describe it (standalone installs).
+# A remote record is also what turns on glidepath-relay (templates/clusters/glidepath-relay.yaml).
 #
-# Empty by default - this is cluster state (which real upper clusters are registered),
-# not chart source, so real entries live in each cluster's own gitops-cluster-<name>
-# repo. Rendering .Values.clusters non-empty is also what turns on glidepath-relay
-# itself (templates/clusters/glidepath-relay.yaml's own `if .Values.clusters`).
-#
+# - name: kind-dev
+#   zone: lower
+#   roles: [control-plane, workloads]
 # - name: kind-prod
-#   relaySecretName: cluster-kind-prod-relay-token
 #   zone: upper
 #   roles: [workloads, platform-services]
+#   glidepath: { relaySecretName: cluster-kind-prod-relay-token }
 clusters: []
 
 # The release relay's fact endpoints (POST /facts/<cluster>, /argocd/<cluster>; ADR-0021). "emit"

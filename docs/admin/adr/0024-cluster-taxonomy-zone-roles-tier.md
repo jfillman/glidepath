@@ -1,8 +1,9 @@
 # ADR-0024: Cluster taxonomy: zone, roles and environment tier
 
 *Status: Accepted (2026-10-08). Built: the registry fields, the control plane's own zone and roles, the
-`production` environment flag and its checks. Not built: Ground environments on other clusters
-([known-gaps.md](../known-gaps.md) #39), and moving Airframe's cluster registry onto these fields (#40).*
+`production` environment flag and its checks; amended the same day so one fleet file feeds both Glidepath and
+Airframe (see "One record per cluster"). Not built: Ground environments on other clusters
+([known-gaps.md](../known-gaps.md) #39).*
 
 ## Context
 
@@ -65,6 +66,48 @@ applies to it.
   (`gitops-cluster-dev/00-bootstrap/cluster-registry/*.yaml` ConfigMaps, `type: dev|upper`, read by the
   ApplicationEnvironment Composition). Airframe's `type: dev` is zone lower with the control-plane role; `type: upper`
   is zone upper. Consolidating them is known-gaps #40.
+
+### One record per cluster (amendment, 2026-10-08)
+
+The first version left two registries: Glidepath's `clusters:` values and Airframe's hand-written
+`crossplane-system` ConfigMaps (`type: dev|upper`, readiness flags), plus apron's `type` - the same facts typed in
+three places, already disagreeing (an unused `kiac-dev` duplicate of `kind-dev`). Now each cluster is one record in
+the hub cluster repo's `clusters.yaml` (next to `cluster-defaults.yaml`; format in apron `docs/clusters-file.md`):
+
+```yaml
+clusters:
+  - name: kind-dev
+    zone: lower
+    roles: [control-plane, workloads]
+    tenantsRepo: gitops-cluster-dev-tenants
+    aliases: [kiac-dev]
+    airframe: { cicdReady: true, infisicalHost: true }
+  - name: kind-prod
+    zone: upper
+    roles: [workloads, platform-services]
+    airframe: { crossplaneReady: true }
+    glidepath: { relaySecretName: cluster-kind-prod-relay-token }
+```
+
+Shared fields at the top; anything only one product needs under that product's key. Each product reads the file with
+its own adapter and ignores what it does not know:
+
+- Glidepath: the control-plane Application passes the file as a value file. The record named `clusterName` is this
+  control plane (must be lower, with `control-plane`); every other record is a remote cluster and needs
+  `glidepath.relaySecretName`.
+- Airframe: `charts/cluster-registry` renders the ConfigMaps its Compositions read, `type` derived from roles
+  (`control-plane` -> `dev`), readiness flags from the `airframe:` section, one ConfigMap per alias.
+
+Neither product imports the other or reads its live objects, so each still installs alone: a Glidepath-only cluster
+repo's file has shared fields and `glidepath:` sections, an Airframe-only one `airframe:` sections. Rejected: Glidepath
+reading Airframe's ConfigMaps (Argo CD renders the chart without cluster lookups, and it would need Airframe);
+Glidepath rendering them (couples Glidepath to Airframe's format); a `Cluster` custom resource (Glidepath needs the
+data at render time, so values would still carry it).
+
+**Names are identities, not runtimes.** `kind-dev` is the dev cluster's name although it now runs on kiac (kubectl
+context `kiac-dev`): the name is a key in 15 Infisical projects (`<app>-kind-dev`, `platform-cicd-kind-dev`), 15
+ClusterSecretStores, every Bootstrap XR's `devCluster`, Backstage's cluster config and Tower. A name should outlive the
+tool that runs the cluster; `aliases` records the other names a cluster answers to.
 
 ### Future: Ground environments on other clusters
 
