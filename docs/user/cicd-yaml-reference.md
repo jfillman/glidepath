@@ -484,14 +484,15 @@ deploy:
     - { name: dev,     tier: ground }
     - { name: test,    tier: ground }
     - { name: staging, tier: flight, cluster: kind-prod }
-    - { name: prod,    tier: flight, cluster: kind-prod }
+    - { name: prod,    tier: flight, cluster: kind-prod, production: true }
 ```
 
 | Field | Meaning |
 |---|---|
 | `name` | Lowercase letters, digits and `-`, starting with a letter, at most 31 characters; unique. |
 | `tier` | `ground`: deployed automatically on every push. `flight`: deployed only through a release PR and its guardrails (a release pin PR for a cloud target, ADR-0020). |
-| `cluster` | Flight only, and only when the environment runs on another cluster than the app's own. A Ground environment cannot set it yet. |
+| `cluster` | Flight only, and only when the environment runs on another cluster than the app's own. Must be a cluster in the platform registry. A Ground environment cannot set it yet (a future feature). |
+| `production` | `true` for the environment serving real users and real data. Must be a Flight environment, and (Kubernetes targets) its `cluster` must be an upper cluster: one nothing below it can write to, changed only through reviewed merges ([ADR-0024](../admin/adr/0024-cluster-taxonomy-zone-roles-tier.md)). |
 
 The list order is the promotion order: Tower promotes from each environment to the next, and a
 release names the environment it came from by it.

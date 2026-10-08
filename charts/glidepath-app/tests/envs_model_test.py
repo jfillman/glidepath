@@ -380,5 +380,62 @@ class Schema(unittest.TestCase):
         self.invalid(cicd(BUILD_DEPLOY, {"environments": []}))
 
 
+
+TAXONOMY = {"clusterTaxonomy": {"self": "kind-dev", "zones": {"kind-dev": "lower", "kind-prod": "upper", "edge-1": "lower"}}}
+
+
+def with_taxonomy(identity=IDENTITY):
+    return {**identity, **TAXONOMY}
+
+
+class ClusterTaxonomy(unittest.TestCase):
+    """ADR-0024: production environments, registered clusters."""
+
+    def envs(self, *flight):
+        return cicd(WITH_RELEASE, {"environments": [{"name": "dev", "tier": "ground"}, *flight]})
+
+    def test_production_on_an_upper_cluster_renders(self):
+        code, _, err = render(self.envs({"name": "staging", "tier": "flight", "cluster": "kind-prod", "production": True}), with_taxonomy())
+        self.assertEqual(code, 0, err)
+
+    def test_production_on_the_control_plane_cluster_is_refused(self):
+        code, _, err = render(self.envs({"name": "staging", "tier": "flight", "production": True}), with_taxonomy())
+        self.assertNotEqual(code, 0)
+        self.assertIn("must run on an upper cluster", err)
+
+    def test_production_on_a_lower_registered_cluster_is_refused(self):
+        code, _, err = render(self.envs({"name": "staging", "tier": "flight", "cluster": "edge-1", "production": True}), with_taxonomy())
+        self.assertNotEqual(code, 0)
+        self.assertIn("'edge-1', which is zone lower", err)
+
+    def test_production_ground_is_refused(self):
+        cfg = cicd(BUILD_DEPLOY, {"environments": [{"name": "dev", "tier": "ground", "production": True}]})
+        code, _, err = render(cfg, with_taxonomy())
+        self.assertNotEqual(code, 0)
+        self.assertIn("is production but tier ground", err)
+
+    def test_unregistered_cluster_is_refused(self):
+        code, _, err = render(self.envs({"name": "staging", "tier": "flight", "cluster": "nowhere"}), with_taxonomy())
+        self.assertNotEqual(code, 0)
+        self.assertIn("not in the cluster registry (known: edge-1, kind-dev, kind-prod)", err)
+
+    def test_without_taxonomy_only_the_tier_rule_applies(self):
+        code, _, err = render(self.envs({"name": "staging", "tier": "flight", "cluster": "nowhere", "production": True}))
+        self.assertEqual(code, 0, err)
+
+    def test_taxonomy_does_not_change_a_valid_render(self):
+        cfg = self.envs({"name": "staging", "tier": "flight", "cluster": "kind-prod"})
+        _, plain, _ = render(cfg)
+        _, taxed, _ = render(cfg, with_taxonomy())
+        self.assertEqual(docs(plain), docs(taxed))
+
+    def test_schema_accepts_production_and_refuses_a_non_boolean(self):
+        cfg = self.envs({"name": "staging", "tier": "flight", "cluster": "kind-prod", "production": True})
+        jsonschema.validate(cfg, SCHEMA)
+        cfg["deploy"]["environments"][1]["production"] = "yes"
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate(cfg, SCHEMA)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -30,6 +30,7 @@ distilled from.
 | [0021](0021-rollout-facts-and-release-record.md) | *Proposed.* Release events are facts from the Rollout, interpreted on dev (replaces the hook Jobs) |
 | [0022](0022-cdevents-conformance-and-vocabulary.md) | *Proposed.* CDEvents conformance (v0.5.1), subject and content discipline, the rollout event set, and what stays out of the events |
 | [0023](0023-per-app-chart-deploy-chart.md) | Per-app chart through `deploy.chart`: Ground via `glidepath-app`, Flight via `identity.yaml`, one default per cluster |
+| [0024](0024-cluster-taxonomy-zone-roles-tier.md) | Cluster taxonomy: zone (lower/upper) and roles per cluster, tier and `production` per environment; production runs on an upper cluster |
 
 New decisions get a new numbered file here, not a paragraph buried in an unrelated doc.
 

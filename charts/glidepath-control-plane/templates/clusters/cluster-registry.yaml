@@ -17,6 +17,6 @@ metadata:
 data:
   {{- range .Values.clusters }}
   {{ .name }}: |
-    {{- $entry := dict "relaySecretName" .relaySecretName }}
+    {{- $entry := dict "relaySecretName" .relaySecretName "zone" (include "glidepath-control-plane.clusterZone" .) "roles" (include "glidepath-control-plane.clusterRoles" . | fromJsonArray) }}
     {{ $entry | toJson }}
   {{- end }}
