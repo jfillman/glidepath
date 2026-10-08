@@ -39,7 +39,13 @@ spec:
   description: >-
     {{ $releaseDesc }}, scoped to its own GitOps repo and namespace only.
   sourceRepos:
-    - {{ .Values.platformIdentity.gitopsRepoUrl }}
+    {{- with .Values.platformIdentity.gitopsRepoUrl }}
+    - {{ . }}
+    {{- else }}
+    # A cloud app has no gitops repo (its releases are pin PRs on its own repo, ADR-0020): nothing to source. An
+    # empty value here rendered as [null], which the API server rejects, failing every sync of <app>-cicd.
+    []
+    {{- end }}
   destinations:
     {{- if gt (len $localUpperEnvs) 0 }}
     {{- range $localUpperEnvs }}
