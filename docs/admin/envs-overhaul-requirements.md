@@ -275,7 +275,9 @@ Answered by the owner on 2026-10-04:
 Proposed, awaiting confirmation (the owner asked how much complexity it adds, said they like
 the idea, and has not confirmed the approach):
 
-- **Q3 (Ground env on another cluster).** Proposed: the schema allows `cluster` on any
+- **Q3 (Ground env on another cluster).** *Resolved 2026-10-08:* the taxonomy it raised is
+  [ADR-0024](adr/0024-cluster-taxonomy-zone-roles-tier.md) (built); Ground on another cluster stays refused and is
+  recorded as a future feature (known-gaps.md #39). Original proposal: the schema allows `cluster` on any
   environment from day one (no later breaking change); the validator rejects a Ground
   `cluster` that differs from the app's dev cluster until multi-cluster Ground is built as
   its own phase. That phase needs the cluster's own ArgoCD to generate the Application, the

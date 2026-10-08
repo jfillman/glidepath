@@ -145,7 +145,26 @@ the source repo (ADR-0020), sets no cluster, and gets no Kubernetes artifacts (l
     {{- fail (printf "deploy.environments: environment '%s' has tier '%v', expected ground or flight" .name .tier) -}}
   {{- end -}}
   {{- if and (eq .tier "ground") .cluster -}}
-    {{- fail (printf "deploy.environments: Ground environment '%s' sets cluster '%s'. A Ground environment runs on the app's own dev cluster; Ground environments on other clusters are not supported yet" .name .cluster) -}}
+    {{- fail (printf "deploy.environments: Ground environment '%s' sets cluster '%s'. A Ground environment runs on the app's own dev cluster; Ground environments on other clusters are not supported yet (known-gaps.md, multi-cluster Ground)" .name .cluster) -}}
+  {{- end -}}
+  {{- /* Cluster taxonomy (ADR-0024). clusterTaxonomy is forwarded by glidepath-control-plane: the control plane's own
+  cluster name and every known cluster's zone. Without it (an install that does not forward it) only the tier rule
+  below applies. */ -}}
+  {{- if and (hasKey . "production") (not (kindIs "bool" .production)) -}}
+    {{- fail (printf "deploy.environments: environment '%s' has production '%v', expected true or false" .name .production) -}}
+  {{- end -}}
+  {{- if and .production (ne .tier "flight") -}}
+    {{- fail (printf "deploy.environments: environment '%s' is production but tier %s. A production environment is a Flight environment: it changes only through an approved release (ADR-0024)" .name .tier) -}}
+  {{- end -}}
+  {{- $zones := (($.Values.clusterTaxonomy).zones) | default dict -}}
+  {{- if and $zones .cluster (not (hasKey $zones .cluster)) -}}
+    {{- fail (printf "deploy.environments: environment '%s' names cluster '%s', which is not in the cluster registry (known: %s)" .name .cluster (keys $zones | sortAlpha | join ", ")) -}}
+  {{- end -}}
+  {{- if and $zones .production $k8s -}}
+    {{- $where := .cluster | default (($.Values.clusterTaxonomy).self) -}}
+    {{- if ne (get $zones $where) "upper" -}}
+      {{- fail (printf "deploy.environments: production environment '%s' would run on cluster '%s', which is zone %s. A production environment must run on an upper cluster: one nothing below it can write to, changed only through reviewed merges (ADR-0024). Set its cluster to an upper cluster" .name $where (get $zones $where)) -}}
+    {{- end -}}
   {{- end -}}
   {{- /* A per-environment cloud block must be the one for the app's target; a Kubernetes app has none. */ -}}
   {{- $envName := .name -}}

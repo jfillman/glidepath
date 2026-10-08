@@ -118,7 +118,12 @@
               },
               "cluster": {
                 "type": "string",
-                "description": "Flight only, and only when the environment runs on a different cluster than the app's own (a cluster name from the platform cluster registry). A Ground environment cannot set it yet."
+                "description": "Flight only, and only when the environment runs on a different cluster than the app's own (a cluster name from the platform cluster registry). A Ground environment cannot set it yet: Ground environments on other clusters are a future feature (docs/admin/known-gaps.md)."
+              },
+              "production": {
+                "type": "boolean",
+                "default": false,
+                "description": "Marks the environment that serves real users and real data (ADR-0024). Must be a Flight environment, and for a Kubernetes target its cluster must be an upper cluster in the platform cluster registry (one nothing below it can write to, changed only through reviewed merges)."
               },
               "ecs": {
                 "$ref": "#/properties/deploy/properties/ecs",

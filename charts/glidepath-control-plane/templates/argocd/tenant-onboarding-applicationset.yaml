@@ -111,6 +111,11 @@ spec:
               defaultChart:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
+              {{- if .Values.clusterName }}
+              # ADR-0024: the control plane's name and each known cluster's zone, for glidepath-app's environment checks.
+              clusterTaxonomy:
+                {{- include "glidepath-control-plane.clusterTaxonomy" . | nindent 16 }}
+              {{- end }}
             valueFiles:
               # $ref value files resolve relative to that source's checkout root -
               # cicd.yaml always lives at the app repo's own root, identity.yaml at

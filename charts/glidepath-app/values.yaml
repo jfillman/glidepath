@@ -186,6 +186,11 @@ devClusterName: kind-dev
 # cluster-defaults.yaml (ADR-0023 slice 1). Unset: idpServiceCatalog below.
 defaultChart: {}
 
+# The cluster taxonomy (ADR-0024), passed in by the control plane: {self: <control-plane cluster>, zones: {<cluster>:
+# lower|upper}}. Used only by the deploy.environments checks (a named cluster must be registered; a production
+# environment must run on an upper cluster). Unset: those checks are skipped.
+clusterTaxonomy: {}
+
 idpServiceCatalog:
   repoUrl: https://github.com/jfillman/airframe.git
   # 2026-09-23: v0.3.63 -> v0.3.83, in step with every other consumer (gitops-cluster-dev's
@@ -211,7 +216,7 @@ idpServiceCatalog:
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
 # public, working) - override if you've built and published your own copy.
-toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-07-envs-only
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-08-production-flag
 
 # The single shared namespace Testkube CE installs into on this cluster - see
 # templates/testkube/rbac-and-secret.yaml's own header for why this Application

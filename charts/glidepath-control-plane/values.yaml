@@ -7,7 +7,7 @@
 # own toolboxImage - kept in sync deliberately, not duplicated by accident. Defaults to
 # this repo's own published image (real, public, working) - override if you've built
 # and published your own copy.
-toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-07-envs-only
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-08-production-flag
 
 # The single shared namespace Testkube CE installs into on this cluster (see
 # gitops-cluster-dev/50-platform-cicd/testkube/application.yaml's own header for why
@@ -73,6 +73,14 @@ platformCicdRepoUrl: ""
 # "kind-dev") for any new cluster instead of hand-typing both derived fields
 # separately.
 clusterName: ""
+
+# This cluster's place in the cluster taxonomy (ADR-0024). zone: lower or upper - upper means nothing below it holds
+# a write credential to it and changes reach it only through a reviewed merge to a repo it watches. roles: what runs
+# here, any of control-plane (Tekton, Pipelines-as-Code, Results, the relay), workloads (application environments),
+# platform-services (Backstage, observability). The cluster running this chart is the control plane, so its own
+# zone is lower and its roles include control-plane.
+clusterZone: lower
+clusterRoles: [control-plane, workloads]
 
 # Which repo/path the tenant-onboarding ApplicationSet's generator scans for
 # tenants/*/identity.yaml (templates/argocd/tenant-onboarding-applicationset.yaml) and
@@ -225,6 +233,12 @@ secretStore:
 # app secret, so it lives in platform-cicd-kind-dev, not any app's own project).
 # The cluster's own copy of the token is what its notification config reads (docs/admin/release-state.md).
 #
+# zone (ADR-0024): lower or upper. Default upper - every cluster registered before the taxonomy existed received
+# releases only through its own Argo CD (ADR-0005). A lower cluster is valid but nothing deploys Ground environments to
+# one yet (multi-cluster Ground, known-gaps.md).
+# roles (ADR-0024): any of workloads, platform-services. Default [workloads]. control-plane is not allowed here:
+# one control plane, the cluster running this chart.
+#
 # Empty by default - this is cluster state (which real upper clusters are registered),
 # not chart source, so real entries live in each cluster's own gitops-cluster-<name>
 # repo. Rendering .Values.clusters non-empty is also what turns on glidepath-relay
@@ -232,6 +246,8 @@ secretStore:
 #
 # - name: kind-prod
 #   relaySecretName: cluster-kind-prod-relay-token
+#   zone: upper
+#   roles: [workloads, platform-services]
 clusters: []
 
 # The release relay's fact endpoints (POST /facts/<cluster>, /argocd/<cluster>; ADR-0021). "emit"
