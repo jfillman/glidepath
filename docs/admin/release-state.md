@@ -47,7 +47,7 @@ it afterwards, and the sweeper removes it past its retention.
 
 | Move | Caused by | Written by |
 |---|---|---|
-| (new) → `proposed` | The release PR opens | `open-release-pr` |
+| (new) → `proposed` | The release PR opens | `open-release-pr` (also for Tower's Promote, see below) |
 | `proposed` → `merged` | The gitops PR merges | `mark-release-merged`, run by `bypass-merge-check`, which is triggered by the **push to main the merge produces** (`resolve-merged-pr` turns the pushed commit back into the PR number; a push that is not a PR merge skips it). It only moves `proposed` (or a record with no state), never a state the relay owns. |
 | `merged` → `progressing` | The Rollout reports `Progressing` or `Paused` | relay |
 | `merged` → `sync-failed` | Argo CD reports a failing sync | relay |
@@ -57,6 +57,12 @@ it afterwards, and the sweeper removes it past its retention.
 | `aborted` / `degraded` → `healthy` | The Rollout recovers | relay |
 | `healthy` → `superseded` | A newer release of the same app, environment and cluster reports its first fact | relay |
 | `healthy` → `rolled-back` | A rollback release turns healthy (phase 4, not built) | relay |
+
+Tower's Promote to a Flight environment runs the same `release` Pipeline, from the
+`promote-release` TriggerTemplate glidepath-app renders into each Kubernetes app's `-cicd`
+namespace; Backstage fills its params and creates the PipelineRun. Until 2026-10-08 the
+Backstage backend opened the release PR itself and wrote no record, so the relay dropped every
+fact for a Tower-promoted release as `no-record`.
 
 `sync-failed` is not terminal. `healthy`, `aborted`, `degraded`, `superseded`, `rolled-back`
 and `closed` are.

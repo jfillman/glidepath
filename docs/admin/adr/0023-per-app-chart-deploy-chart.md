@@ -64,6 +64,15 @@ tenants repo updating it, the same two-PR pattern as adding a Flight environment
 ([ADR-0019](0019-environments-as-one-config-model.md)). A chart change to a Flight
 environment is therefore approval-gated like a release.
 
+**Amended 2026-10-08.** The sync PR edits `spec.chart` on the environment's
+`ApplicationEnvironment` request (`gitops-cluster-dev-tenants`, `tenants/<app>/xr-requests/`), and
+Airframe's Composition renders it into `identity.yaml` (airframe#53, v0.3.119). The first version
+edited `identity.yaml` directly; the Composition owns that file (its RepositoryFile includes the
+Update policy) and reverted the edit 30 minutes after it merged (gate-api staging). With the
+chart on the request there is one writer. On a cluster other than Airframe's chart repo, the
+chart's repository must also be in that cluster's tenant AppProject `allowedChartRepos`
+(`gitops-cluster-kind-prod`, `02-argocd-apps/tenant-appprojects/chart/values.yaml`).
+
 ### One default per cluster, and the gate follows the chart
 
 Each cluster's default chart reference lives in one place, read by both ApplicationSets
@@ -127,8 +136,9 @@ change reaches pods through the Rollout's own strategy like any other spec chang
   ApplicationSet's Applications are adopted by the new one. Same care as known-gap #29:
   `preserveResourcesOnDeletion` first as its own change, verified, then the swap, on one
   app first.
-- `identity.yaml` gains a field written by two paths (the XR at creation, Glidepath's sync
-  PR afterwards); the sync PR is the source of truth after creation.
+- `identity.yaml` gains a field, rendered only by the `ApplicationEnvironment` Composition from the
+  request's `spec.chart`, which Glidepath's sync PR sets (amended 2026-10-08: the first design had two
+  writers, and the Composition's reconcile reverted the other one).
 - `cicd.schema.json` gains `deploy.chart` and `environments[].chart`: a toolbox rebuild and
   a `toolboxImage` bump in three values files.
 - A custom chart must pass chart-contract.md's conformance checklist; Glidepath does not
