@@ -31,7 +31,9 @@ metadata:
     hangar.io/subcomponent: "tekton-results-relay"
 rules:
   - apiGroups: ["results.tekton.dev"]
-    resources: ["results", "records"]
+    # logs: archived step logs for Tower's pipeline history (the relay answered 401 for them, 2026-10-08); summary:
+    # run counts per time window. Same read-only set as the stock tekton-results-readonly ClusterRole.
+    resources: ["results", "records", "logs", "summary"]
     verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
