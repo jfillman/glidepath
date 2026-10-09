@@ -54,7 +54,7 @@ spec:
     #!/usr/bin/env bash
     set -euo pipefail
     source "${PLATFORM_LIB}/otel.sh"
-    echo "[governance-stub] gate=$1 - no real check implemented yet, see docs/governance-stubs.md" >&2
+    echo "[governance-stub] gate=$1 - no real check implemented yet, see Glidepath docs/admin/governance-stubs.md" >&2
     if [[ -n "$2" ]]; then
       otel_child_span "governance:$1" "$2" "$3" "governance.gate=$1,governance.stub=true" -- true
     else

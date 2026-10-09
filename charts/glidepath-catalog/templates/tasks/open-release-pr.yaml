@@ -87,6 +87,10 @@ spec:
       type: string
       default: "{}"
       description: cicd.yaml's resolved content (resolve-notify-config's result) - rides into the release record ConfigMap so notify-slack can render the outcome message when the relay reports the outcome.
+    - name: initiator
+      type: string
+      default: ""
+      description: Who asked for this release when a person did (Tower's Promote, via the promote-release template), named in the PR body. Empty for a release step in a flow.
   results:
     - name: pr-url
       description: URL of the opened (or already-open, on retry) release PR.
@@ -136,6 +140,8 @@ spec:
           value: $(params.flow-start-time)
         - name: CONFIG_JSON
           value: $(params.config-json)
+        - name: INITIATOR
+          value: $(params.initiator)
         - name: NAMESPACE
           # For the release-tracking ConfigMap (this cluster, this Application's own
           # namespace) - $(context.taskRun.namespace) is the correct Task-level
@@ -337,9 +343,11 @@ spec:
         # broke the surrounding Task's own YAML by terminating the block scalar early
         # (see docs/admin/multi-cluster.md's "Live end-to-end verification" section for
         # the real, live-confirmed bug this technique was adopted to avoid).
-        governance_text="$(printf '\n\n## Governance checks\n\n| Check | What it verifies | Status |\n|---|---|---|\n{{ range .Values.releaseGuardrails }}| `{{ .name }}` | {{ .description | replace "'" "'\"'\"'" }} | {{ if eq .status "real" }}real{{ else }}not yet real - see docs/governance-stubs.md{{ end }} |\n{{ end }}\n**If a check fails**: comment `/retest <check-name>` on this PR to re-run just that one (e.g. `/retest sast`), or `/retest` alone to re-run all of them. Fix the underlying issue first if the failure is real - re-running does not bypass a check, it only re-evaluates it.')"
-        pr_body_text="$(printf '**App**: %s\n**Env**: %s\n**Repo**: [%s](%s)\n**Commit**: [`%s`](%s/commit/%s)\n**Image**: `%s`\n\nMerging this PR triggers ArgoCD to sync it to %s. See docs/release.md.%s' \
-          "${APP_NAME}" "${ENV}" "${repo_short}" "${GIT_URL}" "${commit_short}" "${GIT_URL}" "${GIT_REVISION}" "${IMAGE_REF}" "${ENV}" "${governance_text}")"
+        governance_text="$(printf '\n\n## Governance checks\n\n| Check | What it verifies | Status |\n|---|---|---|\n{{ range .Values.releaseGuardrails }}| `{{ .name }}` | {{ .description | replace "'" "'\"'\"'" }} | {{ if eq .status "real" }}real{{ else }}not yet real - see Glidepath docs/admin/governance-stubs.md{{ end }} |\n{{ end }}\n**If a check fails**: comment `/retest <check-name>` on this PR to re-run just that one (e.g. `/retest sast`), or `/retest` alone to re-run all of them. Fix the underlying issue first if the failure is real - re-running does not bypass a check, it only re-evaluates it.')"
+        requested=""
+        [[ -n "${INITIATOR}" ]] && requested="$(printf '\n**Requested by**: %s (via Tower Promote)' "${INITIATOR}")"
+        pr_body_text="$(printf '**App**: %s\n**Env**: %s\n**Repo**: [%s](%s)\n**Commit**: [`%s`](%s/commit/%s)\n**Image**: `%s`%s\n\nMerging this PR triggers ArgoCD to sync it to %s. See Glidepath docs/admin/release.md.%s' \
+          "${APP_NAME}" "${ENV}" "${repo_short}" "${GIT_URL}" "${commit_short}" "${GIT_URL}" "${GIT_REVISION}" "${IMAGE_REF}" "${requested}" "${ENV}" "${governance_text}")"
         pr_body="$(jq -n \
           --arg title "Release: ${APP_NAME} to ${ENV} @ ${image_tag}" \
           --arg body "${pr_body_text}" \
