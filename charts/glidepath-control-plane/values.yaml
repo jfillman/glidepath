@@ -51,6 +51,16 @@ interceptorImage: ghcr.io/jfillman/glidepath-token-review-interceptor:latest
 # doraExporterImage above (real registry-published tag, not a local-only build).
 tektonResultsRelayImage: ghcr.io/jfillman/glidepath-tekton-results-relay:latest
 
+# Shared Trivy server (templates/trivy/trivy-server.yaml): holds the vulnerability DB so the catalog's
+# image-scan/generate-sbom pods stop downloading it. Keep the tag equal to TRIVY_VERSION in
+# catalog/toolbox/Dockerfile (Trivy client and server must match).
+trivyServer:
+  enabled: true
+  image: ghcr.io/aquasecurity/trivy:0.73.0
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1Gi }
+
 # This platform's own repo - the tenant-onboarding ApplicationSet (templates/argocd/
 # tenant-onboarding-applicationset.yaml) reads tenants/*.yaml from here (its generator
 # source) AND renders the glidepath-app chart straight from here at main HEAD. Also

@@ -1,0 +1,86 @@
+{{- if .Values.trivyServer.enabled }}
+# One Trivy server for the whole platform (2026-10-09, pipeline-performance report item 4).
+#
+# Before this every image-scan and generate-sbom pod downloaded Trivy's vulnerability DB (~120 MiB from
+# mirror.gcr.io; 51 s in a measured image-scan log) - in every build and again in the gitops image-scan-check
+# gate. The server holds the DB and refreshes it itself; the catalog Tasks run `trivy image --server ...`
+# (client/server mode): the client still pulls and analyzes the image, then asks the server to match the
+# packages it found. Cluster-agnostic: no node-pinned cache PVC, works on any node count.
+#
+# Clients fall back to standalone mode (their own DB download, the old behaviour) when /healthz does not answer,
+# so a server outage slows scans down rather than failing them. Client and server must run the same Trivy
+# version: trivyServer.image's tag follows TRIVY_VERSION in catalog/toolbox/Dockerfile.
+#
+# No token: the server only answers "which known vulnerabilities affect these package versions" for whatever a
+# client sends it, from a public database. It reads nothing from the cluster, and has no ServiceAccount token.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trivy-server
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "trivy-server"
+  namespace: platform-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: trivy-server }
+  template:
+    metadata:
+      labels: { app: trivy-server }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      volumes:
+        # The DB is re-downloaded on a restart; an emptyDir keeps this free of node-pinned storage.
+        - name: cache
+          emptyDir: { sizeLimit: 2Gi }
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: trivy
+          image: {{ .Values.trivyServer.image }}
+          imagePullPolicy: IfNotPresent
+          args: ["server", "--listen", "0.0.0.0:4954", "--cache-dir", "/cache"]
+          env:
+            - { name: HOME, value: /tmp }
+          ports: [{ containerPort: 4954, name: http }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          # The first DB download happens before the server answers; give it time on a slow link.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.trivyServer.resources | nindent 12 }}
+          volumeMounts:
+            - { name: cache, mountPath: /cache }
+            - { name: tmp, mountPath: /tmp }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trivy-server
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "trivy-server"
+  namespace: platform-system
+spec:
+  selector: { app: trivy-server }
+  ports: [{ name: http, port: 4954, targetPort: http }]
+{{- end }}

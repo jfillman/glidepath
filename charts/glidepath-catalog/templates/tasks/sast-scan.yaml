@@ -83,7 +83,15 @@ spec:
 
         # --json --output writes to a FILE so stdout stays human-readable (unlike Trivy,
         # whose --format fully replaces stdout).
-        semgrep scan --config p/ci --config p/security-audit --error --json --output /tmp/scan-results.json . 2>&1 | tee /tmp/scan-output.txt
+        #
+        # --metrics=off (2026-10-09, report item 9): no usage telemetry to semgrep.dev from
+        # a build. The rule packs are still fetched from the registry: measured in fresh
+        # pods on kiac-dev, registry and vendored rules both scan gate-api in 3-10 s (the
+        # fetch is well under a second), and the 5-239 s spread of this step in Tekton
+        # Results tracks node CPU contention, not the fetch. Vendoring was also ruled out
+        # on licence grounds: the packs are under the Semgrep Rules License v1.0, and
+        # this repo and the toolbox image are public.
+        semgrep scan --metrics=off --config p/ci --config p/security-audit --error --json --output /tmp/scan-results.json . 2>&1 | tee /tmp/scan-output.txt
         EXIT_CODE=${PIPESTATUS[0]}
 
         date -u +"%Y-%m-%dT%H:%M:%SZ" | tee "$(results.span-end-time.path)"
