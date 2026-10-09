@@ -38,6 +38,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # kiac-dev is arm64 and kind-prod amd64: an amd64-only push crash-looped
+      # cdevents-broker-auth on kiac-dev (2026-10-09). The Dockerfile cross-compiles,
+      # so no QEMU is needed.
+      - uses: docker/setup-buildx-action@v3
+
       - name: Build and push interceptor image
         id: image
         working-directory: glidepath/broker
@@ -48,8 +53,13 @@ jobs:
           sha_tag="sha-$(git rev-parse --short HEAD)"
           image="ghcr.io/jfillman/glidepath-token-review-interceptor:${sha_tag}"
 
-          docker build -f cmd/token-review-interceptor/Dockerfile -t "${image}" .
-          docker push "${image}"
+          docker buildx build --platform linux/amd64,linux/arm64 --push \
+            -f cmd/token-review-interceptor/Dockerfile -t "${image}" .
+
+          # Refuse to bump the deployed tag to an image missing an arch a cluster runs on.
+          archs=$(docker buildx imagetools inspect "${image}" --format '{{json .Manifest}}' | jq -r '[.manifests[].platform.architecture | select(. != "unknown")] | sort | join(",")')
+          echo "pushed ${image} for ${archs}"
+          [ "${archs}" = "amd64,arm64" ] || { echo "expected amd64,arm64, got ${archs}"; exit 1; }
 
           echo "image=${image}" >> "$GITHUB_OUTPUT"
 
