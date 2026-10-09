@@ -95,7 +95,8 @@ spec:
 
           # printf, not `uuidgen | tee` - uuidgen's own trailing newline was landing in
           # the result verbatim. Harmless on its own, but once chain-id started being
-          # joined into a comma-separated otel-cli --attrs string (end-stage-span.yaml),
+          # joined into a comma-separated otel-cli --attrs string (stage-finish.yaml's
+          # end-stage-span step),
           # that embedded newline broke otel-cli's CSV-based attrs parser: it silently
           # dropped everything after the newline (platform.stage never made it into the
           # span). Caught live by checking a real span's actual attributes in Tempo -

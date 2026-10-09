@@ -251,6 +251,19 @@ replacing) the existing domain-specific event - **deliberately not gated** on
 "the pipeline finished" is true whether it succeeded or failed, and a uniform completion
 signal that only reports on success isn't a useful uniform signal at all.
 
+**One finally pod per stage (2026-10-08).** Both finally-block events, the stage span
+send, the flow-root span close and the Slack/Backstage notifications now run as steps of
+one Task, `stage-finish.yaml` (pipelineTask `finish`), instead of six independent finally
+TaskRuns - each of which cost 13-17s p50 of pod start-up for under 2s of work. The event
+code itself moved into the `cdevent-send` StepAction, which both `finish` and the thin
+`send-cdevent` Task (still used for the mid-DAG `pipelinerun.started`) reference. The
+old `when:` gates became StepAction params: the domain event's success gate is
+`only-on-success`+`status`, the flow-root close is `otel-span-send`'s `enabled`. Every
+step is `onError: continue` and a final `verdict` step re-raises any failure, so a failed
+event still fails the PipelineRun exactly as a failed finally TaskRun did - but can no
+longer prevent the other finally work from happening. See that Task's header for the
+result-reference rules that keep it from being skipped on a failed stage.
+
 **Outcome mapping**: Tekton's real `status.conditions[].reason` values (`Succeeded`,
 `Completed`, `Failed`, `Cancelled`, `PipelineRunTimeout`, plus other less common error
 reasons - confirmed against Tekton's own docs) don't match CDEvents' `outcome` enum

@@ -4,10 +4,17 @@ Two independent targets, toggled separately per app in `cicd.yaml`: [Slack](#sla
 
 # Slack notifications
 
-Every stage's pipeline (`build`/`test`/`deploy`/`release`) calls
-`charts/glidepath-catalog/templates/tasks/notify-slack.yaml` unconditionally in its `finally` block - one status
-message per stage completion, with a failure log excerpt appended when the stage didn't
-succeed.
+Every stage's pipeline (`build`/`test`/`deploy`/`release`) sends one status message per
+stage completion, with a failure log excerpt appended when the stage didn't succeed. The
+message logic is the `notify-slack` StepAction
+(`charts/glidepath-catalog/templates/stepactions/notify-slack.yaml`). The four stage
+Pipelines run it as one step of their single `finish` finally Task
+(`tasks/stage-finish.yaml` - one pod for the stage span, both notifications, the stage's
+CDEvent and `pipelinerun.finished`, replacing six separate finally pods as of 2026-10-08);
+`release-outcome-notify`/`release-progress-notify` run the same StepAction through the
+thin `notify-slack` Task wrapper. The notification fires unconditionally in both shapes,
+and the `finish` Task's step order and `onError: continue` guarantee a failed span send or
+CDEvent can't suppress it.
 
 `sast-scan`/`image-scan` (Phase 3 items 8.4/8.5) additionally send their own, separate
 shift-left notification the moment each real scan produces a result, rather than waiting
@@ -98,9 +105,9 @@ that file rather than assumed.
 # Backstage notifications
 
 Sibling to the Slack path above, sending the same general build/test/deploy/release
-pass-fail message (`charts/glidepath-catalog/templates/tasks/notify-backstage.yaml`,
-called from the same unconditional `finally` block as `notify-slack.yaml`, right next to
-it) into Backstage's own Notifications plugin (`@backstage/plugin-notifications-backend`,
+pass-fail message (the `notify-backstage` StepAction, run as the step right after
+`notify-slack` in the same `finish` finally Task, or via the `notify-backstage` Task
+wrapper from the release notify pipelines) into Backstage's own Notifications plugin (`@backstage/plugin-notifications-backend`,
 already installed and wired in the `backstage` repo - `packages/backend/src/index.ts`)
 instead of a Slack channel. Toggled independently via `notifications.backstage.enabled`
 in `cicd.yaml` - an app can run Slack, Backstage, both, or neither. Viewable in Tower's
@@ -151,8 +158,9 @@ call, not an in-cluster one:
        enabled: true
    ```
 
-Nothing else to apply - `notify-backstage.yaml`'s volume mount is already wired into
-every pipeline via the existing, unconditional `notify-backstage` finally task.
+Nothing else to apply - the `glidepath-backstage-notify` Secret mount is already wired
+into every pipeline via the `finish` finally Task (and the `notify-backstage` Task
+wrapper for the release notify pipelines).
 
 ## Message format
 

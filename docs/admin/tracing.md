@@ -53,10 +53,11 @@ per-stage drill-down the dashboard needs (see
 ## Which stage closes the flow-root span
 
 Every stage Pipeline (`build`/`test`/`deploy`/`release`) carries an identical
-`is-flow-terminal` param (default `"false"`) and an identical, identically-gated
-`end-flow` `finally` task that calls `end-flow-root-span` iff `is-flow-terminal ==
-"true"`. Which one actually fires is decided per-flow, at generation time, by whichever
-generator produced that step's PipelineRun:
+`is-flow-terminal` param (default `"false"`) and passes it to its single `finish`
+finally Task (`stage-finish.yaml`), whose `end-flow` step sends the flow-root span iff
+`is-flow-terminal == "true"` (the gate is `otel-span-send`'s `enabled` param - Tekton has
+no per-step `when:`). Which stage actually fires it is decided per-flow, at generation
+time, by whichever generator produced that step's PipelineRun:
 
 - `deliver-onboarding-files.yaml` (git-rooted first step) sets it `true` iff the flow
   has exactly one step - i.e. the first step is also the last.

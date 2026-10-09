@@ -314,122 +314,43 @@ spec:
         - { name: flow-traceparent, value: $(tasks.start-flow.results.traceparent) }
         - { name: stage-span-id, value: $(tasks.start-build-stage-span.results.span-id) }
 
+  # One finally Task, one pod (2026-10-08) - replaces the six separate finally tasks this
+  # Pipeline used to carry (end-build-stage-span, end-flow, notify, notify-backstage,
+  # send-cdevent, pipelinerun-finished). Same side effects in the same order; see
+  # stage-finish.yaml's header for what is preserved and why its result references are
+  # deliberately fewer than the old tasks' were.
   finally:
-    - name: end-build-stage-span
+    - name: finish
       taskRef:
         resolver: cluster
         params:
           - { name: kind, value: task }
-          - { name: name, value: end-stage-span }
+          - { name: name, value: stage-finish }
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
         - { name: stage-name, value: build }
-        - { name: flow-traceparent, value: $(tasks.start-flow.results.traceparent) }
-        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
-        - { name: span-id, value: $(tasks.start-build-stage-span.results.span-id) }
-        - { name: start-time, value: $(tasks.start-build-stage-span.results.start-time) }
         - { name: status, value: $(tasks.status) }
-
-    # Closes the flow-root span iff build happens to be the LAST step of its flow (a
-    # build-only flow) - see is-flow-terminal above and docs/tracing.md. Every stage
-    # Pipeline carries an identical copy of this task, gated the same way; whichever one
-    # is actually terminal for THIS flow instance is the one that fires.
-    - name: end-flow
-      when:
-        - { input: $(params.is-flow-terminal), operator: in, values: ["true"] }
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: end-flow-root-span }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
+        - { name: is-flow-terminal, value: $(params.is-flow-terminal) }
         - { name: flow-name, value: "$(params.app-namespace)/$(params.app-name)" }
         - { name: flow-traceparent, value: $(tasks.start-flow.results.traceparent) }
+        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
         - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
-        - { name: status, value: $(tasks.status) }
-
-    - name: notify
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: notify-slack }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: config-json, value: $(tasks.validate-config.results.config-json) }
-        - { name: stage-name, value: build }
-        - { name: status, value: $(tasks.status) }
+        - { name: stage-span-id, value: $(tasks.start-build-stage-span.results.span-id) }
+        - { name: stage-start-time, value: $(tasks.start-build-stage-span.results.start-time) }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
         - { name: app-namespace, value: $(params.app-namespace) }
         - { name: app-name, value: $(params.app-name) }
         - { name: git-url, value: $(params.git-url) }
         - { name: git-revision, value: $(params.git-revision) }
-
-    - name: notify-backstage
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: notify-backstage }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: config-json, value: $(tasks.validate-config.results.config-json) }
-        - { name: stage-name, value: build }
-        - { name: status, value: $(tasks.status) }
-        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
-        - { name: app-namespace, value: $(params.app-namespace) }
-        - { name: app-name, value: $(params.app-name) }
-        - { name: git-url, value: $(params.git-url) }
-        - { name: git-revision, value: $(params.git-revision) }
-
-    - name: send-cdevent
-      when:
-        - { input: $(tasks.status), operator: in, values: ["Succeeded", "Completed"] }
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: send-cdevent }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: event-type, value: "dev.cdevents.artifact.published.0.3.0" }
-        - { name: subject-type, value: "artifact" }
-        - { name: subject-content-json, value: "{\"image\": \"$(tasks.build-image.results.image-ref)\", \"revision\": \"$(params.git-revision)\", \"git-url\": \"$(params.git-url)\", \"env\": \"dev\"}" }
-        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
-        - { name: traceparent, value: $(tasks.start-flow.results.traceparent) }
-        - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
-        # Forwarded so a flow that chains straight off build (e.g. a free-form
-        # build->release or build->deploy flow, Phase 3 item 7) can still inherit
-        # cicd.yaml's already-validated content downstream - same reasoning as
-        # test's/deploy's own domain events, see resolve-notify-config.yaml. Real bug,
-        # found live: this was left off build's artifact.published event on the
-        # original assumption every flow is build->test->deploy->release (so only
-        # test/deploy's events ever needed to carry it) - a build->release flow skips
-        # both, so release's own resolve-notify-config saw "{}" and notify-slack
-        # silently no-op'd ("disabled"), with no error anywhere.
-        - { name: config-json, value: $(tasks.validate-config.results.config-json) }
-        - { name: namespace, value: $(params.app-namespace) }
-        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
-
-    # Deeper CDEvents coverage (Phase 3 item 1) - generic completion signal, deliberately
-    # NOT gated on success like the domain-specific event above: "the pipeline finished"
-    # is true whether it succeeded or failed, and a uniform completion signal that only
-    # reports success isn't a uniform signal at all. See docs/chaining.md.
-    - name: pipelinerun-finished
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: send-cdevent }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: event-type, value: "dev.cdevents.pipelinerun.finished.0.3.0" }
-        - { name: subject-type, value: "pipelineRun" }
-        - { name: subject-content-json, value: "{\"pipelineName\": \"build\"}" }
-        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
-        - { name: traceparent, value: $(tasks.start-flow.results.traceparent) }
-        - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
-        - { name: namespace, value: $(params.app-namespace) }
-        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
-        - { name: tekton-status, value: $(tasks.status) }
+        # Looked up live from the TaskRun results (never a $(tasks.*.results.*)
+        # reference - see stage-finish.yaml's header) so a failed validate-config or
+        # build-image still gets its span, notifications and pipelinerun.finished.
+        - { name: config-json-from-task, value: validate-config }
+        - { name: image-ref-from-task, value: build-image }
+        - { name: domain-event-type, value: "dev.cdevents.artifact.published.0.3.0" }
+        - { name: domain-subject-type, value: "artifact" }
+        # ${IMAGE_REF} is substituted by stage-finish from build-image's looked-up
+        # result. config-json rides along so a flow chaining straight off build (e.g.
+        # build -> release) inherits cicd.yaml's validated content - real bug, found
+        # live 2026-08-12, see resolve-notify-config.yaml.
+        - { name: domain-subject-content-json, value: "{\"image\": \"${IMAGE_REF}\", \"revision\": \"$(params.git-revision)\", \"git-url\": \"$(params.git-url)\", \"env\": \"dev\"}" }
