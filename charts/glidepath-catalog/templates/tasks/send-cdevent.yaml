@@ -1,11 +1,18 @@
 # catalog/tasks/send-cdevent.yaml
 #
-# Thin wrapper Task around catalog/lib/cdevents.sh. Every Pipeline's `finally` block
-# calls this once to announce stage completion to the shared broker, which is what
-# drives the next stage's PipelineRun (see glidepath/broker/). PLATFORM_CHAIN_ID and
-# PLATFORM_TRACEPARENT are passed as params, not discovered inside this Task, so a
-# single flow's identifiers stay consistent across every independently-triggered
-# PipelineRun in the chain.
+# Thin Task wrapper around the cdevent-send StepAction (catalog/stepactions/
+# cdevent-send.yaml, where the logic lives as of 2026-10-08). This is the standalone call
+# shape for an event emitted mid-DAG - every stage Pipeline's pipelinerun.started, which
+# has to be its own TaskRun because it runs in parallel with real work. The finally-block
+# events (each stage's domain event plus pipelinerun.finished) no longer use this Task:
+# they run as two steps of stage-finish.yaml, in the same pod as the span send and the
+# notifications, so a stage's finally block is one pod instead of six. See
+# docs/chaining.md.
+#
+# Audience-bound projected ServiceAccount token, verified by the broker's TokenReview
+# interceptor - declared here, not via any cluster-wide default, because Tekton has no
+# mechanism to auto-mount a volume into every Task's containers; only the Tasks that
+# actually call the broker carry it.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -17,15 +24,10 @@ spec:
   params:
     - name: event-type
       type: string
-      description: e.g. dev.cdevents.artifact.published.0.3.0
+      description: e.g. dev.cdevents.pipelinerun.started.0.3.0
     - name: subject-type
       type: string
-      description: >-
-        The CDEvents subject type this event-type implies, e.g. "artifact" for
-        artifact.published, "pipelineRun" for pipelinerun.started/finished, "testCaseRun"
-        for testcaserun.finished. No default - every caller must be explicit, since
-        getting this wrong silently mislabels the event's subject.type. See
-        docs/chaining.md.
+      description: See cdevent-send.yaml - no default, every caller must be explicit.
     - name: subject-content-json
       type: string
       default: "{}"
@@ -42,34 +44,11 @@ spec:
     - name: tekton-status
       type: string
       default: ""
-      description: >-
-        Optional. When set (e.g. $(tasks.status) from a finally block), the real Tekton
-        status.conditions[].reason value is mapped to CDEvents' outcome enum
-        (cdevents_map_outcome in cdevents.sh) and merged into subject-content-json as
-        "outcome" before sending - existing call sites that leave this empty are
-        unaffected, no merge happens. See docs/chaining.md.
+      description: Optional - see cdevent-send.yaml.
     - name: config-json
       type: string
       default: "{}"
-      description: >-
-        Optional. Forwarded into the emitted event's customData.platform.config_json for
-        a downstream stage to inherit (see catalog/tasks/resolve-notify-config.yaml) -
-        every stage's own domain-completion event (build's artifact.published, test's
-        testcaserun.finished, deploy's service.deployed, release's change.created) sets
-        this to something real, since Phase 3 item 7's free-form flow topology means ANY
-        of these can be what a next stage chains off of (see flow-triggers.yaml's
-        $eventTypeMap). Real bug, found live 2026-08-12: build's and release's own events
-        originally left this at the default, on the stale assumption every flow is a
-        fixed build->test->deploy->release chain (so only the two "middle" events ever
-        needed to carry it forward) - a free-form build->release flow broke that
-        silently (resolve-notify-config saw "{}", notify-slack no-op'd with no error).
-        Every other call site (pipelinerun.started/finished) still leaves the default;
-        nothing reads it downstream of those.
-  # Audience-bound projected ServiceAccount token, verified by the broker's TokenReview
-  # interceptor (glidepath/broker/cmd/token-review-interceptor) - there is no platform-
-  # minted credential anywhere in this Task. Declared here, not via any cluster-wide
-  # default, because Tekton has no mechanism to auto-mount a volume into every Task's
-  # containers - only the one Task that actually calls the broker needs it.
+      description: Optional - see cdevent-send.yaml.
   volumes:
     - name: broker-token
       projected:
@@ -80,40 +59,22 @@ spec:
               expirationSeconds: 600
   steps:
     - name: send
-      image: {{ .Values.toolboxImage }}
+      ref:
+        resolver: cluster
+        params:
+          - { name: kind, value: stepaction }
+          - { name: name, value: cdevent-send }
+          - { name: namespace, value: {{ .Release.Namespace }} }
       imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
-      volumeMounts:
-        - name: broker-token
-          mountPath: /var/run/secrets/platform
-          readOnly: true
-      env:
-        - name: CDEVENTS_BROKER_URL
-          # el-<eventlistener-name> is the Service Tekton Triggers auto-creates for the
-          # EventListener in glidepath/broker/manifests/eventlistener.yaml.
-          value: http://el-cdevents-broker.platform-system.svc.cluster.local:8080
-        - name: NAMESPACE
-          value: $(params.namespace)
-        - name: TEKTON_PIPELINE_RUN
-          value: $(params.pipeline-run-name)
-        - name: PLATFORM_CHAIN_ID
-          value: $(params.chain-id)
-        - name: PLATFORM_TRACEPARENT
-          value: $(params.traceparent)
-        - name: PLATFORM_FLOW_START_TIME
-          value: $(params.flow-start-time)
-        - name: TEKTON_STATUS
-          value: $(params.tekton-status)
-        - name: PLATFORM_CONFIG_JSON
-          value: $(params.config-json)
-      script: |
-        #!/usr/bin/env bash
-        set -euo pipefail
-        source "${PLATFORM_LIB}/cdevents.sh"
-
-        content='$(params.subject-content-json)'
-        if [[ -n "${TEKTON_STATUS}" ]]; then
-          outcome="$(cdevents_map_outcome "${TEKTON_STATUS}")"
-          content="$(jq -c --arg o "${outcome}" '. + {outcome: $o}' <<<"${content}")"
-        fi
-
-        cdevent_send "$(params.event-type)" "$(params.subject-type)" "$(params.pipeline-run-name)" "${content}"
+      params:
+        - { name: event-type, value: $(params.event-type) }
+        - { name: subject-type, value: $(params.subject-type) }
+        - { name: subject-content-json, value: $(params.subject-content-json) }
+        - { name: chain-id, value: $(params.chain-id) }
+        - { name: traceparent, value: $(params.traceparent) }
+        - { name: flow-start-time, value: $(params.flow-start-time) }
+        - { name: namespace, value: $(params.namespace) }
+        - { name: pipeline-run-name, value: $(params.pipeline-run-name) }
+        - { name: tekton-status, value: $(params.tekton-status) }
+        - { name: config-json, value: $(params.config-json) }
+        - { name: token-volume, value: broker-token }

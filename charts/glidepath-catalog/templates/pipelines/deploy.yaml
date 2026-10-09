@@ -258,121 +258,44 @@ spec:
         - { name: git-url, value: $(params.git-url) }
         - { name: git-revision, value: $(params.git-revision) }
 
+  # One finally Task, one pod (2026-10-08) - replaces the six separate finally tasks this
+  # Pipeline used to carry (end-deploy-stage-span, end-flow, notify, notify-backstage,
+  # send-cdevent, pipelinerun-finished). Same side effects in the same order; see
+  # stage-finish.yaml's header for what is preserved and why its result references are
+  # deliberately fewer than the old tasks' were.
   finally:
-    - name: end-deploy-stage-span
+    - name: finish
       taskRef:
         resolver: cluster
         params:
           - { name: kind, value: task }
-          - { name: name, value: end-stage-span }
+          - { name: name, value: stage-finish }
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
         - { name: stage-name, value: deploy }
-        - { name: flow-traceparent, value: $(tasks.start-flow.results.traceparent) }
-        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
-        - { name: span-id, value: $(tasks.start-deploy-stage-span.results.span-id) }
-        - { name: start-time, value: $(tasks.start-deploy-stage-span.results.start-time) }
         - { name: status, value: $(tasks.status) }
-
-    # Closes the flow-root span iff deploy happens to be the LAST step of its flow (the
-    # common case - deploy with no release configured) - see is-flow-terminal above and
-    # docs/tracing.md. Every stage Pipeline carries an identical copy of this task,
-    # gated the same way; whichever one is actually terminal for THIS flow instance is
-    # the one that fires.
-    - name: end-flow
-      when:
-        - { input: $(params.is-flow-terminal), operator: in, values: ["true"] }
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: end-flow-root-span }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
+        - { name: is-flow-terminal, value: $(params.is-flow-terminal) }
         - { name: flow-name, value: "$(params.app-namespace)/$(params.app-name)" }
         - { name: flow-traceparent, value: $(tasks.start-flow.results.traceparent) }
+        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
         - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
-        - { name: status, value: $(tasks.status) }
-
-    - name: notify
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: notify-slack }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: config-json, value: $(tasks.resolve-notify-config.results.config-json) }
-        - { name: stage-name, value: deploy }
-        - { name: status, value: $(tasks.status) }
+        - { name: stage-span-id, value: $(tasks.start-deploy-stage-span.results.span-id) }
+        - { name: stage-start-time, value: $(tasks.start-deploy-stage-span.results.start-time) }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
         - { name: app-namespace, value: $(params.app-namespace) }
         - { name: app-name, value: $(params.app-name) }
         - { name: git-url, value: $(params.git-url) }
         - { name: git-revision, value: $(params.git-revision) }
-        - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
-        - { name: env, value: $(params.env) }
-
-    - name: notify-backstage
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: notify-backstage }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
+        # resolve-notify-config is never when-gated and depends on nothing that can be
+        # skipped, so referencing its result here is always safe (see its header).
         - { name: config-json, value: $(tasks.resolve-notify-config.results.config-json) }
-        - { name: stage-name, value: deploy }
-        - { name: status, value: $(tasks.status) }
-        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
-        - { name: app-namespace, value: $(params.app-namespace) }
-        - { name: app-name, value: $(params.app-name) }
-        - { name: git-url, value: $(params.git-url) }
-        - { name: git-revision, value: $(params.git-revision) }
-        - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
+        # Looked up live rather than $(tasks.resolve-image-ref.results.image-ref): the old
+        # notify task's hard reference meant a failed resolve-image-ref produced no
+        # notification at all. See stage-finish.yaml's header.
+        - { name: image-ref-from-task, value: resolve-image-ref }
         - { name: env, value: $(params.env) }
-
-    - name: send-cdevent
-      when:
-        - { input: $(tasks.status), operator: in, values: ["Succeeded", "Completed"] }
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: send-cdevent }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: event-type, value: "dev.cdevents.service.deployed.0.3.0" }
-        - { name: subject-type, value: "service" }
-        - name: subject-content-json
+        - { name: domain-event-type, value: "dev.cdevents.service.deployed.0.3.0" }
+        - { name: domain-subject-type, value: "service" }
+        - name: domain-subject-content-json
           value: >-
-            {"environment": {"id": "$(params.env)"}, "artifactId": "$(tasks.resolve-image-ref.results.image-ref)", "git-url": "$(params.git-url)", "revision": "$(params.git-revision)"}
-        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
-        - { name: traceparent, value: $(tasks.start-flow.results.traceparent) }
-        - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
-        # Forwarded so release can skip its own clone+validate-config too - same
-        # reasoning as test's own testcaserun.finished event, see resolve-notify-config.
-        # resolve-notify-config is never skipped, so this reference is always safe.
-        - { name: config-json, value: $(tasks.resolve-notify-config.results.config-json) }
-        - { name: namespace, value: $(params.app-namespace) }
-        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
-
-    # Deeper CDEvents coverage - generic completion signal, deliberately
-    # NOT gated on success like the domain-specific event above. See docs/chaining.md.
-    - name: pipelinerun-finished
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: send-cdevent }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: event-type, value: "dev.cdevents.pipelinerun.finished.0.3.0" }
-        - { name: subject-type, value: "pipelineRun" }
-        - { name: subject-content-json, value: "{\"pipelineName\": \"deploy\"}" }
-        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
-        - { name: traceparent, value: $(tasks.start-flow.results.traceparent) }
-        - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
-        - { name: namespace, value: $(params.app-namespace) }
-        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
-        - { name: tekton-status, value: $(tasks.status) }
+            {"environment": {"id": "$(params.env)"}, "artifactId": "${IMAGE_REF}", "git-url": "$(params.git-url)", "revision": "$(params.git-revision)"}

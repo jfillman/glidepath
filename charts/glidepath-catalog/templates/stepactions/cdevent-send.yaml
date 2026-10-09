@@ -1,0 +1,169 @@
+# catalog/stepactions/cdevent-send.yaml
+#
+# The body of send-cdevent, as a StepAction (2026-10-08): one copy of the "assemble and
+# POST a CDEvent to the shared broker" logic, runnable either as the standalone
+# send-cdevent Task (any Pipeline that emits an event mid-DAG, e.g. pipelinerun.started)
+# or as two steps of stage-finish.yaml (the stage's own domain event plus
+# pipelinerun.finished) - see that Task's header for why every stage's finally block is
+# now one pod instead of six. Thin wrapper around catalog/lib/cdevents.sh, same as the
+# Task always was.
+#
+# PLATFORM_CHAIN_ID and PLATFORM_TRACEPARENT are passed as params, not discovered inside
+# this step, so a single flow's identifiers stay consistent across every independently-
+# triggered PipelineRun in the chain.
+#
+# Auth: the pipeline pod's own audience-bound projected ServiceAccount token, verified by
+# the broker's TokenReview interceptor (glidepath/broker/cmd/token-review-interceptor) -
+# there is no platform-minted credential anywhere in this path. The volume is declared by
+# the calling Task (a StepAction volumeMount must name a param) and mounted here.
+apiVersion: tekton.dev/v1beta1
+kind: StepAction
+metadata:
+  name: cdevent-send
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  image: {{ .Values.toolboxImage }}
+  params:
+    - name: event-type
+      type: string
+      description: e.g. dev.cdevents.artifact.published.0.3.0
+    - name: subject-type
+      type: string
+      description: >-
+        The CDEvents subject type this event-type implies, e.g. "artifact" for
+        artifact.published, "pipelineRun" for pipelinerun.started/finished, "testCaseRun"
+        for testcaserun.finished. No default - every caller must be explicit, since
+        getting this wrong silently mislabels the event's subject.type. See
+        docs/chaining.md.
+    - name: subject-content-json
+      type: string
+      default: "{}"
+    - name: chain-id
+      type: string
+    - name: traceparent
+      type: string
+    - name: flow-start-time
+      type: string
+    - name: namespace
+      type: string
+    - name: pipeline-run-name
+      type: string
+    - name: tekton-status
+      type: string
+      default: ""
+      description: >-
+        Optional. When set (e.g. $(tasks.status) from a finally block), the real Tekton
+        status.conditions[].reason value is mapped to CDEvents' outcome enum
+        (cdevents_map_outcome in cdevents.sh) and merged into subject-content-json as
+        "outcome" before sending - callers that leave this empty are unaffected, no merge
+        happens. See docs/chaining.md.
+    - name: config-json
+      type: string
+      default: "{}"
+      description: >-
+        Optional. Forwarded into the emitted event's customData.platform.config_json for
+        a downstream stage to inherit (see catalog/tasks/resolve-notify-config.yaml) -
+        every stage's own domain-completion event (build's artifact.published, test's
+        testcaserun.finished, deploy's service.deployed, release's change.created) sets
+        this to something real, since Phase 3 item 7's free-form flow topology means ANY
+        of these can be what a next stage chains off of (see flow-triggers.yaml's
+        $eventTypeMap). Real bug, found live 2026-08-12: build's and release's own events
+        originally left this at the default, on the stale assumption every flow is a
+        fixed build->test->deploy->release chain - a free-form build->release flow broke
+        that silently (resolve-notify-config saw "{}", notify-slack no-op'd with no
+        error). pipelinerun.started/finished leave the default; nothing reads it there.
+    - name: subject-content-json-b64
+      type: string
+      default: ""
+      description: >-
+        Optional base64 form of subject-content-json; when non-empty it wins. For
+        stage-finish.yaml, which builds the content in an earlier step and hands it over
+        as a step result - Tekton parses a step result that is a compact JSON object/array
+        as that type, so substituting it into a string param yields "" (confirmed live,
+        Tekton 1.15). base64 keeps it a plain string. Standalone callers leave this empty.
+    - name: config-json-b64
+      type: string
+      default: ""
+      description: Optional base64 form of config-json; when non-empty it wins. Same reasoning as subject-content-json-b64.
+    - name: only-on-success
+      type: string
+      default: "false"
+      description: >-
+        "true" skips the send (exit 0, logged) unless `status` is Succeeded or Completed.
+        Replaces the Pipeline-level `when: $(tasks.status) in [Succeeded, Completed]`
+        gate the domain-event finally tasks used to carry, now that they run as steps of
+        stage-finish.yaml (Tekton has no per-step `when`). test's testcaserun.finished
+        deliberately passes "false" - it fires pass or fail, with the outcome in its
+        content, because flow-triggers.yaml's from-test transition is the one that
+        checks outcome itself (docs/chaining.md).
+    - name: status
+      type: string
+      default: ""
+      description: The calling Pipeline's $(tasks.status). Only read when only-on-success is "true".
+    - name: token-volume
+      type: string
+      description: Name of the calling Task's projected-ServiceAccount-token volume (audience cdevents-broker, path broker-token) - a StepAction volumeMount must name a param, the Task owns the volume. send-cdevent.yaml/stage-finish.yaml both declare it as `broker-token`.
+  volumeMounts:
+    - name: $(params.token-volume)
+      mountPath: /var/run/secrets/platform
+      readOnly: true
+  env:
+    - name: CDEVENTS_BROKER_URL
+      # el-<eventlistener-name> is the Service Tekton Triggers auto-creates for the
+      # EventListener in charts/glidepath-control-plane/templates/broker/eventlistener.yaml.
+      value: http://el-cdevents-broker.platform-system.svc.cluster.local:8080
+    - name: EVENT_TYPE
+      value: $(params.event-type)
+    - name: SUBJECT_TYPE
+      value: $(params.subject-type)
+    - name: SUBJECT_CONTENT_JSON
+      value: $(params.subject-content-json)
+    - name: NAMESPACE
+      value: $(params.namespace)
+    - name: TEKTON_PIPELINE_RUN
+      value: $(params.pipeline-run-name)
+    - name: PLATFORM_CHAIN_ID
+      value: $(params.chain-id)
+    - name: PLATFORM_TRACEPARENT
+      value: $(params.traceparent)
+    - name: PLATFORM_FLOW_START_TIME
+      value: $(params.flow-start-time)
+    - name: TEKTON_STATUS
+      value: $(params.tekton-status)
+    - name: PLATFORM_CONFIG_JSON
+      value: $(params.config-json)
+    - name: ONLY_ON_SUCCESS
+      value: $(params.only-on-success)
+    - name: PIPELINE_STATUS
+      value: $(params.status)
+    - name: SUBJECT_CONTENT_JSON_B64
+      value: $(params.subject-content-json-b64)
+    - name: PLATFORM_CONFIG_JSON_B64
+      value: $(params.config-json-b64)
+  script: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "${ONLY_ON_SUCCESS}" == "true" && "${PIPELINE_STATUS}" != "Succeeded" && "${PIPELINE_STATUS}" != "Completed" ]]; then
+      echo "not sending ${EVENT_TYPE}: pipeline status is '${PIPELINE_STATUS}' and this event only fires on success"
+      exit 0
+    fi
+    # base64 overrides (see the params' descriptions) are decoded before cdevents.sh is
+    # sourced, since it reads PLATFORM_CONFIG_JSON from the environment.
+    if [[ -n "${PLATFORM_CONFIG_JSON_B64}" ]]; then
+      PLATFORM_CONFIG_JSON="$(base64 -d <<<"${PLATFORM_CONFIG_JSON_B64}")"
+      export PLATFORM_CONFIG_JSON
+    fi
+    source "${PLATFORM_LIB}/cdevents.sh"
+
+    content="${SUBJECT_CONTENT_JSON}"
+    if [[ -n "${SUBJECT_CONTENT_JSON_B64}" ]]; then
+      content="$(base64 -d <<<"${SUBJECT_CONTENT_JSON_B64}")"
+    fi
+    if [[ -n "${TEKTON_STATUS}" ]]; then
+      outcome="$(cdevents_map_outcome "${TEKTON_STATUS}")"
+      content="$(jq -c --arg o "${outcome}" '. + {outcome: $o}' <<<"${content}")"
+    fi
+
+    cdevent_send "${EVENT_TYPE}" "${SUBJECT_TYPE}" "${TEKTON_PIPELINE_RUN}" "${content}"

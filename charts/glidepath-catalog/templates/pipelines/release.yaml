@@ -16,8 +16,8 @@
 # docs/release.md.
 #
 # This is also where the flow-root span - covering the entire build->test->deploy->
-# release run - is finally sent (see end-flow-root-span.yaml), since release is now the
-# last stage in the chain. Note this measures the AUTOMATED portion of the flow only
+# release run - is finally sent (stage-finish.yaml's end-flow step, gated on
+# is-flow-terminal) when release is the flow's last stage. Note this measures the AUTOMATED portion of the flow only
 # (through PR-open); the PR's own review/merge/ArgoCD-sync afterward is unbounded human-
 # process time, not pipeline execution time, and deliberately isn't part of this trace -
 # see docs/tracing.md.
@@ -287,140 +287,46 @@ spec:
         - { name: git-url, value: $(params.git-url) }
         - { name: git-revision, value: $(params.git-revision) }
 
+  # One finally Task, one pod (2026-10-08) - replaces the six separate finally tasks this
+  # Pipeline used to carry (end-release-stage-span, end-flow, notify, notify-backstage,
+  # send-cdevent, pipelinerun-finished). Same side effects in the same order; see
+  # stage-finish.yaml's header for what is preserved and why its result references are
+  # deliberately fewer than the old tasks' were.
   finally:
-    - name: end-release-stage-span
+    - name: finish
       taskRef:
         resolver: cluster
         params:
           - { name: kind, value: task }
-          - { name: name, value: end-stage-span }
+          - { name: name, value: stage-finish }
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
         - { name: stage-name, value: release }
-        - { name: flow-traceparent, value: $(tasks.start-flow.results.traceparent) }
-        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
-        - { name: span-id, value: $(tasks.start-release-stage-span.results.span-id) }
-        - { name: start-time, value: $(tasks.start-release-stage-span.results.start-time) }
         - { name: status, value: $(tasks.status) }
-
-    # Real bug, fixed live 2026-08-11: this used to fire unconditionally, on the
-    # assumption release is always the flow's last stage (true in Phase 1/2's fixed
-    # chain). Phase 3 item 7 made flow ordering free-form - a flow's release step can be
-    # followed by more steps (e.g. release -> test, confirmed live), and plenty of real
-    # flows never reach release at all (e.g. build -> test -> deploy, no release
-    # configured). Closing the flow-root span here unconditionally meant: (a) any later
-    # stage's own span, sent after this one already closed the root, had a start/end
-    # time AFTER the trace's supposed end - a real, live-confirmed symptom; and (b) every
-    # non-release-terminal flow simply never closed its flow-root span at all, showing
-    # "running/incomplete" in the dashboard forever even after finishing successfully -
-    # also live-confirmed (5 of 12 real recent traces). is-flow-terminal (see above) is
-    # now computed per-flow at generation time and is the single source of truth for
-    # which stage actually closes the span - every stage Pipeline carries an identical
-    # copy of this task, gated the same way. See docs/tracing.md.
-    - name: end-flow
-      when:
-        - { input: $(params.is-flow-terminal), operator: in, values: ["true"] }
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: end-flow-root-span }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
+        - { name: is-flow-terminal, value: $(params.is-flow-terminal) }
         - { name: flow-name, value: "$(params.app-namespace)/$(params.app-name)" }
         - { name: flow-traceparent, value: $(tasks.start-flow.results.traceparent) }
-        - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
-        - { name: status, value: $(tasks.status) }
-
-    - name: notify
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: notify-slack }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: config-json, value: $(tasks.resolve-notify-config.results.config-json) }
-        - { name: stage-name, value: release }
-        - { name: status, value: $(tasks.status) }
-        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
-        - { name: app-namespace, value: $(params.app-namespace) }
-        - { name: app-name, value: $(params.app-name) }
-        - { name: git-url, value: $(params.git-url) }
-        - { name: git-revision, value: $(params.git-revision) }
-        - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
-        - { name: env, value: $(params.env) }
-
-    - name: notify-backstage
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: notify-backstage }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: config-json, value: $(tasks.resolve-notify-config.results.config-json) }
-        - { name: stage-name, value: release }
-        - { name: status, value: $(tasks.status) }
-        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
-        - { name: app-namespace, value: $(params.app-namespace) }
-        - { name: app-name, value: $(params.app-name) }
-        - { name: git-url, value: $(params.git-url) }
-        - { name: git-revision, value: $(params.git-revision) }
-        - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
-        - { name: env, value: $(params.env) }
         - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
-
-    # Rounds out the CDEvents chain for trace/dashboard completeness (so "release" shows
-    # up in Tempo/pipeline-detail the same way build/test/deploy already do) - NOT
-    # load-bearing for DORA metrics, which are sourced from ArgoCD's own Application
-    # status via mark-release-pending above, not from this event. See
-    # docs/dora-metrics.md. change.created is CDEvents' actual vocabulary for "a change
-    # (PR) was created", not a reuse of service.deployed for something that isn't
-    # deployed yet.
-    - name: send-cdevent
-      when:
-        - { input: $(tasks.status), operator: in, values: ["Succeeded", "Completed"] }
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: send-cdevent }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: event-type, value: "dev.cdevents.change.created.0.3.0" }
-        - { name: subject-type, value: "change" }
-        - name: subject-content-json
+        - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
+        - { name: stage-span-id, value: $(tasks.start-release-stage-span.results.span-id) }
+        - { name: stage-start-time, value: $(tasks.start-release-stage-span.results.start-time) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: config-json, value: $(tasks.resolve-notify-config.results.config-json) }
+        - { name: image-ref-from-task, value: resolve-image-ref }
+        - { name: env, value: $(params.env) }
+        # Only release threads chain-id onto the Backstage notification - Tower groups
+        # release/deploying/release-outcome events on it (notify-backstage.yaml).
+        - { name: backstage-chain-id, value: $(tasks.start-flow.results.chain-id) }
+        # change.created is CDEvents' actual vocabulary for "a change (PR) was created",
+        # not a reuse of service.deployed for something that isn't deployed yet. NOT
+        # load-bearing for DORA metrics (those come from ArgoCD's own Application
+        # status via mark-release-pending) - see docs/admin/dora-metrics.md.
+        - { name: domain-event-type, value: "dev.cdevents.change.created.0.3.0" }
+        - { name: domain-subject-type, value: "change" }
+        - name: domain-subject-content-json
           value: >-
-            {"image": "$(tasks.resolve-image-ref.results.image-ref)", "revision": "$(params.git-revision)", "git-url": "$(params.git-url)"}
-        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
-        - { name: traceparent, value: $(tasks.start-flow.results.traceparent) }
-        - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
-        # Forwarded so a step chained after release (e.g. release-then-test's own
-        # release -> test, confirmed live in cicd-flow-test-app's flow config) can
-        # still inherit cicd.yaml's content downstream - same reasoning as build's
-        # artifact.published event (fixed alongside this) and test's/deploy's
-        # pre-existing forwarding. See resolve-notify-config.yaml.
-        - { name: config-json, value: $(tasks.resolve-notify-config.results.config-json) }
-        - { name: namespace, value: $(params.app-namespace) }
-        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
-
-    # Deeper CDEvents coverage (Phase 3 item 1) - generic completion signal, deliberately
-    # NOT gated on success like the domain-specific event above. See docs/chaining.md.
-    - name: pipelinerun-finished
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: send-cdevent }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: event-type, value: "dev.cdevents.pipelinerun.finished.0.3.0" }
-        - { name: subject-type, value: "pipelineRun" }
-        - { name: subject-content-json, value: "{\"pipelineName\": \"release\"}" }
-        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
-        - { name: traceparent, value: $(tasks.start-flow.results.traceparent) }
-        - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
-        - { name: namespace, value: $(params.app-namespace) }
-        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
-        - { name: tekton-status, value: $(tasks.status) }
+            {"image": "${IMAGE_REF}", "revision": "$(params.git-revision)", "git-url": "$(params.git-url)"}

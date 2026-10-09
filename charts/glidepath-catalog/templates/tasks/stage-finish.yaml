@@ -1,0 +1,386 @@
+# catalog/tasks/stage-finish.yaml
+#
+# The one finally Task every stage Pipeline (build/test/deploy/release) runs - replaces
+# the six separate finally tasks each of them carried until 2026-10-08 (end-<stage>-stage-
+# span, end-flow, notify, notify-backstage, send-cdevent, pipelinerun-finished). Same
+# work, same order of side effects, same StepActions/lib code, one pod instead of six.
+#
+# Why: measured over 7,414 TaskRuns (Tekton Results, 2026-09-17..10-09), each finally
+# pod spent 13-17s p50 (30-50s p90) between TaskRun start and its first step for under
+# 2s of real work - the six were pure scheduling and container-start tax, run in parallel
+# so they also competed with each other for the kubelet. deploy and release pipelines
+# were 15-23% real work by wall-clock, almost entirely because of this shape.
+#
+# What's deliberately preserved from the six-task shape:
+#
+# - Every step is `onError: continue` and the final `verdict` step re-raises any
+#   failure, so "a failed finally step fails the PipelineRun" still holds exactly as it
+#   did when each was its own TaskRun - but a failing span send no longer prevents the
+#   notifications or the domain event from running, which the old independent tasks
+#   also guaranteed (they were siblings, not a chain).
+# - The two Pipeline-level `when:` gates the old tasks had (end-flow on is-flow-terminal,
+#   the domain event on $(tasks.status) success) are now step-level: otel-span-send's
+#   `enabled` param and cdevent-send's `only-on-success`/`status` params. Tekton has no
+#   per-step `when`, and a skipped step logs why instead of silently vanishing.
+# - Result-reference coupling is STRICTLY LOOSER than before. Tekton skips a finally
+#   task outright if any of its params references a result from a task that failed or
+#   didn't run. The old `notify` task referenced validate-config's config-json (build/
+#   test) and resolve-image-ref's image-ref (deploy/release), so a config-validation
+#   failure got no Slack/Backstage message at all - and had this Task simply inherited
+#   every old task's references, a failed build-image would have skipped the stage
+#   span, the notifications AND pipelinerun.finished. So this Task hard-references only
+#   start-flow's and start-<stage>-stage-span's results (trivial id-minting tasks the
+#   old end-stage-span already depended on) and resolves everything that might not
+#   exist - the image-ref, build/test's config-json - via a live TaskRun result lookup
+#   in the `resolve` step (config-json-from-task / image-ref-from-task), the exact
+#   pattern notify-slack.yaml already used for build's image-ref. deploy/release pass
+#   config-json from resolve-notify-config, which is never skipped (see its header).
+# - The build-stage domain event's "image" used to be $(tasks.build-image.results.
+#   image-ref) directly. It can't be here (that reference is exactly the coupling
+#   above), so the Pipeline passes the literal token ${IMAGE_REF} inside
+#   domain-subject-content-json and `resolve` substitutes the looked-up value (via jq,
+#   never string concatenation, so an image-ref can't break the JSON). deploy/release
+#   use the same token with image-ref-from-task: resolve-image-ref. Harmless when the
+#   token isn't present (test passes the real value in).
+#
+# Volumes: all three secrets/tokens the old tasks mounted individually are declared
+# here once; each StepAction mounts only the one it needs (StepAction volumeMounts name
+# a param, so the Task decides which volume backs which mount).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: stage-finish
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Every stage Pipeline's single finally Task - closes the stage span (and the flow-root span when terminal), sends the Slack/Backstage notifications, emits the stage's domain CDEvent and pipelinerun.finished, then fails if any of those failed.
+  params:
+    - name: stage-name
+      type: string
+      description: build / test / deploy / release - the span name, notification vocabulary and pipelinerun.finished's pipelineName.
+    - name: status
+      type: string
+      description: Pass $(tasks.status) from the calling Pipeline's finally block.
+    - name: is-flow-terminal
+      type: string
+      default: "false"
+      description: The Pipeline's own is-flow-terminal param - "true" closes the flow-root span here. See docs/admin/tracing.md "Which stage closes the flow-root span".
+    - name: flow-name
+      type: string
+      description: Name of the flow-root span, "<app-namespace>/<app-name>" by convention.
+    - name: flow-traceparent
+      type: string
+    - name: chain-id
+      type: string
+    - name: flow-start-time
+      type: string
+    - name: stage-span-id
+      type: string
+      description: start-<stage>-stage-span's span-id result.
+    - name: stage-start-time
+      type: string
+      description: start-<stage>-stage-span's start-time result.
+    - name: config-json
+      type: string
+      default: "{}"
+      description: >-
+        cicd.yaml's resolved content when the Pipeline can reference it without result coupling (deploy/release: resolve-notify-config's result). Leave at the default and set config-json-from-task otherwise.
+    - name: config-json-from-task
+      type: string
+      default: ""
+      description: >-
+        pipelineTask name whose `config-json` TaskRun result to look up live (build/test: validate-config). Falls back to the config-json param when the lookup returns nothing (the task failed or never ran).
+    - name: image-ref
+      type: string
+      default: ""
+      description: The stage's image reference when the Pipeline already has it as a plain param (test). Leave empty and set image-ref-from-task otherwise.
+    - name: image-ref-from-task
+      type: string
+      default: ""
+      description: >-
+        pipelineTask name whose `image-ref` TaskRun result to look up live when image-ref is empty (build: build-image; deploy/release: resolve-image-ref). Empty result when that task failed or never ran - the notifications then simply omit the Image field, as before.
+    - name: env
+      type: string
+      default: ""
+      description: Only meaningful on deploy/release/test - omitted from the notifications when empty.
+    - name: backstage-chain-id
+      type: string
+      default: ""
+      description: chain-id to put on the Backstage notification's "Chain:" line. Only release passes it (Tower groups release/deploying/release-outcome notifications on it); build/test/deploy leave it empty, matching the pre-collapse behaviour notify-backstage.yaml's own comment describes.
+    - name: pipeline-run-name
+      type: string
+    - name: app-namespace
+      type: string
+    - name: app-name
+      type: string
+    - name: git-url
+      type: string
+    - name: git-revision
+      type: string
+    - name: domain-event-type
+      type: string
+      description: The stage's own CDEvent type (artifact.published / testcaserun.finished / service.deployed / change.created) - what flow-triggers.yaml chains the next stage off.
+    - name: domain-subject-type
+      type: string
+      description: artifact / testCaseRun / service / change - see cdevent-send.yaml.
+    - name: domain-subject-content-json
+      type: string
+      default: "{}"
+      description: subject.content for the domain event. May contain the literal token ${IMAGE_REF}, replaced with the resolved image reference (see header).
+    - name: domain-event-on-success-only
+      type: string
+      default: "true"
+      description: "\"false\" for test only - its testcaserun.finished fires pass or fail with the outcome in its content (docs/admin/chaining.md). Everything else gates on $(tasks.status) success, as the old `when:` did."
+  volumes:
+    - name: slack-webhook
+      secret:
+        secretName: app-secrets
+        optional: true
+    - name: backstage-notify-token
+      secret:
+        secretName: glidepath-backstage-notify
+        optional: true
+    - name: broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: broker-token
+              audience: cdevents-broker
+              expirationSeconds: 600
+  steps:
+    # Live TaskRun-result lookups instead of Tekton result references - see the header
+    # for why that difference decides whether this Task runs at all on a failed stage.
+    # Needs no new RBAC: pipeline-runner's Role already covers get/list taskruns
+    # (notify-slack.yaml has done this exact lookup for build's image-ref since
+    # 2026-08). onError: continue + `|| true` everywhere: a lookup failure must degrade
+    # to "no image/config in the notification", never to "no notification".
+    - name: resolve
+      onError: continue
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      # The two JSON values are handed over base64-encoded: Tekton parses a step result
+      # that is a compact JSON object/array as that type, and substituting an object
+      # into a string param yields "" (confirmed live on Tekton 1.15 - the first canary
+      # run of this Task failed exactly there). image-ref is a plain string and travels
+      # as-is.
+      results:
+        - name: image-ref
+        - name: config-json-b64
+        - name: subject-content-json-b64
+      env:
+        - name: APP_NAMESPACE
+          value: $(params.app-namespace)
+        - name: PIPELINE_RUN_NAME
+          value: $(params.pipeline-run-name)
+        - name: IMAGE_REF_PARAM
+          value: $(params.image-ref)
+        - name: IMAGE_REF_FROM_TASK
+          value: $(params.image-ref-from-task)
+        - name: CONFIG_JSON_PARAM
+          value: $(params.config-json)
+        - name: CONFIG_JSON_FROM_TASK
+          value: $(params.config-json-from-task)
+        - name: CONTENT_TEMPLATE
+          value: $(params.domain-subject-content-json)
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        lookup_result() {
+          # lookup_result <pipelineTask> <result-name> - empty when the TaskRun or result doesn't exist.
+          kubectl get taskrun -n "${APP_NAMESPACE}" \
+            -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME},tekton.dev/pipelineTask=$1" \
+            -o jsonpath="{.items[0].status.results[?(@.name==\"$2\")].value}" 2>/dev/null || true
+        }
+
+        IMAGE_REF="${IMAGE_REF_PARAM}"
+        if [[ -z "${IMAGE_REF}" && -n "${IMAGE_REF_FROM_TASK}" ]]; then
+          IMAGE_REF="$(lookup_result "${IMAGE_REF_FROM_TASK}" image-ref)"
+          echo "image-ref from ${IMAGE_REF_FROM_TASK}'s TaskRun result: '${IMAGE_REF}'"
+        fi
+
+        CONFIG_JSON="${CONFIG_JSON_PARAM}"
+        if [[ -n "${CONFIG_JSON_FROM_TASK}" ]]; then
+          looked_up="$(lookup_result "${CONFIG_JSON_FROM_TASK}" config-json)"
+          if [[ -n "${looked_up}" ]] && jq -e . <<<"${looked_up}" >/dev/null 2>&1; then
+            CONFIG_JSON="${looked_up}"
+          else
+            echo "no usable config-json result on ${CONFIG_JSON_FROM_TASK}'s TaskRun (it failed or never ran) - notifications fall back to the config-json param" >&2
+          fi
+        fi
+        [[ -z "${CONFIG_JSON}" ]] && CONFIG_JSON='{}'
+
+        # ${IMAGE_REF} token substitution via jq's own string ops, never shell
+        # interpolation into JSON text, so a reference containing a quote can't break it.
+        CONTENT="$(jq -c --arg img "${IMAGE_REF}" \
+          'walk(if type == "string" then gsub("\\$\\{IMAGE_REF\\}"; $img) else . end)' \
+          <<<"${CONTENT_TEMPLATE}" 2>/dev/null || echo "${CONTENT_TEMPLATE}")"
+
+        printf '%s' "${IMAGE_REF}" > "$(step.results.image-ref.path)"
+        printf '%s' "${CONFIG_JSON}" | base64 -w0 > "$(step.results.config-json-b64.path)"
+        printf '%s' "${CONTENT}" | base64 -w0 > "$(step.results.subject-content-json-b64.path)"
+
+    - name: end-stage-span
+      onError: continue
+      ref:
+        resolver: cluster
+        params:
+          - { name: kind, value: stepaction }
+          - { name: name, value: otel-span-send }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      params:
+        - { name: name, value: "stage:$(params.stage-name)" }
+        - { name: flow-traceparent, value: $(params.flow-traceparent) }
+        - { name: span-id, value: $(params.stage-span-id) }
+        - { name: start-time, value: $(params.stage-start-time) }
+        - { name: status, value: $(params.status) }
+        - { name: attrs, value: "platform.chain_id=$(params.chain-id),platform.stage=$(params.stage-name)" }
+
+    # Closes the FLOW-ROOT span iff this stage is its flow's last step - see
+    # docs/admin/tracing.md "Which stage closes the flow-root span" for why this is gated
+    # per flow at generation time, not hardcoded to one stage (real bug, fixed live
+    # 2026-08-11: closing it unconditionally in release left every non-release-terminal
+    # flow open forever and put later stages' spans after the trace's end).
+    - name: end-flow
+      onError: continue
+      ref:
+        resolver: cluster
+        params:
+          - { name: kind, value: stepaction }
+          - { name: name, value: otel-span-send }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      params:
+        - { name: name, value: $(params.flow-name) }
+        - { name: flow-traceparent, value: $(params.flow-traceparent) }
+        - { name: span-id, value: "" }
+        - { name: start-time, value: $(params.flow-start-time) }
+        - { name: status, value: $(params.status) }
+        - { name: enabled, value: $(params.is-flow-terminal) }
+
+    - name: notify-slack
+      onError: continue
+      ref:
+        resolver: cluster
+        params:
+          - { name: kind, value: stepaction }
+          - { name: name, value: notify-slack }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      params:
+        - { name: config-json, value: "{}" }
+        - { name: config-json-b64, value: $(steps.resolve.results.config-json-b64) }
+        - { name: stage-name, value: $(params.stage-name) }
+        - { name: status, value: $(params.status) }
+        - { name: pipeline-run-name, value: $(params.pipeline-run-name) }
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: image-ref, value: $(steps.resolve.results.image-ref) }
+        - { name: env, value: $(params.env) }
+        - { name: pr-url, value: "" }
+        - { name: secret-volume, value: slack-webhook }
+
+    - name: notify-backstage
+      onError: continue
+      ref:
+        resolver: cluster
+        params:
+          - { name: kind, value: stepaction }
+          - { name: name, value: notify-backstage }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      params:
+        - { name: config-json, value: "{}" }
+        - { name: config-json-b64, value: $(steps.resolve.results.config-json-b64) }
+        - { name: stage-name, value: $(params.stage-name) }
+        - { name: status, value: $(params.status) }
+        - { name: pipeline-run-name, value: $(params.pipeline-run-name) }
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: image-ref, value: $(steps.resolve.results.image-ref) }
+        - { name: env, value: $(params.env) }
+        - { name: pr-url, value: "" }
+        - { name: chain-id, value: $(params.backstage-chain-id) }
+        - { name: token-volume, value: backstage-notify-token }
+
+    # The stage's own domain event - what the broker chains the next stage off
+    # (docs/admin/chaining.md). Ordered after the notifications deliberately: it is the
+    # one step here with a downstream consumer, and the old six-task shape gave the
+    # notifications no ordering guarantee relative to it either way.
+    - name: domain-event
+      onError: continue
+      ref:
+        resolver: cluster
+        params:
+          - { name: kind, value: stepaction }
+          - { name: name, value: cdevent-send }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      params:
+        - { name: event-type, value: $(params.domain-event-type) }
+        - { name: subject-type, value: $(params.domain-subject-type) }
+        - { name: subject-content-json-b64, value: $(steps.resolve.results.subject-content-json-b64) }
+        - { name: chain-id, value: $(params.chain-id) }
+        - { name: traceparent, value: $(params.flow-traceparent) }
+        - { name: flow-start-time, value: $(params.flow-start-time) }
+        - { name: namespace, value: $(params.app-namespace) }
+        - { name: pipeline-run-name, value: $(params.pipeline-run-name) }
+        - { name: config-json-b64, value: $(steps.resolve.results.config-json-b64) }
+        - { name: only-on-success, value: $(params.domain-event-on-success-only) }
+        - { name: status, value: $(params.status) }
+        - { name: token-volume, value: broker-token }
+
+    # Generic completion signal, deliberately NOT gated on success like the domain event
+    # above: "the pipeline finished" is true whether it succeeded or failed (Phase 3
+    # item 1, docs/admin/chaining.md). tekton-status maps $(tasks.status) onto CDEvents'
+    # outcome enum inside cdevent-send.
+    - name: pipelinerun-finished
+      onError: continue
+      ref:
+        resolver: cluster
+        params:
+          - { name: kind, value: stepaction }
+          - { name: name, value: cdevent-send }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      params:
+        - { name: event-type, value: "dev.cdevents.pipelinerun.finished.0.3.0" }
+        - { name: subject-type, value: "pipelineRun" }
+        - { name: subject-content-json, value: "{\"pipelineName\": \"$(params.stage-name)\"}" }
+        - { name: chain-id, value: $(params.chain-id) }
+        - { name: traceparent, value: $(params.flow-traceparent) }
+        - { name: flow-start-time, value: $(params.flow-start-time) }
+        - { name: namespace, value: $(params.app-namespace) }
+        - { name: pipeline-run-name, value: $(params.pipeline-run-name) }
+        - { name: tekton-status, value: $(params.status) }
+        - { name: token-volume, value: broker-token }
+
+    # Re-raises any step failure so the TaskRun - and with it the PipelineRun - fails
+    # exactly as it did when each step was its own finally TaskRun. Tekton writes a
+    # step's exit code to this path only when it exits non-zero under onError: continue,
+    # so a missing file means success.
+    - name: verdict
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        failed=()
+        check() { local code; code="$(cat "$2" 2>/dev/null || echo 0)"; [[ "${code}" == "0" ]] || failed+=("$1 (exit ${code})"); }
+        check resolve "$(steps.step-resolve.exitCode.path)"
+        check end-stage-span "$(steps.step-end-stage-span.exitCode.path)"
+        check end-flow "$(steps.step-end-flow.exitCode.path)"
+        check notify-slack "$(steps.step-notify-slack.exitCode.path)"
+        check notify-backstage "$(steps.step-notify-backstage.exitCode.path)"
+        check domain-event "$(steps.step-domain-event.exitCode.path)"
+        check pipelinerun-finished "$(steps.step-pipelinerun-finished.exitCode.path)"
+        if (( ${#failed[@]} )); then
+          echo "stage-finish: ${#failed[@]} step(s) failed: ${failed[*]} - failing this TaskRun so the PipelineRun reports it, same as when each was its own finally task" >&2
+          exit 1
+        fi
+        echo "stage-finish: all steps succeeded"

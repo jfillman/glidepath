@@ -40,6 +40,15 @@ spec:
     - name: attrs
       type: string
       default: ""
+    - name: enabled
+      type: string
+      default: "true"
+      description: >-
+        Anything but "true" skips the send (exit 0, logged). Lets stage-finish.yaml gate
+        its end-flow step on $(params.is-flow-terminal) the way the old standalone
+        end-flow finally task was gated with a Pipeline-level `when:` - Tekton has no
+        per-step `when`, so the gate moved into the step itself. Every other caller
+        leaves the default.
   env:
     - name: OTEL_EXPORTER_OTLP_ENDPOINT
       value: http://otel-collector-opentelemetry-collector.observability.svc.cluster.local:4318
@@ -55,8 +64,13 @@ spec:
     - "$(params.start-time)"
     - "$(params.status)"
     - "$(params.attrs)"
+    - "$(params.enabled)"
   script: |
     #!/usr/bin/env bash
     set -euo pipefail
+    if [[ "$7" != "true" ]]; then
+      echo "span '$1' not sent: enabled=$7 (this stage is not the flow's terminal step)"
+      exit 0
+    fi
     source "${PLATFORM_LIB}/otel.sh"
     otel_span_send "$1" "$2" "$3" "$4" "$(otel_now)" "$5" "$6"

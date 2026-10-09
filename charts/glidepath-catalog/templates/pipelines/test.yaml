@@ -160,115 +160,44 @@ spec:
         - { name: test-name, value: $(params.test-name) }
         - { name: app-name, value: $(params.app-name) }
 
+  # One finally Task, one pod (2026-10-08) - replaces the six separate finally tasks this
+  # Pipeline used to carry (end-test-stage-span, end-flow, notify, notify-backstage,
+  # send-cdevent, pipelinerun-finished). Same side effects in the same order; see
+  # stage-finish.yaml's header for what is preserved and why its result references are
+  # deliberately fewer than the old tasks' were.
   finally:
-    - name: end-test-stage-span
+    - name: finish
       taskRef:
         resolver: cluster
         params:
           - { name: kind, value: task }
-          - { name: name, value: end-stage-span }
+          - { name: name, value: stage-finish }
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
         - { name: stage-name, value: test }
-        - { name: flow-traceparent, value: $(tasks.start-flow.results.traceparent) }
-        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
-        - { name: span-id, value: $(tasks.start-test-stage-span.results.span-id) }
-        - { name: start-time, value: $(tasks.start-test-stage-span.results.start-time) }
         - { name: status, value: $(tasks.status) }
-
-    # Closes the flow-root span iff test is the LAST stage of its flow (is-flow-terminal
-    # above). Every stage Pipeline carries an identical copy of this task.
-    - name: end-flow
-      when:
-        - { input: $(params.is-flow-terminal), operator: in, values: ["true"] }
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: end-flow-root-span }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
+        - { name: is-flow-terminal, value: $(params.is-flow-terminal) }
         - { name: flow-name, value: "$(params.app-namespace)/$(params.app-name)" }
         - { name: flow-traceparent, value: $(tasks.start-flow.results.traceparent) }
+        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
         - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
-        - { name: status, value: $(tasks.status) }
-
-    - name: notify
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: notify-slack }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: config-json, value: $(tasks.validate-config.results.config-json) }
-        - { name: stage-name, value: test }
-        - { name: status, value: $(tasks.status) }
+        - { name: stage-span-id, value: $(tasks.start-test-stage-span.results.span-id) }
+        - { name: stage-start-time, value: $(tasks.start-test-stage-span.results.start-time) }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
         - { name: app-namespace, value: $(params.app-namespace) }
         - { name: app-name, value: $(params.app-name) }
         - { name: git-url, value: $(params.git-url) }
         - { name: git-revision, value: $(params.git-revision) }
+        - { name: config-json-from-task, value: validate-config }
         - { name: image-ref, value: $(params.image-ref) }
-
-    - name: notify-backstage
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: notify-backstage }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: config-json, value: $(tasks.validate-config.results.config-json) }
-        - { name: stage-name, value: test }
-        - { name: status, value: $(tasks.status) }
-        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
-        - { name: app-namespace, value: $(params.app-namespace) }
-        - { name: app-name, value: $(params.app-name) }
-        - { name: git-url, value: $(params.git-url) }
-        - { name: git-revision, value: $(params.git-revision) }
-        - { name: image-ref, value: $(params.image-ref) }
-
-    - name: send-cdevent
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: send-cdevent }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: event-type, value: "dev.cdevents.testcaserun.finished.0.3.0" }
-        - { name: subject-type, value: "testCaseRun" }
-        - name: subject-content-json
+        - { name: env, value: $(params.env) }
+        - { name: domain-event-type, value: "dev.cdevents.testcaserun.finished.0.3.0" }
+        - { name: domain-subject-type, value: "testCaseRun" }
+        # Fires pass OR fail (on-success-only false) with the outcome in its content -
+        # test is the one stage whose domain event carries its own verdict, and the
+        # from-test Trigger in flow-triggers.yaml is the one that checks it
+        # (docs/admin/chaining.md).
+        - name: domain-subject-content-json
           value: >-
             {"outcome": "$(tasks.status)", "image": "$(params.image-ref)", "revision": "$(params.git-revision)", "git-url": "$(params.git-url)", "env": "$(params.env)", "test-name": "$(params.test-name)"}
-        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
-        - { name: traceparent, value: $(tasks.start-flow.results.traceparent) }
-        - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
-        # Forwarded to deploy so it can skip its own clone+validate-config just to get
-        # this - free here since validate-config always runs (never when-gated) in this
-        # Pipeline, so referencing its result from finally is always safe. See
-        # resolve-notify-config.yaml for why that safety doesn't hold for deploy/release.
-        - { name: config-json, value: $(tasks.validate-config.results.config-json) }
-        - { name: namespace, value: $(params.app-namespace) }
-        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
-
-    # Generic completion signal, deliberately NOT gated on success like the
-    # domain-specific event above.
-    - name: pipelinerun-finished
-      taskRef:
-        resolver: cluster
-        params:
-          - { name: kind, value: task }
-          - { name: name, value: send-cdevent }
-          - { name: namespace, value: {{ .Release.Namespace }} }
-      params:
-        - { name: event-type, value: "dev.cdevents.pipelinerun.finished.0.3.0" }
-        - { name: subject-type, value: "pipelineRun" }
-        - { name: subject-content-json, value: "{\"pipelineName\": \"test\"}" }
-        - { name: chain-id, value: $(tasks.start-flow.results.chain-id) }
-        - { name: traceparent, value: $(tasks.start-flow.results.traceparent) }
-        - { name: flow-start-time, value: $(tasks.start-flow.results.start-time) }
-        - { name: namespace, value: $(params.app-namespace) }
-        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
-        - { name: tekton-status, value: $(tasks.status) }
+        - { name: domain-event-on-success-only, value: "false" }
