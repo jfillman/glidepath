@@ -1,7 +1,7 @@
 {
     "title": "CI/CD Variant 4 - Governance & Security Gates",
     "uid": "platform-cicd-governance",
-    "description": "Pass/fail health of every release-governance check (sast-check, image-scan-check, sbom-check, policy-check) plus the break-glass bypass-merge detector, broken out per app. Stub gates are called out explicitly - see docs/governance-stubs.md - so this dashboard never implies more confidence than the underlying check actually earns.",
+    "description": "Pass/fail health of every release-governance check (sast-check, image-scan-check, sbom-check, policy-check) plus the break-glass bypass-merge detector, broken out per app. Stub gates are called out explicitly - see Glidepath docs/admin/governance-stubs.md - so this dashboard never implies more confidence than the underlying check actually earns.",
     "tags": ["glidepath", "cicd-variant"],
     "schemaVersion": 39,
     "editable": true,

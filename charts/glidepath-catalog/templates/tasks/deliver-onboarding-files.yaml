@@ -1,4 +1,4 @@
-# templates/tasks/deliver-onboarding-files.yaml - see docs/onboarding.md.
+# templates/tasks/deliver-onboarding-files.yaml - see Glidepath docs/admin/onboarding-mechanics.md.
 #
 # Replaces manual copy-paste onboarding: mints a fresh, single-repo-scoped GitHub App
 # installation token per target repo (never a standing credential), opens a PR rather than
@@ -776,7 +776,7 @@ spec:
           # this file - a legitimate "nothing to add" (file absent, or already tracked and
           # unchanged) exits this chain non-zero, which set -e would otherwise abort on.
           { [[ -d "${ENVS_ROOT}" ]] && git add "${ENVS_ROOT}"; } || true
-          git commit --quiet -m "$(printf 'Onboarding: re-sync .tekton boilerplate from the platform catalog\n\nRegenerated onboarding-resync.yaml plus one .tekton/flow-<name>.yaml per git-rooted flow declared under cicd.yaml'"'"'s pipelines: - see docs/onboarding.md. Also scaffolds '"${ENVS_ROOT}"'/base.yaml, '"${ENVS_ROOT}"'/pr-env.yaml and '"${ENVS_ROOT}"'/envs/<lower-env>.yaml once each, only when missing (known-gap #17). No developer action needed beyond merging.')"
+          git commit --quiet -m "$(printf 'Onboarding: re-sync .tekton boilerplate from the platform catalog\n\nRegenerated onboarding-resync.yaml plus one .tekton/flow-<name>.yaml per git-rooted flow declared under cicd.yaml'"'"'s pipelines: - see Glidepath docs/admin/onboarding-mechanics.md. Also scaffolds '"${ENVS_ROOT}"'/base.yaml, '"${ENVS_ROOT}"'/pr-env.yaml and '"${ENVS_ROOT}"'/envs/<lower-env>.yaml once each, only when missing (known-gap #17). No developer action needed beyond merging.')"
           # --force: the only way this exact branch name already exists remotely is a
           # still-open resync PR from an earlier trigger - this run's freshly
           # regenerated content should replace it outright, not be rejected as a
@@ -794,7 +794,7 @@ spec:
           else
             pr_body="$(jq -n \
               --arg title "Onboarding: re-sync .tekton boilerplate" \
-              --arg body "Regenerated onboarding-resync.yaml from the platform catalog's onboarding templates, plus one .tekton/flow-<name>.yaml per git-rooted flow declared under cicd.yaml's pipelines: (push/pull_request/tag/branch.created) - see docs/onboarding.md. Fires automatically whenever cicd.yaml changes, or the platform's own onboarding templates change and this Application's files went stale." \
+              --arg body "Regenerated onboarding-resync.yaml from the platform catalog's onboarding templates, plus one .tekton/flow-<name>.yaml per git-rooted flow declared under cicd.yaml's pipelines: (push/pull_request/tag/branch.created) - see Glidepath docs/admin/onboarding-mechanics.md. Fires automatically whenever cicd.yaml changes, or the platform's own onboarding templates change and this Application's files went stale." \
               --arg head "${branch_name}" --arg base "main" \
               '{title: $title, body: $body, head: $head, base: $base}')"
             curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
@@ -893,7 +893,7 @@ spec:
           branch="onboarding-resync"
           git checkout -b "${branch}"
           git add .tekton/
-          git commit --quiet -m "$(printf 'Onboarding: re-sync .tekton governance-check boilerplate\n\nRegenerated from the platform catalog'"'"'s onboarding templates - see docs/onboarding.md. No developer action needed beyond merging.')"
+          git commit --quiet -m "$(printf 'Onboarding: re-sync .tekton governance-check boilerplate\n\nRegenerated from the platform catalog'"'"'s onboarding templates - see Glidepath docs/admin/onboarding-mechanics.md. No developer action needed beyond merging.')"
           # --force: the only way this exact branch name already exists remotely is a
           # still-open resync PR from an earlier trigger - replace its content outright
           # rather than being rejected as a non-fast-forward push.
@@ -910,7 +910,7 @@ spec:
           else
             pr_body="$(jq -n \
               --arg title "Onboarding: re-sync governance-check boilerplate" \
-              --arg body "Regenerated the governance-check .tekton files from the platform catalog's onboarding templates (a file whose gate was retired is removed) - see docs/onboarding.md." \
+              --arg body "Regenerated the governance-check .tekton files from the platform catalog's onboarding templates (a file whose gate was retired is removed) - see Glidepath docs/admin/onboarding-mechanics.md." \
               --arg head "${branch}" --arg base "main" \
               '{title: $title, body: $body, head: $head, base: $base}')"
             curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \

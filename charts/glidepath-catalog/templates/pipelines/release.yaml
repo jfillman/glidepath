@@ -106,6 +106,10 @@ spec:
         Already threaded through unconditionally by flow-triggers.yaml/
         deliver-onboarding-files.yaml for every stage - this Pipeline just didn't
         declare (or use) it before. See docs/multi-cluster.md.
+    - name: initiator
+      type: string
+      default: ""
+      description: Who asked for this release when a person did (Tower's Promote); named in the release PR. Empty for a flow step.
     - name: cluster
       type: string
       default: ""
@@ -201,6 +205,7 @@ spec:
         - { name: chain-id, value: $(tasks.preflight.results.chain-id) }
         - { name: flow-start-time, value: $(tasks.preflight.results.start-time) }
         - { name: config-json, value: $(tasks.preflight.results.config-json) }
+        - { name: initiator, value: $(params.initiator) }
 
     # Hands off to the DORA exporter (glidepath/dora-exporter) - only runs if
     # open-release-pr actually succeeded (standard Tekton DAG failure propagation, no

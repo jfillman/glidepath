@@ -44,7 +44,7 @@ spec:
       description: "The gitops PR's head commit - PaC's `revision`. Fallback source for the real PR number when pr-number arrives unsubstituted (see script header on PaC's pull_request.number webhook var only resolving for genuine pull_request webhooks)."
     - name: gate-name
       type: string
-      description: Any name from .Values.releaseGuardrails (docs/admin/release-guardrails.md) - must match the real `/retest <name>` PaC expects (docs/release.md).
+      description: Any name from .Values.releaseGuardrails (docs/admin/release-guardrails.md) - must match the real `/retest <name>` PaC expects (docs/admin/release.md).
     - name: pipeline-run-name
       type: string
       description: $(context.pipelineRun.name) from the calling Pipeline - used to find which of its own child TaskRuns failed.
