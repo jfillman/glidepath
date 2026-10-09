@@ -213,7 +213,10 @@ idpServiceCatalog:
   # 2026-10-05: v0.3.110 -> v0.3.115, airframe#48 (optional rollout.labels/annotations, podLabels/podAnnotations,
   # serviceLabels/serviceAnnotations; additive). All 8 live Flight env files render byte-identically under both
   # versions (helm template of each chart version, diffed). Moves the per-app PR-preview ApplicationSets with it.
-  chartVersion: v0.3.118
+  # 2026-10-09: v0.3.118 -> v0.3.135 (airframe review C12: one Airframe version on every pin). The chart's templates are
+  # byte-identical between the two; values.schema.json only gained descriptions and x-hangar-owner/x-hangar-risk
+  # annotations (A7), which do not change validation. Same version as each cluster's cluster-defaults.yaml.
+  chartVersion: v0.3.135
 
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
