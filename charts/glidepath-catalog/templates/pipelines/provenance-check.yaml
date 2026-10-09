@@ -55,6 +55,7 @@ spec:
       params:
         - { name: repo-url, value: $(params.repo-url) }
         - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
         - { name: app-namespace, value: $(params.app-namespace) }
         - { name: app-name, value: $(params.app-name) }
 
@@ -68,6 +69,7 @@ spec:
       params:
         - { name: repo-url, value: $(params.repo-url) }
         - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
         - { name: app-namespace, value: $(params.app-namespace) }
         - { name: app-name, value: $(params.app-name) }
 

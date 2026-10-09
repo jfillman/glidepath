@@ -9,8 +9,10 @@
 #
 # Contract with the image: it provides `validate-values [--app NAME] FILE...` on its PATH, run in the cloned repo
 # (files are relative to it), exit 0 = valid, non-zero = invalid, output shown in the check.
-# Which files: every `*values.yaml` this PR changes relative to main (merge-base), not just HEAD~1, so a human
-# or agent PR with several commits is fully covered. No matching file = the check passes with a note.
+# Which files: every `*values.yaml` this PR changes relative to its base (GitHub's compare endpoint, a merge-base
+# diff), not just HEAD~1, so a human or agent PR with several commits is fully covered. No matching file = the
+# check passes with a note. The repo itself is a one-commit fetch of the PR head, not a full clone (2026-10-09,
+# report item 5); without a PR number (a manual run) the changed files are the revision's own commit's.
 # A changed `<cluster>/base.yaml` (shared values of the Flight environments on that cluster, layered under each
 # one's values.yaml; Tower's App Configuration edits it) is validated itself and brings in every
 # `<cluster>/<env>/values.yaml` on that cluster, so each environment it reaches is checked with the new base.
@@ -27,7 +29,7 @@ metadata:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
 spec:
-  description: Clones a gitops-repo PR head and runs a validator image against the values files the PR changes.
+  description: Fetches a gitops-repo PR head and runs a validator image against the values files the PR changes.
   params:
     - name: repo-url
       type: string
@@ -35,6 +37,10 @@ spec:
     - name: revision
       type: string
       description: The PR head commit - PaC's revision.
+    - name: pr-number
+      type: string
+      default: ""
+      description: PaC's body.pull_request.number - the changed files are those between the PR's base and revision. Empty means "just this commit".
     - name: validator-image
       type: string
       default: {{ .Values.valuesValidatorImage | default (printf "%s:%s" .Values.valuesValidatorRepository (required "defaultChart.targetRevision must be set" .Values.defaultChart.targetRevision)) | quote }}
@@ -67,6 +73,8 @@ spec:
           value: $(params.repo-url)
         - name: REVISION
           value: $(params.revision)
+        - name: PR_NUMBER
+          value: $(params.pr-number)
         - name: APP_NAME
           value: $(params.app-name)
         - name: DEFAULT_CHART_REPO_URL
@@ -82,12 +90,27 @@ spec:
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
         token="$(github_app_installation_token "${owner}" "${repo}")"
-        with_retry 3 -- git clone --quiet "https://x-access-token:${token}@github.com/${owner}/${repo}.git" /work/repo
-        cd /work/repo
-        git checkout --quiet "${REVISION}"
+        api() {
+          curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"
+        }
+        # The tree at the PR head, one commit deep: the validator reads the files from it.
+        mkdir -p /work/repo && cd /work/repo
+        git init --quiet
+        with_retry 3 -- git fetch --quiet --depth 1 "https://x-access-token:${token}@github.com/${owner}/${repo}.git" "${REVISION}"
+        git checkout --quiet FETCH_HEAD
 
-        base="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1)"
-        git diff --name-only --diff-filter=AMR "${base}" HEAD | grep -E '(^|/)values\.yaml$|^[^/]+/base\.yaml$' > /work/files.txt || true
+        # Changed files: the PR's base...head compare (merge-base semantics, like the old `git merge-base
+        # origin/main`), or the single commit when there is no PR. `removed` dropped = the old --diff-filter=AMR.
+        if [[ -n "${PR_NUMBER}" ]]; then
+          base_sha="$(api "https://api.github.com/repos/${owner}/${repo}/pulls/${PR_NUMBER}" | jq -r '.base.sha')"
+          changed="$(api "https://api.github.com/repos/${owner}/${repo}/compare/${base_sha}...${REVISION}" \
+            | jq -r '.files[] | select(.status != "removed") | .filename')"
+        else
+          changed="$(api "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}" \
+            | jq -r '.files[] | select(.status != "removed") | .filename')"
+        fi
+        grep -E '(^|/)values\.yaml$|^[^/]+/base\.yaml$' <<<"${changed}" > /work/files.txt || true
         for b in $(grep -E '^[^/]+/base\.yaml$' /work/files.txt || true); do
           ls "$(dirname "${b}")"/*/values.yaml 2>/dev/null >> /work/files.txt || true
         done
@@ -149,16 +172,20 @@ spec:
             if [[ -n "${gh_owner}" ]] && t="$(github_app_installation_token "${gh_owner}" "${gh_repo}" 2>/dev/null)"; then
               clone_url="https://x-access-token:${t}@github.com/${gh_owner}/${gh_repo}.git"
             fi
-            with_retry 3 -- git clone --quiet "${clone_url}" "/work/charts/${n}"
-            git -C "/work/charts/${n}" checkout --quiet "${rev}"
+            # One-commit fetch of the pinned revision (branch, tag or sha), not a full clone.
+            mkdir -p "/work/charts/${n}"
+            git -C "/work/charts/${n}" init --quiet
+            with_retry 3 -- git -C "/work/charts/${n}" fetch --quiet --depth 1 "${clone_url}" "${rev}"
+            git -C "/work/charts/${n}" checkout --quiet FETCH_HEAD
             rm -f "/work/charts/${n}/.git/config"
             echo "${f}|${cluster}|${env}|/work/charts/${n}/${path}" >> /work/own-resolved.txt
           fi
           echo "own chart for ${f}: ${chart}"
         done < /work/own.txt
-        # The token-bearing .git config is not needed past this point. Do not chmod /work itself: it is the
-        # volume mount root, owned by root, and this step runs as a non-root user (it fails with "Operation not
-        # permitted"). Files this step creates are already world-readable; the validator image only reads them.
+        # Nothing past this point needs .git (and a fetch by URL never wrote the token into it, unlike the old
+        # clone). Do not chmod /work itself: it is the volume mount root, owned by root, and this step runs as
+        # a non-root user (it fails with "Operation not permitted"). Files this step creates are already
+        # world-readable; the validator image only reads them.
         rm -f .git/config
         chmod -R a+rX /work/repo /work/files.txt /work/charts /work/own-resolved.txt 2>/dev/null || true
     - name: validate

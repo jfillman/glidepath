@@ -33,6 +33,7 @@ spec:
       params:
         - { name: repo-url, value: $(params.repo-url) }
         - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
 
     - name: generate-sbom
       runAfter: [extract-promoted-image]
