@@ -1,0 +1,119 @@
+# catalog/stepactions/resolve-promoted-image.yaml
+#
+# Finds the image a gitops release PR (or a cloud target's release-pin PR) promotes, from
+# the GitHub API alone - no clone (2026-10-09, report item 5). Shared by the four
+# image-centric release gates: extract-promoted-image.yaml wraps it for sast-check/
+# image-scan-check/sbom-check, and verify-image-provenance.yaml runs it as its first
+# step. Before this every one of those gates full-cloned the gitops repo (p50 5s of work
+# behind a 23s pod start) to diff ONE commit and read ONE file.
+#
+# Which commits count: with a PR number, the files changed between the PR's base and the
+# revision under check (GitHub's compare endpoint) - so a release branch that picked up
+# a second commit (an empty "retrigger" push, a rebase) still resolves, where the old
+# `git diff HEAD~1 HEAD` only ever saw the last commit. Without a PR number (a manual
+# run) it falls back to the revision's own commit, the same single-commit view as before.
+#
+# The manifest is the first changed file matching, in order: */release.yaml (D9/AF-5
+# split release file), */values.yaml (apps that haven't opted in), glidepath/releases/
+# *.yaml (ADR-0020 cloud release pins). Anything else - including a Release Record PR,
+# which only adds releases/<app>@<version>.yaml - is not a promotion, and the error says
+# so. (Those PRs no longer trigger these gates at all: their branches start with
+# `release-record-`, excluded in the gitops-repo onboarding templates' CEL since the same
+# date - 135 of 284 historical extract-promoted-image runs had failed on exactly them.)
+#
+# Auth: the same per-run, single-repo GitHub App installation token every clone used,
+# minted by the broker against this pod's own ServiceAccount (catalog/lib/github-app.sh).
+# The volume is declared by the calling Task (a StepAction volumeMount must name a param).
+apiVersion: tekton.dev/v1beta1
+kind: StepAction
+metadata:
+  name: resolve-promoted-image
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  image: {{ .Values.toolboxImage }}
+  params:
+    - name: repo-url
+      type: string
+      description: The repo the PR is on - PaC's `repo_url` (the gitops repo, or the app repo for a cloud release-pin PR).
+    - name: revision
+      type: string
+      description: The commit under check - PaC's `revision`.
+    - name: pr-number
+      type: string
+      default: ""
+      description: PaC's `body.pull_request.number`. Anchors the changed-file list on the PR's base; empty means "just this commit".
+    - name: token-volume
+      type: string
+      description: Name of the calling Task's projected-ServiceAccount-token volume (audience github-installation-token, path github-token-broker-token).
+  results:
+    - name: image-ref
+      description: "<repository>:<tag> read from the promoted manifest."
+    - name: manifest-path
+      description: Repo-relative path of the manifest the image was read from.
+  volumeMounts:
+    - name: $(params.token-volume)
+      mountPath: /var/run/secrets/platform
+      readOnly: true
+  env:
+    - name: GITHUB_TOKEN_BROKER_URL
+      value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+    - name: REPO_URL
+      value: $(params.repo-url)
+    - name: REVISION
+      value: $(params.revision)
+    - name: PR_NUMBER
+      value: $(params.pr-number)
+  script: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "${PLATFORM_LIB}/github-app.sh"
+
+    owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+    repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+    token="$(github_app_installation_token "${owner}" "${repo}")"
+    api() {
+      curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
+        -H "Authorization: Bearer ${token}" -H "X-GitHub-Api-Version: 2022-11-28" "$@"
+    }
+    base="https://api.github.com/repos/${owner}/${repo}"
+
+    if [[ -n "${PR_NUMBER}" ]]; then
+      pr_json="$(api -H "Accept: application/vnd.github+json" "${base}/pulls/${PR_NUMBER}")"
+      base_sha="$(jq -r '.base.sha' <<<"${pr_json}")"
+      head_sha="$(jq -r '.head.sha' <<<"${pr_json}")"
+      head_ref="$(jq -r '.head.ref' <<<"${pr_json}")"
+      if [[ "${head_sha}" != "${REVISION}" ]]; then
+        echo "note: PR #${PR_NUMBER}'s head is now ${head_sha:0:12}; checking ${REVISION:0:12} as triggered"
+      fi
+      # Up to 300 files per compare - a promotion changes one.
+      files="$(api -H "Accept: application/vnd.github+json" "${base}/compare/${base_sha}...${REVISION}" \
+        | jq -r '.files[] | select(.status != "removed") | .filename')"
+      scope="PR #${PR_NUMBER} (${head_ref}), ${base_sha:0:12}..${REVISION:0:12}"
+    else
+      files="$(api -H "Accept: application/vnd.github+json" "${base}/commits/${REVISION}" \
+        | jq -r '.files[] | select(.status != "removed") | .filename')"
+      scope="commit ${REVISION:0:12} alone (no PR number given)"
+    fi
+    echo "changed files in ${scope}: $(wc -l <<<"${files}" | tr -d ' ')"
+
+    manifest="$(grep -E '(^|/)[^/]+/release\.yaml$' <<<"${files}" | head -1 || true)"
+    [[ -n "${manifest}" ]] || manifest="$(grep -E '(^|/)[^/]+/values\.yaml$' <<<"${files}" | head -1 || true)"
+    [[ -n "${manifest}" ]] || manifest="$(grep -E '^glidepath/releases/[^/]+\.yaml$' <<<"${files}" | head -1 || true)"
+    if [[ -z "${manifest}" ]]; then
+      echo "error: no <cluster>/<env>/release.yaml, <cluster>/<env>/values.yaml or glidepath/releases/*.yaml changed in ${scope} - this PR does not promote an image (a Release Record PR adds releases/<app>@<version>.yaml and is not a promotion). Files: $(paste -sd ' ' - <<<"${files}")" >&2
+      exit 1
+    fi
+
+    api -H "Accept: application/vnd.github.raw+json" "${base}/contents/${manifest}?ref=${REVISION}" > /tmp/manifest.yaml
+    image_repo="$(yq -r '.release.image.repository // .rollout.image.repository' /tmp/manifest.yaml)"
+    image_tag="$(yq -r '.release.image.tag // .rollout.image.tag' /tmp/manifest.yaml)"
+    if [[ -z "${image_repo}" || "${image_repo}" == "null" || -z "${image_tag}" || "${image_tag}" == "null" ]]; then
+      echo "error: no release.image.repository/tag (or the deprecated rollout.image) in ${manifest} @ ${REVISION:0:12}" >&2
+      exit 1
+    fi
+    image_ref="${image_repo}:${image_tag}"
+    echo "promoted image: ${image_ref} (from ${manifest})"
+    printf '%s' "${image_ref}" > "$(step.results.image-ref.path)"
+    printf '%s' "${manifest}" > "$(step.results.manifest-path.path)"

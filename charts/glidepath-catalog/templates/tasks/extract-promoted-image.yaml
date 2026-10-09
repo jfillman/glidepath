@@ -1,29 +1,11 @@
 # catalog/tasks/extract-promoted-image.yaml
 #
-# Clones an Application's gitops-repo PR head commit and reads the image reference
-# open-release-pr.yaml's yq patch put into the promoted env's Deployment manifest - the
-# actual image about to be promoted. Used by image-scan-check.yaml (Phase 3 item 8.5);
-# intended for reuse by any future gate that needs "which image is this PR actually
-# promoting" rather than app-repo source (see resolve-app-commit.yaml for the
-# source-code equivalent, used by sast-check.yaml - a deliberately different resolution
-# mechanism, not reused here: this needs the image the manifest points at, not a source
-# checkout).
-#
-# Finds the manifest via `git diff --name-only HEAD~1` rather than a hardcoded
-# <cluster>/<env>/values.yaml (or even */values.yaml) path - this Task is invoked
-# directly by PaC off the gitops repo's own PR webhook (repo-url/revision only, no
-# env/cluster param in that path at all - see docs/multi-cluster.md), so it can't know
-# the cluster/env names up front the way release.yaml's own Pipeline now can. What it
-# CAN rely on: open-release-pr.yaml always produces exactly one commit, one file
-# changed (a single surgical yq patch) - so the file HEAD~1..HEAD touched IS the
-# promoted env's manifest, whatever that cluster/env is named. Generalizes to any depth
-# for the same reason `find`'s glob used to.
-#
-# values.yaml, not deployment.yaml - the gitops-<app-name> repo is now scaffolded by
-# airframe's ApplicationEnvironment composition (airframe-application's own Helm
-# values file), not a raw Deployment manifest - see open-release-pr.yaml's own header
-# for the live-confirmed schema this reads back (repository/tag split fields, not a
-# single image: string).
+# Thin Task wrapper around the resolve-promoted-image StepAction (where the logic lives
+# as of 2026-10-09 - see its header). First task of sast-check/image-scan-check/
+# sbom-check: "which image is this PR promoting". No clone any more - two GitHub API
+# calls against the PR, anchored on the PR's base so a multi-commit release branch
+# resolves too. verify-image-provenance.yaml runs the same StepAction inline instead of
+# calling this Task, saving itself a pod.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -32,19 +14,24 @@ metadata:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
 spec:
-  description: Clones an Application's gitops-repo PR head commit and reads the promoted image reference from its Deployment manifest.
+  description: Reads the image reference a gitops release PR (or cloud release-pin PR) promotes, from the PR's own changed files via the GitHub API.
   params:
     - name: repo-url
       type: string
-      description: The gitops repo's own URL - PaC's `repo_url`.
+      description: The repo the PR is on - PaC's `repo_url`.
     - name: revision
       type: string
-      description: The gitops PR's head commit - PaC's `revision`.
+      description: The PR's head commit - PaC's `revision`.
+    - name: pr-number
+      type: string
+      default: ""
+      description: PaC's `body.pull_request.number` - anchors the changed-file list on the PR's base. Empty means "just this commit".
   results:
     - name: image-ref
-  # Audience-bound projected ServiceAccount token for the shared broker's GitHub
-  # token-minting endpoint - same pattern as clone-repo-authenticated.yaml. The gitops
-  # repo this Task clones can be private, so a bare unauthenticated fetch isn't enough.
+      value: $(steps.resolve.results.image-ref)
+    - name: manifest-path
+      description: Repo-relative path of the manifest the image was read from.
+      value: $(steps.resolve.results.manifest-path)
   volumes:
     - name: github-token-broker-token
       projected:
@@ -54,52 +41,16 @@ spec:
               audience: github-installation-token
               expirationSeconds: 600
   steps:
-    - name: extract
-      image: {{ .Values.toolboxImage }}
+    - name: resolve
+      ref:
+        resolver: cluster
+        params:
+          - { name: kind, value: stepaction }
+          - { name: name, value: resolve-promoted-image }
+          - { name: namespace, value: {{ .Release.Namespace }} }
       imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
-      volumeMounts:
-        - name: github-token-broker-token
-          mountPath: /var/run/secrets/platform
-          readOnly: true
-      env:
-        - name: GITHUB_TOKEN_BROKER_URL
-          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
-        - name: REPO_URL
-          value: $(params.repo-url)
-        - name: REVISION
-          value: $(params.revision)
-      script: |
-        #!/usr/bin/env bash
-        set -euo pipefail
-        source "${PLATFORM_LIB}/github-app.sh"
-        source "${PLATFORM_LIB}/retry.sh"
-
-        gitops_owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
-        gitops_repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
-        gitops_token="$(github_app_installation_token "${gitops_owner}" "${gitops_repo}")"
-        gitops_clone_url="https://x-access-token:${gitops_token}@github.com/${gitops_owner}/${gitops_repo}.git"
-
-        workdir="$(mktemp -d)"
-        with_retry 3 -- git clone --quiet "${gitops_clone_url}" "${workdir}/gitops"
-        cd "${workdir}/gitops"
-        git checkout --quiet "${REVISION}"
-
-        # D9/AF-5: an app with deploy.releaseFile gets its release in a sibling release.yaml, not values.yaml -
-        # prefer that file, fall back to values.yaml for apps that haven't opted in.
-        manifest="$(git diff --name-only HEAD~1 HEAD -- '*/release.yaml' | head -1)"
-        [[ -n "${manifest}" ]] || manifest="$(git diff --name-only HEAD~1 HEAD -- '*/values.yaml' | head -1)"
-        # ADR-0020: a cloud Flight environment's release pin, on a pin PR in the app's source repo.
-        [[ -n "${manifest}" ]] || manifest="$(git diff --name-only HEAD~1 HEAD -- 'glidepath/releases/*.yaml' | head -1)"
-        if [[ -z "${manifest}" ]]; then
-          echo "error: no */release.yaml or */values.yaml changed between HEAD~1 and ${REVISION} in ${REPO_URL} - expected open-release-pr.yaml's single surgical image-tag commit" >&2
-          exit 1
-        fi
-        image_repo="$(yq -r '.release.image.repository // .rollout.image.repository' "${manifest}")"
-        image_tag="$(yq -r '.release.image.tag // .rollout.image.tag' "${manifest}")"
-        if [[ -z "${image_repo}" || "${image_repo}" == "null" || -z "${image_tag}" || "${image_tag}" == "null" ]]; then
-          echo "error: no release.image.repository/tag (or the deprecated rollout.image) found in ${manifest}" >&2
-          exit 1
-        fi
-        image_ref="${image_repo}:${image_tag}"
-        echo "Resolved promoted image: ${image_ref} (from ${manifest})"
-        echo -n "${image_ref}" | tee "$(results.image-ref.path)"
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: token-volume, value: github-token-broker-token }

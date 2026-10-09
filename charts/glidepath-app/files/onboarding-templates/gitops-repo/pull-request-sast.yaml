@@ -42,7 +42,12 @@ metadata:
     # hitting the same CEL expression - a push event has no pull_request key, which
     # without the guard raised a CEL "no such key" error and posted a false-alarm bot
     # comment even though the real check had already passed.
-    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main" && body.pull_request.head.ref.startsWith("release-")'
+    # `!startsWith("release-record-")` (2026-10-09): Tower's Release Record poller opens
+    # PRs on this repo from release-record-<app>-<hash> branches that only add
+    # releases/<app>@<version>.yaml - no image is promoted, so every image-centric gate
+    # failed on them ("no release.yaml changed"), 135 of 284 historical
+    # extract-promoted-image runs. Those PRs are not releases; the gates don't apply.
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main" && body.pull_request.head.ref.startsWith("release-") && !body.pull_request.head.ref.startsWith("release-record-")'
     pipelinesascode.tekton.dev/max-keep-runs: "5"
 spec:
   pipelineRef:

@@ -33,7 +33,13 @@ spec:
       description: The head commit to check - PaC's revision.
     - name: poll-interval-seconds
       type: string
-      default: "15"
+      default: "30"
+      description: >-
+        30s, up from 15s (2026-10-09, report item 5): one check-runs read per poll from
+        every open release PR's image-promotion run, against a sibling gate set whose
+        fastest member takes well over a minute - halving the rate costs at most 15s on
+        a promotion and spends a quarter of the GitHub App's rate budget that the old
+        rate did, for this repo's whole gate set.
     - name: timeout-seconds
       type: string
       default: "1080"

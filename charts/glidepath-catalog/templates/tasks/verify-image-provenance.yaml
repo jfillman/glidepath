@@ -36,6 +36,10 @@ spec:
     - name: revision
       type: string
       description: The gitops PR's head commit - PaC's `revision`.
+    - name: pr-number
+      type: string
+      default: ""
+      description: PaC's `body.pull_request.number` - lets the resolve step anchor the PR's changed files on its base (see resolve-promoted-image.yaml). Empty means "just this commit".
     - name: app-namespace
       type: string
     - name: app-name
@@ -43,8 +47,9 @@ spec:
       description: Used to find <app-name>-policy-config in this Application's own namespace.
   # Audience-bound projected ServiceAccount token for the shared broker's GitHub
   # token-minting endpoint - same pattern as clone-repo-authenticated.yaml/
-  # verify-commit-signature.yaml. The gitops repo this Task clones can be private, so
-  # a bare unauthenticated fetch isn't enough.
+  # verify-commit-signature.yaml. Mounted by the resolve step (the StepAction names it
+  # via its token-volume param): the gitops repo can be private, so even the two API
+  # reads need a real installation token.
   volumes:
     - name: github-token-broker-token
       projected:
@@ -69,25 +74,36 @@ spec:
           - key: .dockerconfigjson
             path: config.json
   steps:
+    # Which image this PR promotes - the same StepAction extract-promoted-image.yaml
+    # wraps for the other image gates, run inline here so this gate stays one pod
+    # (2026-10-09, report item 5). It replaced a full clone of the gitops repo plus
+    # `git diff HEAD~1 HEAD`, which only ever saw the PR's last commit.
+    - name: resolve
+      ref:
+        resolver: cluster
+        params:
+          - { name: kind, value: stepaction }
+          - { name: name, value: resolve-promoted-image }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: token-volume, value: github-token-broker-token }
     - name: verify
       image: {{ .Values.toolboxImage }}
       imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
       volumeMounts:
-        - name: github-token-broker-token
-          mountPath: /var/run/secrets/platform
-          readOnly: true
         - name: registry-credentials
           mountPath: /var/run/secrets/registry
           readOnly: true
       env:
         - name: DOCKER_CONFIG
           value: /var/run/secrets/registry
-        - name: GITHUB_TOKEN_BROKER_URL
-          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
-        - name: REPO_URL
-          value: $(params.repo-url)
-        - name: REVISION
-          value: $(params.revision)
+        # A step result substitutes into env (not into script) - Tekton 1.15.
+        - name: IMAGE_REF
+          value: $(steps.resolve.results.image-ref)
         - name: APP_NAMESPACE
           value: $(params.app-namespace)
         - name: APP_NAME
@@ -95,41 +111,16 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
 
-        gitops_owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
-        gitops_repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
-        gitops_token="$(github_app_installation_token "${gitops_owner}" "${gitops_repo}")"
-        gitops_clone_url="https://x-access-token:${gitops_token}@github.com/${gitops_owner}/${gitops_repo}.git"
-
         workdir="$(mktemp -d)"
-        with_retry 3 -- git clone --quiet "${gitops_clone_url}" "${workdir}/gitops"
-        cd "${workdir}/gitops"
-        git checkout --quiet "${REVISION}"
-
-        # Promoted image ref comes straight from the manifest open-release-pr.yaml patches -
-        # already the authoritative record of what's being promoted. Found via `git diff`
-        # rather than a hardcoded path since this Task runs off the gitops repo's own PR
-        # webhook with no env/cluster param, and the target is a scaffolded
-        # <cluster>/<env>/values.yaml (airframe-application Helm values), not a fixed Deployment path.
-        # D9/AF-5: an app with deploy.releaseFile gets its release in a sibling release.yaml, not values.yaml -
-        # prefer that file, fall back to values.yaml for apps that haven't opted in.
-        manifest="$(git diff --name-only HEAD~1 HEAD -- '*/release.yaml' | head -1)"
-        [[ -n "${manifest}" ]] || manifest="$(git diff --name-only HEAD~1 HEAD -- '*/values.yaml' | head -1)"
-        # ADR-0020: a cloud Flight environment's release pin, on a pin PR in the app's source repo.
-        [[ -n "${manifest}" ]] || manifest="$(git diff --name-only HEAD~1 HEAD -- 'glidepath/releases/*.yaml' | head -1)"
-        if [[ -z "${manifest}" ]]; then
-          echo "FAIL: no */release.yaml or */values.yaml changed between HEAD~1 and ${REVISION} - expected open-release-pr.yaml's single surgical image-tag commit" >&2
+        # Promoted image ref, from the manifest open-release-pr.yaml patched - already the
+        # authoritative record of what's being promoted. Resolved by the step above.
+        image_ref="${IMAGE_REF}"
+        if [[ -z "${image_ref}" ]]; then
+          echo "FAIL: the resolve step produced no image-ref" >&2
           exit 1
         fi
-        image_repo="$(yq -r '.release.image.repository // .rollout.image.repository' "${manifest}")"
-        image_tag="$(yq -r '.release.image.tag // .rollout.image.tag' "${manifest}")"
-        if [[ -z "${image_repo}" || "${image_repo}" == "null" || -z "${image_tag}" || "${image_tag}" == "null" ]]; then
-          echo "FAIL: could not read release.image.repository/tag (or the deprecated rollout.image) from ${manifest}" >&2
-          exit 1
-        fi
-        image_ref="${image_repo}:${image_tag}"
 
         # cosign's signature/attestation lookup is digest-keyed, so a plain tag reference
         # fails with "no signatures found" even when signatures exist - resolve to a digest

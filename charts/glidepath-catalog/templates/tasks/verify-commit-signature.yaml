@@ -15,18 +15,21 @@
 # commit's message specifically so this Task can find its way back to the right commit
 # without a second PaC Repository CR/webhook on the app repo.
 #
-# Walks history back from REVISION for the trailers (git log --grep, not `git log -1` on
-# REVISION's own message) - 2026-08-12, real bug found live once every commit on a release
-# PR started getting independently checked (see pull-request-provenance.yaml's own
-# history for why that changed): open-release-pr.yaml's SECOND commit ("Add
-# outcome-reporting hooks...") never carries these trailers, only its first commit
-# ("Release: promote...") does - both commits promote the exact same app commit, the
-# second just layers unrelated bookkeeping on top. Checking only REVISION's own message
-# made this Task fail on every release PR's actual HEAD, permanently, for a commit that
-# was never supposed to carry trailers in the first place. Safe to walk back unbounded:
-# open-release-pr.yaml always branches fresh off main, so the nearest trailer-bearing
-# ancestor is always this release's own promote commit, never a stale one from a prior
-# release already merged into main's history.
+# Walks the PR's commits newest-first for the trailers (not just REVISION's own message)
+# - 2026-08-12, real bug found live once every commit on a release PR started getting
+# independently checked (see pull-request-provenance.yaml's own history for why that
+# changed): open-release-pr.yaml's SECOND commit ("Add outcome-reporting hooks...")
+# never carried these trailers, only its first commit ("Release: promote...") did -
+# both promote the exact same app commit. Checking only REVISION's own message made
+# this Task fail on every release PR's actual HEAD, permanently.
+#
+# The commits come from the GitHub API (pulls/N/commits), not a clone of the gitops
+# repo (2026-10-09, report item 5): the old full clone was p50 5s of work behind a 23s
+# pod start, for one `git log --grep`. Bounding the walk to the PR's own commits is also
+# the right scope - a prior release's promote commit is in main's history and would
+# have been found by an unbounded walk had this PR carried no trailers at all. With no
+# PR number (a manual run) the walk falls back to the 50 commits reachable from
+# REVISION, the old `git log` view.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -42,6 +45,10 @@ spec:
     - name: revision
       type: string
       description: The gitops PR's head commit - PaC's `revision`.
+    - name: pr-number
+      type: string
+      default: ""
+      description: PaC's `body.pull_request.number` - bounds the trailer search to this PR's own commits. Empty means "the commits reachable from revision".
     - name: app-namespace
       type: string
     - name: app-name
@@ -49,9 +56,8 @@ spec:
       description: Used to find <app-name>-policy-config in this Application's own namespace (charts/glidepath-app/templates/governance/policy-config.yaml).
   # Audience-bound projected ServiceAccount token for the shared broker's GitHub
   # token-minting endpoint - same pattern as clone-repo-authenticated.yaml/
-  # comment-pr-check-result.yaml. Both the gitops repo and the app repo this Task
-  # clones can be private, so both clones need a real installation token, not a bare
-  # unauthenticated fetch.
+  # comment-pr-check-result.yaml. Both the gitops repo (read over the API) and the app
+  # repo (one-commit fetch) can be private, so both need a real installation token.
   volumes:
     - name: github-token-broker-token
       projected:
@@ -75,6 +81,8 @@ spec:
           value: $(params.repo-url)
         - name: REVISION
           value: $(params.revision)
+        - name: PR_NUMBER
+          value: $(params.pr-number)
         - name: APP_NAMESPACE
           value: $(params.app-namespace)
         - name: APP_NAME
@@ -88,27 +96,32 @@ spec:
         gitops_owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         gitops_repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
         gitops_token="$(github_app_installation_token "${gitops_owner}" "${gitops_repo}")"
-        gitops_clone_url="https://x-access-token:${gitops_token}@github.com/${gitops_owner}/${gitops_repo}.git"
+        gitops_api="https://api.github.com/repos/${gitops_owner}/${gitops_repo}"
 
-        workdir="$(mktemp -d)"
-        with_retry 3 -- git clone --quiet "${gitops_clone_url}" "${workdir}/gitops"
-        cd "${workdir}/gitops"
-        git checkout --quiet "${REVISION}"
-
-        # Extract the trailers open-release-pr.yaml embeds - see that file's own
-        # comment on why these exist instead of a second PaC Repository CR on the app
-        # repo. git log --grep (not `git log -1`, see this file's own header comment) -
-        # matches nothing rather than failing when no ancestor has the trailer, so this
-        # reaches the explicit empty check below instead of dying silently under set -e.
-        commit_body="$(git log -1 --format=%B --grep='^X-App-Repo: ' --extended-regexp)"
-        app_repo="$(grep -E '^X-App-Repo: ' <<<"${commit_body}" | sed -E 's/^X-App-Repo: //')"
-        app_commit="$(grep -E '^X-App-Commit: ' <<<"${commit_body}" | sed -E 's/^X-App-Commit: //')"
+        # The trailers open-release-pr.yaml embeds - see that file's own comment on why
+        # these exist instead of a second PaC Repository CR on the app repo. Newest
+        # commit first, same order `git log --grep` walked (header comment). The commit
+        # list is one API read; a missing trailer reaches the explicit check below.
+        if [[ -n "${PR_NUMBER}" ]]; then
+          messages="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
+            -H "Authorization: Bearer ${gitops_token}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${gitops_api}/pulls/${PR_NUMBER}/commits?per_page=100" | jq -r 'reverse | .[].commit.message')"
+          scope="PR #${PR_NUMBER}'s commits"
+        else
+          messages="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
+            -H "Authorization: Bearer ${gitops_token}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${gitops_api}/commits?sha=${REVISION}&per_page=50" | jq -r '.[].commit.message')"
+          scope="the 50 commits reachable from ${REVISION:0:12}"
+        fi
+        app_repo="$(grep -E -m1 '^X-App-Repo: ' <<<"${messages}" | sed -E 's/^X-App-Repo: //' || true)"
+        app_commit="$(grep -E -m1 '^X-App-Commit: ' <<<"${messages}" | sed -E 's/^X-App-Commit: //' || true)"
 
         if [[ -z "${app_repo}" || -z "${app_commit}" ]]; then
-          echo "FAIL: no commit reachable from ${REVISION} carries X-App-Repo/X-App-Commit trailers - cannot determine which app commit to verify" >&2
+          echo "FAIL: none of ${scope} carries X-App-Repo/X-App-Commit trailers - cannot determine which app commit to verify" >&2
           exit 1
         fi
-        echo "Verifying ${app_repo}@${app_commit}"
+        echo "Verifying ${app_repo}@${app_commit} (trailers found in ${scope})"
+        workdir="$(mktemp -d)"
 
         # Narrow, single-commit fetch - no PaC Repository CR/webhook needed on the app
         # repo for this. The app repo can be private same as the gitops repo, so this

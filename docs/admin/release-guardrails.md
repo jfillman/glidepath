@@ -116,6 +116,22 @@ template's own header for the exact chain of reasoning.
 | `policy-validation` | Gatekeeper/Kyverno admission-policy validation of the rendered manifest | stub |
 | `image-promotion` | Promotes the image from the dev registry to this env's upper registry - runs last, dependent on every gate above | stub |
 
+**How the image gates find the image (2026-10-09).** `sast`, `image-scan`, `sbom` and the provenance half of
+`provenance` share the `resolve-promoted-image` StepAction: two GitHub API reads against the PR (its base, the
+files changed between that base and the head commit, then the one manifest's content) - no clone of the gitops
+repo. The manifest is the first changed `*/release.yaml`, else `*/values.yaml`, else `glidepath/releases/*.yaml`;
+a PR that changes none of them is not a promotion and the gate says so. `verify-commit-signature` reads the PR's
+commits the same way for the `X-App-Repo`/`X-App-Commit` trailers, and `validate-values` fetches the PR head one
+commit deep and takes its changed files from the same compare. Every gate pipeline passes `pr-number` for this;
+without it (a manual run) each falls back to the revision's own commit. Before this every gate full-cloned the
+gitops repo to diff one commit, and a release branch with more than one commit broke the three image gates.
+
+**Release Record PRs are not releases.** Tower's Release Record poller opens PRs on the gitops repo from
+`release-record-<app>-<hash>` branches that only add `releases/<app>@<version>.yaml`. Every gate template's
+trigger excludes them (`!head.ref.startsWith("release-record-")`); before 2026-10-09 they matched
+`startsWith("release-")` and the image gates failed on each one - 135 of 284 historical `extract-promoted-image`
+runs.
+
 `provenance` and `policy-validation` are deliberately separate gates, not one - the
 former is about the *commit*'s signer identity and the *image*'s provenance attestation
 (docs/commit-signing.md, docs/provenance-policy.md), the latter is about the *rendered
