@@ -292,7 +292,7 @@ rather than a flat string - sidesteps any risk of the printf-per-line manifest
 generation mis-escaping it) the same way. `PHASE` is baked in per-hook-type
 (`Succeeded`/`Failed`) rather than discovered live - which hook ran already tells you
 the outcome. `CHAIN_ID` (this flow's own chain-id, threaded from `release.yaml`'s
-`start-flow` result - see "The outcome span" below for what it's for) joined this list
+`preflight` result (`start-flow` before 2026-10-09) - see "The outcome span" below for what it's for) joined this list
 2026-08-12, optional (`:-`, not `:?`, in the hook script - an app onboarded before it
 existed must keep releasing without it). The hook script itself
 (`catalog/lib/argocd-outcome-hook.sh`, baked into the toolbox image, not embedded in the

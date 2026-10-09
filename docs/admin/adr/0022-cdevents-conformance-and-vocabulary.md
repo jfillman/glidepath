@@ -108,7 +108,7 @@ the flow's config.
    exists.
 6. **The `cicd.yaml` blob leaves the events.** A `FlowRecord` (a ConfigMap keyed by
    chain-id, written once at flow start, immutable, TTL-swept) holds the config and flow
-   start time; `resolve-notify-config` reads it by chain-id instead of from the event. This
+   start time; `preflight` (then `resolve-notify-config`) reads it by chain-id instead of from the event. This
    is the same record the ReleaseRecord extends, so there is one record per chain, not two.
    A missing record needs a defined fallback before this ships: the stage re-reads `cicd.yaml`
    from git, which is slower but correct.

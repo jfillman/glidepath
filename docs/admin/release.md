@@ -52,6 +52,11 @@ purely so `notify-slack`'s finally step could read two fields off it - a full cl
 a dynamically-provisioned PVC, on every single stage transition, for a workspace that
 was otherwise dead weight.
 
+> **2026-10-09:** the mechanism below is now the `clone`/`validate` steps of every
+> stage's single `preflight` Task (`stage-preflight.yaml`); `resolve-notify-config` and
+> the standalone `validate-config`/`clone-repo` tasks are gone. A git-rooted
+> deploy/release now gets full schema validation and defaults, not a best-effort read.
+
 Fixed: `cicd.yaml`'s already-validated content is now forwarded stage-to-stage through
 the CDEvents chain instead (`customData.platform.config_json` - see docs/chaining.md),
 ultimately sourced from `test`'s own `validate-config` (which always runs regardless,

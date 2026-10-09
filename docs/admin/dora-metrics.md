@@ -130,7 +130,7 @@ frequency via `increase(dora_deployments_total[...])` over whatever window a pan
 counter becomes "how often" in Prometheus, not something to precompute and bake in.
 
 **2. Lead Time for Changes** - "time from commit to running in production." The start
-anchor is `flow-start-time`, established once at `build`'s `start-flow-root-span` (the
+anchor is `flow-start-time`, established once by `build`'s `preflight` Task (the
 moment the very first stage of this commit's whole flow began) and threaded unchanged
 through every CDEvent's `customData.platform.flow_start_time` since -
 `mark-release-pending` just copies a value that already exists all the way from

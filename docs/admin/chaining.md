@@ -137,6 +137,15 @@ moment the failing event arrived, not before. Fixed by deleting the unused param
 
 ### `customData.platform.config_json` - cicd.yaml, forwarded instead of re-read
 
+> **2026-10-09:** `resolve-notify-config` no longer exists. Its two jobs - pass an
+> inherited `config_json` through, or clone and read `cicd.yaml` for a git-rooted
+> deploy/release - are the `validate` and `clone` steps of every stage's single
+> `preflight` Task (`stage-preflight.yaml`), whose workspace is `optional: true` for
+> exactly the admission-time reason described below. The git-rooted path now gets the
+> same schema validation and defaults build/test always had, instead of a best-effort
+> `yq` read. The rest of this section is kept as the design record of why the clone had
+> to live inside a Task with an optional workspace in the first place.
+
 Performance pass: `deploy`/`release` used to unconditionally clone the whole app repo
 and run full JSON-schema validation on `cicd.yaml`, purely to get `notify-slack` a
 `config-json` - `deploy-manifests.yaml`/`open-release-pr.yaml`/`mark-release-pending.yaml`
@@ -237,13 +246,13 @@ already used), each with three predicates - `queued`, `started`, `finished`.
   an exact `body.context.type` string - a new type the filter doesn't check for simply
   never matches, so this is safely additive to the real chaining mechanism.
 
-**Placement**: `pipelinerun.started` fires with no `runAfter` dependency (parallel with
-`clone-repo`) in `test`/`deploy`/`release`, since `chain-id`/`traceparent`/
-`flow-start-time` already arrive as incoming Pipeline params for those three. In `build`
-it fires `runAfter: [start-flow]` instead, alongside `start-build-stage-span` - build is
-the flow *root*, so those values don't exist until `start-flow` generates them. This
-means build's `pipelinerun.started` fires a few tasks later than the other three stages' -
-a real, accepted asymmetry, not an oversight.
+**Placement**: `pipelinerun.started` is the second step of every stage's `preflight`
+Task (`stage-preflight.yaml`), right after the step that mints or passes through
+`chain-id`/`traceparent`/`flow-start-time` - so it fires at the same point in every
+stage, before the clone. (Until 2026-10-09 it was its own TaskRun, and in `build` it had
+to wait for a separate `start-flow` task to mint those ids first, firing a few tasks
+later than in the other stages - an accepted asymmetry that the single preflight pod
+removed for free.)
 
 `pipelinerun.finished` lives in every pipeline's `finally:` block, alongside (not
 replacing) the existing domain-specific event - **deliberately not gated** on
@@ -253,9 +262,9 @@ signal that only reports on success isn't a useful uniform signal at all.
 
 **One finally pod per stage (2026-10-08).** Both finally-block events, the stage span
 send, the flow-root span close and the Slack/Backstage notifications now run as steps of
-one Task, `stage-finish.yaml` (pipelineTask `finish`), instead of six independent finally
+one Task, `stage-debrief.yaml` (pipelineTask `debrief`), instead of six independent finally
 TaskRuns - each of which cost 13-17s p50 of pod start-up for under 2s of work. The event
-code itself moved into the `cdevent-send` StepAction, which both `finish` and the thin
+code itself moved into the `cdevent-send` StepAction, which both `debrief` and the thin
 `send-cdevent` Task (still used for the mid-DAG `pipelinerun.started`) reference. The
 old `when:` gates became StepAction params: the domain event's success gate is
 `only-on-success`+`status`, the flow-root close is `otel-span-send`'s `enabled`. Every

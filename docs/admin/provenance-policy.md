@@ -260,9 +260,14 @@ Two things had to be confirmed live, not assumed, to get this working correctly:
    need to be literally `data.json`, despite that being the convention in Conforma's own
    example files - confirmed live by testing both).
 
-The required list itself (`git-clone`, `validate-cicd-config`, `start-flow-root-span`,
-`start-stage-span`, `send-cdevent`, `run-tests`, `build-image`, `end-stage-span`,
-`notify-slack`) is every Task that **unconditionally** runs in `build.yaml`
+The required list itself is every Task that **unconditionally** runs in `build.yaml` -
+derived live from the Pipeline object by `verify-image-provenance.yaml`, so it tracks
+catalog changes automatically (as of 2026-10-09: `stage-preflight`, `run-tests`,
+`build-image`, `stage-debrief`; it was the nine single-purpose Tasks listed in older
+provenance documents before the pre-work and finally blocks were each folded into one
+Task). **Transition caveat:** an image built by the *old* pipeline shape, promoted after
+the catalog changed, fails this check - its provenance lists the old Task names and lacks
+the new ones. Rebuild (push to main) before releasing such an image.
 (`resolve-build-agent-image`/`extract-governance-flags` used to be two more entries here
 - both folded into `validate-cicd-config` as a performance pass, see docs/chaining.md's
 Task-count note, so the live-derived list below is simply shorter now, no policy change
@@ -492,7 +497,7 @@ read from two genuinely different places:
 1. `build.yaml` gained two new Pipeline-level results, `CHAINS-GIT_URL`/`CHAINS-GIT_COMMIT`
    (Tekton Chains' own real, documented type-hint convention for promoting a task's
    source-checkout results into `predicate.materials` - confirmed via
-   `tekton.dev/docs/chains/slsa-provenance`, not guessed), sourced from `clone-repo`'s
+   `tekton.dev/docs/chains/slsa-provenance`, not guessed), sourced from `preflight`'s (formerly `clone-repo`'s)
    own `url`/`commit` results. Same Pipeline-level-result pattern already proven for
    `IMAGE_URL`/`IMAGE_DIGEST` - not the separate `artifacts.pipelinerun.enable-deep-
    inspection` auto-discovery mechanism, which isn't needed for an explicit Pipeline-level

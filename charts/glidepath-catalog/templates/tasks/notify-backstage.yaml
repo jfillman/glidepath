@@ -25,7 +25,7 @@ metadata:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
 spec:
-  description: Thin Task wrapper around the notify-backstage StepAction - the standalone call shape release-outcome-notify.yaml/release-progress-notify.yaml use. build/test/deploy/release run the same StepAction as one step of stage-finish.yaml instead.
+  description: Thin Task wrapper around the notify-backstage StepAction - the standalone call shape release-outcome-notify.yaml/release-progress-notify.yaml use. build/test/deploy/release run the same StepAction as one step of stage-debrief.yaml instead.
   params:
     - name: config-json
       type: string

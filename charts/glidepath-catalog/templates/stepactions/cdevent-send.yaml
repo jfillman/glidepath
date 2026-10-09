@@ -3,7 +3,7 @@
 # The body of send-cdevent, as a StepAction (2026-10-08): one copy of the "assemble and
 # POST a CDEvent to the shared broker" logic, runnable either as the standalone
 # send-cdevent Task (any Pipeline that emits an event mid-DAG, e.g. pipelinerun.started)
-# or as two steps of stage-finish.yaml (the stage's own domain event plus
+# or as two steps of stage-debrief.yaml (the stage's own domain event plus
 # pipelinerun.finished) - see that Task's header for why every stage's finally block is
 # now one pod instead of six. Thin wrapper around catalog/lib/cdevents.sh, same as the
 # Task always was.
@@ -79,7 +79,7 @@ spec:
       default: ""
       description: >-
         Optional base64 form of subject-content-json; when non-empty it wins. For
-        stage-finish.yaml, which builds the content in an earlier step and hands it over
+        stage-debrief.yaml, which builds the content in an earlier step and hands it over
         as a step result - Tekton parses a step result that is a compact JSON object/array
         as that type, so substituting it into a string param yields "" (confirmed live,
         Tekton 1.15). base64 keeps it a plain string. Standalone callers leave this empty.
@@ -94,7 +94,7 @@ spec:
         "true" skips the send (exit 0, logged) unless `status` is Succeeded or Completed.
         Replaces the Pipeline-level `when: $(tasks.status) in [Succeeded, Completed]`
         gate the domain-event finally tasks used to carry, now that they run as steps of
-        stage-finish.yaml (Tekton has no per-step `when`). test's testcaserun.finished
+        stage-debrief.yaml (Tekton has no per-step `when`). test's testcaserun.finished
         deliberately passes "false" - it fires pass or fail, with the outcome in its
         content, because flow-triggers.yaml's from-test transition is the one that
         checks outcome itself (docs/chaining.md).
@@ -104,7 +104,7 @@ spec:
       description: The calling Pipeline's $(tasks.status). Only read when only-on-success is "true".
     - name: token-volume
       type: string
-      description: Name of the calling Task's projected-ServiceAccount-token volume (audience cdevents-broker, path broker-token) - a StepAction volumeMount must name a param, the Task owns the volume. send-cdevent.yaml/stage-finish.yaml both declare it as `broker-token`.
+      description: Name of the calling Task's projected-ServiceAccount-token volume (audience cdevents-broker, path broker-token) - a StepAction volumeMount must name a param, the Task owns the volume. send-cdevent.yaml/stage-debrief.yaml both declare it as `broker-token`.
   volumeMounts:
     - name: $(params.token-volume)
       mountPath: /var/run/secrets/platform
