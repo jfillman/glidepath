@@ -44,7 +44,9 @@ build:
   # this on.
   sonar: false
   cache:
-    # Renders a shared build-cache PVC (e.g. node_modules) mounted into the build step.
+    # Enables the per-app dependency-download cache (npm/yarn package cache, Maven local
+    # repository - not node_modules) that build-source and run-tests both mount. The PVC
+    # itself is rendered regardless, see templates/env/build-cache-pvc.yaml.
     enabled: false
     # PVC size class for the build cache above - only meaningful when cache.enabled is
     # true. One of the platform's standard size classes (small/medium/large), same

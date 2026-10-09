@@ -60,7 +60,7 @@
             "enabled": {
               "type": "boolean",
               "default": false,
-              "description": "Persistent dependency-download cache for build-source (npm's package cache / Maven's local repository, not node_modules/target itself - see docs/cicd-yaml-reference.md). No `type` field: derived from `agent`'s prefix (nodejs-* -> npm, openjdk-* -> maven), not a second, redundantly-declarable field. Keyed by a hash of the relevant lockfile (package-lock.json/pom.xml) so a dependency change invalidates the cache automatically. A no-op (logged, not an error) for agents without cache support yet (python-*/go-1.22). Teams with no build.script (whole build inside a multi-stage Dockerfile) get layer caching for free from kaniko instead."
+              "description": "Persistent dependency-download cache for build-source (npm's package cache / Maven's local repository, not node_modules/target itself - see docs/cicd-yaml-reference.md). No `type` field: derived from `agent`'s prefix (nodejs-* -> npm, openjdk-* -> maven), not a second, redundantly-declarable field. One shared directory per tool, never keyed by a lockfile hash - npm's cache is content-addressed and Maven's local repository is laid out per exact version, so neither can serve a stale package and a dependency bump only fetches what changed. Shared by build-source and (npm/yarn only) run-tests' unit-test step. A no-op (logged, not an error) for agents without cache support yet (python-*/go-1.22). Teams with no build.script (whole build inside a multi-stage Dockerfile) get layer caching for free from kaniko instead."
             },
             "size": {
               "type": "string",

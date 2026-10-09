@@ -1,15 +1,19 @@
-# Backs build-source.yaml's build-cache volume - a persistent PVC, not the ephemeral
-# per-run `source` workspace. One PVC per app since build.cache.size is a per-app choice.
+# Backs the build-cache volume build-source.yaml and run-tests.yaml both mount - a
+# persistent PVC, not the ephemeral per-run `source` workspace. One PVC per app since
+# build.cache.size is a per-app choice.
 #
-# Rendered unconditionally regardless of build.cache.enabled: build-source.yaml always
-# mounts this volume and only checks enabled at the script level (not as a Tekton
-# workspace, to avoid colliding with the Affinity Assistant). Making it conditional here
-# once broke scheduling for every app with caching disabled (the default) -
-# "persistentvolumeclaim ... not found".
+# Rendered unconditionally regardless of build.cache.enabled: both Tasks always mount
+# this volume and only check enabled at the script level (not as a Tekton workspace, to
+# avoid colliding with the Affinity Assistant). Making it conditional here once broke
+# scheduling for every app with caching disabled (the default) - "persistentvolumeclaim
+# ... not found".
 #
-# ReadWriteOnce is sufficient on this single-node cluster. No live resize: the default
-# StorageClass has allowVolumeExpansion: false, so changing build.cache.size later means
-# deleting and recreating this PVC.
+# ReadWriteOnce: build-source and unit-test run concurrently and both mount it, which
+# RWO allows as long as both pods land on the same node - true on this single-node
+# cluster, and true on a multi-node cluster whenever the Affinity Assistant is on
+# (it co-locates every TaskRun of a PipelineRun that shares the `source` PVC). No live
+# resize: the default StorageClass has allowVolumeExpansion: false, so changing
+# build.cache.size later means deleting and recreating this PVC.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
