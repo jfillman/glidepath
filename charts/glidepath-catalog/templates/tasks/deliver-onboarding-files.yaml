@@ -463,16 +463,22 @@ spec:
               # Config tab), and .tekton/ is this generated boilerplate (merging an
               # onboarding-resync PR re-builds nothing) - none of them changes what gets built.
               #
-              # Skips a push ONLY when EVERY changed file in it is exempt - `files.all` is
-              # the whole push's changed-file list, so it is range-safe in the direction
-              # that matters: a push whose range carries a developer's real code change
-              # alongside a bot/config commit still has a non-exempt file and still
-              # builds. (Contrast the pathChanged() form this file's history replaced -
-              # see the loop-guard comment above - which was any-file-matches, and
-              # silently dropped a developer's push when a bot commit shared its range.)
-              # size() > 0 keeps a push with an empty file list (nothing to classify)
-              # building as before rather than vacuously matching `all`.
-              local exempt_guard='!(size(files.all) > 0 && files.all.all(f, f == "cicd.yaml" || f.startsWith("glidepath/") || f.startsWith(".tekton/")))'
+              # Skips a push ONLY when EVERY changed file in it is exempt, across EVERY
+              # commit in the push (the webhook payload's `commits[].added/modified/
+              # removed`). Not `files.all`: PaC fills that from the HEAD commit alone, and
+              # for a merge commit GitHub lists only what the merge brought in relative to
+              # its first parent - so a `git pull` merge whose other side was a resync
+              # (.tekton/ only) hid the developer's own commit (backstage 59d056b,
+              # 2026-10-09: a Tower pin bump never built; found by reading PaC's "CEL
+              # expression ... is not matching" against the compare API). A developer
+              # commit alongside a bot/config commit still has a non-exempt file in SOME
+              # commit and still builds. The `exists` clause keeps a push with no changed
+              # files at all (an empty commit) building as before rather than vacuously
+              # matching `all`. Evaluated with cel-go (what PaC embeds) against seven
+              # payload shapes before shipping, including this exact merge case. GitHub
+              # caps `commits` at 20 per payload; a larger push of only exempt commits
+              # could still be skipped on the truncated list - accepted.
+              local exempt_guard='!(has(body.commits) && body.commits.exists(c, size(c.added) + size(c.modified) + size(c.removed) > 0) && body.commits.all(c, (c.added + c.modified + c.removed).all(f, f == "cicd.yaml" || f.startsWith("glidepath/") || f.startsWith(".tekton/"))))'
               [[ -z "${pin_file}" ]] && loop_guard="${loop_guard} && ${exempt_guard}"
               # Same on-cel-expression-drops-on-event/on-target-branch gap as the
               # pull_request case below, hit live 2026-08-24: this flow's on-target-branch
