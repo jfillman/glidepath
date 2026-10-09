@@ -11,6 +11,9 @@
 # (files are relative to it), exit 0 = valid, non-zero = invalid, output shown in the check.
 # Which files: every `*values.yaml` this PR changes relative to main (merge-base), not just HEAD~1, so a human
 # or agent PR with several commits is fully covered. No matching file = the check passes with a note.
+# A changed `<cluster>/base.yaml` (shared values of the Flight environments on that cluster, layered under each
+# one's values.yaml; Tower's App Configuration edits it) is validated itself and brings in every
+# `<cluster>/<env>/values.yaml` on that cluster, so each environment it reaches is checked with the new base.
 #
 # An environment that renders its own chart (cicd.yaml deploy.chart / environments[].chart other than Airframe's,
 # ADR-0023 slice 5) is not given to the Airframe validator, whose strict keys and component checks describe a chart
@@ -84,7 +87,11 @@ spec:
         git checkout --quiet "${REVISION}"
 
         base="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1)"
-        git diff --name-only --diff-filter=AMR "${base}" HEAD | grep -E '(^|/)values\.yaml$' > /work/files.txt || true
+        git diff --name-only --diff-filter=AMR "${base}" HEAD | grep -E '(^|/)values\.yaml$|^[^/]+/base\.yaml$' > /work/files.txt || true
+        for b in $(grep -E '^[^/]+/base\.yaml$' /work/files.txt || true); do
+          ls "$(dirname "${b}")"/*/values.yaml 2>/dev/null >> /work/files.txt || true
+        done
+        sort -u -o /work/files.txt /work/files.txt
         echo "values files changed in this PR: $(wc -l < /work/files.txt | tr -d ' ')"
         cat /work/files.txt
 
@@ -104,6 +111,9 @@ spec:
           keep=()
           while read -r f; do
             cluster="$(echo "${f}" | cut -d/ -f1)"; env="$(echo "${f}" | cut -d/ -f2)"
+            # A cluster's shared base.yaml has no environment, so it resolves to the app's chart. On an own chart it
+            # is not a whole values file to render alone: the environments it brought in are rendered with it
+            # layered underneath (step own-chart), so it is dropped here.
             resolved="$(echo "${cicd}" | yq -o json "{\"app\": (.deploy.chart // {}), \"env\": ((.deploy.environments // [])[] | select(.name == \"${env}\") | .chart // {}), \"target\": (.deploy.target // \"k8s-rollout\")}" 2>/dev/null \
               | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" '
                   def over($b; $o): if ($o.repoURL // "") != "" then $o
@@ -112,7 +122,7 @@ spec:
                   over(over({repoURL: $r, path: $p}; .app); .env) + {target}' 2>/dev/null || true)"
             if [[ -n "${resolved}" && "$(echo "${resolved}" | jq -r --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" \
                  '.target == "k8s-rollout" and (.repoURL != $r or (.chart // "") != "" or .path != $p)')" == "true" ]]; then
-              echo "${f}|${cluster}|${env}|${resolved}" >> /work/own.txt
+              [[ "${env}" == "base.yaml" ]] || echo "${f}|${cluster}|${env}|${resolved}" >> /work/own.txt
             else
               keep+=("${f}")
             fi
