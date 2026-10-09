@@ -303,4 +303,7 @@ spec:
       -H "Authorization: Bearer ${TOKEN}" \
       -d "${payload}"; then
       echo "warn: POST to Backstage notifications API failed after retries - skipping, not failing the pipeline" >&2
+    else
+      echo
+      echo "Backstage notification posted (severity ${SEVERITY}, topic ${STAGE_NAME}): ${TITLE}"
     fi

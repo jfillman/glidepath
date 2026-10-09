@@ -166,4 +166,6 @@ spec:
       content="$(jq -c --arg o "${outcome}" '. + {outcome: $o}' <<<"${content}")"
     fi
 
-    cdevent_send "${EVENT_TYPE}" "${SUBJECT_TYPE}" "${TEKTON_PIPELINE_RUN}" "${content}"
+    broker_ack="$(cdevent_send "${EVENT_TYPE}" "${SUBJECT_TYPE}" "${TEKTON_PIPELINE_RUN}" "${content}")"
+    echo "CDEvent sent: ${EVENT_TYPE} (subject ${SUBJECT_TYPE}) for ${TEKTON_PIPELINE_RUN} - broker ack $(jq -r '.eventID // "ok"' <<<"${broker_ack}" 2>/dev/null || echo ok)"
+    echo "  content: ${content}"

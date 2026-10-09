@@ -296,4 +296,6 @@ spec:
       -H 'Content-Type: application/json' \
       -d "${payload}"; then
       echo "warn: POST to Slack webhook failed after retries - skipping, not failing the pipeline" >&2
+    else
+      echo "Slack notification sent${CHANNEL:+ to ${CHANNEL}}: ${HEADER_TEXT}"
     fi
