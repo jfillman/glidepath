@@ -369,28 +369,23 @@ spec:
           # glidepath/, so the config-only build exemption must not apply to it, and the deploy
           # stage reads its image from this pin instead of rebuilding.
           local pin_file="${13:-}"
-          local on_event="" branch_line="" cel_line="" tag_param_line="" task_run_specs_block=""
-          # Only build/test/deploy/release actually declare a notify-backstage task
-          # (see notify-backstage.yaml's own finally-block wiring) - gitops-image-bump
-          # and any other stage don't, and Tekton hard-rejects a PipelineRun at
-          # admission if taskRunSpecs names a pipelineTaskName the target Pipeline
-          # doesn't have ("does not exist in Pipeline") - a real live failure hit on
-          # gitops-image-bump as a flow's root stage. Keep this list in sync with
-          # flow-triggers.yaml's own identical guard.
-          case "${root_stage}" in
-            build|test|deploy|release)
-              if [[ -n "${BACKSTAGE_HOST_ALIAS_IP}" ]]; then
-                task_run_specs_block="
-          taskRunSpecs:
-            - pipelineTaskName: notify-backstage
-              podTemplate:
-                hostAliases:
-                  - ip: ${BACKSTAGE_HOST_ALIAS_IP}
-                    hostnames:
-                      - backstage.prod.kiac.local"
-              fi
-              ;;
-          esac
+          local on_event="" branch_line="" cel_line="" tag_param_line="" pod_template_block=""
+          # Run-wide taskRunTemplate.podTemplate (2026-10-08), not a per-task
+          # taskRunSpecs entry naming `notify-backstage`: Tekton validates taskRunSpecs
+          # pipelineTaskNames at admission against the target Pipeline ("does not exist
+          # in Pipeline" - hit live on gitops-image-bump), which forced a stage allowlist
+          # here and tied every app's generated .tekton files to the catalog's exact
+          # finally-task names. One extra /etc/hosts line on every pod in the run has no
+          # such coupling, so any stage (gitops-image-bump included) can carry it. Same
+          # shape as flow-triggers.yaml's event-chained PipelineRuns.
+          if [[ -n "${BACKSTAGE_HOST_ALIAS_IP}" ]]; then
+            pod_template_block="
+            podTemplate:
+              hostAliases:
+                - ip: ${BACKSTAGE_HOST_ALIAS_IP}
+                  hostnames:
+                    - backstage.prod.kiac.local"
+          fi
           # deploy/release/test can all be a flow's git-rooted first step (e.g. a tag push
           # deploying straight to prod). Their Pipelines read env/test-name/cluster/name as
           # regular params, only emitted when set. This quartet was previously missing
@@ -632,8 +627,7 @@ spec:
                     requests:
                       storage: ${SOURCE_VOLUME_STORAGE}
           taskRunTemplate:
-            serviceAccountName: pipeline-runner
-        ${task_run_specs_block}
+            serviceAccountName: pipeline-runner${pod_template_block}
           timeouts:
             pipeline: "1h"
         YAMLEOF
