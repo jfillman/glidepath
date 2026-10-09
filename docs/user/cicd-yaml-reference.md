@@ -357,12 +357,20 @@ Agents without cache support yet (`python-*`, `go-1.22`) treat `enabled: true` a
 What's actually cached is the build tool's own *download* cache (npm's tarball cache,
 yarn's package cache, Maven's local repository) - not `node_modules`/`target` directly, since `npm ci` deletes
 and rebuilds `node_modules` from scratch by design. The cache is a real, persistent,
-**per-app** PVC, keyed by a hash of the relevant lockfile (`package-lock.json`/`pom.xml`)
-so a dependency change invalidates it automatically rather than serving stale packages.
-Yarn is the exception: its cache holds one file per `package@version` and is never stale,
-so it is one shared directory (`YARN_CACHE_FOLDER`/`YARN_GLOBAL_FOLDER`, global cache
-forced on for Berry) and a lockfile change only fetches the packages that changed. It only
+**per-app** PVC with one shared directory per tool (`npm/`, `yarn/`, `maven/`). It is
+deliberately *not* keyed by a lockfile hash: none of the three tools can serve a stale
+package from its own download cache (npm's cache is content-addressed by the integrity
+hash in your lockfile, yarn stores one file per `package@version`, Maven's local
+repository is laid out per exact version), so a dependency bump only fetches the packages
+that actually changed instead of starting from an empty directory. The directory only
 grows as versions are added; delete the PVC to reset it.
+
+The same npm/yarn cache directory is mounted into the `unit-test` step (`run-tests`), so
+`test.sh`'s own `npm ci` reuses the tarballs `build.sh` just fetched - the two run
+concurrently, which is safe for npm and yarn. Maven is excluded there: its local
+repository isn't safe for concurrent writers, and serializing the test step behind the
+build step to protect it would cost more than the download it saves.
+
 Not resizable live after onboarding - changing `size` later means recreating the PVC
 (losing its content).
 

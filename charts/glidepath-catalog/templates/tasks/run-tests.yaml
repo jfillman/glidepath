@@ -13,12 +13,24 @@ metadata:
 spec:
   workspaces:
     - name: source
+  # Same per-app dependency-download cache PVC build-source.yaml mounts (charts/glidepath-
+  # app/templates/env/build-cache-pvc.yaml), for the same reason it's a raw volume there
+  # and not a workspace (Affinity Assistant allows one PVC-backed workspace per TaskRun,
+  # and `source` already is one). Always mounted; use is gated on build.cache.enabled in
+  # the unit-test step. Only the npm/yarn directories are shared - see the step's comment.
+  volumes:
+    - name: build-cache
+      persistentVolumeClaim:
+        claimName: build-cache-$(params.app-name)
   params:
     - name: config-json
       type: string
     - name: agent-image
       type: string
       description: Resolved build-agent image, see catalog/lib/build-agents.env for the cicd.yaml `build.agent` name -> image mapping.
+    - name: app-name
+      type: string
+      description: Selects this app's own build-cache-<app-name> PVC (same as build-source.yaml's param) - not used for anything else in this Task.
     - name: flow-traceparent
       type: string
       description: Root traceparent for the whole flow (from start-flow-root-span) - gives this Task's span its trace id.
@@ -38,9 +50,12 @@ spec:
       results:
         - name: command
         - name: enabled
+        - name: cache-type
+          description: "'npm'/'yarn'/'' - the dependency cache the unit-test step should point its package manager at. Same detection as build-source.yaml's resolve-build-script-path (agent prefix + lockfile), minus Maven: its local repository isn't safe for concurrent writers and build-source runs concurrently with this Task, so sharing it would mean serializing tests behind the build. Empty when build.cache.enabled is false or the agent has no cache support."
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        CFG='$(params.config-json)'
         # NOT `.build.unitTest.enabled // true` - a real, previously-undiscovered bug
         # found live (see docs/user-guide/cicd-yaml-reference.md's own writeup): jq's `//` operator
         # treats `false` the same as `null`/missing and falls through to the default, so
@@ -48,10 +63,29 @@ spec:
         # "true" - no Application has ever actually been able to disable unit tests via
         # cicd.yaml. `if == false then false else true end` is the correct way to give a
         # boolean field a true default while still respecting an explicit false.
-        ENABLED="$(jq -r 'if .build.unitTest.enabled == false then "false" else "true" end' <<< '$(params.config-json)')"
-        CMD="$(jq -r '.build.unitTest.command // "./test.sh"' <<< '$(params.config-json)')"
+        ENABLED="$(jq -r 'if .build.unitTest.enabled == false then "false" else "true" end' <<< "${CFG}")"
+        CMD="$(jq -r '.build.unitTest.command // "./test.sh"' <<< "${CFG}")"
         echo -n "${ENABLED}" | tee "$(step.results.enabled.path)"
         echo -n "${CMD}" | tee "$(step.results.command.path)"
+
+        # Mirrors build-source.yaml's detection so test.sh's own `npm ci`/`yarn install`
+        # reuses the tarballs build.sh just fetched (or vice versa - the two run
+        # concurrently, and both caches are safe for concurrent access). Kept inline
+        # rather than in catalog/lib because that would need a toolbox image rebuild for
+        # a four-line case statement.
+        CACHE_TYPE=""
+        if [[ "$(jq -r '.build.cache.enabled // false' <<< "${CFG}")" == "true" ]]; then
+          case "$(jq -r '.build.agent' <<< "${CFG}")" in
+            nodejs-*)
+              if [[ -f "$(workspaces.source.path)/yarn.lock" && ! -f "$(workspaces.source.path)/package-lock.json" ]]; then
+                CACHE_TYPE="yarn"
+              else
+                CACHE_TYPE="npm"
+              fi
+              ;;
+          esac
+        fi
+        echo -n "${CACHE_TYPE}" | tee "$(step.results.cache-type.path)"
 
     - name: unit-test
       image: $(params.agent-image)
@@ -68,11 +102,16 @@ spec:
       # copying the old one first would be wasted work) gives this Task's own dependency
       # install nothing to collide with, without needing a second PVC-backed workspace.
       workingDir: /tmp/test-src
+      volumeMounts:
+        - name: build-cache
+          mountPath: /cache
       env:
         - name: TEST_ENABLED
           value: $(steps.resolve-test-command.results.enabled)
         - name: TEST_COMMAND
           value: $(steps.resolve-test-command.results.command)
+        - name: CACHE_TYPE
+          value: $(steps.resolve-test-command.results.cache-type)
         - name: SOURCE_WORKSPACE
           value: $(workspaces.source.path)
       script: |
@@ -81,6 +120,22 @@ spec:
         mkdir -p /tmp/test-src
         cp -a "${SOURCE_WORKSPACE}/." /tmp/test-src/
         rm -rf /tmp/test-src/node_modules
+        # Same directory layout and env vars as build-source.yaml's run-build-script step
+        # (/cache/<tool>) so the two steps share one download cache per app. Only the
+        # package manager's cache location changes - test.sh still owns its own install.
+        if [[ -n "${CACHE_TYPE}" ]]; then
+          CACHE_DIR="/cache/${CACHE_TYPE}"
+          mkdir -p "${CACHE_DIR}"
+          case "${CACHE_TYPE}" in
+            npm) export NPM_CONFIG_CACHE="${CACHE_DIR}" ;;
+            yarn)
+              export YARN_CACHE_FOLDER="${CACHE_DIR}"
+              export YARN_GLOBAL_FOLDER="${CACHE_DIR}"
+              export YARN_ENABLE_GLOBAL_CACHE=true
+              ;;
+          esac
+          echo "build.cache: unit-test sharing the ${CACHE_TYPE} download cache at ${CACHE_DIR}"
+        fi
         # Plain `date`, not catalog/lib/otel.sh - this step runs inside the app's own
         # resolved build-agent image, which has neither otel-cli nor $PLATFORM_LIB. See
         # build-source.yaml's own run-build-script step for the full rationale - same

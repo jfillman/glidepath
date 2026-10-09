@@ -116,6 +116,7 @@ spec:
       params:
         - { name: config-json, value: $(tasks.preflight.results.config-json) }
         - { name: agent-image, value: $(tasks.preflight.results.agent-image) }
+        - { name: app-name, value: $(params.app-name) }
         - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
         - { name: stage-span-id, value: $(tasks.preflight.results.span-id) }
 
