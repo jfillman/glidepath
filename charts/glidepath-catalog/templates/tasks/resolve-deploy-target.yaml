@@ -13,7 +13,8 @@
 # config-json is literally "{}" for a git-rooted deploy (a tag push with no build/test
 # in that run), so reading .deploy.target from it would always silently fall back to
 # k8s-rollout even for an app whose real cicd.yaml sets a cloud target. Fixed by
-# cloning just cicd.yaml and reading it directly in that case - same shape
+# reading just cicd.yaml (over the GitHub contents API since 2026-10-09; a full clone
+# before that) and using it directly in that case - same shape
 # resolve-notify-config.yaml already uses for its own git-rooted fallback, but
 # AUTHENTICATED via the GitHub App token broker (catalog/lib/github-app.sh), matching
 # deploy-manifests.yaml's pattern, rather than resolve-notify-config's unauthenticated
@@ -145,11 +146,33 @@ spec:
         owner="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         token="$(github_app_installation_token "${owner}" "${APP_NAME}")"
         workdir="$(mktemp -d)"
-        clone_url="https://x-access-token:${token}@github.com/${owner}/${APP_NAME}.git"
-        with_retry 3 -- git clone --quiet "${clone_url}" "${workdir}"
-        if [[ -n "${GIT_REVISION}" ]]; then
-          git -C "${workdir}" checkout --quiet "${GIT_REVISION}"
-        fi
+        # One file, read over the contents API at the revision (default branch when empty)
+        # instead of a full clone plus checkout (2026-10-09, report item 7). 404 means the
+        # repo has no cicd.yaml, the same "use defaults" case a clone without the file was;
+        # any other failure still fails the Task, since this result picks the deploy Task.
+        ref_query=""
+        [[ -n "${GIT_REVISION}" ]] && ref_query="?ref=${GIT_REVISION}"
+        fetch_cicd() {
+          code="$(curl --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
+            -o "${workdir}/cicd.yaml" -w '%{http_code}' \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${owner}/${APP_NAME}/contents/cicd.yaml${ref_query}")"
+          case "${code}" in
+            200) return 0 ;;
+            404)
+              # GitHub answers 404 for an unknown ref too ("No commit found for the ref ..."). That
+              # must fail like the old `git checkout` did, not fall back to defaults and pick the
+              # wrong deploy Task for a cloud app.
+              if grep -q 'No commit found' "${workdir}/cicd.yaml" 2>/dev/null; then
+                echo "error: ${owner}/${APP_NAME} has no commit ${GIT_REVISION}" >&2
+                exit 1
+              fi
+              rm -f "${workdir}/cicd.yaml"; return 0 ;;
+            *) echo "contents API returned HTTP ${code} for cicd.yaml" >&2; return 1 ;;
+          esac
+        }
+        with_retry 3 -- fetch_cicd
 
         TARGET="k8s-rollout"
         RESOLVED_CONFIG="{}"
