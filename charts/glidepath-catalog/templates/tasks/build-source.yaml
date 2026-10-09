@@ -62,7 +62,7 @@ spec:
         - name: cache-type
           description: "'npm'/'yarn'/'maven'/'' - derived from build.agent's prefix rather than a separate cicd.yaml field. Empty when caching is disabled or the agent has no cache support yet (python-*/go-1.22)."
         - name: cache-subdir
-          description: "'<cache-type>/<lockfile-hash>' ('yarn' alone for yarn: its cache is per package, so no hash), or '' if caching isn't active. The lockfile hash is the cache-invalidation mechanism - a dependency change produces a new subdir instead of reusing stale packages."
+          description: "Same as cache-type ('npm'/'yarn'/'maven') when caching is active, '' otherwise. One shared directory per tool, never keyed by a lockfile hash - see the script's own comment for why a hash-keyed directory was the wrong shape for all three tools. Kept as a separate result (not just cache-type) so run-build-script's 'is caching on' check stays one env var."
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -88,19 +88,26 @@ spec:
         esac
         CACHE_SUBDIR=""
         if [[ "${CACHE_ENABLED}" == "true" && -n "${CACHE_TYPE}" ]]; then
-          if [[ -f "${LOCKFILE}" ]]; then
-            if [[ "${CACHE_TYPE}" == "yarn" ]]; then
-              # Not keyed by lockfile hash, unlike npm/maven below: yarn's cache is one file per
-              # package@version, so a single changed dependency only needs that one package
-              # fetched. A hash-keyed dir would start empty after every lockfile change - the
-              # common case (one dependency bump) - and re-download everything.
-              CACHE_SUBDIR="yarn"
-            else
-              LOCKFILE_HASH="$(sha256sum "${LOCKFILE}" | cut -d' ' -f1 | cut -c1-16)"
-              CACHE_SUBDIR="${CACHE_TYPE}/${LOCKFILE_HASH}"
-            fi
-          else
-            echo "build.cache: enabled but no ${LOCKFILE} found - proceeding uncached" >&2
+          # One shared directory per tool, NOT keyed by a lockfile hash (2026-10-08). npm
+          # and Maven used to get '<tool>/<sha256(lockfile)>' so a dependency change could
+          # never serve stale packages - but neither tool can serve stale packages from its
+          # own download cache in the first place: npm's cacache is content-addressed (a
+          # tarball is looked up by integrity hash from the lockfile, so a changed version
+          # is simply a different entry), and Maven's local repository is laid out by
+          # exact groupId/artifactId/version (a bumped version is a new path, and
+          # resolution is driven by the pom, never by what else is on disk). Keying by the
+          # lockfile hash therefore bought no correctness and cost every warm run: any
+          # dependency bump - and for Maven any pom.xml edit at all, including the version
+          # bump every release makes - started from an empty directory and re-downloaded
+          # everything. Yarn already took this shape (commit f71fa04); the same reasoning
+          # was always true of the other two. Measured on this platform: run-build-script
+          # p50 287s / p90 1031s (Tekton Results, 143 runs), dominated by dependency fetch.
+          # The directory only ever grows as versions are added; delete the PVC to reset it.
+          CACHE_SUBDIR="${CACHE_TYPE}"
+          if [[ ! -f "${LOCKFILE}" ]]; then
+            # Informational only - the cache works without a lockfile, it just can't be
+            # as effective (an unpinned dependency set may resolve differently per run).
+            echo "build.cache: no ${LOCKFILE} found - caching anyway, but pin dependencies for repeatable builds" >&2
           fi
         fi
         echo -n "${CACHE_TYPE}" | tee "$(step.results.cache-type.path)"
@@ -138,13 +145,24 @@ spec:
         #
         # Cache is per-APP, not per-branch/per-PipelineRun, so concurrent builds of the
         # same app share it - expected, not an edge case. npm's cache store is
-        # content-addressable and safe for concurrent access; Maven's local repo is NOT
-        # (concurrent `mvn` writes corrupt it), so MAVEN_LOCK_DIR below is a portable
-        # mkdir-based lock serializing builds that land on the same cache key (i.e. the
-        # same pom.xml, so they'd produce the same deps anyway).
+        # content-addressable and safe for concurrent access (run-tests.yaml's unit-test
+        # step shares the npm/yarn directory concurrently with this step for exactly that
+        # reason); Maven's local repo is NOT (concurrent `mvn` writes corrupt it), so
+        # MAVEN_LOCK_DIR below is a portable mkdir-based lock serializing every Maven
+        # build of this app. Now that the directory is shared across pom.xml revisions
+        # (see resolve-build-script-path above) the lock covers concurrent builds of
+        # different commits too, which is the correct scope - Maven's repo layout is
+        # per-version so they never overwrite each other's artifacts, only the
+        # metadata/index files the lock exists to protect.
         if [[ -n "${CACHE_SUBDIR}" ]]; then
           CACHE_DIR="/cache/${CACHE_SUBDIR}"
           mkdir -p "${CACHE_DIR}"
+          # One-time migration from the pre-2026-10-08 layout: the old
+          # '<tool>/<16-hex-lockfile-hash>/' directories now sit inside the shared
+          # directory as dead weight on a PVC that is often only 1Gi. Neither npm's
+          # cacache (_cacache/, _logs/) nor Maven's repository (groupId segments) ever
+          # creates a bare 16-hex top-level directory, so this matches only the old keys.
+          find "${CACHE_DIR}" -mindepth 1 -maxdepth 1 -type d -regex '.*/[0-9a-f]\{16\}$' -exec rm -rf {} + 2>/dev/null || true
           case "${CACHE_TYPE}" in
             npm) export NPM_CONFIG_CACHE="${CACHE_DIR}" ;;
             yarn)

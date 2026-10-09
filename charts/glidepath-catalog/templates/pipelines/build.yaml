@@ -175,6 +175,7 @@ spec:
       params:
         - { name: config-json, value: $(tasks.validate-config.results.config-json) }
         - { name: agent-image, value: $(tasks.validate-config.results.agent-image) }
+        - { name: app-name, value: $(params.app-name) }
         - { name: flow-traceparent, value: $(tasks.start-flow.results.traceparent) }
         - { name: stage-span-id, value: $(tasks.start-build-stage-span.results.span-id) }
 
