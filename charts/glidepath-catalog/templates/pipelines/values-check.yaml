@@ -4,7 +4,7 @@
 # gitops-repo PR changes. Referenced from the gitops repo's .tekton/pull-request-values.yaml (an onboarding
 # template). Like the other gates it is its own PaC PipelineRun, so it is its own GitHub Check. It only becomes
 # REQUIRED once `values-validation` is in `releaseGuardrails` (see docs/admin/release-guardrails.md); register it
-# only after every gitops repo has the .tekton file, or image-promotion will wait on a check that never reports.
+# only after every gitops repo has the .tekton file, or detect-bypass-merge reports it "missing" on every merge.
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:

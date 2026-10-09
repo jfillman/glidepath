@@ -1,9 +1,9 @@
 # The GitHub ruleset that enforces the guardrails
 
 **This is a mandatory part of a Glidepath install.** The gates (`sast`, `image-scan`, `provenance`, `sbom`, `values`,
-`itsm`, `qa`, `policy-validation`, `image-promotion`) only report; the ruleset's required-status-checks list is what
-stops a merge. `image-promotion` also waits for its sibling gates, so a *release* PR cannot promote past a failing gate
-even without the ruleset, but nothing else is blocked without it.
+`itsm`, `qa`, `policy-validation`) only report; the ruleset's required-status-checks list is what stops a merge.
+Nothing is blocked without it. (Until 2026-10-09 an `image-promotion` check also waited on its sibling gates; it was
+retired as a stub, ADR-0025, and the audited export below predates that and still lists it.)
 
 Reference: [`reference/glidepath-guardrail-checks.ruleset.json`](reference/glidepath-guardrail-checks.ruleset.json), an export of
 the ruleset from `gitops-flight-api` (audited 2026-09-27). Generate and apply it with

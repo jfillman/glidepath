@@ -3,9 +3,9 @@
 #
 # Unlike the release-branch-only gates, this runs on EVERY pull request to main that touches a values.yaml, so a
 # human's or an agent's hand edit is checked the same as a release PR. `files.all` is PaC's changed-file list.
-# It also runs when only a release.yaml changes (deploy.releaseFile, D9/AF-5): image-promotion waits for this
-# check on every release PR, so a release that never triggers it waits forever. With no values.yaml in the
-# change, validate-values passes with a note.
+# It also runs when only a release.yaml changes (deploy.releaseFile, D9/AF-5), so every release PR carries this
+# check and detect-bypass-merge never reads it as "missing". With no values.yaml in the change, validate-values
+# passes with a note.
 # And when a cluster's shared base.yaml changes (`<cluster>/base.yaml`, Tower App Configuration's Flight shared values):
 # validate-values checks it and every environment on that cluster (2026-10-09: such a PR ran no check at all).
 apiVersion: tekton.dev/v1
