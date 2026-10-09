@@ -67,6 +67,13 @@ platform's PaaS/RBAC posture.
   a PV to a node (local-path), gets that anyway. On a multi-node cluster with network-attached
   `ReadWriteOnce` storage use `coschedule: pipelineruns`: the per-app `build-cache` PVC and the
   run's `source` PVC are both mounted by `build-source` and `unit-test`, and must land together.
+- **One Trivy server holds the vulnerability DB.** `glidepath-control-plane` runs `trivy-server` in
+  `platform-system` (`trivyServer` values; its tag must equal `TRIVY_VERSION` in
+  `catalog/toolbox/Dockerfile`), and `image-scan` scans against it (`trivyServerUrl` in the catalog
+  values). Before 2026-10-09 every scan pod downloaded the ~120 MiB DB itself. If the server does not
+  answer `/healthz` or fails mid-scan, the scan runs standalone and downloads the DB as before, so an
+  outage costs time, not a false failure. `generate-sbom` does not use it: a CycloneDX-only run has
+  no vulnerability scanner and never needed the DB.
 - **Ground deploys ask Argo CD to refresh.** `deploy-manifests` annotates the environment's
   Application in `argocd-apps` with `argocd.argoproj.io/refresh=hard` right after its push, so the
   new release file is picked up in seconds instead of on the next 120 s (+60 s jitter) poll. The
