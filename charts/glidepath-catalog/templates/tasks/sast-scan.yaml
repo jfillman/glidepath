@@ -66,6 +66,9 @@ spec:
     - name: scan
       onError: continue
       image: semgrep/semgrep:1.172.0
+      # Requests only, no limits (2026-10-09): see docs/admin/pipeline-performance.md "Step resources".
+      computeResources:
+        requests: { cpu: 200m, memory: 256Mi }
       workingDir: $(workspaces.source.path)
       script: |
         #!/usr/bin/env bash

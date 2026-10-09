@@ -40,6 +40,28 @@ smoke-fn build went from 13 pods and 258-409 s to 4 pods and 129 s.
 
 [installation.md](installation.md#operational-notes) covers the install-time side of each.
 
+## Step resources
+
+Every Tekton container now carries a CPU and memory request (2026-10-09). Before that no step set one, so
+every step pod was BestEffort. The kubelet puts all BestEffort pods in one cgroup with the minimum CPU weight,
+so under load the whole pipeline got less CPU than any single pod with a request. The Semgrep scan step ranged
+from 5 to 239 s on repos of a few files, following node CPU load.
+
+| Where | Request | Applies to |
+|---|---|---|
+| TektonConfig `options.configMaps.config-defaults` (cluster repo) | 25m CPU, 32Mi | Every container that sets none, including Tekton's init containers |
+| `build-source` `run-build-script`, `run-tests` `unit-test`, `build-artifact` `build`, both `build-image` kaniko steps | 250m, 256Mi | The app's own build and test work |
+| `sast-scan` `scan` | 200m, 256Mi | Semgrep |
+| `image-scan` `scan` | 100m, 256Mi | Trivy client (the server does the DB work) |
+| `generate-sbom` `generate-and-attest` | 100m, 128Mi | Trivy SBOM + cosign |
+
+These are requests only, with no limits, so nothing is throttled or OOM-killed because of them. A request is
+a scheduling reservation, though, and a pod's step requests add up even though its steps run one at a time.
+The dev node had about 3.2 of its 11 cores unrequested when this was set. One build at its widest
+(`build-source`, `unit-test` and `sast-scan` in parallel) reserves about 0.8 cores. Several builds at once can
+leave a pod Pending until another finishes. That queueing is the intended trade, and it counts against the
+TaskRun timeout. Raise a step's request only together with the node's headroom.
+
 ## Release gates
 
 A gitops release PR runs eight gate PipelineRuns.
@@ -75,10 +97,6 @@ Details are in [release-guardrails.md](release-guardrails.md).
   the amd64 half runs emulated on the arm64 build node. A Backstage build spends 11 of its 25 minutes in
   `build-image`. The fix derives the platforms from the clusters an app actually deploys to and needs an
   `arch` field in the cluster registry ([ADR-0024](adr/0024-cluster-taxonomy-zone-roles-tier.md)).
-- **Step pods are BestEffort.** No Tekton container sets requests, so under load they get the smallest CPU
-  share. The Semgrep scan step varies from 5 to 239 s on repos of a few files, and that spread follows node
-  CPU contention. Setting `default-container-resource-requirements` in Tekton's `config-defaults`, or
-  requests on the scan steps, is the next lever.
 - **The dev cluster's control plane is under pressure.** `kube-scheduler` and `kube-controller-manager`
   restart on lease timeouts with node memory around 86%. That sets the floor under every number here.
 - **No PaC `concurrency_limit`.** A burst of pushes starts every build at once.

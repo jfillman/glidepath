@@ -115,6 +115,9 @@ spec:
 
     - name: run-build-script
       image: $(params.agent-image)
+      # Requests only, no limits (2026-10-09): see docs/admin/pipeline-performance.md "Step resources".
+      computeResources:
+        requests: { cpu: 250m, memory: 256Mi }
       workingDir: $(workspaces.source.path)
       volumeMounts:
         - name: build-cache
