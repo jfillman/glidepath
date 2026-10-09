@@ -1,5 +1,13 @@
 # OTEL Tracing & CDEvents Flow Architecture
 
+> **2026-10-09: Task names below are historical.** Each stage now opens with one `preflight` Task
+> (`stage-preflight.yaml`: mints the chain id and traceparent, starts the stage span, sends
+> `pipelinerun.started`, clones, validates `cicd.yaml`) and closes with one `debrief` finally Task
+> (`stage-debrief.yaml`: ends the stage and flow spans, notifies Slack and Backstage, sends the domain event
+> and `pipelinerun.finished`). Read `start-flow-root-span`/`start-stage-span` as `preflight`, and
+> `end-stage-span`/`end-flow-root-span`/`send-cdevent` in a finally block as `debrief`. The spans, ids and
+> events themselves are unchanged. See [pipeline-performance.md](pipeline-performance.md).
+
 ## Overview
 
 This document illustrates how OpenTelemetry spans and CloudEvents (CDEvents) are created, threaded through Tekton PipelineRuns, and used to correlate distributed traces across a complete CI/CD flow (build → test → deploy → release).
@@ -493,10 +501,10 @@ DEPLOY PipelineRun (triggered by CDEvent from test)
 | [otel.sh](../../catalog/lib/otel.sh) | Span minting & sending functions |
 | [cdevents.sh](../../catalog/lib/cdevents.sh) | Event payload construction & broker delivery |
 | [build.yaml](../../charts/glidepath-catalog/templates/pipelines/build.yaml) | Build Pipeline (flow start) |
-| [start-flow-root-span.yaml](../../charts/glidepath-catalog/templates/tasks/start-flow-root-span.yaml) | Initializes traceparent & chain_id |
-| [start-stage-span.yaml](../../charts/glidepath-catalog/templates/tasks/start-stage-span.yaml) | Stage span initialization |
-| [end-stage-span.yaml](../../charts/glidepath-catalog/templates/tasks/end-stage-span.yaml) | Stage span completion to OTEL |
-| [end-flow-root-span.yaml](../../charts/glidepath-catalog/templates/tasks/end-flow-root-span.yaml) | Flow-root span completion |
-| [send-cdevent.yaml](../../charts/glidepath-catalog/templates/tasks/send-cdevent.yaml) | CDEvent delivery to broker |
+| [stage-preflight.yaml](../../charts/glidepath-catalog/templates/tasks/stage-preflight.yaml) | Mints traceparent & chain_id, begins the stage span, sends `pipelinerun.started` |
+| [stage-debrief.yaml](../../charts/glidepath-catalog/templates/tasks/stage-debrief.yaml) | Ends the stage and flow-root spans, sends the domain event and `pipelinerun.finished` |
+| [otel-span-send.yaml](../../charts/glidepath-catalog/templates/stepactions/otel-span-send.yaml) | StepAction: one span to the collector |
+| [cdevent-send.yaml](../../charts/glidepath-catalog/templates/stepactions/cdevent-send.yaml) | StepAction: CDEvent delivery to the broker |
+| [send-cdevent.yaml](../../charts/glidepath-catalog/templates/tasks/send-cdevent.yaml) | Task wrapper around `cdevent-send`, for a mid-DAG event |
 | [build-image.yaml](../../charts/glidepath-catalog/templates/tasks/build-image.yaml) | Example of task span emission |
 | [deploy.yaml](../../charts/glidepath-catalog/templates/pipelines/deploy.yaml) | Deploy Pipeline (receives CDEvent) |
