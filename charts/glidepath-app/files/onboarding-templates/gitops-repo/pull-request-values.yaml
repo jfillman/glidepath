@@ -6,6 +6,8 @@
 # It also runs when only a release.yaml changes (deploy.releaseFile, D9/AF-5): image-promotion waits for this
 # check on every release PR, so a release that never triggers it waits forever. With no values.yaml in the
 # change, validate-values passes with a note.
+# And when a cluster's shared base.yaml changes (`<cluster>/base.yaml`, Tower App Configuration's Flight shared values):
+# validate-values checks it and every environment on that cluster (2026-10-09: such a PR ran no check at all).
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
@@ -13,7 +15,7 @@ metadata:
   labels:
     hangar.io/app: "<APP_NAME>"
   annotations:
-    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main" && files.all.exists(f, f.endsWith("values.yaml") || f.endsWith("release.yaml"))'
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main" && files.all.exists(f, f.endsWith("values.yaml") || f.endsWith("release.yaml") || f.endsWith("/base.yaml"))'
     pipelinesascode.tekton.dev/max-keep-runs: "5"
 spec:
   pipelineRef:
