@@ -481,7 +481,10 @@ spec:
               # payload shapes before shipping, including this exact merge case. GitHub
               # caps `commits` at 20 per payload; a larger push of only exempt commits
               # could still be skipped on the truncated list - accepted.
-              local exempt_guard='!(has(body.commits) && body.commits.exists(c, size(c.added) + size(c.modified) + size(c.removed) > 0) && body.commits.all(c, (c.added + c.modified + c.removed).all(f, f == "cicd.yaml" || f.startsWith("glidepath/") || f.startsWith(".tekton/"))))'
+              # PaC drops an empty added/modified/removed list from each commit, so every key is guarded: unguarded,
+              # a merge push with nothing removed failed CEL evaluation ("no such key: removed") and built nothing
+              # (backstage#86, 2026-10-09).
+              local exempt_guard='!(has(body.commits) && body.commits.exists(c, (has(c.added) ? size(c.added) : 0) + (has(c.modified) ? size(c.modified) : 0) + (has(c.removed) ? size(c.removed) : 0) > 0) && body.commits.all(c, ((has(c.added) ? c.added : []) + (has(c.modified) ? c.modified : []) + (has(c.removed) ? c.removed : [])).all(f, f == "cicd.yaml" || f.startsWith("glidepath/") || f.startsWith(".tekton/"))))'
               [[ -z "${pin_file}" ]] && loop_guard="${loop_guard} && ${exempt_guard}"
               # Same on-cel-expression-drops-on-event/on-target-branch gap as the
               # pull_request case below, hit live 2026-08-24: this flow's on-target-branch
