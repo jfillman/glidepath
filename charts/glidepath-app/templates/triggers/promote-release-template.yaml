@@ -62,14 +62,14 @@ spec:
         workspaces:
           - name: source
             emptyDir: {}
-        taskRunTemplate: { serviceAccountName: pipeline-runner }
-        {{- if .Values.backstageHostAliasIP }}
-        taskRunSpecs:
-          - pipelineTaskName: notify-backstage
-            podTemplate:
-              hostAliases:
-                - ip: {{ .Values.backstageHostAliasIP }}
-                  hostnames:
-                    - backstage.prod.kiac.local
-        {{- end }}
+        taskRunTemplate:
+          serviceAccountName: pipeline-runner
+          {{- /* Run-wide podTemplate, same shape and reasoning as flow-triggers.yaml. */ -}}
+          {{- if .Values.backstageHostAliasIP }}
+          podTemplate:
+            hostAliases:
+              - ip: {{ .Values.backstageHostAliasIP }}
+                hostnames:
+                  - backstage.prod.kiac.local
+          {{- end }}
 {{- end }}

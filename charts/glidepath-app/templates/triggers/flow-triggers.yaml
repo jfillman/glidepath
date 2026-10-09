@@ -271,29 +271,28 @@ spec:
             volumeClaimTemplate:
               spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: {{ include "glidepath-app.sourceVolumeSize" (dict "size" $.Values.build.sourceVolume.size) }} } } }
         {{- end }}
-        taskRunTemplate: { serviceAccountName: pipeline-runner }
-        {{- /* backstage.prod.kiac.local isn't real DNS anywhere a pod's CoreDNS can see
-        (see values.yaml's own backstageHostAliasIP comment) - notify-backstage's Task
-        pod needs it baked in via hostAliases to resolve it at all. Scoped to just this
-        one pipelineTask (not taskRunTemplate.podTemplate, which would apply to every
-        Task in the run) since no other step needs it. Skipped entirely when
-        backstageHostAliasIP is empty, not rendered with a blank ip - Tekton would
-        reject that as an invalid hostAliases entry.
-        Also gated on $stageName: Tekton hard-rejects a PipelineRun at admission if
-        taskRunSpecs names a pipelineTaskName the target Pipeline doesn't actually have
-        ("does not exist in Pipeline") - a real live failure hit on gitops-image-bump,
-        which has no notify-backstage task at all (only build/test/deploy/release/
-        release-outcome-notify do, see notify-backstage's own finally-block wiring). List
-        must stay in sync with which Pipelines actually call notify-backstage. */ -}}
-        {{- if and $.Values.backstageHostAliasIP (has $stageName (list "build" "test" "deploy" "release")) }}
-        taskRunSpecs:
-          - pipelineTaskName: notify-backstage
-            podTemplate:
-              hostAliases:
-                - ip: {{ $.Values.backstageHostAliasIP }}
-                  hostnames:
-                    - backstage.prod.kiac.local
-        {{- end }}
+        taskRunTemplate:
+          serviceAccountName: pipeline-runner
+          {{- /* backstage.prod.kiac.local isn't real DNS anywhere a pod's CoreDNS can
+          see (see values.yaml's own backstageHostAliasIP comment) - whichever Task pod
+          posts to Backstage needs it baked in via hostAliases to resolve it at all.
+          Run-wide podTemplate (2026-10-08), not a per-task taskRunSpecs entry: the
+          previous shape named `pipelineTaskName: notify-backstage`, which Tekton
+          validates at admission against the target Pipeline's task list ("does not
+          exist in Pipeline" - hit live on gitops-image-bump), so it (a) needed a
+          stage allowlist here that had to track the catalog, and (b) made the catalog
+          unable to rename or merge its finally tasks without first regenerating every
+          app's .tekton files. An extra /etc/hosts line on every pod in the run costs
+          nothing and has no task-name coupling. Skipped entirely when
+          backstageHostAliasIP is empty, not rendered with a blank ip - Tekton would
+          reject that as an invalid hostAliases entry. */ -}}
+          {{- if $.Values.backstageHostAliasIP }}
+          podTemplate:
+            hostAliases:
+              - ip: {{ $.Values.backstageHostAliasIP }}
+                hostnames:
+                  - backstage.prod.kiac.local
+          {{- end }}
 ---
 apiVersion: triggers.tekton.dev/v1beta1
 kind: Trigger
