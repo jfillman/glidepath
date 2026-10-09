@@ -38,6 +38,7 @@ architecture.md wherever relevant.
 - [catalog-versioning.md](catalog-versioning.md) - promoting shared catalog changes
 - [pipelinerun-pruner.md](pipelinerun-pruner.md) - PipelineRun history cleanup
 - [stalled-pipeline-detector.md](stalled-pipeline-detector.md) - stuck-flow alerting
+- [pipeline-performance.md](pipeline-performance.md) - what a stage costs, the 2026-10 performance review, open levers
 
 **Observability**
 - [tracing.md](tracing.md) - OpenTelemetry span/trace stitching across stages

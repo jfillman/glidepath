@@ -75,7 +75,7 @@ test:
   name: integration              # The app-wide default TestWorkflow name every `test`
                                  # step inherits unless it sets its own `testName`. One
                                  # of this or a step's own `testName` MUST resolve to a
-                                 # value - checked by validate-cicd-config.
+                                 # value - checked by preflight.
 
 # --- deploy: optional block. See "The deploy: block" below. ---
 deploy:
@@ -83,7 +83,7 @@ deploy:
     - { name: dev, tier: ground } # environment, once, in promotion order. A deploy step's
                                  # `env` (below, under pipelines:) MUST be listed here, a
                                  # release step's must be tier: flight, or
-                                 # validate-cicd-config rejects the flow before anything
+                                 # preflight rejects the flow before anything
                                  # runs. A flight env on another physical cluster sets
                                  # cluster: - see docs/multi-cluster.md.
   strategy: rollout               # Optional, default "rollout" (Argo Rollouts
@@ -236,7 +236,7 @@ pipelines:
 
 ## Design rules this file follows
 
-- **Read fresh, every run, from the triggering commit.** `validate-cicd-config` (always
+- **Read fresh, every run, from the triggering commit.** `preflight` (always
   the first Task in every Pipeline) reads `cicd.yaml` straight out of the cloned
   workspace and validates it on the spot. There is deliberately no ConfigMap sync, no
   cache, no second copy anywhere - a `cicd.yaml` change takes effect on the very next
@@ -470,7 +470,7 @@ deploy:
 `environments` (below) is not the thing that decides where a flow deploys - that is each
 `deploy`/`release` step's own `env:` under `pipelines:` (below). A `deploy` step's `env` must
 be listed in `environments`, and a `release` step's `env` must be a `flight` one - either is a
-`validate-cicd-config` rejection before anything runs, rather than failing later (a bare
+`preflight` rejection before anything runs, rather than failing later (a bare
 `Forbidden` deep inside the deploy Task, in the deploy case).
 
 For `deploy`, the list provisions RBAC (the pipeline runner's read access to the Rollout, per
@@ -483,7 +483,7 @@ for how the release PR delivery and ArgoCD feedback path differ for such an envi
 
 `deploy.environments` declares every environment once, in promotion order (ADR-0019). It
 replaced `lowerEnvironments`, `upperEnvironments` and `promotionOrder`, which were removed on
-2026-10-07 after every app moved; `validate-cicd-config` and the chart now refuse them with a
+2026-10-07 after every app moved; `preflight` and the chart now refuse them with a
 pointer here.
 
 ```yaml
@@ -751,7 +751,7 @@ removed rather than left in place. Write your steps in the order they execute.
 environment's build this run is exercising (there's no default - a test result is
 meaningless without knowing what it ran against). The test name can come from either
 the step's own `testName`, or the top-level `test.name` shared by every test step in the
-app - one of the two has to resolve, checked by `validate-cicd-config` before anything
+app - one of the two has to resolve, checked by `preflight` before anything
 runs. The step-level override only matters once a flow has more than one test step (the
 two-step case: hitting the same build with two different TestWorkflows) - otherwise just
 set `test.name` once and every test step inherits it. Both `env` and the resolved test
@@ -761,7 +761,7 @@ as `TEST_ENV`, `TEST_NAME`, and `IMAGE_REF` environment variables.
 **A `deploy` step's `env` must be provisioned.** It has to be listed in
 `deploy.environments` (see above) - that's the list the pipeline runner is granted access
 into. Declaring `env: staging` on a deploy step without also listing `staging` under
-`deploy.environments` is rejected at `validate-cicd-config` time, instead of
+`deploy.environments` is rejected at `preflight` time, instead of
 failing later with a bare `Forbidden` RBAC error deep inside the deploy Task.
 
 ### Event-chained flows (downstream chaining)
@@ -798,7 +798,7 @@ preferred for clarity, especially when naming flows or using event-based trigger
 ### Local validation before pushing
 
 Run `yajsv -s schemas/cicd.schema.json <(yq -o=json . cicd.yaml)` locally (same tool
-`validate-cicd-config` uses) to catch schema errors before a push burns a pipeline run
+`preflight` uses) to catch schema errors before a push burns a pipeline run
 finding them for you.
 
 ## Real bugs found in this mechanism, fixed - worth knowing about if something looks wrong

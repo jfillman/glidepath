@@ -1,5 +1,13 @@
 # Real-World Example: Complete Build→Test→Deploy→Release Flow
 
+> **2026-10-09: Task names below are historical.** Each stage now opens with one `preflight` Task
+> (`stage-preflight.yaml`: mints the chain id and traceparent, starts the stage span, sends
+> `pipelinerun.started`, clones, validates `cicd.yaml`) and closes with one `debrief` finally Task
+> (`stage-debrief.yaml`: ends the stage and flow spans, notifies Slack and Backstage, sends the domain event
+> and `pipelinerun.finished`). Read `start-flow-root-span`/`start-stage-span` as `preflight`, and
+> `end-stage-span`/`end-flow-root-span`/`send-cdevent` in a finally block as `debrief`. The spans, ids and
+> events themselves are unchanged. See [pipeline-performance.md](pipeline-performance.md).
+
 This example traces a single `boarding-api` commit through a complete CI/CD flow, showing exact OTEL spans and CDEvents at each stage.
 
 ---

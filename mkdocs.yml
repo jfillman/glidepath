@@ -32,6 +32,7 @@ nav:
           - Catalog versioning: admin/catalog-versioning.md
           - PipelineRun pruner: admin/pipelinerun-pruner.md
           - Stalled pipeline detector: admin/stalled-pipeline-detector.md
+          - Pipeline performance: admin/pipeline-performance.md
       - Observability:
           - Tracing: admin/tracing.md
           - DORA metrics: admin/dora-metrics.md
