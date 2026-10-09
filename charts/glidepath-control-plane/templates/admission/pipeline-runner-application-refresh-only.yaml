@@ -1,0 +1,71 @@
+# Keeps the pipeline's Argo CD grant a refresh request and nothing more (2026-10-09, report item 8).
+#
+# Each app's glidepath-app chart grants its pipeline-runner ServiceAccount get+patch on its own Ground
+# Applications in argocd-apps (templates/env/argocd-refresh-rbac.yaml), so deploy-manifests.yaml can annotate
+# argocd.argoproj.io/refresh=hard after a push instead of waiting out the 120 s poll. RBAC cannot narrow a patch
+# to one field, and a patched Application is a large lever: a new spec.project (the `default` project allows
+# every destination and cluster-scoped kind), a new destination, or an `operation` that syncs any revision.
+#
+# This policy closes that: for an update from any `pipeline-runner` ServiceAccount, everything except a short list
+# of annotations must be unchanged (spec, operation, labels, every other annotation, finalizers, owner
+# references). Application has no status subresource, so status is compared too. Argo CD's own controllers and the
+# dora-exporter are not matched.
+#
+# Allowed annotations: argocd.argoproj.io/refresh (this item), and hangar.io/dora-* - mark-release-pending.yaml has
+# long annotated same-cluster Flight Applications in `argocd` through the identical get+patch grant in
+# templates/argocd/release-application.yaml (glidepath-app). That older grant had the same hole on production
+# Applications; this policy covers it too, in every namespace.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: pipeline-runner-application-refresh-only
+  labels:
+    hangar.io/component: glidepath-control-plane
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["argoproj.io"]
+        apiVersions: ["*"]
+        operations: ["UPDATE"]
+        resources: ["applications"]
+  matchConditions:
+    - name: pipeline-runner-only
+      expression: >-
+        request.userInfo.username.startsWith('system:serviceaccount:') &&
+        request.userInfo.username.endsWith(':pipeline-runner')
+  variables:
+    - name: refreshKey
+      expression: "'argocd.argoproj.io/refresh'"
+    - name: newAnn
+      expression: "has(object.metadata.annotations) ? object.metadata.annotations : {}"
+    - name: oldAnn
+      expression: "has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}"
+  validations:
+    - expression: >-
+        (has(object.spec) ? object.spec : {}) == (has(oldObject.spec) ? oldObject.spec : {}) &&
+        (has(object.operation) ? object.operation : {}) == (has(oldObject.operation) ? oldObject.operation : {}) &&
+        (has(object.status) ? object.status : {}) == (has(oldObject.status) ? oldObject.status : {})
+      message: "a pipeline-runner ServiceAccount may only annotate an Application (refresh, hangar.io/dora-*), not its spec, operation or status"
+    - expression: >-
+        (has(object.metadata.labels) ? object.metadata.labels : {}) == (has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}) &&
+        (has(object.metadata.finalizers) ? object.metadata.finalizers : []) == (has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers : []) &&
+        (has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []) == (has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : [])
+      message: "a pipeline-runner ServiceAccount may only annotate an Application (refresh, hangar.io/dora-*), not its labels, finalizers or owners"
+    - expression: >-
+        variables.newAnn.all(k, k == variables.refreshKey || k.startsWith('hangar.io/dora-') ||
+          (k in variables.oldAnn && variables.oldAnn[k] == variables.newAnn[k])) &&
+        variables.oldAnn.all(k, k == variables.refreshKey || k.startsWith('hangar.io/dora-') || k in variables.newAnn)
+      message: "a pipeline-runner ServiceAccount may only change the argocd.argoproj.io/refresh and hangar.io/dora-* annotations on an Application"
+    - expression: "!(variables.refreshKey in variables.newAnn) || variables.newAnn[variables.refreshKey] in ['normal', 'hard']"
+      message: "argocd.argoproj.io/refresh must be 'normal' or 'hard'"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: pipeline-runner-application-refresh-only
+  labels:
+    hangar.io/component: glidepath-control-plane
+spec:
+  policyName: pipeline-runner-application-refresh-only
+  validationActions: [Deny]

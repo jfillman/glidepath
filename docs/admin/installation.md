@@ -60,6 +60,22 @@ platform's PaaS/RBAC posture.
 - **Pod Security Standards `restricted` + kaniko**: validate this combination against
   your actual target CNI before onboarding real apps - see
   [rootless-builds.md](rootless-builds.md).
+- **Tekton's Affinity Assistant is off (`coschedule: disabled`).** Set in the cluster repo's
+  `50-platform-cicd/tekton-operator/tektonconfig.yaml` (2026-10-09). The default (`workspaces`)
+  starts a StatefulSet and placeholder pod before every build and test run, 10-25 s each, only to
+  keep TaskRuns that share a PVC on one node. A single-node cluster, or one whose StorageClass pins
+  a PV to a node (local-path), gets that anyway. On a multi-node cluster with network-attached
+  `ReadWriteOnce` storage use `coschedule: pipelineruns`: the per-app `build-cache` PVC and the
+  run's `source` PVC are both mounted by `build-source` and `unit-test`, and must land together.
+- **Ground deploys ask Argo CD to refresh.** `deploy-manifests` annotates the environment's
+  Application in `argocd-apps` with `argocd.argoproj.io/refresh=hard` right after its push, so the
+  new release file is picked up in seconds instead of on the next 120 s (+60 s jitter) poll. The
+  grant is per app (`glidepath-app` `templates/env/argocd-refresh-rbac.yaml`, get+patch on its own
+  Ground Applications), and the control plane's ValidatingAdmissionPolicy
+  `pipeline-runner-application-refresh-only` denies any change from a `pipeline-runner`
+  ServiceAccount other than that annotation and the `hangar.io/dora-*` ones, so the grant can never
+  change an Application's project, destination or sync operation. It needs Kubernetes 1.30+
+  (ValidatingAdmissionPolicy GA). Without the grant the deploy still works, at poll speed.
 
 ## Upper environments (staging/prod)
 

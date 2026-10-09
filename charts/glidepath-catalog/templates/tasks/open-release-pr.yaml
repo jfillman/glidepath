@@ -240,7 +240,10 @@ spec:
 
         workdir="$(mktemp -d)"
         clone_url="https://x-access-token:${token}@github.com/${owner}/${gitops_repo}.git"
-        with_retry 3 -- git clone --quiet "${clone_url}" "${workdir}/repo"
+        # --depth 1 --single-branch (2026-10-09, report item 7): this Task only writes on top of
+        # the default branch's tip and pushes, so history is never read. GitHub accepts a push
+        # from a shallow clone (it already has the boundary commit).
+        with_retry 3 -- git clone --quiet --depth 1 --single-branch "${clone_url}" "${workdir}/repo"
         cd "${workdir}/repo"
 
         git checkout -b "${branch}"

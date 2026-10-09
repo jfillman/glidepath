@@ -9,9 +9,10 @@
 # ... not found".
 #
 # ReadWriteOnce: build-source and unit-test run concurrently and both mount it, which
-# RWO allows as long as both pods land on the same node - true on this single-node
-# cluster, and true on a multi-node cluster whenever the Affinity Assistant is on
-# (it co-locates every TaskRun of a PipelineRun that shares the `source` PVC). No live
+# RWO allows as long as both pods land on the same node - true on a single-node
+# cluster, and on a multi-node one with node-pinned storage (local-path) or Tekton's
+# `coschedule: pipelineruns`. The Affinity Assistant is off on gitops-cluster-dev since
+# 2026-10-09 (`coschedule: disabled`, docs/admin/installation.md). No live
 # resize: the default StorageClass has allowVolumeExpansion: false, so changing
 # build.cache.size later means deleting and recreating this PVC.
 apiVersion: v1
