@@ -5,7 +5,7 @@
 # shape for an event emitted mid-DAG - every stage Pipeline's pipelinerun.started, which
 # has to be its own TaskRun because it runs in parallel with real work. The finally-block
 # events (each stage's domain event plus pipelinerun.finished) no longer use this Task:
-# they run as two steps of stage-finish.yaml, in the same pod as the span send and the
+# they run as two steps of stage-debrief.yaml, in the same pod as the span send and the
 # notifications, so a stage's finally block is one pod instead of six. See
 # docs/chaining.md.
 #

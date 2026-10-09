@@ -1,4 +1,4 @@
-# catalog/tasks/stage-finish.yaml
+# catalog/tasks/stage-debrief.yaml
 #
 # The one finally Task every stage Pipeline (build/test/deploy/release) runs - replaces
 # the six separate finally tasks each of them carried until 2026-10-08 (end-<stage>-stage-
@@ -49,7 +49,7 @@
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: stage-finish
+  name: stage-debrief
   labels:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
@@ -380,7 +380,7 @@ spec:
         check domain-event "$(steps.step-domain-event.exitCode.path)"
         check pipelinerun-finished "$(steps.step-pipelinerun-finished.exitCode.path)"
         if (( ${#failed[@]} )); then
-          echo "stage-finish: ${#failed[@]} step(s) failed: ${failed[*]} - failing this TaskRun so the PipelineRun reports it, same as when each was its own finally task" >&2
+          echo "stage-debrief: ${#failed[@]} step(s) failed: ${failed[*]} - failing this TaskRun so the PipelineRun reports it, same as when each was its own finally task" >&2
           exit 1
         fi
-        echo "stage-finish: all steps succeeded"
+        echo "stage-debrief: all steps succeeded"

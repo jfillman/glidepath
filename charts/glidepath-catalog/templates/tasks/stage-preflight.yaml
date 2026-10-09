@@ -1,0 +1,388 @@
+# catalog/tasks/stage-preflight.yaml
+#
+# The one Task every stage Pipeline (build/test/deploy/release) runs first - everything
+# that has to happen before the stage's real work, in one pod (2026-10-09). It replaces
+# five single-purpose Tasks that each cost a pod: clone-repo-authenticated,
+# validate-cicd-config, start-flow-root-span, start-stage-span and the send-cdevent call
+# for pipelinerun.started - plus resolve-notify-config, whose only job (hand deploy/
+# release a config-json whether event-chained or git-rooted) this Task now does for
+# every stage. Their scripts moved here verbatim; see each step for what it was.
+#
+# Why: measured over 7,414 TaskRuns (Tekton Results, 2026-09-17..10-09), build spent
+# 57s p50 / 164s p90 from its first TaskRun start until real work could begin, across
+# four serial pods doing under 2s of work between them (clone excepted); deploy and
+# release spent ~33s across three. Each pod paid 8-15s p50 of start-up tax. Sibling of
+# stage-debrief.yaml, which does the same for the finally block.
+#
+# Order of work inside the step, and why it differs from the old DAG:
+#   1. mint-ids   - flow-root ids (passthrough when event-chained) + this stage's span.
+#   2. announce   - pipelinerun.started, now at the same point in every stage (build's
+#                   old "fires a few tasks late" asymmetry is gone - the ids exist from
+#                   step 1).
+#   3. clone      - only when the `source` workspace is bound (build/test always; a
+#                   git-rooted deploy/release), skipped otherwise.
+#   4. validate   - cicd.yaml from the checkout (schema-validated, defaults applied,
+#                   same program as before), or the inherited config-json passed
+#                   through for an event-chained deploy/release.
+# The stage span therefore now starts before the clone instead of after it - a more
+# honest stage duration, and the reason the old start-flow `runAfter: [validate-config]`
+# ordering (an artificial dependency - id minting needs nothing from the checkout) was
+# dropped rather than preserved.
+#
+# One step, deliberately. Kubernetes caps a pod's termination messages at 12 KiB shared
+# across EVERY container, init containers included (kubelet divides it equally, max 4096
+# each). Tekton carries Task results in those messages, so a Task with four steps plus
+# Tekton's two init containers gets 2048 bytes per step - and the step that writes
+# config-json (about 2 KB pretty-printed, re-emitting the earlier steps' results too, as
+# the entrypoint always does) silently lost every result past the cut. Found live on the
+# first canary of a four-step version of this Task (2026-10-09); the 4096-byte constant
+# Tekton's own entrypoint checks against never fires because the kubelet's per-container
+# share is what actually truncates. With one step the share is the full 4096 bytes, and
+# config-json is emitted compact (jq -c, ~1.3 KB for a typical app) for headroom. If
+# cicd.yaml ever outgrows that, the platform fix is Tekton's `results-from: sidecar-logs`
+# feature flag, not another step split. Fewer containers is also simply faster here.
+#
+# Results: everything downstream reads `$(tasks.preflight.results.*)`. All plain
+# strings except config-json, which only Pipeline params and Task-level consumers read -
+# never a StepAction param (see the stage-debrief header for the step-result/JSON gotcha).
+#
+# Workspace is `optional: true` so deploy/release can leave it unbound (skipping PVC
+# provisioning on every event-chained transition, as before). That is the only shape
+# Tekton accepts here: an optional Pipeline workspace is valid only when every task
+# referencing it also declares it optional - which is exactly why resolve-notify-config
+# had to carry its own clone instead of a separate clone task (confirmed live, see
+# docs/admin/chaining.md).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: stage-preflight
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Every stage Pipeline's first Task - mints/propagates the flow and stage trace ids, announces pipelinerun.started, clones the app repo when a workspace is bound, and resolves the validated cicd.yaml as config-json.
+  workspaces:
+    - name: source
+      optional: true
+      description: Bound by build/test (always) and by a git-rooted deploy/release; left unbound for the common event-chained deploy/release, which inherits config-json from the upstream event instead.
+  params:
+    - name: stage-name
+      type: string
+      description: build / test / deploy / release - pipelinerun.started's pipelineName.
+    - name: chain-id
+      type: string
+      default: ""
+      description: Incoming chain-id (event-chained, passed through) or empty (flow root, a new one is minted).
+    - name: flow-traceparent
+      type: string
+      default: ""
+      description: Incoming flow-root traceparent (event-chained) or empty (flow root).
+    - name: flow-start-time
+      type: string
+      default: ""
+      description: Incoming flow start time (event-chained) or empty (flow root).
+    - name: git-url
+      type: string
+    - name: git-revision
+      type: string
+    - name: app-name
+      type: string
+      description: Repo name is assumed to equal app-name, same convention deploy-manifests.yaml relies on.
+    - name: app-namespace
+      type: string
+    - name: pipeline-run-name
+      type: string
+    - name: config-json
+      type: string
+      default: "{}"
+      description: Event-chained cicd.yaml content inherited from the upstream stage's CDEvent (deploy/release). Only read when the workspace is unbound; "{}" for a git-rooted run, which reads cicd.yaml from its own clone instead.
+    - name: config-path
+      type: string
+      default: cicd.yaml
+  results:
+    - name: traceparent
+      description: W3C traceparent of the flow-root span - minted here for a flow root, passed through otherwise.
+    - name: chain-id
+    - name: start-time
+      description: Flow-root span start time (the flow's start, not this stage's).
+    - name: chain-slug
+      description: Human-friendly stand-in for chain-id (catalog/lib/chain-slug.sh) - Tower reads this result off the first task of every run to group a flow's PipelineRuns.
+    - name: span-id
+      description: This stage's own span id - stage-debrief closes it.
+    - name: stage-start-time
+    - name: url
+      description: Tekton Chains' documented type-hint result name for a clone (build.yaml's CHAINS-GIT_URL reads it). Empty when no clone ran.
+    - name: commit
+      description: Chains type hint (CHAINS-GIT_COMMIT). Empty when no clone ran.
+    - name: config-json
+      description: cicd.yaml as JSON with every schema default applied - what every downstream Task reads with jq.
+    - name: has-build-script
+      description: "'true'/'false' - whether build.script is set. Drives build.yaml's when: gate on build-source."
+    - name: agent-image
+      description: build.agent resolved to an image via build-agents.env.
+    - name: sast
+      description: "governance.sast - 'true'/'false'."
+    - name: image-scan
+      description: "governance.imageScan - 'true'/'false'."
+    - name: policy-check
+      description: "governance.policyCheck - 'true'/'false'."
+    - name: sbom
+      description: "governance.sbom - 'true'/'false'."
+    - name: artifacts-python-wheel
+      description: "'true'/'false' - build.artifacts includes python-wheel."
+    - name: artifacts-go-binary
+      description: "'true'/'false' - build.artifacts includes go-binary."
+  volumes:
+    # Audience-bound projected ServiceAccount tokens - the same two the folded-away Tasks
+    # mounted: the GitHub App token broker for the clone, the CDEvents broker for announce.
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+    - name: broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: broker-token
+              audience: cdevents-broker
+              expirationSeconds: 600
+  steps:
+    - name: prepare
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+        - name: broker-token
+          mountPath: /var/run/secrets/platform-broker
+          readOnly: true
+      env:
+        - name: STAGE_NAME
+          value: $(params.stage-name)
+        - name: INCOMING_CHAIN_ID
+          value: $(params.chain-id)
+        - name: INCOMING_TRACEPARENT
+          value: $(params.flow-traceparent)
+        - name: INCOMING_FLOW_START_TIME
+          value: $(params.flow-start-time)
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: GIT_URL
+          value: $(params.git-url)
+        - name: GIT_REVISION
+          value: $(params.git-revision)
+        - name: APP_NAME
+          value: $(params.app-name)
+        # cdevents.sh's own contract (it hard-requires these three to source).
+        - name: CDEVENTS_BROKER_URL
+          value: http://el-cdevents-broker.platform-system.svc.cluster.local:8080
+        - name: NAMESPACE
+          value: $(params.app-namespace)
+        - name: TEKTON_PIPELINE_RUN
+          value: $(params.pipeline-run-name)
+        - name: INCOMING_CONFIG_JSON
+          value: $(params.config-json)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        ### 1. Flow and stage ids - was start-flow-root-span.yaml's check-and-start step
+        ### plus otel-stage-span-start's one-liner. Idempotent: an incoming chain-id
+        ### (event-chained) is passed through with its traceparent/start-time; an empty
+        ### one (flow root) mints all three. The stage span is a sibling under the flow
+        ### root, never nested - see docs/admin/tracing.md.
+        source "${PLATFORM_LIB}/otel.sh"
+        # Not cdevents.sh - that file hard-requires CDEVENTS_BROKER_URL/NAMESPACE/
+        # TEKTON_PIPELINE_RUN to even source; chain-slug.sh is the same
+        # chain_id_to_slug function with no such requirement.
+        source "${PLATFORM_LIB}/chain-slug.sh"
+
+        if [[ -n "${INCOMING_CHAIN_ID}" ]]; then
+          chain_id="${INCOMING_CHAIN_ID}"
+          printf '%s' "${INCOMING_TRACEPARENT}" > "$(results.traceparent.path)"
+          printf '%s' "${INCOMING_FLOW_START_TIME}" > "$(results.start-time.path)"
+          printf '%s' "${chain_id}" > "$(results.chain-id.path)"
+        else
+          read -r traceparent start_time <<< "$(otel_flow_root_begin)"
+          printf '%s' "${traceparent}" > "$(results.traceparent.path)"
+          printf '%s' "${start_time}" > "$(results.start-time.path)"
+          # printf, not `uuidgen | tee` - uuidgen's trailing newline once landed in the
+          # result verbatim and broke otel-cli's CSV-based --attrs parser downstream
+          # (platform.stage silently dropped from every stage span, caught in Tempo).
+          chain_id="$(uuidgen)"
+          printf '%s' "${chain_id}" > "$(results.chain-id.path)"
+        fi
+        # A pure function of chain-id - always the same word pair a downstream
+        # CDEvent-triggered stage's own PipelineRun name derives for this chain.
+        printf '%s' "$(chain_id_to_slug "${chain_id}")" > "$(results.chain-slug.path)"
+
+        # This stage's own span: fail fast here if the traceparent is malformed rather
+        # than only at send time in stage-debrief, much later.
+        read -r span_id stage_start_time <<< "$(otel_stage_span_begin "$(cat "$(results.traceparent.path)")")"
+        printf '%s' "${span_id}" > "$(results.span-id.path)"
+        printf '%s' "${stage_start_time}" > "$(results.stage-start-time.path)"
+
+        ### 2. pipelinerun.started - was a send-cdevent TaskRun. Same lib call the
+        ### cdevent-send StepAction makes; cdevents.sh reads the PLATFORM_* values from
+        ### the environment. Its token path is a plain variable, overridden after sourcing
+        ### because the GitHub-App token already occupies /var/run/secrets/platform here.
+        ### No error handling on purpose, same as the TaskRun it replaces: a broker that
+        ### rejects the announcement fails the stage early rather than letting it run
+        ### unannounced.
+        export PLATFORM_CHAIN_ID="$(cat "$(results.chain-id.path)")"
+        export PLATFORM_TRACEPARENT="$(cat "$(results.traceparent.path)")"
+        export PLATFORM_FLOW_START_TIME="$(cat "$(results.start-time.path)")"
+        source "${PLATFORM_LIB}/cdevents.sh"
+        _BROKER_TOKEN_PATH=/var/run/secrets/platform-broker/broker-token
+        cdevent_send "dev.cdevents.pipelinerun.started.0.3.0" "pipelineRun" "${TEKTON_PIPELINE_RUN}" "{\"pipelineName\": \"${STAGE_NAME}\"}"
+        echo
+
+        ### 3. Clone - was clone-repo-authenticated.yaml. Only when the `source`
+        ### workspace is bound (build/test always; a git-rooted deploy/release). A fresh,
+        ### single-repo-scoped GitHub App installation token per run
+        ### (catalog/lib/github-app.sh), proven by this pod's own ServiceAccount identity,
+        ### so it works identically whether PaC or the broker created the PipelineRun.
+        if [[ "$(workspaces.source.bound)" == "true" ]]; then
+          source "${PLATFORM_LIB}/github-app.sh"
+
+        owner="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${APP_NAME}")"
+        clone_url="https://x-access-token:${token}@github.com/${owner}/${APP_NAME}.git"
+
+        cd "$(workspaces.source.path)"
+        # Workspace volume is owned by a different uid than this step runs as - git
+        # refuses to operate at all otherwise ("detected dubious ownership").
+        git config --global --add safe.directory "$(workspaces.source.path)"
+        git init --quiet
+        git remote add origin "${clone_url}"
+        git fetch --quiet --depth=1 origin "${GIT_REVISION}"
+        git checkout --quiet FETCH_HEAD
+
+        echo -n "${GIT_URL}" | tee "$(results.url.path)"
+        git rev-parse FETCH_HEAD | tr -d '\n' | tee "$(results.commit.path)"
+          echo
+        else
+          echo "no source workspace bound (event-chained ${STAGE_NAME}) - nothing to clone"
+          printf '' > "$(results.url.path)"
+          printf '' > "$(results.commit.path)"
+        fi
+
+        ### 4. cicd.yaml -> config-json - was validate-cicd-config.yaml, unchanged for a
+        ### bound workspace: read fresh from the triggering commit, schema-validated
+        ### (schemas/cicd.schema.json, baked into the toolbox image), every default
+        ### applied, the most-used fields extracted. For an unbound workspace the
+        ### inherited config-json - already validated and defaulted upstream - is passed
+        ### through; that is what resolve-notify-config used to do, minus its own
+        ### best-effort git-rooted clone (step 3 covers that now, with real validation).
+        CONFIG_FILE="$(workspaces.source.path)/$(params.config-path)"
+
+        if [[ "$(workspaces.source.bound)" == "true" ]]; then
+          if [[ ! -f "${CONFIG_FILE}" ]]; then
+            echo "error: ${CONFIG_FILE} not found." >&2
+            echo "Every app repo needs a cicd.yaml at its root - see docs/user-guide/cicd-yaml-reference.md" >&2
+            exit 1
+          fi
+
+          yq -o=json '.' "${CONFIG_FILE}" > /tmp/cicd.json
+
+          # The pre-ADR-0019 environment keys were removed 2026-10-07; say what replaced
+          # them instead of yajsv's bare "additional property not allowed".
+          old_keys="$(jq -r '(.deploy // {}) | [keys[] | select(. == "lowerEnvironments" or . == "upperEnvironments" or . == "promotionOrder")] | join(", ")' /tmp/cicd.json)"
+          if [[ -n "${old_keys}" ]]; then
+            echo "error: cicd.yaml sets deploy.${old_keys}, which deploy.environments replaced (list each environment once, in promotion order, with tier: ground or flight; see docs/user/cicd-yaml-reference.md)." >&2
+            exit 1
+          fi
+
+          if ! yajsv -s /opt/platform/schemas/cicd.schema.json /tmp/cicd.json; then
+            echo "" >&2
+            echo "error: cicd.yaml failed schema validation (see above)." >&2
+            echo "Reference: docs/user-guide/cicd-yaml-reference.md" >&2
+            exit 1
+          fi
+
+          # Applies every schemas/cicd.schema.json "default" the developer's cicd.yaml
+          # left unset, recursively, so config-json is always a COMPLETE document - a
+          # Task never sees an absent key for a field the schema says has a default.
+          # (build.containerfile once reached kaniko as the literal ".../null" path
+          # because a Task's own `// default` was missing - applying defaults once,
+          # centrally, closes that whole bug class.) Only walks `properties`;
+          # `pipelines`' dynamic per-flow-name keys have no schema defaults.
+          # (heredoc terminators below sit at column 0 - bash requires it even inside this if-block)
+          cat > /tmp/apply-defaults.jq <<'JQ_PROGRAM'
+          def apply_defaults(schema):
+            if (schema.type == "object") and (schema.properties != null) then
+              . as $obj
+              | reduce (schema.properties | to_entries[]) as $e
+                  ( $obj;
+                    ($e.key) as $k | ($e.value) as $s
+                    | (.[$k]) as $cur
+                    | if ($cur == null) then
+                        if ($s.type == "object" and $s.properties != null) then
+                          .[$k] = ({} | apply_defaults($s))
+                        elif ($s.default != null) then
+                          .[$k] = $s.default
+                        else
+                          .
+                        end
+                      else
+                        .[$k] = ($cur | apply_defaults($s))
+                      end
+                  )
+            else
+              .
+            end;
+          apply_defaults($schema)
+        JQ_PROGRAM
+          jq --argjson schema "$(cat /opt/platform/schemas/cicd.schema.json)" \
+            -f /tmp/apply-defaults.jq /tmp/cicd.json > /tmp/cicd-defaulted.json
+
+          # Environments (ADR-0019): deploy.environments, or one Ground environment, dev, when it is unset.
+          cat > /tmp/normalize-envs.jq <<'JQ_NORMALIZE'
+          .deploy.environments = ($orig.deploy.environments // [{name: "dev", tier: "ground"}])
+        JQ_NORMALIZE
+          jq --argjson orig "$(cat /tmp/cicd.json)" -f /tmp/normalize-envs.jq /tmp/cicd-defaulted.json > /tmp/cicd-normalized.json
+          mv /tmp/cicd-normalized.json /tmp/cicd-defaulted.json
+          echo "cicd.yaml is valid."
+        else
+          # Event-chained: the upstream stage already validated and defaulted this.
+          printf '%s' "${INCOMING_CONFIG_JSON}" > /tmp/cicd-defaulted.json
+          if ! jq -e 'type == "object"' /tmp/cicd-defaulted.json >/dev/null 2>&1; then
+            echo "warning: inherited config-json is not a JSON object - using {} (notifications and target resolution will see an empty config)" >&2
+            printf '{}' > /tmp/cicd-defaulted.json
+          fi
+          echo "no source workspace bound - passing the inherited config-json through ($(wc -c < /tmp/cicd-defaulted.json) bytes)"
+        fi
+
+        # Compact, not pretty-printed: see this file's header on the kubelet's per-container
+        # termination-message budget. Every consumer reads it with jq, so whitespace is noise.
+        jq -c . /tmp/cicd-defaulted.json | tr -d '\n' > "$(results.config-json.path)"
+
+        # Flag extraction - echo -n, never a bare `jq -r | tee`: jq's trailing newline
+        # once landed in a result and broke Tekton's exact-string `when:` gates.
+        # `if == true` rather than `// false`: jq's `//` treats false like null.
+        flag() { jq -r "if ($1) == true then \"true\" else \"false\" end" /tmp/cicd-defaulted.json; }
+        echo -n "$(jq -r 'if .build.script != null and .build.script != "" then "true" else "false" end' /tmp/cicd-defaulted.json)" | tee "$(results.has-build-script.path)" > /dev/null
+        echo -n "$(flag .governance.sast)" | tee "$(results.sast.path)" > /dev/null
+        echo -n "$(flag .governance.imageScan)" | tee "$(results.image-scan.path)" > /dev/null
+        echo -n "$(flag .governance.policyCheck)" | tee "$(results.policy-check.path)" > /dev/null
+        echo -n "$(flag .governance.sbom)" | tee "$(results.sbom.path)" > /dev/null
+        echo -n "$(jq -r '(.build.artifacts // []) | index("python-wheel") != null' /tmp/cicd-defaulted.json)" | tee "$(results.artifacts-python-wheel.path)" > /dev/null
+        echo -n "$(jq -r '(.build.artifacts // []) | index("go-binary") != null' /tmp/cicd-defaulted.json)" | tee "$(results.artifacts-go-binary.path)" > /dev/null
+
+        # build.agent -> image via build-agents.env (formerly resolve-build-agent-image's
+        # own step). Only an error when a cicd.yaml was actually validated above - an
+        # event-chained deploy/release never needs the agent image.
+        AGENT="$(jq -r '.build.agent // ""' /tmp/cicd-defaulted.json)"
+        AGENT_IMAGE=""
+        if [[ -n "${AGENT}" ]]; then
+          AGENT_IMAGE="$(grep -E "^${AGENT}=" /opt/platform/lib/build-agents.env | cut -d= -f2- || true)"
+          if [[ -z "${AGENT_IMAGE}" && "$(workspaces.source.bound)" == "true" ]]; then
+            echo "error: build.agent '${AGENT}' has no entry in build-agents.env - this should be impossible if schema validation passed, file a platform bug." >&2
+            exit 1
+          fi
+        fi
+        echo -n "${AGENT_IMAGE}" | tee "$(results.agent-image.path)" > /dev/null

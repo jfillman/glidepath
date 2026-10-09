@@ -44,7 +44,7 @@ spec:
       type: string
       default: "true"
       description: >-
-        Anything but "true" skips the send (exit 0, logged). Lets stage-finish.yaml gate
+        Anything but "true" skips the send (exit 0, logged). Lets stage-debrief.yaml gate
         its end-flow step on $(params.is-flow-terminal) the way the old standalone
         end-flow finally task was gated with a Pipeline-level `when:` - Tekton has no
         per-step `when`, so the gate moved into the step itself. Every other caller

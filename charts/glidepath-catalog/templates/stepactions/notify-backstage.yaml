@@ -3,7 +3,7 @@
 # The body of the Backstage notification, as a StepAction (2026-10-08) - same split and
 # same reasoning as notify-slack.yaml: one copy of the logic, callable standalone (the
 # notify-backstage Task, still used by release-outcome-notify/release-progress-notify)
-# or as one step of stage-finish.yaml. Unchanged from the previous Task's step except
+# or as one step of stage-debrief.yaml. Unchanged from the previous Task's step except
 # config-json arrives via env.
 #
 #
@@ -41,7 +41,7 @@ spec:
       default: ""
       description: >-
         Optional base64 form of config-json; when non-empty it wins. Exists for
-        stage-finish.yaml, which resolves cicd.yaml's JSON in an earlier step and hands
+        stage-debrief.yaml, which resolves cicd.yaml's JSON in an earlier step and hands
         it over as a step result - Tekton parses a step result that is a compact JSON
         object/array as that type, so substituting it into a string param yields ""
         (confirmed live, Tekton 1.15). base64 keeps it a plain string. Standalone
@@ -89,7 +89,7 @@ spec:
         to go.
     - name: token-volume
       type: string
-      description: Name of the calling Task's volume holding the glidepath-backstage-notify Secret - a StepAction volumeMount must name a param, the Task owns the volume. notify-backstage.yaml/stage-finish.yaml both declare it as `backstage-notify-token`.
+      description: Name of the calling Task's volume holding the glidepath-backstage-notify Secret - a StepAction volumeMount must name a param, the Task owns the volume. notify-backstage.yaml/stage-debrief.yaml both declare it as `backstage-notify-token`.
   volumeMounts:
     - name: $(params.token-volume)
       mountPath: /var/run/secrets/platform

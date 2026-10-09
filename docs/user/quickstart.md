@@ -40,8 +40,8 @@ exact file with every field explained inline.
 yajsv -s schemas/cicd.schema.json <(yq -o=json . cicd.yaml)
 ```
 
-This is the *exact* check `validate-cicd-config` runs as the first step of every real
-pipeline. Catching a typo here costs you two seconds; catching it after a push costs you
+This is the *exact* check the `preflight` Task's validate step runs at the start of every
+real pipeline. Catching a typo here costs you two seconds; catching it after a push costs you
 a burned pipeline run and a wait.
 
 ## 3. Push, and watch it happen

@@ -7,7 +7,7 @@ independently-triggered PipelineRun with no Tekton-native relationship to the ot
 ## Shape: flat, not nested
 
 The flow-root span (started once, by `build`, via `otel-flow-root-start`) is the trace's
-only "top" span. Every stage's span (`start-stage-span`) parents **directly to the flow
+only "top" span. Every stage's span (minted by `preflight`) parents **directly to the flow
 root**, never to the previous stage's span:
 
 ```
@@ -27,7 +27,8 @@ per-stage drill-down the dashboard needs (see
 
 ## How context crosses independently-triggered PipelineRuns
 
-1. `build`'s first stage-relevant Task calls `start-flow-root-span`, which mints a fresh
+1. `build`'s first Task, `preflight` (`stage-preflight.yaml`, one pod for ids, clone and
+   config validation since 2026-10-09), mints a fresh
    W3C `traceparent` (root span, no incoming parent), a real start timestamp, and a
    fresh CDEvents `chainId` - but does **not** send the flow-root span anywhere yet
    (see "otel-cli" below for why). All three are threaded through every subsequent
@@ -44,7 +45,8 @@ per-stage drill-down the dashboard needs (see
    `flow-start-time`) into the next stage's `PipelineRun` (see
    [../../charts/glidepath-app/templates/triggers/](../../charts/glidepath-app/templates/triggers/)).
 4. `test` (and later `deploy`/`release`) receive `flow-traceparent` as a Pipeline param
-   instead of generating their own - they call `start-stage-span` with it, producing a
+   instead of generating their own - their own `preflight` passes it through and mints a
+   stage span under it, producing a
    span parented to the *original* flow root, reconstructing one continuous trace across
    PipelineRuns Tekton itself has no idea are related. `flow-start-time` keeps riding
    along, consumed only by whichever stage turns out to be this flow's terminal step -
@@ -53,8 +55,8 @@ per-stage drill-down the dashboard needs (see
 ## Which stage closes the flow-root span
 
 Every stage Pipeline (`build`/`test`/`deploy`/`release`) carries an identical
-`is-flow-terminal` param (default `"false"`) and passes it to its single `finish`
-finally Task (`stage-finish.yaml`), whose `end-flow` step sends the flow-root span iff
+`is-flow-terminal` param (default `"false"`) and passes it to its single `debrief`
+finally Task (`stage-debrief.yaml`), whose `end-flow` step sends the flow-root span iff
 `is-flow-terminal == "true"` (the gate is `otel-span-send`'s `enabled` param - Tekton has
 no per-step `when:`). Which stage actually fires it is decided per-flow, at generation
 time, by whichever generator produced that step's PipelineRun:
@@ -109,7 +111,7 @@ already deliberately excluded from the automated trace for this reason (see
 [release.md](release.md)) - extending the trace to cover it would undo that on purpose.
 
 So `release-outcome-span.yaml` mints its **own** fresh trace-id (`otel_flow_root_begin`,
-the same call `build`'s own `start-flow-root-span` uses when it's a flow root) and sends
+the same call `build`'s own `preflight` uses when it's a flow root) and sends
 one standalone span, no parent. Correlation back to the original flow is by `chain-id`
 (CDEvents' own causal-sequence correlator - see this file's own header on why it's kept
 distinct from the OTel trace/span ids), carried as a span *attribute*
@@ -209,12 +211,11 @@ live failure.
 Phase 3 item 8.2 added task-level spans (nested under the current stage span) to the
 build pipeline's variable-duration tasks: `unit-test`, `build-source`, `build-image`,
 and - once real, items 8.4/8.5/8.7 - `sast-scan`, `image-scan`, `generate-sbom`.
-Deliberately NOT instrumented: `validate-config` (also resolves `agent-image` and the
-governance flags now - see docs/chaining.md's Task-count note), `start-flow`, `start`/
-`end-*-stage-span`, `pipelinerun-started`/`finished`, `notify`, `send-cdevent` - all
-low-single-digit-second tasks where otel-cli's own per-invocation overhead isn't worth
-it, and `clone-repo` (a third-party hub-resolved catalog Task with no step of ours to
-instrument).
+Deliberately NOT instrumented: `preflight` (ids, `pipelinerun.started`, clone and
+config validation - the stage span it mints starts before its own clone, so the clone's
+duration is visible as the gap before the first instrumented Task) and `debrief` (span
+sends, notifications, `pipelinerun.finished`) - low-single-digit-second steps where
+otel-cli's own per-invocation overhead isn't worth it.
 
 Tasks that do real work inside a non-toolbox image (the resolved `build.agent` image for
 `build-source`/`unit-test`, or `sast-scan`'s own `semgrep/semgrep` step) can't call

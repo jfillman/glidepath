@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""validate-cicd-config must hand every Task a config-json whose environment fields agree (ADR-0019).
+"""stage-preflight's prepare step must hand every Task a config-json whose environment fields agree (ADR-0019).
 
 deploy.environments is passed through as declared, or defaults to one Ground environment, dev. The
 pre-ADR-0019 fields (lowerEnvironments, upperEnvironments, promotionOrder) were removed 2026-10-07 and
@@ -23,10 +23,11 @@ SCHEMA = open(os.path.join(ROOT, "schemas", "cicd.schema.json")).read()
 
 def task_script():
     out = subprocess.run(
-        ["helm", "template", "t", CATALOG, "-s", "templates/tasks/validate-cicd-config.yaml"],
+        ["helm", "template", "t", CATALOG, "-s", "templates/tasks/stage-preflight.yaml"],
         capture_output=True, text=True, check=True,
     ).stdout
-    return yaml.safe_load(out)["spec"]["steps"][0]["script"]
+    steps = yaml.safe_load(out)["spec"]["steps"]
+    return [s for s in steps if s["name"] == "prepare"][0]["script"]
 
 
 def heredoc(script, tag):
@@ -41,7 +42,7 @@ NORMALIZE = heredoc(SCRIPT, "JQ_NORMALIZE")
 
 
 def config_json(user_doc):
-    """What validate-cicd-config writes to its config-json result for this cicd.yaml (as JSON)."""
+    """What stage-preflight's prepare step writes to its config-json result for this cicd.yaml (as JSON)."""
     with tempfile.TemporaryDirectory() as d:
         paths = {}
         for name, text in (("apply.jq", APPLY), ("normalize.jq", NORMALIZE), ("orig.json", json.dumps(user_doc))):
