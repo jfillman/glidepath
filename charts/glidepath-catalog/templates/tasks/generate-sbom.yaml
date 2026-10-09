@@ -72,6 +72,9 @@ spec:
     - name: generate-and-attest
       image: {{ .Values.toolboxImage }}
       imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      # Requests only, no limits (2026-10-09): see docs/admin/pipeline-performance.md "Step resources".
+      computeResources:
+        requests: { cpu: 100m, memory: 128Mi }
       volumeMounts:
         - name: registry-credentials
           mountPath: /var/run/secrets/registry

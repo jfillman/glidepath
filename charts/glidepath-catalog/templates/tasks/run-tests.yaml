@@ -89,6 +89,9 @@ spec:
 
     - name: unit-test
       image: $(params.agent-image)
+      # Requests only, no limits (2026-10-09): see docs/admin/pipeline-performance.md "Step resources".
+      computeResources:
+        requests: { cpu: 250m, memory: 256Mi }
       # Deliberately NOT $(workspaces.source.path) - real bug, caught live (Phase 3 item
       # 8.2 testing): this Task now runs concurrently with build-source (item 8.1), and
       # both independently run their own full dependency install (test.sh's own header

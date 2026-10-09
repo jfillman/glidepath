@@ -266,6 +266,9 @@ spec:
       # v1.24.0 is the latest kaniko release as of this fix (no newer tag exists) -
       # kept pinned, not "latest", same reasoning as every other version pin here.
       image: gcr.io/kaniko-project/executor:v1.24.0-debug
+      # Requests only, no limits (2026-10-09): see docs/admin/pipeline-performance.md "Step resources".
+      computeResources:
+        requests: { cpu: 250m, memory: 256Mi }
       # Uses `script:` (not a plain `command:` invocation of the executor binary) only
       # for the thin platform-gate check below - the moment that check passes, `exec`
       # replaces the shell process with kaniko directly, so kaniko still ends up as the
@@ -369,6 +372,9 @@ spec:
       # name (--customPlatform is accepted but logs a deprecation warning - confirmed
       # live testing this).
       image: gcr.io/kaniko-project/executor:v1.24.0-debug
+      # Requests only, no limits (2026-10-09): see docs/admin/pipeline-performance.md "Step resources".
+      computeResources:
+        requests: { cpu: 250m, memory: 256Mi }
       env:
         - name: SSL_CERT_FILE
           value: /kaniko/ssl/certs/ca-certificates.crt
