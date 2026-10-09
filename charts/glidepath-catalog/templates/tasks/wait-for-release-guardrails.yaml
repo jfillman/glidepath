@@ -1,20 +1,19 @@
 # catalog/tasks/wait-for-release-guardrails.yaml
 #
-# Built for the `image-promotion` gate (docs/admin/release-guardrails.md): the user's
-# explicit design requirement was that image-promotion run last, dependent on every
-# other release guardrail on this same PR having already passed - it promotes the image
-# only once nothing else could still reject the release. Tekton has no cross-PipelineRun
-# `runAfter` (each gate is its own independently PaC-triggered PipelineRun, run in
-# parallel off the same webhook - see governance-check.yaml), so "depends on" is enforced
-# here by polling the GitHub Checks API for the same head commit until every sibling gate
-# in .Values.releaseGuardrails reaches a terminal conclusion, then failing closed if any
-# of them didn't succeed. Generic/reusable by name list, not hardcoded to today's set -
-# any gate added to that values list is automatically waited on too.
+# "Run after every other release guardrail on this PR has passed" - Tekton has no
+# cross-PipelineRun `runAfter` (each gate is its own independently PaC-triggered
+# PipelineRun, run in parallel off the same webhook - see governance-check.yaml), so a
+# gate that depends on the rest polls the GitHub Checks API for the same head commit
+# until every other gate in .Values.releaseGuardrails reaches a terminal conclusion, and
+# fails closed if any of them didn't succeed. Generic by name list: any gate added to
+# the registry is waited on; the calling gate names itself in `self-gate` and is skipped.
 #
-# Deliberately real, not a stub: unlike the actual registry-promotion logic (still
-# unimplemented - see image-promotion-check.yaml), the ordering/dependency guarantee
-# itself is exactly the piece of architecture being asked for here, so it's built for
-# real rather than stubbed alongside the promotion step it gates.
+# No gate calls this today. It was built for `image-promotion`, retired as a stub check
+# on 2026-10-09 (ADR-0025): the check could not block a merge on this GitHub plan, its
+# result was the AND of its siblings, and there was no upper registry to promote into.
+# Kept as the documented "shape B" piece (docs/admin/release-guardrails.md) for a gate
+# that genuinely must run last; ADR-0025 also records the event-driven fan-in that
+# should replace this polling when such a gate is real.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -31,15 +30,17 @@ spec:
     - name: revision
       type: string
       description: The head commit to check - PaC's revision.
+    - name: self-gate
+      type: string
+      default: ""
+      description: The calling gate's own registry name, skipped from the sibling set (a gate never waits on itself).
     - name: poll-interval-seconds
       type: string
       default: "30"
       description: >-
-        30s, up from 15s (2026-10-09, report item 5): one check-runs read per poll from
-        every open release PR's image-promotion run, against a sibling gate set whose
-        fastest member takes well over a minute - halving the rate costs at most 15s on
-        a promotion and spends a quarter of the GitHub App's rate budget that the old
-        rate did, for this repo's whole gate set.
+        30s, up from 15s (2026-10-09, report item 5): one check-runs read per poll
+        against a sibling gate set whose fastest member takes well over a minute -
+        halving the rate costs at most 15s and spends half the GitHub App rate budget.
     - name: timeout-seconds
       type: string
       default: "1080"
@@ -47,11 +48,10 @@ spec:
         Give up and fail closed if sibling gates haven't all finished within this long.
         Must stay comfortably ABOVE the slowest sibling gate's own PipelineRun timeout
         (today that's image-scan's 15m, see pull-request-image-scan.yaml's own
-        2026-08-23 header for why it needs that much) - image-promotion can't report a
-        real result before the slowest thing it's waiting on could possibly finish.
-        Also keep comfortably under this Pipeline's own `tasks` timeout (see
-        image-promotion-check.yaml's onboarding template) to leave headroom for the
-        promote+comment steps after this one.
+        2026-08-23 header for why it needs that much) - the caller can't report a real
+        result before the slowest thing it's waiting on could possibly finish. Also
+        keep comfortably under the calling Pipeline's own `tasks` timeout to leave
+        headroom for whatever runs after this.
   volumes:
     - name: github-token-broker-token
       projected:
@@ -79,6 +79,8 @@ spec:
           value: $(params.poll-interval-seconds)
         - name: TIMEOUT_SECONDS
           value: $(params.timeout-seconds)
+        - name: SELF_GATE
+          value: $(params.self-gate)
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -88,11 +90,13 @@ spec:
         repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
         token="$(github_app_installation_token "${owner}" "${repo}")"
 
-        # Every other gate in the registry - image-promotion never waits on itself.
-        # Rendered at chart-template time from .Values.releaseGuardrails
-        # (docs/admin/release-guardrails.md), the same single source of truth
-        # detect-bypass-merge.yaml/open-release-pr.yaml already render off.
-        sibling_gates=({{ range .Values.releaseGuardrails }}{{ if ne .name "image-promotion" }}"{{ .name }}" {{ end }}{{ end }})
+        # Every gate in the registry except the caller. Rendered at chart-template time
+        # from .Values.releaseGuardrails (docs/admin/release-guardrails.md), the same
+        # single source of truth detect-bypass-merge.yaml/open-release-pr.yaml render off.
+        sibling_gates=()
+        for g in {{ range .Values.releaseGuardrails }}"{{ .name }}" {{ end }}; do
+          [[ "${g}" == "${SELF_GATE}" ]] || sibling_gates+=("${g}")
+        done
 
         echo "Waiting on sibling guardrail checks for ${REVISION}: ${sibling_gates[*]}"
         deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
@@ -126,7 +130,7 @@ spec:
               continue
             fi
             if [[ "${conclusion}" != "success" ]]; then
-              echo "error: sibling guardrail '${gate}' completed with conclusion '${conclusion}' on ${REVISION} - image-promotion cannot proceed until it passes." >&2
+              echo "error: sibling guardrail '${gate}' completed with conclusion '${conclusion}' on ${REVISION} - ${SELF_GATE:-this gate} cannot proceed until it passes." >&2
               exit 1
             fi
           done

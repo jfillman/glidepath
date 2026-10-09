@@ -17,11 +17,11 @@ deploy (dev) succeeds
      open-release-pr.yaml) - this is where the automated part of the flow ends; the
      flow-root trace closes here (see docs/tracing.md)
   -> the release-guardrail GitHub Checks run on that PR, one per gate in
-     .Values.releaseGuardrails (sast/image-scan/provenance/sbom real, itsm/qa/
-     policy-validation/image-promotion still stubs - see
+     .Values.releaseGuardrails (sast/image-scan/provenance/sbom/values real, itsm/qa/
+     policy-validation still stubs - see
      [release-guardrails.md](release-guardrails.md)/[governance-stubs.md](governance-stubs.md)),
-     each individually re-triggerable and independent of the others except
-     `image-promotion`, which deliberately runs last and waits on the rest
+     each individually re-triggerable and independent of the others (the
+     `image-promotion` check that waited on the rest was retired 2026-10-09, ADR-0025)
   -> branch protection on the gitops repo requires every one of those checks + N human
      reviewers
 
@@ -238,8 +238,8 @@ This is all one-time setup per app, same spirit as onboarding the app repo itsel
    API - not IaC-managed by this platform, documented here so it isn't a tribal-
    knowledge step): require status checks matching every `name` currently in
    `.Values.releaseGuardrails` (`charts/glidepath-catalog/values.yaml` - today
-   `sast`, `image-scan`, `provenance`, `sbom`, `itsm`, `qa`, `policy-validation`,
-   `image-promotion`) to pass, and require **2 approving reviews**. Enable "Allow
+   `sast`, `image-scan`, `provenance`, `sbom`, `values`, `itsm`, `qa`,
+   `policy-validation`) to pass, and require **2 approving reviews**. Enable "Allow
    auto-merge" on the repo so a PR merges itself the moment checks + reviews are
    satisfied, without needing anyone to click Merge. This list changes whenever a gate
    is added/removed (see [release-guardrails.md](release-guardrails.md)'s "Branch
@@ -261,9 +261,9 @@ Phase 3 item 8.6, and [release-guardrails.md](release-guardrails.md) for the mec
 and current gate list). `sast`/`image-scan`/`provenance`/`sbom` are real as of Phase 3
 items 8.4/8.5/item 2/item 8.7 (see that item's own "cosign `--ca-roots` deprecation"
 fallout note in [provenance-policy.md](provenance-policy.md) for a still-unresolved edge
-case, not a stub); `itsm`/`qa`/`policy-validation`/`image-promotion` are still stubs.
-All except `image-promotion` run independently of each other; `image-promotion`
-deliberately waits on the rest (see that doc's "Two shapes" section).
+case, not a stub); `itsm`/`qa`/`policy-validation` are still stubs. All run
+independently of each other (`image-promotion`, which waited on the rest, was retired
+2026-10-09 - see that doc's "Two shapes" section and ADR-0025).
 
 **Re-running a failed check**: comment `/retest <check-name>` on the PR (e.g. `/retest
 sast`) to re-run just that one, or `/retest` alone to re-run every gate in
@@ -349,7 +349,7 @@ failing required check, and how it's made visible.
 - A PR should appear on `gitops-<app-name>` with the correct image reference, and every
   governance check in `.Values.releaseGuardrails` should show up in the PR's checks list
   (each individually re-runnable, e.g. via `/retest sast` PR comment) - all independent
-  of each other except `image-promotion`, which should only go green once the rest have.
+  of each other.
 - Security check: confirm `/github-installation-token` genuinely rejects a request for
   a repo the caller's Application doesn't own (test from `platform-cicd-demo`'s SA
   requesting a different, unrelated `gitops-*` repo name - should get a 403).

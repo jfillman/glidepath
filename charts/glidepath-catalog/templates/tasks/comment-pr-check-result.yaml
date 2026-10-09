@@ -130,8 +130,8 @@ spec:
           summary="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "findings-summary")][0].value // empty')"
           # governance-gate-stub/qa-gate (ADR-0003) emit outcome=stub - a stub always
           # succeeds, so STATUS alone can't tell "really passed" from "not a real check
-          # yet". Without this, a stubbed gate (currently itsm/qa/policy-validation/
-          # image-promotion) posts the same "passed" wording as a genuine result, which
+          # yet". Without this, a stubbed gate (currently itsm/qa/policy-validation)
+          # posts the same "passed" wording as a genuine result, which
           # reads as the gate having actually verified something it never checked.
           outcome="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "outcome")][0].value // empty')"
           if [[ "${outcome}" == "stub" ]]; then
@@ -174,9 +174,6 @@ spec:
               ;;
             itsm|qa|policy-validation)
               recommendation="This gate is a stub - it always no-ops and reports \`stub\`, never a real pass/fail judgment (see docs/admin/governance-stubs.md). A failure here means something broke in the platform scaffolding itself (e.g. the shared toolbox image or OTel collector), not a real ITSM/QA/policy rejection - check the log excerpt above and \`/retest ${GATE_NAME}\`."
-              ;;
-            image-promotion)
-              recommendation="This either means a sibling guardrail check on this PR hasn't passed yet, or timed out waiting for one to finish (see the log excerpt above for which) - image-promotion runs last and depends on every other check succeeding first (docs/admin/release-guardrails.md). Once every other check on this PR is green, comment \`/retest image-promotion\`. Note the actual dev-to-upper-registry image copy is still a stub - this check only enforces the ordering today."
               ;;
             *)
               recommendation="See the log excerpt above for detail."

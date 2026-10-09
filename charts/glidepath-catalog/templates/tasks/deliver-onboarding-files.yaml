@@ -852,6 +852,22 @@ spec:
         cd "${workdir}/repo"
         mkdir -p .tekton
 
+        # A platform-generated gate file whose template no longer exists is removed (2026-10-09,
+        # the image-promotion retirement, ADR-0025): otherwise a retired gate keeps triggering a
+        # PipelineRun against a Pipeline the catalog no longer has. Only files this Task itself
+        # wrote are candidates - every gitops template starts with a `# STUB` or `# BOILERPLATE`
+        # marker line (or names the gate as "real" in its first line), and a tenant's own
+        # .tekton file carries no such marker, so their customizations are left alone as before.
+        for existing in .tekton/pull-request-*.yaml; do
+          [[ -f "${existing}" ]] || continue
+          base="$(basename "${existing}")"
+          [[ -f "/opt/platform/onboarding-templates/gitops-repo/${base}" ]] && continue
+          if head -1 "${existing}" | grep -qE '^# (STUB|BOILERPLATE)\b|^# The real `[a-z-]+` gate'; then
+            rm -f "${existing}"
+            echo "gitops repo: removed .tekton/${base} - its platform template no longer exists (gate retired)"
+          fi
+        done
+
         for f in /opt/platform/onboarding-templates/gitops-repo/*.yaml; do
           base="$(basename "${f}")"
           sed \
@@ -888,7 +904,7 @@ spec:
           else
             pr_body="$(jq -n \
               --arg title "Onboarding: re-sync governance-check boilerplate" \
-              --arg body "Regenerated the 5 governance-check .tekton files from the platform catalog's onboarding templates - see docs/onboarding.md." \
+              --arg body "Regenerated the governance-check .tekton files from the platform catalog's onboarding templates (a file whose gate was retired is removed) - see docs/onboarding.md." \
               --arg head "${branch}" --arg base "main" \
               '{title: $title, body: $body, head: $head, base: $base}')"
             curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \

@@ -150,7 +150,3 @@ releaseGuardrails:
     status: stub
     class: process
     targets: [k8s-rollout]
-  - name: image-promotion
-    description: Promotes the image from the dev registry to this env's upper registry - runs last, only once every other gate above has passed
-    status: stub
-    class: process

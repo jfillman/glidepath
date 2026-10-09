@@ -1,11 +1,11 @@
 # catalog/tasks/governance-gate-stub.yaml
 #
 # One reusable stub Task for every still-stub release-guardrail gate (currently itsm,
-# qa, policy-validation, image-promotion - see docs/admin/release-guardrails.md and
+# qa, policy-validation - see docs/admin/release-guardrails.md and
 # .Values.releaseGuardrails) rather than a near-duplicate file per gate. Called from
 # governance-check.yaml (the shared, parameterized-by-gate-name Pipeline for an
-# independent stub gate) and from image-promotion-check.yaml's own `promote` step,
-# parameterized by gate-name either way. Originally also covered sast/image-scan/
+# independent stub gate), parameterized by gate-name (image-promotion's own Pipeline
+# called it too until that stub check was retired, ADR-0025). Originally also covered sast/image-scan/
 # provenance/sbom before each was promoted to a dedicated, real Pipeline - see
 # governance-stubs.md's "Landing a real implementation" section for that migration
 # path. See catalog/stepactions/governance-stub.yaml and docs/governance-stubs.md for

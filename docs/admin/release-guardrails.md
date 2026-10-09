@@ -63,14 +63,17 @@ webhook, with no dependency on each other's outcome:
   replace the Task's stub step with real logic, keeping its name/params/results
   contract the same - no Pipeline or onboarding-template change at all.
 
-**B. A gate that depends on the others (currently just `image-promotion`)** - Tekton has
-no cross-PipelineRun `runAfter` (every gate is its own independently PaC-triggered
-PipelineRun off the same webhook, run in parallel - see `governance-check.yaml`'s own
-header), so a gate that must run *after every other gate succeeds* needs its own
-dedicated Pipeline that polls the GitHub Checks API for the rest. See
-`image-promotion-check.yaml` and `catalog/tasks/wait-for-release-guardrails.yaml` - the
-latter is generic (Helm-rendered off `releaseGuardrails`, minus the calling gate itself)
-and reusable if a second such gate is ever needed.
+**B. A gate that depends on the others (none today)** - Tekton has no cross-PipelineRun
+`runAfter` (every gate is its own independently PaC-triggered PipelineRun off the same
+webhook, run in parallel - see `governance-check.yaml`'s own header), so a gate that must
+run *after every other gate succeeds* needs its own dedicated Pipeline that waits for the
+rest. `catalog/tasks/wait-for-release-guardrails.yaml` does that by polling the GitHub
+Checks API (Helm-rendered off `releaseGuardrails`, minus the gate named in `self-gate`).
+`image-promotion` was the one such gate until 2026-10-09, when it was retired as a stub
+check ([ADR-0025](adr/0025-retire-image-promotion-stub-check.md): it could not block a
+merge on this GitHub plan, its result was the AND of its siblings, and there is no upper
+registry to promote into). That ADR also records how a real promotion should be ordered:
+event-driven fan-in on the release record rather than a polling pod.
 
 ## Timeouts: always split `tasks`/`finally`, never a single `pipeline` budget alone
 
@@ -98,9 +101,10 @@ A new gate's onboarding template must set all three, not just `pipeline` - copy 
 pattern from `pull-request-sast.yaml` (the default 8m/2m/10m split) or, if the real
 check genuinely needs more room (see `pull-request-image-scan.yaml`'s 13m/2m/15m for
 why Trivy scans got more), size `tasks` to what the check actually needs and keep
-`finally` at 2m. `image-promotion` is the one exception with its own larger numbers,
-since it has to out-wait every sibling gate's own timeout - see that onboarding
-template's own header for the exact chain of reasoning.
+`finally` at 2m. A shape-B gate (one that waits on its siblings) is the exception: its
+`tasks` must out-wait `wait-for-release-guardrails`' own timeout, which in turn must
+out-wait the slowest sibling's PipelineRun timeout. `image-promotion` carried those
+larger numbers until ADR-0025 retired it.
 
 ## Current gates
 
@@ -114,7 +118,6 @@ template's own header for the exact chain of reasoning.
 | `itsm` | ServiceNow Change Request | stub |
 | `qa` | Test-completion verification | stub |
 | `policy-validation` | Gatekeeper/Kyverno admission-policy validation of the rendered manifest | stub |
-| `image-promotion` | Promotes the image from the dev registry to this env's upper registry - runs last, dependent on every gate above | stub |
 
 **How the image gates find the image (2026-10-09).** `sast`, `image-scan`, `sbom` and the provenance half of
 `provenance` share the `resolve-promoted-image` StepAction: two GitHub API reads against the PR (its base, the
@@ -150,12 +153,12 @@ image, or never register the gate.
 Pieces: Task `validate-values`, Pipeline `values-check`, onboarding template
 `gitops-repo/pull-request-values.yaml` (runs on every PR to `main` that touches a `values.yaml`).
 
-**Rollout order matters.** Registering the gate in `releaseGuardrails` makes `image-promotion` wait for its
-check, so:
+**Rollout order matters.** Registering the gate in `releaseGuardrails` makes `detect-bypass-merge` treat its
+check as required on every merge, so:
 1. Publish the validator image and make its package public.
 2. Let the onboarding-resync PR (which adds `.tekton/pull-request-values.yaml`) merge in every gitops repo.
-3. Only then add `values` to `releaseGuardrails` (status `real`; the name must match the PipelineRun's `generateName` prefix, `values-`, because `wait-for-release-guardrails` looks up the check `Pipelines as Code CI / values-`). That makes `image-promotion` wait for it,
-   so a release PR cannot promote past a failing values check. It does **not** make the check required on other PRs
+3. Only then add `values` to `releaseGuardrails` (status `real`; the name must match the PipelineRun's `generateName` prefix, `values-`, because `detect-bypass-merge` looks up the check `Pipelines as Code CI / values-`). From then on a merge
+   with that check red is reported as a bypass. It does **not** make the check required on other PRs
    (a human's or an agent's hand edit to a `values.yaml`): that is the GitHub ruleset's required-status-checks list,
    a separate setting kept in sync by hand (see "Branch protection" below). Add `Pipelines as Code CI / values-` there.
 Before step 3 the check runs and reports but does not block.
@@ -165,15 +168,19 @@ Before step 3 the check runs and reports but does not block.
 Delete its onboarding template file
 (`charts/glidepath-app/files/onboarding-templates/gitops-repo/pull-request-<name>.yaml`)
 and its `releaseGuardrails` entry. If it had a dedicated Pipeline/Task (a promoted-to-real
-gate, or `image-promotion`'s Pipeline/Task), remove those too once nothing else
-references them. Two things this does **not** do automatically:
+gate), remove those too once nothing else references them. Worked example: the
+`image-promotion` retirement, 2026-10-09 (ADR-0025). Three things to know:
 
 - **Already-onboarded gitops repos** still have the old `.tekton/pull-request-<name>.yaml`
-  file from a prior onboarding-resync - `deliver-onboarding-files.yaml` only ever adds
-  missing files, it doesn't prune ones that disappeared from the template directory (a
-  deliberate asymmetry - deleting a tenant's own customization was never the intent of an
-  onboarding-resync PR). Remove the stale file from each gitops repo by hand (or via a
-  one-off script) if the gate is really gone for good.
+  until their next onboarding-resync PR. Since 2026-10-09 that resync removes a
+  platform-generated gate file whose template no longer exists (it recognises its own
+  files by their `# STUB` / `# BOILERPLATE` / `# The real ... gate` first line; a
+  tenant's own `.tekton` file carries no such marker and is left alone, as before).
+  Trigger a resync for every app after the gate is removed.
+- **The catalog Application does not prune.** Removing a Pipeline/Task from the chart
+  leaves the live object in `platform-catalog` (OutOfSync, still resolvable). Delete it by
+  hand once every gitops repo's resync has merged - until then the stale `.tekton` file
+  still runs against it, which is the safe order.
 - **Branch protection** on the gitops repo's `main` still lists the old check name as
   required (see below) - a required check that no PR will ever produce again blocks every
   future release PR from merging until removed.

@@ -51,7 +51,7 @@ confirmed by auditing all 26 Task names live before writing this doc. Keep it th
 
 Noun matching the stage or check it represents: `build`, `test`, `deploy`, `release`,
 `sast-check`, `image-scan-check`, `provenance-check`, `sbom-check`, `qa-check`,
-`governance-check`, `image-promotion-check`, `bypass-merge-check`, `onboarding-resync`.
+`governance-check`, `values-check`, `bypass-merge-check`, `onboarding-resync`.
 
 **Not actually consistent until 2026-08-23**: this doc originally claimed the list above
 was "already consistent," but missed a real gap - `policy-check` was the *gate's own
@@ -202,7 +202,7 @@ now:
 ## GitHub Check / status context names
 
 Short, no trailing dash, matching the concept the file represents (`sast`, `provenance`,
-`image-scan`, `sbom`, `qa`, `itsm`, `policy-validation`, `image-promotion`,
+`image-scan`, `sbom`, `values`, `qa`, `itsm`, `policy-validation`,
 `bypass-check`). Confirmed-good, keep as-is.
 
 ## Helm chart and file naming
