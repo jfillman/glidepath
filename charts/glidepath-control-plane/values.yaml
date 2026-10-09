@@ -45,7 +45,7 @@ doraExporterImage: ghcr.io/jfillman/glidepath-dora-exporter:latest
 # pull-based model as every app deploy on this platform. See interceptor.yaml's own
 # comment on this value for the real live bug (stale image, 2026-09-06) a floating
 # "latest" tag caused here.
-interceptorImage: ghcr.io/jfillman/glidepath-token-review-interceptor:sha-0adcce8
+interceptorImage: ghcr.io/jfillman/glidepath-token-review-interceptor:latest
 
 # templates/tekton/tekton-results-relay.yaml's own image - same reasoning as
 # doraExporterImage above (real registry-published tag, not a local-only build).
