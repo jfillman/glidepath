@@ -196,7 +196,13 @@ spec:
         IMAGE_REF="${IMAGE_REF_PARAM}"
         if [[ -z "${IMAGE_REF}" && -n "${IMAGE_REF_FROM_TASK}" ]]; then
           IMAGE_REF="$(lookup_result "${IMAGE_REF_FROM_TASK}" image-ref)"
-          echo "image-ref from ${IMAGE_REF_FROM_TASK}'s TaskRun result: '${IMAGE_REF}'"
+          if [[ -n "${IMAGE_REF}" ]]; then
+            echo "image-ref resolved from ${IMAGE_REF_FROM_TASK}'s TaskRun result: ${IMAGE_REF}"
+          else
+            echo "image-ref: none - ${IMAGE_REF_FROM_TASK} produced no image-ref result (it failed, was skipped, or never ran); notifications omit the Image field"
+          fi
+        elif [[ -n "${IMAGE_REF}" ]]; then
+          echo "image-ref from Pipeline param: ${IMAGE_REF}"
         fi
 
         CONFIG_JSON="${CONFIG_JSON_PARAM}"
@@ -204,9 +210,12 @@ spec:
           looked_up="$(lookup_result "${CONFIG_JSON_FROM_TASK}" config-json)"
           if [[ -n "${looked_up}" ]] && jq -e . <<<"${looked_up}" >/dev/null 2>&1; then
             CONFIG_JSON="${looked_up}"
+            echo "config-json resolved from ${CONFIG_JSON_FROM_TASK}'s TaskRun result ($(wc -c <<<"${CONFIG_JSON}" | tr -d ' ') bytes): slack=$(jq -r '.notifications.slack.enabled // false' <<<"${CONFIG_JSON}") backstage=$(jq -r '.notifications.backstage.enabled // false' <<<"${CONFIG_JSON}")"
           else
             echo "no usable config-json result on ${CONFIG_JSON_FROM_TASK}'s TaskRun (it failed or never ran) - notifications fall back to the config-json param" >&2
           fi
+        elif [[ "${CONFIG_JSON}" != "{}" ]]; then
+          echo "config-json from Pipeline param ($(wc -c <<<"${CONFIG_JSON}" | tr -d ' ') bytes)"
         fi
         [[ -z "${CONFIG_JSON}" ]] && CONFIG_JSON='{}'
 
@@ -216,6 +225,7 @@ spec:
           'walk(if type == "string" then gsub("\\$\\{IMAGE_REF\\}"; $img) else . end)' \
           <<<"${CONTENT_TEMPLATE}" 2>/dev/null || echo "${CONTENT_TEMPLATE}")"
 
+        echo "domain event content: ${CONTENT}"
         printf '%s' "${IMAGE_REF}" > "$(step.results.image-ref.path)"
         printf '%s' "${CONFIG_JSON}" | base64 -w0 > "$(step.results.config-json-b64.path)"
         printf '%s' "${CONTENT}" | base64 -w0 > "$(step.results.subject-content-json-b64.path)"
@@ -383,4 +393,4 @@ spec:
           echo "stage-debrief: ${#failed[@]} step(s) failed: ${failed[*]} - failing this TaskRun so the PipelineRun reports it, same as when each was its own finally task" >&2
           exit 1
         fi
-        echo "stage-debrief: all steps succeeded"
+        echo "stage-debrief: all 7 steps succeeded (stage span, flow span, Slack, Backstage, domain event, pipelinerun.finished)"

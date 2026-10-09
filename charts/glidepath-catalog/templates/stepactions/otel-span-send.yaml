@@ -73,4 +73,6 @@ spec:
       exit 0
     fi
     source "${PLATFORM_LIB}/otel.sh"
-    otel_span_send "$1" "$2" "$3" "$4" "$(otel_now)" "$5" "$6"
+    end_time="$(otel_now)"
+    otel_span_send "$1" "$2" "$3" "$4" "${end_time}" "$5" "$6"
+    echo "span sent: '$1' status=$5 start=$4 end=${end_time} trace=$(otel_traceparent_trace_id "$2")${3:+ span=$3}${6:+ attrs=$6}"

@@ -219,12 +219,18 @@ spec:
         # A pure function of chain-id - always the same word pair a downstream
         # CDEvent-triggered stage's own PipelineRun name derives for this chain.
         printf '%s' "$(chain_id_to_slug "${chain_id}")" > "$(results.chain-slug.path)"
+        if [[ -n "${INCOMING_CHAIN_ID}" ]]; then
+          echo "flow continued: chain ${chain_id} ($(cat "$(results.chain-slug.path)")), trace $(otel_traceparent_trace_id "$(cat "$(results.traceparent.path)")"), started $(cat "$(results.start-time.path)")"
+        else
+          echo "flow started: chain ${chain_id} ($(cat "$(results.chain-slug.path)")), trace $(otel_traceparent_trace_id "$(cat "$(results.traceparent.path)")")"
+        fi
 
         # This stage's own span: fail fast here if the traceparent is malformed rather
         # than only at send time in stage-debrief, much later.
         read -r span_id stage_start_time <<< "$(otel_stage_span_begin "$(cat "$(results.traceparent.path)")")"
         printf '%s' "${span_id}" > "$(results.span-id.path)"
         printf '%s' "${stage_start_time}" > "$(results.stage-start-time.path)"
+        echo "stage span started: ${STAGE_NAME} (span ${span_id}) at ${stage_start_time}"
 
         ### 2. pipelinerun.started - was a send-cdevent TaskRun. Same lib call the
         ### cdevent-send StepAction makes; cdevents.sh reads the PLATFORM_* values from
@@ -238,8 +244,8 @@ spec:
         export PLATFORM_FLOW_START_TIME="$(cat "$(results.start-time.path)")"
         source "${PLATFORM_LIB}/cdevents.sh"
         _BROKER_TOKEN_PATH=/var/run/secrets/platform-broker/broker-token
-        cdevent_send "dev.cdevents.pipelinerun.started.0.3.0" "pipelineRun" "${TEKTON_PIPELINE_RUN}" "{\"pipelineName\": \"${STAGE_NAME}\"}"
-        echo
+        broker_ack="$(cdevent_send "dev.cdevents.pipelinerun.started.0.3.0" "pipelineRun" "${TEKTON_PIPELINE_RUN}" "{\"pipelineName\": \"${STAGE_NAME}\"}")"
+        echo "CDEvent sent: dev.cdevents.pipelinerun.started for ${TEKTON_PIPELINE_RUN} - broker ack $(jq -r '.eventID // "ok"' <<<"${broker_ack}" 2>/dev/null || echo ok)"
 
         ### 3. Clone - was clone-repo-authenticated.yaml. Only when the `source`
         ### workspace is bound (build/test always; a git-rooted deploy/release). A fresh,
@@ -262,9 +268,9 @@ spec:
         git fetch --quiet --depth=1 origin "${GIT_REVISION}"
         git checkout --quiet FETCH_HEAD
 
-        echo -n "${GIT_URL}" | tee "$(results.url.path)"
-        git rev-parse FETCH_HEAD | tr -d '\n' | tee "$(results.commit.path)"
-          echo
+        echo -n "${GIT_URL}" > "$(results.url.path)"
+        git rev-parse FETCH_HEAD | tr -d \'\n\' > "$(results.commit.path)"
+        echo "clone successful: ${GIT_URL} @ $(git rev-parse --short=12 FETCH_HEAD) (requested ${GIT_REVISION}, depth 1, $(git ls-files | wc -l | tr -d ' ') files)"
         else
           echo "no source workspace bound (event-chained ${STAGE_NAME}) - nothing to clone"
           printf '' > "$(results.url.path)"
@@ -346,7 +352,7 @@ spec:
         JQ_NORMALIZE
           jq --argjson orig "$(cat /tmp/cicd.json)" -f /tmp/normalize-envs.jq /tmp/cicd-defaulted.json > /tmp/cicd-normalized.json
           mv /tmp/cicd-normalized.json /tmp/cicd-defaulted.json
-          echo "cicd.yaml is valid."
+          CONFIG_SOURCE="cicd.yaml from the checkout (schema ok, defaults applied)"
         else
           # Event-chained: the upstream stage already validated and defaulted this.
           printf '%s' "${INCOMING_CONFIG_JSON}" > /tmp/cicd-defaulted.json
@@ -354,7 +360,7 @@ spec:
             echo "warning: inherited config-json is not a JSON object - using {} (notifications and target resolution will see an empty config)" >&2
             printf '{}' > /tmp/cicd-defaulted.json
           fi
-          echo "no source workspace bound - passing the inherited config-json through ($(wc -c < /tmp/cicd-defaulted.json) bytes)"
+          CONFIG_SOURCE="inherited config-json from the upstream stage's CDEvent (not re-validated)"
         fi
 
         # Compact, not pretty-printed: see this file's header on the kubelet's per-container
@@ -386,3 +392,9 @@ spec:
           fi
         fi
         echo -n "${AGENT_IMAGE}" | tee "$(results.agent-image.path)" > /dev/null
+
+        echo "config resolved: ${CONFIG_SOURCE}, $(wc -c < "$(results.config-json.path)" | tr -d ' ') bytes compact"
+        echo "  build.agent=${AGENT:-<none>} -> ${AGENT_IMAGE:-<none>}  build.script=$(cat "$(results.has-build-script.path)")  platforms=$(jq -c '.build.platforms // "default"' /tmp/cicd-defaulted.json)"
+        echo "  governance: sast=$(cat "$(results.sast.path)") imageScan=$(cat "$(results.image-scan.path)") policyCheck=$(cat "$(results.policy-check.path)") sbom=$(cat "$(results.sbom.path)")  artifacts: python-wheel=$(cat "$(results.artifacts-python-wheel.path)") go-binary=$(cat "$(results.artifacts-go-binary.path)")"
+        echo "  deploy.target=$(jq -r '.deploy.target // "k8s-rollout"' /tmp/cicd-defaulted.json)  environments=$(jq -c '[.deploy.environments[]? | .name]' /tmp/cicd-defaulted.json)"
+        echo "preflight complete for ${STAGE_NAME}: $(ls /tekton/results | wc -l | tr -d ' ') results written"
