@@ -216,7 +216,10 @@ idpServiceCatalog:
   # 2026-10-09: v0.3.118 -> v0.3.135 (airframe review C12: one Airframe version on every pin). The chart's templates are
   # byte-identical between the two; values.schema.json only gained descriptions and x-hangar-owner/x-hangar-risk
   # annotations (A7), which do not change validation. Same version as each cluster's cluster-defaults.yaml.
-  chartVersion: v0.3.135
+  # 2026-10-10: v0.3.135 -> v0.3.139, airframe#82 (rollout.rollbackWindow {revisions: 3}: fast-track rollback, ADR-0021
+  # phase 4). Rendering all 9 live kind-prod Flight envs on both versions: 8 Rollouts gain only spec.rollbackWindow,
+  # skyport-broker (no Rollout) is byte-identical. Same version as each cluster's cluster-defaults.yaml.
+  chartVersion: v0.3.139
 
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
