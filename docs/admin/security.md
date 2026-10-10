@@ -65,6 +65,46 @@ a pull request against a `gitops-<app>` repo. Human review plus branch protectio
 ArgoCD's own sync are the only path from "PR opened" to "cluster changed." See
 [release.md](release.md) and [ADR-0004](adr/0004-gitops-only-release.md).
 
+### What changes on a rollback, and what does not
+
+A rollback is an ordinary release of an earlier image (ADR-0021 phase 4,
+[release-state.md](release-state.md)). The gates recompute its eligibility themselves (the image is one of the
+environment's last five releases that reached healthy) rather than trusting the PR. On an eligible rollback the
+*content* gates (`sast`, `imageScan`, `sbom`) run as advisory: they report but do not block, because that image
+already ran there. The *integrity* gates (provenance, commit and image signatures) still block.
+
+### No workload, no release
+
+An environment whose human values say it runs no service (`rollout.enabled: false`, or the older `rollout: null`)
+is refused by `open-release-pr` (Flight) and `deploy-manifests` (Ground) before any PR or commit. The files are
+layered the way Argo CD layers them. The airframe chart's release-tracking guard also fails the render if a release
+is tracked where no workload runs. See [release.md](release.md#an-environment-that-runs-no-workload-is-refused-2026-10-10).
+
+### Environment Applications converge on git, including deletions
+
+Every environment Application (Ground `lower-envs`, Flight `tenant-onboarding`) syncs automatically with self-heal
+**and prune**, so a resource the chart stops rendering is deleted. Argo CD's default `allowEmpty: false` refuses a
+sync that would delete everything, and a chart render failure stops the sync before any prune. The ApplicationSets
+set `preserveResourcesOnDeletion`, so replacing a generator never deletes a running environment.
+
+## Portal actions (Tower): owner-scoped, delegated, audited
+
+Tower (the Backstage portal) can open the same PRs a release does, and run a few Argo CD operations. None of it is a
+second path around the gates above:
+
+- **Every write needs the app's owning team**, checked by Backstage's permission framework on the app's catalog
+  entity. Operations that change a Flight environment's running state outside a reviewed PR (Argo CD sync and force
+  sync) need an admin. Whether an environment is Ground or Flight is read from `cicd.yaml` on the server.
+- **No Kubernetes write permissions.** Sync, force sync, terminate and Argo Rollouts actions (abort, pause, resume,
+  retry, restart, promote) run through Argo CD as one `backstage` account. Its write roles cover app projects
+  only, enforced by deny rules for the platform projects. Argo CD checks the resource belongs to the Application.
+- **Skipping canary analysis on Flight** (promote, promote full) is allowed to owners but audited `critical` and
+  announced to everyone, like any break-glass bypass.
+- **Every write is audited** (`tower-write` events), refusals included.
+- **No pod exec.** A time-boxed, two-person, recorded break-glass design is proposed, not built.
+
+The full table of who may do what is in Tower's [security model](https://github.com/jfillman/tower/blob/main/docs/security.md).
+
 ## Secrets
 
 Application secrets flow through a `ClusterSecretStore`/`ExternalSecret` model, never
@@ -98,6 +138,10 @@ platform runs on. See [rootless-builds.md](rootless-builds.md).
   [chaining.md](chaining.md)); TokenReview-verified identity, not transport
   encryption, was always the actual trust boundary for this never-leaves-the-cluster
   call.
+- **Branch protection depends on the GitHub plan.** On this lab's private gitops repositories (free plan) branch
+  protection is not available (checked 2026-10-10: the API answers "Upgrade to GitHub Pro"), so a release PR can be
+  merged with failing checks by anyone with write access. Such a merge is a break-glass bypass: the PR keeps its
+  failed checks visible. "Human review plus branch protection" above holds only where the plan provides it.
 - **Governance gates that haven't landed yet** are visible as structurally-marked
   stubs, not hidden - see [governance-stubs.md](governance-stubs.md) for current
   status of each.
