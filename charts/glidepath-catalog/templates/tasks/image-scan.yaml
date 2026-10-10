@@ -172,7 +172,7 @@ spec:
         fi
 
         # The human-readable report this log always showed, rendered from the same JSON (no second analysis).
-        trivy convert --skip-version-check --format table --scanners vuln --severity HIGH,CRITICAL /tmp/scan-results.json 2>&1 | grep -v 'No enabled scanners found'
+        trivy convert --format table --scanners vuln --severity HIGH,CRITICAL /tmp/scan-results.json 2>&1 | grep -v 'No enabled scanners found'
 
         # Real findings, not just Trivy's "Total: N" summary count - a real gap the user
         # caught live: the first version of this Task's Slack message only ever showed a
