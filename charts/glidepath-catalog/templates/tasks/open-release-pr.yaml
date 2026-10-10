@@ -295,6 +295,17 @@ spec:
 
         git checkout -b "${branch}"
 
+        # Refuse a release to an environment that runs no workload (2026-10-10): its human values say
+        # rollout.enabled: false (or the older rollout: null), layered base.yaml then values.yaml the way
+        # Argo CD layers them. A release there would render nothing and the chart's release-tracking guard
+        # would fail the sync, so say it here, before a PR exists.
+        human_files=()
+        for f in "${CLUSTER}/base.yaml" "${CLUSTER}/${ENV}/values.yaml"; do [[ -f "${f}" ]] && human_files+=("${f}"); done
+        if (( ${#human_files[@]} > 0 )) && [[ "$(yq eval-all '. as $i ireduce ({}; . * $i) | (has("rollout") and (.rollout == null or .rollout.enabled == false))' "${human_files[@]}")" == "true" ]]; then
+          echo "error: ${ENV} on ${CLUSTER} runs no workload (rollout.enabled: false, or rollout: null, in ${human_files[*]}), so there is nothing to release an image to. Turn the Deployment switch on in Tower's App Configuration (rollout.enabled: true), then release again." >&2
+          exit 1
+        fi
+
         # <cluster>/<env>/values.yaml - airframe-application's Helm values (scaffolded by
         # airframe), not a raw Deployment manifest. repository/tag are split
         # fields in that schema, not a single image: string - same split

@@ -253,6 +253,16 @@ the governance checks are real (Phase 3) and trusted, drop
 repo directly. Nothing in the platform needs to change for this; the PR flow becomes
 fully automatic (checks-gated only) the moment that setting changes.
 
+## An environment that runs no workload is refused (2026-10-10)
+
+`rollout.enabled: false` (or the older `rollout: null`) in an environment's human values says it runs no
+service: only Jobs, CronJobs and components. `open-release-pr` (Flight: `<cluster>/base.yaml` then
+`<cluster>/<env>/values.yaml`) and `deploy-manifests` (Ground: `glidepath/base.yaml` then
+`glidepath/envs/<env>.yaml`) layer those files the way Argo CD does and stop with an error naming the files,
+before any PR or commit, rather than release an image that would render nothing (the chart's release-tracking
+guard would fail the sync). Turn the Deployment switch on in Tower's App Configuration to release there.
+`charts/glidepath-catalog/tests/workload_check_test.sh` covers the layering cases.
+
 ## Governance checks, re-triggering, and break-glass
 
 Every gitops-repo release PR carries one required GitHub Check per gate in
