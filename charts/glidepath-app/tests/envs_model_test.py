@@ -297,6 +297,11 @@ class LowerEnvsChart(unittest.TestCase):
         self.assertNotIn("templatePatch", a["spec"])
         self.assertTrue(a["spec"]["syncPolicy"]["preserveResourcesOnDeletion"])
 
+    def test_environments_prune_what_the_chart_stops_rendering(self):
+        # 2026-10-10: without prune, a workload turned off (rollout.enabled: false) left its Rollout running.
+        a = lower_envs(cicd(BUILD_DEPLOY, {"environments": [{"name": "dev", "tier": "ground"}]}))
+        self.assertEqual(a["spec"]["template"]["spec"]["syncPolicy"]["automated"], {"prune": True, "selfHeal": True})
+
     def test_deploy_chart_version_pin_keeps_the_default_source(self):
         a = lower_envs(cicd(BUILD_DEPLOY, {"chart": {"targetRevision": "v9.9.9"}, "environments": [{"name": "dev", "tier": "ground"}]}))
         src = self.chart_of(a)

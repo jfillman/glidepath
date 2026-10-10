@@ -263,6 +263,12 @@ before any PR or commit, rather than release an image that would render nothing 
 guard would fail the sync). Turn the Deployment switch on in Tower's App Configuration to release there.
 `charts/glidepath-catalog/tests/workload_check_test.sh` covers the layering cases.
 
+Turning a workload off removes it: every environment Application (Ground `lower-envs`, Flight `tenant-onboarding`
+on each cluster) syncs with `prune: true` (2026-10-10), so the Rollout, Service, RolloutWatch and ServiceMonitor the
+chart stops rendering are deleted on the next sync. A Flight environment that still has a release (`releaseTracking`
+in its `release.yaml`) does not get that far: the chart's release-tracking guard fails the render, Argo CD shows a
+ComparisonError and keeps what is running until the release is removed or the workload is turned back on.
+
 ## Governance checks, re-triggering, and break-glass
 
 Every gitops-repo release PR carries one required GitHub Check per gate in
