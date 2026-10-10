@@ -120,6 +120,21 @@ spec:
         image_repo="${IMAGE_REF%:*}"
         image_tag="${IMAGE_REF##*:}"
 
+        # ADR-0018: the environments folder is glidepath/ (the lower-envs ApplicationSet reads
+        # only glidepath/envs/).
+        envs_root=glidepath
+
+        # Refuse a deploy to an environment that runs no workload (2026-10-10): its human values say
+        # rollout.enabled: false (or the older rollout: null), layered glidepath/base.yaml then
+        # glidepath/envs/<env>.yaml the way the lower-envs ApplicationSet layers them. The deploy would
+        # render nothing, so say why instead.
+        human_files=()
+        for f in "${envs_root}/base.yaml" "${envs_root}/envs/${ENV}.yaml"; do [[ -f "${f}" ]] && human_files+=("${f}"); done
+        if (( ${#human_files[@]} > 0 )) && [[ "$(yq eval-all '. as $i ireduce ({}; . * $i) | (has("rollout") and (.rollout == null or .rollout.enabled == false))' "${human_files[@]}")" == "true" ]]; then
+          echo "error: ${ENV} runs no workload (rollout.enabled: false, or rollout: null, in ${human_files[*]}), so there is nothing to deploy an image to. Turn the Deployment switch on in Tower's App Configuration (rollout.enabled: true), then deploy again." >&2
+          exit 1
+        fi
+
         # Release-file split (D9/AF-5, ADR-0018): release.image lives in a machine-owned
         # <folder>/envs/<env>.release.yaml beside the human env file, which the lower-envs
         # ApplicationSet layers last. deploy.releaseFile overrides the path; unset means that
@@ -128,10 +143,6 @@ spec:
         if [[ -f cicd.yaml ]]; then
           release_file_template="$(yq -r '.deploy.releaseFile // ""' cicd.yaml)"
         fi
-
-        # ADR-0018: the environments folder is glidepath/ (the lower-envs ApplicationSet reads
-        # only glidepath/envs/).
-        envs_root=glidepath
 
         default_release_file="${envs_root}/envs/${ENV}.release.yaml"
         if [[ -z "${release_file_template}" ]]; then
@@ -154,15 +165,15 @@ spec:
         git add "${manifest}"
 
         # Moving an app onto the split: the env file may still carry the image an earlier deploy
-        # wrote there (release.image, or the deprecated rollout.image) and a bootstrap
-        # "rollout: null" (null means "no workload" to the chart, and the release file sets no
-        # rollout to override it). Drop exactly those, once, in this same commit.
+        # wrote there (release.image, or the deprecated rollout.image). Drop exactly those, once, in
+        # this same commit. A rollout: null is no longer dropped here (2026-10-10): it means "this
+        # environment runs no workload", and the check above already refused the deploy.
         env_file="${envs_root}/envs/${ENV}.yaml"
         # Checked first so yq never rewrites (and re-formats) a human file that has none of them.
-        if [[ -f "${env_file}" && "$(yq '(.release.image != null) or (.rollout.image != null) or (has("rollout") and .rollout == null)' "${env_file}")" == "true" ]]; then
+        if [[ -f "${env_file}" && "$(yq '(.release.image != null) or (.rollout.image != null)' "${env_file}")" == "true" ]]; then
           yq -i '
             del(.release.image) | del(.release | select(length == 0)) |
-            del(.rollout.image) | del(.rollout | select(. == null))
+            del(.rollout.image)
           ' "${env_file}"
           echo "moved the image out of ${env_file} into ${manifest}"
           git add "${env_file}"
