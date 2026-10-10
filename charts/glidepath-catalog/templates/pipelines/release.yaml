@@ -116,6 +116,26 @@ spec:
       description: >-
         Name of a cluster-registry entry (docs/multi-cluster.md), set only when env is
         mapped to a different physical cluster. Empty for the common same-cluster case.
+    # ADR-0021 phase 4: a rollback is a release of an earlier image (rollback-release template).
+    - name: release-kind
+      type: string
+      default: promote
+      description: promote, or rollback (an earlier image back onto env; recorded on the release record and the PR).
+    - name: rollback-of
+      type: string
+      default: ""
+      description: For a rollback, the release-id it replaces (the relay marks that release rolled-back once this one is healthy).
+    - name: rollback-reason
+      type: string
+      default: ""
+      description: For a rollback, why, in the requester's words; on the record and the PR.
+    - name: config-revision
+      type: string
+      default: ""
+      description: >-
+        The app-repo revision to read cicd.yaml at, when it must not be git-revision. A
+        rollback releases an old commit's image but today's cicd.yaml (an old commit can
+        carry keys the platform has since removed). Empty: git-revision.
   workspaces:
     - name: source
       optional: true
@@ -145,6 +165,7 @@ spec:
         - { name: flow-start-time, value: $(params.flow-start-time) }
         - { name: git-url, value: $(params.git-url) }
         - { name: git-revision, value: $(params.git-revision) }
+        - { name: clone-revision, value: $(params.config-revision) }
         - { name: app-name, value: $(params.app-name) }
         - { name: app-namespace, value: $(params.app-namespace) }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
@@ -206,6 +227,9 @@ spec:
         - { name: flow-start-time, value: $(tasks.preflight.results.start-time) }
         - { name: config-json, value: $(tasks.preflight.results.config-json) }
         - { name: initiator, value: $(params.initiator) }
+        - { name: release-kind, value: $(params.release-kind) }
+        - { name: rollback-of, value: $(params.rollback-of) }
+        - { name: rollback-reason, value: $(params.rollback-reason) }
 
     # Hands off to the DORA exporter (glidepath/dora-exporter) - only runs if
     # open-release-pr actually succeeded (standard Tekton DAG failure propagation, no

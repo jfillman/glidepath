@@ -1,10 +1,10 @@
 # ADR-0021: Release events are facts from the Rollout, interpreted on dev
 
-*Status: Proposed (2026-10-05). Nothing here is implemented. The owner accepted the
-rollback gate policy (item 8) and the no-fallback decision for non-Rollout workloads
-(item 9) on 2026-10-05 and approved Phase 0 (spikes). The rest stays Proposed until Phase 0
-settles S2. Supersedes the mechanism in [ADR-0005](0005-multicluster-per-cluster-argocd.md);
-that ADR's trust boundary and its per-cluster ArgoCD decision are kept.*
+*Status: Accepted. Phases 0 to 3c are built and live (2026-10-06): facts from the Rollout,
+the reducer, the hooks removed, the relay renamed `glidepath-relay`. Phase 4 (rollback) is
+designed in [Phase 4: rollback](#phase-4-rollback-design-2026-10-10) below and in progress.
+Supersedes the mechanism in [ADR-0005](0005-multicluster-per-cluster-argocd.md); that ADR's
+trust boundary and its per-cluster ArgoCD decision are kept.*
 
 ## Context
 
@@ -229,9 +229,10 @@ rebuild and `toolboxImage` bump in all three values files.
 
 ## Not decided here
 
-- Whether Tower offers **abort** (instant, in-cluster, does not fight git) as a button
-  next to Rollback, and under what authorisation. Prod write actions are governed by the
-  Tower write-action policy.
+- ~~Whether Tower offers **abort**~~ Decided 2026-10-09: Tower offers every Argo Rollouts
+  action (abort, pause, resume, promote, promote-full, retry, restart) through Argo CD's
+  built-in Rollout actions, owner-only; on Flight, promote and promote-full are audited and
+  announced as a bypass of canary analysis (backstage `towerPermissions.ts`, tower#55).
 - Auto-rollback on an SLO burn. The Rollout already aborts on AnalysisRun failure; whether
   Glidepath should also open the rollback PR automatically is a separate decision.
 - Several Flight environments in sequence, and several clusters per environment: the
@@ -262,3 +263,53 @@ cluster, and most of its lifetime is mutation. Specifically:
 What Results is good for here is the *evidence*: the build, gate and
 `release-outcome-notify` PipelineRuns behind a release. The terminal record should
 store their Results record names so Tower can open the logs after the CRs are pruned.
+
+## Phase 4: rollback (design, 2026-10-10)
+
+Decisions 7 and 8 above, made concrete. A rollback is an ordinary release whose image is an
+earlier one; everything below is what makes it recognisable and what that changes.
+
+1. **Starting one.** Tower's *Roll back* on a Kubernetes Flight environment starts the app's
+   `promote-release` run (the path Promote already takes) with three more params:
+   `release-kind: rollback`, `rollback-of` (the release-id being replaced, normally the
+   environment's current one) and `rollback-reason`. Image and git revision are the target
+   release's. The run is the normal `release` Pipeline: same PR, gates, merge and facts.
+2. **Config comes from main, not the old commit.** A fourth param, `config-revision`, makes
+   the run read `cicd.yaml` at that revision (Tower passes the app repo's `main`) while
+   `git-revision` stays the target's commit, so provenance and commit-signature checks still
+   look at the commit that built the image. Found live 2026-10-10: a release at an old
+   sky-marshall commit was rejected by preflight because that commit's `cicd.yaml` still used
+   the pre-ADR-0019 keys.
+3. **The record and the PR say what it is.** `open-release-pr` writes `kind=rollback`,
+   `rollbackOf` and `rollbackReason` on the release record, and `image` on every record. The
+   commit carries `X-Glidepath-Release-Kind: rollback` and `X-Glidepath-Rollback-Of:`
+   trailers, the branch is `release-rollback-<env>-<sha8>` (it must start `release-`, which is what
+   every gate's PaC trigger matches) and the PR title starts `Rollback:`.
+   None of this is trusted for gate decisions (item 4).
+4. **Eligibility is computed, not claimed.** The promoted image is *eligible* when one of the
+   newest five release records for the same app, environment and cluster reached `healthy`
+   (`healthyAt` set, whatever its state is now) with that image. Every content gate works it
+   out itself from the records (`resolve-rollback-eligibility`), so a PR that says it is a
+   rollback but targets anything else gets the full gate set, and a hand-made PR that pins an
+   eligible image gets the advisory treatment too. The sweeper keeps those five records past
+   the 14-day retention.
+5. **Gates on an eligible target.** Content gates (`sast`, `image-scan`, `sbom`) run, report
+   what they found in the check output and the PR comment, and pass. Integrity gates
+   (`provenance`, `values`, commit signing) block as always; "the image still exists" is part
+   of `provenance`, which fetches the image's signature and attestation from the registry, so
+   no separate gate was added. Process and approval gates are unchanged (`image-promotion` was
+   retired by ADR-0025).
+6. **Reducer.** A release that reaches `healthy` records `healthyAt`. When a rollback release
+   reaches `healthy`, the release named by `rollbackOf` becomes `rolled-back`
+   (`rolledBackBy` = the rollback's release-id) and one `service.rolledback` event is sent, in
+   the current envelope (`dev.cdevents.service.rolledback.0.2.0`; ADR-0022's vocabulary move
+   is separate). A Tower *Retry* of an aborted release sends a Progressing fact with the abort
+   flag clear; the reducer reopens the release to `progressing` instead of ignoring it.
+7. **Downstream.** `service.rolledback` gets its own Trigger and a small pipeline: a Backstage
+   notification and a log line. DORA needs nothing new: the aborted release already sent
+   `deployed-failure`, and the rollback release's own `deployed-success` is the restore
+   dora-exporter pairs with it.
+8. **Unchanged.** A hand `git revert` is still drift, not a rollback (decision 7).
+
+Verifiable by: a live rollback of sky-marshall on staging after an aborted canary, with the
+content gates advisory, the old record `rolled-back`, and one `service.rolledback` event.

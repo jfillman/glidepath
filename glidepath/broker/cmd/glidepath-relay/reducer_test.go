@@ -205,3 +205,75 @@ func TestDegradedAfterHealthyIsReportedOnce(t *testing.T) {
 		t.Errorf("recovery must clear it")
 	}
 }
+
+// Phase 4: Tower's Retry clears the Rollout's abort and the canary runs again under the same
+// release-id. The release reopens instead of ignoring the Progressing fact, sends no second
+// deploying event, and reports success when it gets there.
+func TestRetryOfAnAbortedRelease(t *testing.T) {
+	s := &relState{State: stMerged}
+	got := replay(s, []*fact{
+		mk("Progressing", "h1", false), mk("Degraded", "h1", true),
+		mk("Progressing", "h1", false), // retry
+		mk("Healthy", "h1", false),
+	})
+	want(t, got, []string{kindDeploying}, []string{kindFailure}, none, []string{kindSuccess})
+	if s.State != stHealthy || s.HealthyAt.IsZero() {
+		t.Errorf("state %s healthyAt %v", s.State, s.HealthyAt)
+	}
+}
+
+func TestRetryThatFailsAgainGoesBackToAborted(t *testing.T) {
+	s := &relState{State: stMerged}
+	replay(s, []*fact{mk("Progressing", "h1", false), mk("Degraded", "h1", true), mk("Progressing", "h1", false)})
+	if s.State != stProgressing {
+		t.Fatalf("retry must reopen the release, state %s", s.State)
+	}
+	d := reduce(s, mk("Degraded", "h1", true), t0.Add(time.Minute))
+	if len(d.Emits) != 0 || s.State != stAborted {
+		t.Errorf("second abort: emitted %v, state %s", kinds(d), s.State)
+	}
+}
+
+func TestAbortedRolloutStillAbortedIsNotARetry(t *testing.T) {
+	s := &relState{State: stAborted, Emitted: map[string]bool{kindDeploying: true, kindFailure: true}}
+	f := mk("Progressing", "h1", true)
+	if d := reduce(s, f, t0); s.State != stAborted || d.Ignore == "" {
+		t.Errorf("a Progressing fact that still says abort must not reopen: state %s", s.State)
+	}
+}
+
+func TestHealthyAtOutlivesTheState(t *testing.T) {
+	s := &relState{State: stMerged}
+	replay(s, []*fact{mk("Progressing", "h1", false), mk("Healthy", "h1", false)})
+	at := s.HealthyAt
+	s.State = stSuperseded
+	reduce(s, mk("Healthy", "h1", false), t0.Add(time.Hour))
+	if at.IsZero() || !s.HealthyAt.Equal(at) {
+		t.Errorf("healthyAt %v, then %v", at, s.HealthyAt)
+	}
+}
+
+func TestRollbackReleaseNamesTheReleaseItReplaced(t *testing.T) {
+	s := &relState{State: stMerged, Kind: releaseKindRollback, RollbackOf: "old:kind-prod/staging"}
+	var last decision
+	for i, f := range []*fact{mk("Progressing", "h2", false), mk("Healthy", "h2", false), mk("Healthy", "h2", false)} {
+		d := reduce(s, f, t0.Add(time.Duration(i)*time.Second))
+		if i == 1 {
+			last = d
+		}
+		if i == 2 && (len(d.Emits) != 0 || d.RolledBack != "") {
+			t.Errorf("a repeat Healthy must not roll back twice: %v %q", kinds(d), d.RolledBack)
+		}
+	}
+	if !eq(kinds(last), []string{kindSuccess, kindRolledBack}) || last.RolledBack != "old:kind-prod/staging" {
+		t.Errorf("healthy rollback: emitted %v rolledBack %q", kinds(last), last.RolledBack)
+	}
+}
+
+func TestPromoteReleaseNeverRollsBack(t *testing.T) {
+	s := &relState{State: stMerged, Kind: "promote", RollbackOf: "x:kind-prod/staging"}
+	replay(s, []*fact{mk("Progressing", "h1", false)})
+	if d := reduce(s, mk("Healthy", "h1", false), t0.Add(time.Minute)); d.RolledBack != "" {
+		t.Errorf("only a rollback release marks another rolled-back")
+	}
+}

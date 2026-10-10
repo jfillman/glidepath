@@ -11,6 +11,7 @@ on:
       - "charts/glidepath-catalog/templates/tasks/mark-release-merged.yaml"
       - "charts/glidepath-catalog/templates/tasks/resolve-merged-pr.yaml"
       - "charts/glidepath-catalog/templates/tasks/open-release-pr.yaml"
+      - "charts/glidepath-catalog/templates/tasks/extract-promoted-image.yaml"
       - "charts/glidepath-catalog/tests/*.sh"
       - "charts/glidepath-control-plane/templates/broker/release-record-sweeper-cronjob.yaml"
       - "charts/glidepath-control-plane/tests/*.sh"
@@ -22,6 +23,7 @@ on:
       - "charts/glidepath-catalog/templates/tasks/mark-release-merged.yaml"
       - "charts/glidepath-catalog/templates/tasks/resolve-merged-pr.yaml"
       - "charts/glidepath-catalog/templates/tasks/open-release-pr.yaml"
+      - "charts/glidepath-catalog/templates/tasks/extract-promoted-image.yaml"
       - "charts/glidepath-catalog/tests/*.sh"
       - "charts/glidepath-control-plane/templates/broker/release-record-sweeper-cronjob.yaml"
       - "charts/glidepath-control-plane/tests/*.sh"
@@ -54,3 +56,5 @@ jobs:
         run: charts/glidepath-catalog/tests/resolve_merged_pr_test.sh
       - name: release-record-sweeper
         run: charts/glidepath-control-plane/tests/release_record_sweeper_test.sh
+      - name: rollback-eligibility
+        run: charts/glidepath-catalog/tests/rollback_eligibility_test.sh

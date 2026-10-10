@@ -178,3 +178,53 @@ func TestNewReleaseSupersedesTheOldOne(t *testing.T) {
 		t.Errorf("a newer release must not be superseded by an older one")
 	}
 }
+
+// Phase 4: a rollback release reaching healthy sends service.rolledback and marks the release it
+// replaced rolled-back, but only one of the same app, environment and cluster.
+func TestRollbackMarksTheReplacedRelease(t *testing.T) {
+	h, sent := newTestHandler(t, "emit")
+	cs := h.clientset
+	ns := "app-gate-api-cicd"
+	mk := func(name, app, relID string) {
+		cs.CoreV1().ConfigMaps(ns).Create(context.Background(), &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Data: map[string]string{"state": "aborted", "releaseId": relID, "appNamespace": ns, "appName": app, "env": "staging", "cluster": "kind-prod"}},
+			metav1.CreateOptions{})
+	}
+	mk("release-tracking-bad", "gate-api", "bad:kind-prod/staging")
+	mk("release-tracking-other", "boarding-api", "other:kind-prod/staging")
+	c1, _ := cs.CoreV1().ConfigMaps(ns).Get(context.Background(), "release-tracking-chain1", metav1.GetOptions{})
+	c1.Data["kind"], c1.Data["rollbackOf"], c1.Data["image"] = "rollback", "bad:kind-prod/staging", "ghcr.io/o/gate-api:1.0.0-aaaaaaa"
+	cs.CoreV1().ConfigMaps(ns).Update(context.Background(), c1, metav1.UpdateOptions{})
+
+	post(h, "kind-prod", "Bearer tok", factBody(rel1, "Progressing", 3, "3"))
+	post(h, "kind-prod", "Bearer tok", factBody(rel1, "Healthy", 3, "3"))
+	get := func(n string) map[string]string {
+		cm, _ := cs.CoreV1().ConfigMaps(ns).Get(context.Background(), n, metav1.GetOptions{})
+		return cm.Data
+	}
+	if d := get("release-tracking-bad"); d["state"] != "rolled-back" || d["rolledBackBy"] != rel1 {
+		t.Errorf("the replaced release must be rolled-back by %s: %v", rel1, d)
+	}
+	if d := get("release-tracking-chain1"); d["healthyAt"] == "" || d["state"] != "healthy" {
+		t.Errorf("the rollback release itself: %v", d)
+	}
+	var types []string
+	for _, b := range *sent {
+		if strings.Contains(string(b), "service.rolledback") {
+			types = append(types, "rolledback")
+			if !strings.Contains(string(b), `"rollbackOf":"bad:kind-prod/staging"`) {
+				t.Errorf("rolledback event must name the release it replaced: %s", b)
+			}
+		}
+	}
+	if len(types) != 1 {
+		t.Errorf("want one service.rolledback event, got %d of %d sent", len(types), len(*sent))
+	}
+
+	// A rollback record naming another app's release must not touch it.
+	c1, _ = cs.CoreV1().ConfigMaps(ns).Get(context.Background(), "release-tracking-chain1", metav1.GetOptions{})
+	h.markRolledBack(context.Background(), c1, "other:kind-prod/staging", rel1)
+	if get("release-tracking-other")["state"] != "aborted" {
+		t.Errorf("another app's release was marked")
+	}
+}

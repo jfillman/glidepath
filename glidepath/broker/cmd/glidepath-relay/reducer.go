@@ -17,7 +17,13 @@ package main
 //   - a CDEvent is emitted at most once per (release, kind) as recorded in state, and the id
 //     is deterministic anyway, so a repeat after a failed state write is harmless;
 //   - a Progressing fact after the release is terminal is ignored (phase 1 saw one arrive in
-//     the same second as the Healthy fact).
+//     the same second as the Healthy fact), except an aborted release whose Rollout is no
+//     longer aborted: that is a retry (Tower's Retry, phase 4), so the release reopens.
+//
+// Phase 4 (rollback): a release that reaches healthy records HealthyAt, which the rollback
+// eligibility check reads; when a release of kind rollback reaches healthy, the decision names
+// the release it replaced so the caller marks that one rolled-back, and one service.rolledback
+// event is sent.
 
 import (
 	"fmt"
@@ -37,9 +43,12 @@ const (
 	stClosed      = "closed"
 	stSyncFailed  = "sync-failed"
 
-	kindDeploying = "deploying"
-	kindSuccess   = "deployed-success"
-	kindFailure   = "deployed-failure"
+	kindDeploying  = "deploying"
+	kindSuccess    = "deployed-success"
+	kindFailure    = "deployed-failure"
+	kindRolledBack = "rolledback"
+
+	releaseKindRollback = "rollback"
 )
 
 // relState is what is stored under the release record's keys.
@@ -51,6 +60,12 @@ type relState struct {
 	PodHash       string
 	Drift         string
 	LastError     string
+	// HealthyAt is when the release first reached healthy; it stays set through superseded and
+	// rolled-back, so "this image once ran healthy here" outlives the state.
+	HealthyAt time.Time
+	// Kind and RollbackOf come from the record open-release-pr wrote; the reducer only reads them.
+	Kind       string
+	RollbackOf string
 	// Emitted is the set of CDEvent kinds already sent for this release, per mode, so that
 	// switching shadow -> emit sends the history instead of believing it already did.
 	Emitted map[string]bool
@@ -64,12 +79,18 @@ type decision struct {
 	Emits  []emission
 	Drift  string // non-empty: out-of-band change, alert it
 	Ignore string // non-empty: why this fact changed nothing
+	// RolledBack, when set, is the release-id this (rollback) release replaced: the caller marks
+	// that release rolled-back.
+	RolledBack string
 }
 
 var (
 	emDeploying = emission{kindDeploying, eventDeploying, "Syncing", "in_progress", "Syncing"}
 	emSuccess   = emission{kindSuccess, eventDeployed, "Succeeded", "success", "Succeeded"}
 	emFailure   = emission{kindFailure, eventDeployed, "Failed", "failure", "Failed"}
+	// The rollback release reports its own deployed-success like any release; this one is about
+	// the release it replaced.
+	emRolledBack = emission{kindRolledBack, eventRolledBack, "RolledBack", "rolled_back", "RolledBack"}
 )
 
 func terminal(state string) bool {
@@ -133,6 +154,13 @@ func reduce(s *relState, f *fact, now time.Time) decision {
 
 	switch f.Status.Phase {
 	case "Progressing", "Paused":
+		if s.State == stAborted && !f.Status.Abort {
+			// Retry: the Rollout was told to start the aborted canary again. Same release, same
+			// release-id, so no second deploying event; a later Healthy reports success.
+			setState(stProgressing)
+			d.Ignore = "retry of an aborted release"
+			return d
+		}
 		if terminal(s.State) {
 			d.Ignore = fmt.Sprintf("%s fact after the release is %s", strings.ToLower(f.Status.Phase), s.State)
 			return d
@@ -149,14 +177,29 @@ func reduce(s *relState, f *fact, now time.Time) decision {
 			return d
 		}
 		setState(stHealthy)
+		if s.HealthyAt.IsZero() {
+			s.HealthyAt = now
+		}
 		emit(emDeploying)
 		emit(emSuccess)
+		if s.Kind == releaseKindRollback && s.RollbackOf != "" {
+			emit(emRolledBack)
+			d.RolledBack = s.RollbackOf
+		}
 	case "Degraded":
 		if s.State == stSuperseded || s.State == stRolledBack || s.State == stClosed {
 			d.Ignore = "release already " + s.State
 			return d
 		}
 		if s.Emitted[kindFailure] {
+			// A retried release failing again: back to its failed state, nothing new to send.
+			if !terminal(s.State) {
+				if f.Status.Abort {
+					setState(stAborted)
+				} else {
+					setState(stDegraded)
+				}
+			}
 			d.Ignore = "already reported failed"
 			return d
 		}

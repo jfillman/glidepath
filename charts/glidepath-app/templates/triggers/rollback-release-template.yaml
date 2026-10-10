@@ -1,0 +1,81 @@
+{{- /*
+The PipelineRun Tower's Roll back starts (glidepath ADR-0021 phase 4): the same `release` Pipeline as promote-release,
+for an earlier image, marked as a rollback. Separate from promote-release so a Backstage that does not know these
+params keeps working against that one (Backstage fills every $(tt.params.*) a template names, or refuses).
+
+rollback-of is the release-id being replaced; config-revision is the app-repo revision cicd.yaml is read at (Tower
+passes main), because the image's own commit can carry cicd.yaml keys the platform has since removed. Whether the
+gates treat the PR as a rollback is not decided here: they compute eligibility from the release records.
+*/ -}}
+{{- if eq (include "glidepath-app.isKubernetesTarget" .) "true" }}
+{{- $appNamespace := include "glidepath-app.namespace" . }}
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: rollback-release
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "triggers"
+    hangar.io/stage: release
+    hangar.io/purpose: rollback
+spec:
+  params:
+    - name: pipeline-run-name
+    - name: env
+    - name: cluster
+    - name: git-url
+    - name: git-revision
+    - name: image-ref
+    - name: initiator
+    - name: rollback-of
+    - name: rollback-reason
+    - name: config-revision
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        name: $(tt.params.pipeline-run-name)
+        labels:
+          hangar.io/app: {{ .Values.platformIdentity.appName }}
+          hangar.io/flow: rollback
+          hangar.io/stage: release
+        annotations:
+          hangar.io/initiator: $(tt.params.initiator)
+      spec:
+        pipelineRef:
+          resolver: cluster
+          params:
+            - { name: kind, value: pipeline }
+            - { name: name, value: release }
+            - { name: namespace, value: {{ .Values.platformIdentity.catalogNamespace }} }
+        params:
+          - { name: is-flow-root, value: "true" }
+          - { name: is-flow-terminal, value: "true" }
+          - { name: app-namespace, value: {{ $appNamespace }} }
+          - { name: app-name, value: {{ .Values.platformIdentity.appName }} }
+          - { name: app-type, value: {{ .Values.platformIdentity.type }} }
+          - { name: env, value: $(tt.params.env) }
+          - { name: cluster, value: $(tt.params.cluster) }
+          - { name: git-url, value: $(tt.params.git-url) }
+          - { name: git-revision, value: $(tt.params.git-revision) }
+          - { name: image-ref, value: $(tt.params.image-ref) }
+          - { name: initiator, value: $(tt.params.initiator) }
+          - { name: release-kind, value: rollback }
+          - { name: rollback-of, value: $(tt.params.rollback-of) }
+          - { name: rollback-reason, value: $(tt.params.rollback-reason) }
+          - { name: config-revision, value: $(tt.params.config-revision) }
+        workspaces:
+          - name: source
+            emptyDir: {}
+        taskRunTemplate:
+          serviceAccountName: pipeline-runner
+          {{- /* Run-wide podTemplate, same shape and reasoning as flow-triggers.yaml. */ -}}
+          {{- if .Values.backstageHostAliasIP }}
+          podTemplate:
+            hostAliases:
+              - ip: {{ .Values.backstageHostAliasIP }}
+                hostnames:
+                  - backstage.prod.kiac.local
+          {{- end }}
+{{- end }}

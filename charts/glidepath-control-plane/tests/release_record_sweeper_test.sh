@@ -83,4 +83,19 @@ refute "a merged record is never swept while it may still be live" "DELETE" "$ou
 out="$(run "$(rec x merged "$(ago 2 hours)" "$(ago 2 hours)" "" "$(ago 2 hours)" "")" 1)"
 refute "no list permission is skipped, not fatal" "EVENT" "$out"
 
+# ADR-0021 phase 4: the newest five records that reached healthy per app/env/cluster are the
+# rollback-eligibility window and outlive retention; a sixth, older one does not.
+healthy_rec() { # name healthyAt app
+  jq -n --arg n "$1" --arg h "$2" --arg app "${3:-x}" --arg old "$(ago 30 days)" \
+    '{metadata:{name:$n,creationTimestamp:$old,labels:{"hangar.io/app":$app,"hangar.io/env":"staging","hangar.io/cluster":"kind-prod"}},
+      data:{state:"superseded",stateAt:$old,healthyAt:$h}}'
+}
+window=""
+for i in 1 2 3 4 5 6; do window="${window}${window:+,}$(healthy_rec "h${i}" "$(ago $(( 20 + i )) days)")"; done
+window="${window},$(healthy_rec other-app "$(ago 40 days)" y)"
+out="$(run "${window}")"
+for i in 1 2 3 4 5; do refute "healthy record h${i} is in the five-record window and is kept" "DELETE h${i}\$" "$out"; done
+expect "the sixth-newest healthy record is past retention and deleted" "DELETE h6" "$out"
+refute "another app's only healthy record is its own window, kept" "DELETE other-app" "$out"
+
 [ $fail -eq 0 ] && echo ok || exit 1

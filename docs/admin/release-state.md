@@ -25,7 +25,9 @@ One ConfigMap per release, `release-tracking-<chain-id>`, in the Application's o
 | Key | Written by | Meaning |
 |---|---|---|
 | `prUrl`, `prCreatedAt` | `open-release-pr` | The gitops release PR and when it opened. |
-| `releaseId`, `kind` | `open-release-pr` | The release's identity; `promote` today, `rollback` in phase 4. |
+| `releaseId`, `kind` | `open-release-pr` | The release's identity; `promote`, or `rollback` (ADR-0021 phase 4). |
+| `image` | `open-release-pr` | The image the release deploys. Rollback eligibility matches on it; records written before phase 4 have none and never qualify. |
+| `rollbackOf`, `rollbackReason` | `open-release-pr` | A rollback only: the release-id it replaces, and why. |
 | `appNamespace`, `appName`, `env`, `cluster` | `open-release-pr` | What was released and where. |
 | `gitUrl`, `gitRevision`, `flowStartTime`, `configJson` | `open-release-pr` | The context the outcome events and the lead-time anchor need. |
 | `state`, `stateAt` | `open-release-pr` (`proposed`), `mark-release-merged` (`merged`, `closed`), the relay (everything after) | Where the release is, and since when. |
@@ -36,6 +38,8 @@ One ConfigMap per release, `release-tracking-<chain-id>`, in the Application's o
 | `lastError` | relay | The last Argo CD sync error for this release. |
 | `emittedLive`, `emittedShadow` | relay | The CDEvent kinds already sent, per mode (below). |
 | `supersededBy` | relay | The release that replaced this one. |
+| `healthyAt` | relay | When the release first reached `healthy`. Kept through `superseded` and `rolled-back`: "this image ran healthy here" is what rollback eligibility reads. |
+| `rolledBackBy` | relay | The rollback release that replaced this one. |
 | label `hangar.io/stall-alerted` | sweeper | The state a `ReleaseStalled` Event was already raised for. |
 
 The record is **not deleted when its outcome is read** (it used to be). The state machine needs
@@ -55,8 +59,9 @@ it afterwards, and the sweeper removes it past its retention.
 | `progressing` → `healthy` | The Rollout reports `Healthy` | relay |
 | `progressing` → `aborted` / `degraded` | The Rollout reports `Degraded` (`aborted` if the abort flag is set) | relay |
 | `aborted` / `degraded` → `healthy` | The Rollout recovers | relay |
+| `aborted` → `progressing` | Tower's *Retry*: a `Progressing` fact with the abort flag clear (no second `deploying` event; a later `Healthy` reports success, another abort goes back to `aborted`) | relay |
 | `healthy` → `superseded` | A newer release of the same app, environment and cluster reports its first fact | relay |
-| `healthy` → `rolled-back` | A rollback release turns healthy (phase 4, not built) | relay |
+| any ran state → `rolled-back` | A rollback release naming this one in `rollbackOf` turns healthy; one `service.rolledback` event is sent. Only a release of the same app, environment and cluster can be marked. | relay |
 
 Tower's Promote to a Flight environment runs the same `release` Pipeline, from the
 `promote-release` TriggerTemplate glidepath-app renders into each Kubernetes app's `-cicd`
@@ -137,9 +142,28 @@ Tenant Applications retry (limit 5, backoff up to 10 minutes), about 15 minutes 
   (the sync never started, or facts are not arriving), or `progressing` with no fact for 45
   minutes (the heartbeat arrives every 15), once per state;
 - deletes records past 14 days: terminal and closed records by `stateAt`, proposed and
-  state-less legacy records by creation time. A `merged` or `progressing` record is never swept.
+  state-less legacy records by creation time. A `merged` or `progressing` record is never swept,
+  and neither are the newest five records per app, environment and cluster that reached
+  `healthy` (the rollback-eligibility window, below).
 
-Both knobs are env vars on the CronJob (`RELEASE_STALL_MINUTES`, `RECORD_TTL_DAYS`).
+The knobs are env vars on the CronJob (`RELEASE_STALL_MINUTES`, `RECORD_TTL_DAYS`, `KEEP_HEALTHY`).
+
+## Rollback (ADR-0021 phase 4)
+
+A rollback is a release of an earlier image: Tower's *Roll back* starts the app's
+`rollback-release` TriggerTemplate (glidepath-app), the same `release` Pipeline as Promote with
+`release-kind: rollback`, `rollback-of` and `rollback-reason`, and `config-revision` so
+`cicd.yaml` is read at the app repo's `main` while provenance still checks the image's own
+commit. `open-release-pr` records the kind, opens branch `release-rollback-<env>-<sha8>` and titles
+the PR `Rollback:`.
+
+The content gates (`sast`, `image-scan`, `sbom`) work out for themselves whether the promoted
+image is an *eligible* rollback target: `extract-promoted-image`'s `rollback-eligibility` step
+reads this app/environment/cluster's records and answers yes when one of the newest five that
+reached `healthy` ran the same image. Then the gate runs its check as `<task>-advisory` with
+`onError: continue`: the check run passes and the PR comment shows what it found. Integrity
+gates (provenance, values, commit signing) and approvals are unchanged. The PR's own text and
+trailers are never trusted for this.
 
 ## Permissions
 
@@ -179,15 +203,17 @@ kubectl -n platform-system logs -l app=glidepath-relay --prefix | grep shadow-ev
 - `glidepath/broker`: `go test ./cmd/glidepath-relay`. The reducer's rows above, state
   persistence, a failed forward, a write conflict, an unwritable record, drift, supersede,
   shadow-then-emit, and the Argo CD endpoint.
-- `charts/glidepath-catalog/tests/mark_release_merged_test.sh` and
+- `charts/glidepath-catalog/tests/mark_release_merged_test.sh`,
+  `charts/glidepath-catalog/tests/rollback_eligibility_test.sh` and
   `charts/glidepath-control-plane/tests/release_record_sweeper_test.sh` run the real Task and
   sweeper scripts against a stub `kubectl`.
 
 ## Not built yet
 
-Rollback (a release with `rollbackOf`, `rolled-back`, the `service.rolledback` event, the gate
-policy for it), moving the events onto the spec's
-vocabulary ([ADR-0022](adr/0022-cdevents-conformance-and-vocabulary.md)).
+Moving the events onto the spec's vocabulary
+([ADR-0022](adr/0022-cdevents-conformance-and-vocabulary.md)). Recording on the release that a
+Tower *Promote full* skipped analysis (Backstage audits and announces it; the fact carries no
+such field yet).
 
 ## Known gap: a PR closed without merging
 

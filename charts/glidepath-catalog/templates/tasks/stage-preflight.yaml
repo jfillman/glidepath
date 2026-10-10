@@ -85,6 +85,10 @@ spec:
       type: string
     - name: git-revision
       type: string
+    - name: clone-revision
+      type: string
+      default: ""
+      description: Revision to clone (and read cicd.yaml at) instead of git-revision. Only a rollback sets it (ADR-0021 phase 4); empty means git-revision.
     - name: app-name
       type: string
       description: Repo name is assumed to equal app-name, same convention deploy-manifests.yaml relies on.
@@ -175,6 +179,8 @@ spec:
           value: $(params.git-url)
         - name: GIT_REVISION
           value: $(params.git-revision)
+        - name: CLONE_REVISION
+          value: $(params.clone-revision)
         - name: APP_NAME
           value: $(params.app-name)
         # cdevents.sh's own contract (it hard-requires these three to source).
@@ -265,12 +271,13 @@ spec:
         git config --global --add safe.directory "$(workspaces.source.path)"
         git init --quiet
         git remote add origin "${clone_url}"
-        git fetch --quiet --depth=1 origin "${GIT_REVISION}"
+        clone_revision="${CLONE_REVISION:-${GIT_REVISION}}"
+        git fetch --quiet --depth=1 origin "${clone_revision}"
         git checkout --quiet FETCH_HEAD
 
         echo -n "${GIT_URL}" > "$(results.url.path)"
         git rev-parse FETCH_HEAD | tr -d \'\n\' > "$(results.commit.path)"
-        echo "clone successful: ${GIT_URL} @ $(git rev-parse --short=12 FETCH_HEAD) (requested ${GIT_REVISION}, depth 1, $(git ls-files | wc -l | tr -d ' ') files)"
+        echo "clone successful: ${GIT_URL} @ $(git rev-parse --short=12 FETCH_HEAD) (requested ${clone_revision}, depth 1, $(git ls-files | wc -l | tr -d ' ') files)"
         else
           echo "no source workspace bound (event-chained ${STAGE_NAME}) - nothing to clone"
           printf '' > "$(results.url.path)"

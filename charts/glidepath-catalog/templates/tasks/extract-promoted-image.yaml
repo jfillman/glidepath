@@ -32,6 +32,16 @@ spec:
     - name: manifest-path
       description: Repo-relative path of the manifest the image was read from.
       value: $(steps.resolve.results.manifest-path)
+    - name: rollback-eligible
+      description: >-
+        "true" when the promoted image is an eligible rollback target (ADR-0021 decision 8,
+        phase 4): one of the newest five release records for this app, environment and cluster
+        that reached healthy ran this exact image. The content gates then report without
+        blocking. "false" otherwise, including any doubt.
+      value: $(steps.rollback-eligibility.results.eligible)
+    - name: rollback-note
+      description: One line on why the image is or is not an eligible rollback target, for the PR comment.
+      value: $(steps.rollback-eligibility.results.note)
   volumes:
     - name: github-token-broker-token
       projected:
@@ -54,3 +64,56 @@ spec:
         - { name: revision, value: $(params.revision) }
         - { name: pr-number, value: $(params.pr-number) }
         - { name: token-volume, value: github-token-broker-token }
+    # ADR-0021 phase 4: is this image an eligible rollback target? Computed from the release
+    # records on this cluster (release-tracking-<chain-id> ConfigMaps in this namespace, which
+    # open-release-pr writes and glidepath-relay keeps the state of), never from the PR's own
+    # text: a PR that calls itself a rollback but targets anything else gets the full gate set,
+    # and a hand-made PR pinning an image that ran healthy here gets the advisory treatment too.
+    # Records written before phase 4 carry no image and so never qualify. Any failure to read
+    # the records is "not eligible": the gates then block, as they would without this step.
+    - name: rollback-eligibility
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      results:
+        - name: eligible
+        - name: note
+      env:
+        - name: IMAGE_REF
+          value: $(steps.resolve.results.image-ref)
+        - name: MANIFEST
+          value: $(steps.resolve.results.manifest-path)
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: NAMESPACE
+          value: $(context.taskRun.namespace)
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        answer() {
+          printf '%s' "$1" > "$(step.results.eligible.path)"
+          printf '%s' "$2" > "$(step.results.note.path)"
+          echo "rollback eligibility: $1 - $2"
+          exit 0
+        }
+        # <cluster>/<env>/release.yaml or values.yaml; a cloud release pin has its own rollback path.
+        if ! [[ "${MANIFEST}" =~ ^([^/]+)/([^/]+)/(release|values)\.yaml$ ]]; then
+          answer false "not a Kubernetes environment's release file (${MANIFEST})"
+        fi
+        cluster="${BASH_REMATCH[1]}"
+        env="${BASH_REMATCH[2]}"
+        repo="$(sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#' <<<"${REPO_URL}")"
+        app="${repo#gitops-}"
+        if [[ "${app}" == "${repo}" ]]; then
+          answer false "${repo} is not a gitops-<app> repo"
+        fi
+        if ! records="$(kubectl get configmap -n "${NAMESPACE}" -o json \
+            -l "hangar.io/subcomponent=release-tracking,hangar.io/app=${app},hangar.io/env=${env},hangar.io/cluster=${cluster}" 2>&1)"; then
+          answer false "could not read the release records: ${records}"
+        fi
+        match="$(jq -r --arg image "${IMAGE_REF}" '
+          [.items[] | select((.data.healthyAt // "") != "")] | sort_by(.data.healthyAt) | reverse | .[0:5]
+          | map(select(.data.image == $image)) | .[0] | if . == null then "" else "\(.data.releaseId) (healthy \(.data.healthyAt))" end' <<<"${records}")"
+        if [[ -n "${match}" ]]; then
+          answer true "${IMAGE_REF} ran healthy on ${cluster}/${env} as release ${match}, one of its last five healthy releases"
+        fi
+        answer false "${IMAGE_REF} is not among the images of the last five healthy releases on ${cluster}/${env}"
