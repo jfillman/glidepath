@@ -134,12 +134,28 @@ spec:
           # posts the same "passed" wording as a genuine result, which
           # reads as the gate having actually verified something it never checked.
           outcome="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "outcome")][0].value // empty')"
-          if [[ "${outcome}" == "stub" ]]; then
+          # ADR-0021 phase 4: on an eligible rollback the content gates run their check as
+          # <task>-advisory with onError: continue, so the run succeeds while that TaskRun failed.
+          # Say what it found and why it did not block, instead of a plain "passed".
+          advisory_failed="$(echo "${taskrun_results}" | jq -r '[.items[] | select((.metadata.labels["tekton.dev/pipelineTask"] // "") | endswith("-advisory")) | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
+          rollback_note="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "rollback-note")][0].value // empty')"
+          if [[ -n "${advisory_failed}" ]]; then
+            pod_name="$(kubectl get taskrun "${advisory_failed}" -n "${NAMESPACE}" -o jsonpath='{.status.podName}' 2>/dev/null || true)"
+            excerpt="(no log excerpt available)"
+            if [[ -n "${pod_name}" ]]; then
+              excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=20 2>/dev/null | tail -c 1200 || true)"
+            fi
+            body="$(printf '### ⚠️ `%s` found a problem, advisory on this rollback\n\nThis check would fail on a normal release. It did not block because this PR rolls back to an image that already ran healthy here: %s (glidepath ADR-0021 decision 8). The finding is recorded here and on the check run.\n\n**What it found:**\n```\n%s\n```' \
+              "${GATE_NAME}" "${rollback_note:-an eligible rollback target}" "${excerpt}")"
+          elif [[ "${outcome}" == "stub" ]]; then
             body="### ⚠️ \`${GATE_NAME}\` — stub, not a real check yet"$'\n\n'"This gate always succeeds today; it hasn't verified anything real. See docs/admin/governance-stubs.md."
           else
             body="### ✅ \`${GATE_NAME}\` passed"
             if [[ -n "${summary}" ]]; then
               body="${body}"$'\n\n'"${summary}"
+            fi
+            if [[ "${rollback_note}" == *"ran healthy"* ]]; then
+              body="${body}"$'\n\n'"Rollback: ${rollback_note}."
             fi
           fi
         else

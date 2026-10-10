@@ -1,0 +1,59 @@
+# catalog/pipelines/release-rollback-notify.yaml
+#
+# ADR-0021 phase 4. glidepath-relay sends one service.rolledback CDEvent when a rollback release
+# reaches healthy: the release it replaced is now rolled-back (the relay has already marked its
+# record). This tells people. DORA needs nothing from here: the failed release already sent
+# deployed-failure and the rollback release's own deployed-success is the restore that
+# dora-exporter pairs with it; the rollback release also gets the full release-outcome-notify run.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: release-rollback-notify
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Announces that a release was rolled back (service.rolledback from glidepath-relay).
+  params:
+    - name: app-namespace
+      type: string
+    - name: app-name
+      type: string
+    - name: env
+      type: string
+    - name: git-url
+      type: string
+    - name: git-revision
+      type: string
+      description: The rollback release's revision (the one now running).
+    - name: image-ref
+      type: string
+      default: ""
+      description: The image now running.
+    - name: config-json
+      type: string
+      default: "{}"
+    - name: chain-id
+      type: string
+      default: ""
+      description: The rollback release's chain-id.
+  tasks:
+    - name: notify-backstage
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: notify-backstage }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: config-json, value: $(params.config-json) }
+        - { name: stage-name, value: rolled-back }
+        - { name: status, value: RolledBack }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: image-ref, value: $(params.image-ref) }
+        - { name: env, value: $(params.env) }
+        - { name: chain-id, value: $(params.chain-id) }

@@ -8,7 +8,9 @@
 #     record, once per state, the way stalled-pipeline-detector raises its Events.
 #  2. Retention. Records are no longer deleted when the outcome is first read (the state
 #     machine needs them afterwards), so they are swept here: terminal or closed records past
-#     RECORD_TTL_DAYS, and proposals and state-less legacy records past it too.
+#     RECORD_TTL_DAYS, and proposals and state-less legacy records past it too. Except (ADR-0021
+#     phase 4) the newest KEEP_HEALTHY records that reached healthy for each app, environment and
+#     cluster, whatever their age: they are what rollback eligibility is checked against.
 #
 # Heartbeat facts arrive every 15 minutes while the Rollouts notification config is working,
 # so 45 minutes of silence from a "progressing" release means something is wrong, while a
@@ -89,6 +91,8 @@ spec:
                   value: "45"
                 - name: RECORD_TTL_DAYS
                   value: "14"
+                - name: KEEP_HEALTHY
+                  value: "5"
               command: ["/bin/bash", "-c"]
               args:
                 - |
@@ -103,6 +107,12 @@ spec:
                     records="$(kubectl get configmap -n "${ns}" -l hangar.io/subcomponent=release-tracking -o json 2>/dev/null)" || {
                       echo "[release-record-sweeper] cannot list records in ${ns} (no Role yet?) - skipping"; continue; }
 
+                    # The rollback-eligibility window (extract-promoted-image's rollback-eligibility step):
+                    # per app/env/cluster, the newest KEEP_HEALTHY records with healthyAt.
+                    keep="$(jq -r --argjson n "${KEEP_HEALTHY:-5}" '[.items[] | select((.data.healthyAt // "") != "")]
+                      | group_by([.metadata.labels["hangar.io/app"], .metadata.labels["hangar.io/env"], .metadata.labels["hangar.io/cluster"]])
+                      | map(sort_by(.data.healthyAt) | reverse | .[0:$n][] | .metadata.name) | .[]' <<<"${records}")"
+
                     # "-" stands for an empty field: bash's read collapses consecutive tabs (tab is
                     # whitespace to IFS), which silently shifted every later field left.
                     jq -r '.items[] | [.metadata.name, (.data.state // "-"), (.data.stateAt // "-"), (.data.mergedAt // "-"),
@@ -116,7 +126,8 @@ spec:
                         healthy|aborted|degraded|superseded|rolled-back|closed) anchor="$(epoch "${state_at}")" ;;
                         *) anchor="$(epoch "${created}")" ;;   # proposed, merged-and-never-started, legacy
                       esac
-                      if [[ "${state}" != "merged" && "${state}" != "progressing" && "${anchor}" -gt 0 && $(( now - anchor )) -gt ${ttl_s} ]]; then
+                      if [[ "${state}" != "merged" && "${state}" != "progressing" && "${anchor}" -gt 0 && $(( now - anchor )) -gt ${ttl_s} ]] \
+                         && ! grep -qxF "${name}" <<<"${keep}"; then
                         echo "[release-record-sweeper] ${ns}/${name} (${state:-no state}) past ${RECORD_TTL_DAYS}d - deleting"
                         kubectl delete configmap "${name}" -n "${ns}" --ignore-not-found --wait=false
                         continue

@@ -47,6 +47,9 @@ const (
 
 	eventDeploying = "dev.cdevents.environment.deploying.0.1.0"
 	eventDeployed  = "dev.cdevents.environment.deployed.0.1.0"
+	// ADR-0021 phase 4: the release a rollback replaced. CDEvents' own service.rolledback type, in
+	// this relay's current (0.4.1-style) envelope; ADR-0022 moves the rest of the vocabulary later.
+	eventRolledBack = "dev.cdevents.service.rolledback.0.2.0"
 )
 
 // fact mirrors the body of the Rollouts notification template (see the prod cluster's
@@ -79,6 +82,9 @@ type record struct {
 	FlowStartTime string
 	ConfigJSON    string
 	ChainID       string
+	Kind          string // promote | rollback (phase 4)
+	RollbackOf    string // the release-id a rollback replaces
+	Image         string
 }
 
 // releaseID is "<chain-id>:<cluster>/<env>".
@@ -228,6 +234,9 @@ func (h *handler) apply(w http.ResponseWriter, ctx context.Context, cluster, who
 		if dec.Drift != "" {
 			h.recordDrift(ctx, cm, relID, dec.Drift)
 		}
+		if dec.RolledBack != "" {
+			h.markRolledBack(ctx, cm, dec.RolledBack, relID)
+		}
 		ignored = dec.Ignore
 		break
 	}
@@ -271,6 +280,7 @@ func buildEvent(rec *record, relID string, em emission) ([]byte, error) {
 				"revision": "", "gitUrl": rec.GitURL, "gitRevision": rec.GitRevision,
 				"flowStartTime": rec.FlowStartTime, "finishedAt": now,
 				"configJson": cfg,
+				"releaseId":  relID, "releaseKind": rec.Kind, "rollbackOf": rec.RollbackOf, "image": rec.Image,
 			},
 		},
 		"customData": map[string]any{
@@ -298,6 +308,7 @@ func (h *handler) loadRecord(ctx context.Context, f *fact, chain string) (*recor
 		AppNamespace: d["appNamespace"], AppName: d["appName"], Env: d["env"], Cluster: d["cluster"],
 		GitURL: d["gitUrl"], GitRevision: d["gitRevision"], FlowStartTime: d["flowStartTime"],
 		ConfigJSON: d["configJson"], ChainID: chain,
+		Kind: d["kind"], RollbackOf: d["rollbackOf"], Image: d["image"],
 	}
 	if rec.AppNamespace == "" || rec.AppName == "" || rec.Env == "" || rec.Cluster == "" {
 		return nil, nil, fmt.Errorf("record %s/%s predates the fields the reducer needs", ns, recordPrefix+chain)
@@ -314,6 +325,7 @@ const (
 	keyState, keyStateAt, keyLastFactAt, keyLastFactPhase = "state", "stateAt", "lastFactAt", "lastFactPhase"
 	keyPodHash, keyDrift, keyLastError                    = "podHash", "drift", "lastError"
 	keyEmittedLive, keyEmittedShadow                      = "emittedLive", "emittedShadow"
+	keyHealthyAt, keyRolledBackBy                         = "healthyAt", "rolledBackBy"
 )
 
 func emittedKey(mode string) string {
@@ -333,6 +345,7 @@ func stateFromRecord(cm *corev1.ConfigMap, mode string) relState {
 	st := relState{
 		State: d[keyState], StateAt: parseTime(d[keyStateAt]), LastFactAt: parseTime(d[keyLastFactAt]),
 		LastFactPhase: d[keyLastFactPhase], PodHash: d[keyPodHash], Drift: d[keyDrift], LastError: d[keyLastError],
+		HealthyAt: parseTime(d[keyHealthyAt]), Kind: d["kind"], RollbackOf: d["rollbackOf"],
 		Emitted: map[string]bool{},
 	}
 	if st.State == "" {
@@ -365,6 +378,9 @@ func (h *handler) persistState(ctx context.Context, cm *corev1.ConfigMap, st rel
 	d := next.Data
 	d[keyState], d[keyStateAt], d[keyLastFactAt], d[keyLastFactPhase] = st.State, ts(st.StateAt), ts(st.LastFactAt), st.LastFactPhase
 	d[keyPodHash], d[keyDrift], d[keyLastError] = st.PodHash, st.Drift, st.LastError
+	if !st.HealthyAt.IsZero() {
+		d[keyHealthyAt] = ts(st.HealthyAt)
+	}
 	d[emittedKey(h.mode())] = strings.Join(em, ",")
 	_, err := h.clientset.CoreV1().ConfigMaps(cm.Namespace).Update(ctx, next, metav1.UpdateOptions{})
 	return err
@@ -402,6 +418,36 @@ func (h *handler) supersedeOlder(ctx context.Context, cur *corev1.ConfigMap) {
 		if _, err := h.clientset.CoreV1().ConfigMaps(old.Namespace).Update(ctx, old, metav1.UpdateOptions{}); err != nil {
 			log.Printf("glidepath-relay: marking %s/%s superseded: %v", old.Namespace, old.Name, err)
 		}
+	}
+}
+
+// markRolledBack marks the release a rollback replaced (phase 4). The rollback's record names it
+// by release-id; its record is release-tracking-<chain> in the same Application namespace, and
+// it must be the same app, environment and cluster, or a record could be used to mark another
+// app's release. Best effort, like supersedeOlder: the rolledback event has already been sent.
+func (h *handler) markRolledBack(ctx context.Context, cur *corev1.ConfigMap, target, by string) {
+	chain, cluster, env, ok := parseReleaseID(target)
+	if !ok {
+		log.Printf("glidepath-relay: rollback %s names a malformed release-id %q", by, target)
+		return
+	}
+	old, err := h.clientset.CoreV1().ConfigMaps(cur.Namespace).Get(ctx, recordPrefix+chain, metav1.GetOptions{})
+	if err != nil {
+		log.Printf("glidepath-relay: rollback %s: cannot read the release it replaced (%s): %v", by, target, err)
+		return
+	}
+	if old.Data["appName"] != cur.Data["appName"] || old.Data["env"] != env || old.Data["cluster"] != cluster {
+		log.Printf("glidepath-relay: rollback %s names %s, which is not the same app, environment and cluster", by, target)
+		return
+	}
+	if old.Data[keyState] == stRolledBack {
+		return
+	}
+	old = old.DeepCopy()
+	old.Data[keyState], old.Data[keyStateAt] = stRolledBack, time.Now().UTC().Format(time.RFC3339)
+	old.Data[keyRolledBackBy] = by
+	if _, err := h.clientset.CoreV1().ConfigMaps(old.Namespace).Update(ctx, old, metav1.UpdateOptions{}); err != nil {
+		log.Printf("glidepath-relay: marking %s/%s rolled-back: %v", old.Namespace, old.Name, err)
 	}
 }
 

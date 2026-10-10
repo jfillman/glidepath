@@ -168,12 +168,14 @@ spec:
       release) STAGE_DISPLAY="Release" ;;
       deploying) STAGE_DISPLAY="Deploying" ;;
       release-outcome) STAGE_DISPLAY="Release" ;;
+      rolled-back) STAGE_DISPLAY="Rollback" ;;
       *) STAGE_DISPLAY="${STAGE_NAME}" ;;
     esac
     # Syncing (the new release-progress-notify mid-flow stage) is routine, not a
     # failure - without this it'd render as a "high" severity alert. Cancelled is a
     # deliberate user action, not a failure either - it shouldn't read as a red alert.
-    if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" || "${STATUS}" == "Syncing" || "${STATUS}" == "Cancelled" ]]; then
+    # RolledBack (ADR-0021 phase 4) is a recovery that already happened, not a failure.
+    if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" || "${STATUS}" == "Syncing" || "${STATUS}" == "Cancelled" || "${STATUS}" == "RolledBack" ]]; then
       SEVERITY="normal"
     else
       SEVERITY="high"
@@ -209,6 +211,7 @@ spec:
           TITLE="Release failed in ${ENV_NAME}"
         fi
         ;;
+      rolled-back) TITLE="Release rolled back in ${ENV_NAME}" ;;
       *) TITLE="${APP_NAME} · ${STAGE_DISPLAY} ${STATUS}" ;;
     esac
 
@@ -244,7 +247,7 @@ spec:
     # Failure log excerpt - same non-"Succeeded"/"Completed" trigger and RBAC as
     # notify-slack.yaml (pipeline-runner's existing Role already covers this).
     log_excerpt=""
-    if [[ "${STATUS}" != "Succeeded" && "${STATUS}" != "Completed" && "${STATUS}" != "Syncing" ]]; then
+    if [[ "${STATUS}" != "Succeeded" && "${STATUS}" != "Completed" && "${STATUS}" != "Syncing" && "${STATUS}" != "RolledBack" ]]; then
       failed_taskrun="$(kubectl get taskrun -n "${APP_NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json \
         | jq -r '[.items[] | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
       if [[ -n "${failed_taskrun}" ]]; then

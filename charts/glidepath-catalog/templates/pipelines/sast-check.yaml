@@ -47,7 +47,26 @@ spec:
         - { name: revision, value: $(params.revision) }
         - { name: pr-number, value: $(params.pr-number) }
 
+    # ADR-0021 decision 8 / phase 4: on an eligible rollback (extract-promoted-image works that out
+    # from the release records) this content gate reports without blocking: the -advisory copy
+    # below runs instead, with onError: continue, and comment-pr says what it found.
     - name: verify-sast-attestation
+      when:
+        - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: notin, values: ["true"] }
+      runAfter: [extract-promoted-image]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: verify-sast-attestation }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: image-ref, value: $(tasks.extract-promoted-image.results.image-ref) }
+
+    - name: verify-sast-attestation-advisory
+      onError: continue
+      when:
+        - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: in, values: ["true"] }
       runAfter: [extract-promoted-image]
       taskRef:
         resolver: cluster

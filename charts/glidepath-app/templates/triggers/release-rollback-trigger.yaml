@@ -1,0 +1,104 @@
+# Consumes the service.rolledback CDEvent glidepath-relay forwards when a rollback release reaches
+# healthy (glidepath ADR-0021 phase 4) and runs release-rollback-notify. Same trust shape as
+# release-outcome-trigger.yaml: the broker's TokenReview interceptor proves the relay sent it, and
+# the CEL filter matches the event's claimed appNamespace.
+{{- if eq (include "glidepath-app.hasClusterMappedUpperEnv" .) "true" }}
+{{- $appNamespace := include "glidepath-app.namespace" . }}
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  name: release-rollback-binding
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "triggers"
+spec:
+  params:
+    - { name: pipeline-run-name, value: {{ printf "release-rollback-$(body.context.id)" | quote }} }
+    - { name: app-namespace, value: "$(body.subject.content.appNamespace)" }
+    - { name: app-name, value: "$(body.subject.content.appName)" }
+    - { name: env, value: "$(body.subject.content.env)" }
+    - { name: git-url, value: "$(body.subject.content.gitUrl)" }
+    - { name: git-revision, value: "$(body.subject.content.gitRevision)" }
+    - { name: image-ref, value: "$(body.subject.content.image)" }
+    - { name: config-json, value: "$(body.subject.content.configJson)" }
+    - { name: chain-id, value: "$(body.context.chainId)" }
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: release-rollback-template
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "triggers"
+spec:
+  params:
+    - name: pipeline-run-name
+    - name: app-namespace
+    - name: app-name
+    - name: env
+    - name: git-url
+    - name: git-revision
+    - name: image-ref
+    - name: config-json
+    - name: chain-id
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        name: $(tt.params.pipeline-run-name)
+        labels:
+          hangar.io/subcomponent: "release-rollback"
+      spec:
+        pipelineRef:
+          resolver: cluster
+          params:
+            - { name: kind, value: pipeline }
+            - { name: name, value: release-rollback-notify }
+            - { name: namespace, value: {{ .Values.platformIdentity.catalogNamespace }} }
+        params:
+          - { name: app-namespace, value: $(tt.params.app-namespace) }
+          - { name: app-name, value: $(tt.params.app-name) }
+          - { name: env, value: $(tt.params.env) }
+          - { name: git-url, value: $(tt.params.git-url) }
+          - { name: git-revision, value: $(tt.params.git-revision) }
+          - { name: image-ref, value: $(tt.params.image-ref) }
+          - { name: config-json, value: $(tt.params.config-json) }
+          - { name: chain-id, value: $(tt.params.chain-id) }
+        taskRunTemplate:
+          serviceAccountName: pipeline-runner
+          {{- /* Same Backstage host alias as release-outcome-trigger.yaml: this run posts to Backstage. */ -}}
+          {{- if .Values.backstageHostAliasIP }}
+          podTemplate:
+            hostAliases:
+              - ip: {{ .Values.backstageHostAliasIP }}
+                hostnames:
+                  - backstage.prod.kiac.local
+          {{- end }}
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: Trigger
+metadata:
+  name: release-rollback
+  namespace: {{ $appNamespace }}
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "triggers"
+spec:
+  serviceAccountName: pipeline-runner
+  interceptors:
+    - ref: { name: cdevents-broker-auth, kind: ClusterInterceptor }
+      params: [{ name: audience, value: cdevents-broker }]
+    - ref: { name: cel, kind: ClusterInterceptor }
+      params:
+        - name: filter
+          value: >-
+            body.context.type == 'dev.cdevents.service.rolledback.0.2.0' &&
+            body.subject.content.appNamespace == '{{ $appNamespace }}'
+  bindings:
+    - { ref: release-rollback-binding }
+  template:
+    ref: release-rollback-template
+{{- end }}

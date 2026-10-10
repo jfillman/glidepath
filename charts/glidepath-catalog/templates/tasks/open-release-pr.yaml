@@ -91,6 +91,20 @@ spec:
       type: string
       default: ""
       description: Who asked for this release when a person did (Tower's Promote, via the promote-release template), named in the PR body. Empty for a release step in a flow.
+    # ADR-0021 phase 4. A rollback is a release of an earlier image; these say so on the record, the
+    # commit and the PR. Gates never trust them: rollback eligibility is computed from the records.
+    - name: release-kind
+      type: string
+      default: promote
+      description: promote or rollback.
+    - name: rollback-of
+      type: string
+      default: ""
+      description: For a rollback, the release-id it replaces.
+    - name: rollback-reason
+      type: string
+      default: ""
+      description: For a rollback, why.
   results:
     - name: pr-url
       description: URL of the opened (or already-open, on retry) release PR.
@@ -142,6 +156,12 @@ spec:
           value: $(params.config-json)
         - name: INITIATOR
           value: $(params.initiator)
+        - name: RELEASE_KIND
+          value: $(params.release-kind)
+        - name: ROLLBACK_OF
+          value: $(params.rollback-of)
+        - name: ROLLBACK_REASON
+          value: $(params.rollback-reason)
         - name: NAMESPACE
           # For the release-tracking ConfigMap (this cluster, this Application's own
           # namespace) - $(context.taskRun.namespace) is the correct Task-level
@@ -153,6 +173,16 @@ spec:
         set -euo pipefail
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
+
+        case "${RELEASE_KIND}" in
+          promote) ;;
+          rollback)
+            if [[ -z "${ROLLBACK_OF}" ]]; then
+              echo "error: a rollback must name the release it replaces (rollback-of)." >&2
+              exit 1
+            fi ;;
+          *) echo "error: release-kind must be promote or rollback, got '${RELEASE_KIND}'." >&2; exit 1 ;;
+        esac
 
         # The dev-side release record (ADR-0021): prUrl/prCreatedAt as before, plus
         # everything glidepath-relay's /facts endpoint needs to rebuild this
@@ -173,7 +203,10 @@ spec:
             --from-literal="prUrl=${pr_url_arg}" \
             --from-literal="prCreatedAt=${pr_created_arg}" \
             --from-literal="releaseId=${CHAIN_ID}:${CLUSTER}/${ENV}" \
-            --from-literal="kind=promote" \
+            --from-literal="kind=${RELEASE_KIND}" \
+            --from-literal="image=${IMAGE_REF}" \
+            --from-literal="rollbackOf=${ROLLBACK_OF}" \
+            --from-literal="rollbackReason=${ROLLBACK_REASON}" \
             --from-literal="appNamespace=${APP_NAMESPACE}" \
             --from-literal="appName=${APP_NAME}" \
             --from-literal="env=${ENV}" \
@@ -219,7 +252,15 @@ spec:
         # to) its own, silently never promoting its own env. Real bug, live-confirmed on
         # checkout-api (both staging and prod releases landed on one PR touching only
         # whichever env ran first), fixed 2026-09-04.
-        branch="release-${ENV}-${GIT_REVISION:0:8}"
+        # A rollback gets its own branch: the image it restores was released once already, under
+        # release-<env>-<sha8>, and that branch name must not find an old PR or be force-pushed over.
+        # It still starts with release-: every gate's PaC trigger matches head.ref "release-*", and a
+        # rollback must get the same gates (they decide what is advisory, not the branch name).
+        if [[ "${RELEASE_KIND}" == "rollback" ]]; then
+          branch="release-rollback-${ENV}-${GIT_REVISION:0:8}"
+        else
+          branch="release-${ENV}-${GIT_REVISION:0:8}"
+        fi
 
         # Check for an already-open PR from this exact branch before doing any work -
         # this Task's own result description has always claimed "(or already-open, on
@@ -314,8 +355,15 @@ spec:
         # never signed itself. Full 40-char SHA, not the 12-char truncation used elsewhere,
         # since that's not reliably enough to unambiguously `git fetch` one commit. Built
         # with printf + \n escapes, not a raw multi-line string, which breaks YAML parsing.
-        commit_message="$(printf 'Release: promote %s to %s @ %s\n\nX-App-Repo: %s\nX-App-Commit: %s' \
-          "${APP_NAME}" "${ENV}" "${IMAGE_REF}" "${GIT_URL}" "${GIT_REVISION}")"
+        # X-Glidepath-Release-Kind / X-Glidepath-Rollback-Of describe a rollback for people and the
+        # Release Record; no gate trusts them (eligibility is computed from the release records).
+        if [[ "${RELEASE_KIND}" == "rollback" ]]; then
+          commit_message="$(printf 'Rollback: %s %s to %s\n\nX-App-Repo: %s\nX-App-Commit: %s\nX-Glidepath-Release-Kind: rollback\nX-Glidepath-Rollback-Of: %s' \
+            "${APP_NAME}" "${ENV}" "${IMAGE_REF}" "${GIT_URL}" "${GIT_REVISION}" "${ROLLBACK_OF}")"
+        else
+          commit_message="$(printf 'Release: promote %s to %s @ %s\n\nX-App-Repo: %s\nX-App-Commit: %s' \
+            "${APP_NAME}" "${ENV}" "${IMAGE_REF}" "${GIT_URL}" "${GIT_REVISION}")"
+        fi
         git commit --quiet -m "${commit_message}"
         # --force is safe/correct here, not just convenient: this branch name is
         # deterministic and exclusively owned by this automation (see above), so the
@@ -345,11 +393,17 @@ spec:
         # the real, live-confirmed bug this technique was adopted to avoid).
         governance_text="$(printf '\n\n## Governance checks\n\n| Check | What it verifies | Status |\n|---|---|---|\n{{ range .Values.releaseGuardrails }}| `{{ .name }}` | {{ .description | replace "'" "'\"'\"'" }} | {{ if eq .status "real" }}real{{ else }}not yet real - see Glidepath docs/admin/governance-stubs.md{{ end }} |\n{{ end }}\n**If a check fails**: comment `/retest <check-name>` on this PR to re-run just that one (e.g. `/retest sast`), or `/retest` alone to re-run all of them. Fix the underlying issue first if the failure is real - re-running does not bypass a check, it only re-evaluates it.')"
         requested=""
-        [[ -n "${INITIATOR}" ]] && requested="$(printf '\n**Requested by**: %s (via Tower Promote)' "${INITIATOR}")"
+        if [[ "${RELEASE_KIND}" == "rollback" ]]; then
+          [[ -n "${INITIATOR}" ]] && requested="$(printf '\n**Requested by**: %s (via Tower Roll back)' "${INITIATOR}")"
+          requested="${requested}$(printf '\n**Rolls back**: `%s`\n**Reason**: %s\n\nThis is a rollback (glidepath ADR-0021). If the image ran healthy on %s within its last five releases, the content checks (sast, image-scan, sbom) report what they find without blocking; integrity checks and approvals apply as always.' \
+            "${ROLLBACK_OF}" "${ROLLBACK_REASON:-not given}" "${ENV}")"
+        else
+          [[ -n "${INITIATOR}" ]] && requested="$(printf '\n**Requested by**: %s (via Tower Promote)' "${INITIATOR}")"
+        fi
         pr_body_text="$(printf '**App**: %s\n**Env**: %s\n**Repo**: [%s](%s)\n**Commit**: [`%s`](%s/commit/%s)\n**Image**: `%s`%s\n\nMerging this PR triggers ArgoCD to sync it to %s. See Glidepath docs/admin/release.md.%s' \
           "${APP_NAME}" "${ENV}" "${repo_short}" "${GIT_URL}" "${commit_short}" "${GIT_URL}" "${GIT_REVISION}" "${IMAGE_REF}" "${requested}" "${ENV}" "${governance_text}")"
         pr_body="$(jq -n \
-          --arg title "Release: ${APP_NAME} to ${ENV} @ ${image_tag}" \
+          --arg title "$([[ "${RELEASE_KIND}" == "rollback" ]] && echo "Rollback: ${APP_NAME} ${ENV} to ${image_tag}" || echo "Release: ${APP_NAME} to ${ENV} @ ${image_tag}")" \
           --arg body "${pr_body_text}" \
           --arg head "${branch}" \
           --arg base "main" \
