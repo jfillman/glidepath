@@ -219,7 +219,10 @@ idpServiceCatalog:
   # 2026-10-10: v0.3.135 -> v0.3.139, airframe#82 (rollout.rollbackWindow {revisions: 3}: fast-track rollback, ADR-0021
   # phase 4). Rendering all 9 live kind-prod Flight envs on both versions: 8 Rollouts gain only spec.rollbackWindow,
   # skyport-broker (no Rollout) is byte-identical. Same version as each cluster's cluster-defaults.yaml.
-  chartVersion: v0.3.139
+  # 2026-10-10: v0.3.139 -> v0.3.140, airframe#83 (rollout.enabled: false = this environment runs no service; rollout: null
+  # still means the same). All 23 live envs on both clusters render byte-identically on both versions. Same version as
+  # each cluster's cluster-defaults.yaml.
+  chartVersion: v0.3.140
 
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
