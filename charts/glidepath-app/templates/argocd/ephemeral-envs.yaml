@@ -116,6 +116,14 @@ spec:
       # finalizer, not the primary cleanup path anymore.
       finalizers:
         - resources-finalizer.argocd.argoproj.io
+      # The same identity labels every environment Application carries (lower-envs.yaml, tenant-onboarding), so
+      # Tower can tell which app a preview belongs to and authorize actions on it (2026-10-10: Restart pod on a
+      # preview was refused, the Application had no labels). ephemeral-env makes it a Ground environment there.
+      labels:
+        hangar.io/app: {{ .Values.platformIdentity.appName }}
+        hangar.io/env: "pr-{{ "{{" }}.number{{ "}}" }}"
+        hangar.io/env-tier: lower
+        hangar.io/ephemeral-env: "true"
     spec:
       # Matches appproject.yaml's ephemeral AppProject name (deliberately not
       # {{ $appNamespace }} alone - see that file's header comment).
