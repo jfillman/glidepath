@@ -197,8 +197,12 @@ spec:
     # title+description, and this is the one place that still embeds it).
     case "${STAGE_NAME}" in
       release)
+        # Cancelled is its own title (2026-10-11): it read as "trigger failed", while its severity already said
+        # normal, so Tower showed a failure in calm colours.
         if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
           TITLE="Release triggered for ${ENV_NAME}"
+        elif [[ "${STATUS}" == "Cancelled" ]]; then
+          TITLE="Release trigger cancelled for ${ENV_NAME}"
         else
           TITLE="Release trigger failed for ${ENV_NAME}"
         fi
@@ -207,6 +211,8 @@ spec:
       release-outcome)
         if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
           TITLE="Release succeeded in ${ENV_NAME}"
+        elif [[ "${STATUS}" == "Cancelled" ]]; then
+          TITLE="Release cancelled in ${ENV_NAME}"
         else
           TITLE="Release failed in ${ENV_NAME}"
         fi
