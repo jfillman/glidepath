@@ -284,6 +284,24 @@ def lower_envs(config):
     return sets[0] if sets else None
 
 
+class PreviewApplications(unittest.TestCase):
+    """2026-10-10: preview Applications carry the identity labels Tower authorizes against."""
+
+    def test_preview_application_is_labelled_with_its_app_and_env(self):
+        config = cicd(BUILD_DEPLOY, {"environments": [{"name": "dev", "tier": "ground"}]})
+        config["ephemeralEnvironments"] = {"pullRequest": {"enabled": True}}
+        rc, out, err = render(config)
+        self.assertEqual(rc, 0, err[:400])
+        sets = [d for d in docs(out) if d.get("kind") == "ApplicationSet" and d["metadata"]["name"].endswith("-pr-envs")]
+        if not sets:
+            sets = [d for d in docs(out) if d.get("kind") == "ApplicationSet" and "pullRequest" in str(d["spec"].get("generators"))]
+        self.assertTrue(sets, "no preview ApplicationSet rendered")
+        labels = sets[0]["spec"]["template"]["metadata"]["labels"]
+        self.assertEqual(labels["hangar.io/app"], "sample")
+        self.assertEqual(labels["hangar.io/env"], "pr-{{.number}}")
+        self.assertEqual(labels["hangar.io/ephemeral-env"], "true")
+
+
 class LowerEnvsChart(unittest.TestCase):
     """ADR-0023 slice 3: the Ground ApplicationSet renders the chart resolved from cicd.yaml."""
 
