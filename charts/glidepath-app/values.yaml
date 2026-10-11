@@ -222,7 +222,11 @@ idpServiceCatalog:
   # 2026-10-10: v0.3.139 -> v0.3.140, airframe#83 (rollout.enabled: false = this environment runs no service; rollout: null
   # still means the same). All 23 live envs on both clusters render byte-identically on both versions. Same version as
   # each cluster's cluster-defaults.yaml.
-  chartVersion: v0.3.140
+  # 2026-10-11: v0.3.140 -> v0.3.141, airframe#84 (Rollouts run non-root, UID/GID 65532, by default, so Tower break-glass
+  # process access can read the app's files). All 22 live envs on both clusters rendered on both versions: the 18
+  # Rollouts gain only pod/container securityContext; the rest are byte-identical. Same version as each cluster's
+  # cluster-defaults.yaml.
+  chartVersion: v0.3.141
 
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
