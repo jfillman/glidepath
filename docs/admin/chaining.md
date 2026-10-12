@@ -273,6 +273,17 @@ event still fails the PipelineRun exactly as a failed finally TaskRun did - but 
 longer prevent the other finally work from happening. See that Task's header for the
 result-reference rules that keep it from being skipped on a failed stage.
 
+**A cancelled or stopped run never chains (2026-10-12).** `$(tasks.status)` has no
+`Cancelled` value. A run cancelled (`CancelledRunFinally`) or stopped (`StoppedRunFinally`)
+before any task failed reports `Completed`, because the tasks that never started count as
+skipped. The success gate then passed and the broker started the next stage off a cancelled
+run (sky-marshall build -> deploy). stage-debrief's `resolve` step now reads the run's own
+`spec.status`. When it is a cancel or stop, every later step gets `Cancelled` instead:
+- the domain event is skipped, so nothing chains;
+- `pipelinerun.finished` carries `outcome: cancel`;
+- the spans are errors;
+- Slack and Backstage say cancelled.
+
 **Outcome mapping**: Tekton's real `status.conditions[].reason` values (`Succeeded`,
 `Completed`, `Failed`, `Cancelled`, `PipelineRunTimeout`, plus other less common error
 reasons - confirmed against Tekton's own docs) don't match CDEvents' `outcome` enum

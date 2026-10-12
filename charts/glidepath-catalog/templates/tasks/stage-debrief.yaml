@@ -61,7 +61,7 @@ spec:
       description: build / test / deploy / release - the span name, notification vocabulary and pipelinerun.finished's pipelineName.
     - name: status
       type: string
-      description: Pass $(tasks.status) from the calling Pipeline's finally block.
+      description: Pass $(tasks.status) from the calling Pipeline's finally block. The resolve step reports Cancelled instead when the run was cancelled or stopped (Tekton's aggregate says Completed then); every later step uses that.
     - name: is-flow-terminal
       type: string
       default: "false"
@@ -165,10 +165,13 @@ spec:
       # run of this Task failed exactly there). image-ref is a plain string and travels
       # as-is.
       results:
+        - name: status
         - name: image-ref
         - name: config-json-b64
         - name: subject-content-json-b64
       env:
+        - name: PIPELINE_STATUS
+          value: $(params.status)
         - name: APP_NAMESPACE
           value: $(params.app-namespace)
         - name: PIPELINE_RUN_NAME
@@ -186,6 +189,24 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
+        # The stage's real outcome, which every later step reports instead of $(tasks.status). Tekton's
+        # aggregate has no "Cancelled": a run cancelled (CancelledRunFinally) or stopped (StoppedRunFinally)
+        # before any task failed reports Completed, because the tasks that never started count as skipped.
+        # Taken at face value the domain event fired and the broker chained the next stage off a cancelled
+        # run (sky-marshall ci-0-build-p46zm -> ci-1-deploy, 2026-10-12), and the spans and Slack called it
+        # a success. The run's own spec.status records the cancel; notify-backstage has read it for its
+        # title since 2026-09-16. Written first, so a later failure in this step cannot leave it unset.
+        STATUS="${PIPELINE_STATUS}"
+        REQUESTED="$(kubectl get pipelinerun -n "${APP_NAMESPACE}" "${PIPELINE_RUN_NAME}" -o jsonpath='{.spec.status}' 2>/dev/null || true)"
+        case "${REQUESTED}" in
+          Cancelled|CancelledRunFinally|StoppedRunFinally)
+            STATUS="Cancelled"
+            echo "status: Tekton reports ${PIPELINE_STATUS}, but the run was ${REQUESTED} - reporting Cancelled (no domain event, so nothing chains)"
+            ;;
+          *) echo "status: ${STATUS}" ;;
+        esac
+        printf '%s' "${STATUS}" > "$(step.results.status.path)"
+
         lookup_result() {
           # lookup_result <pipelineTask> <result-name> - empty when the TaskRun or result doesn't exist.
           kubectl get taskrun -n "${APP_NAMESPACE}" \
@@ -244,7 +265,7 @@ spec:
         - { name: flow-traceparent, value: $(params.flow-traceparent) }
         - { name: span-id, value: $(params.stage-span-id) }
         - { name: start-time, value: $(params.stage-start-time) }
-        - { name: status, value: $(params.status) }
+        - { name: status, value: $(steps.resolve.results.status) }
         - { name: attrs, value: "platform.chain_id=$(params.chain-id),platform.stage=$(params.stage-name)" }
 
     # Closes the FLOW-ROOT span iff this stage is its flow's last step - see
@@ -266,7 +287,7 @@ spec:
         - { name: flow-traceparent, value: $(params.flow-traceparent) }
         - { name: span-id, value: "" }
         - { name: start-time, value: $(params.flow-start-time) }
-        - { name: status, value: $(params.status) }
+        - { name: status, value: $(steps.resolve.results.status) }
         - { name: enabled, value: $(params.is-flow-terminal) }
 
     - name: notify-slack
@@ -282,7 +303,7 @@ spec:
         - { name: config-json, value: "{}" }
         - { name: config-json-b64, value: $(steps.resolve.results.config-json-b64) }
         - { name: stage-name, value: $(params.stage-name) }
-        - { name: status, value: $(params.status) }
+        - { name: status, value: $(steps.resolve.results.status) }
         - { name: pipeline-run-name, value: $(params.pipeline-run-name) }
         - { name: app-namespace, value: $(params.app-namespace) }
         - { name: app-name, value: $(params.app-name) }
@@ -306,7 +327,7 @@ spec:
         - { name: config-json, value: "{}" }
         - { name: config-json-b64, value: $(steps.resolve.results.config-json-b64) }
         - { name: stage-name, value: $(params.stage-name) }
-        - { name: status, value: $(params.status) }
+        - { name: status, value: $(steps.resolve.results.status) }
         - { name: pipeline-run-name, value: $(params.pipeline-run-name) }
         - { name: app-namespace, value: $(params.app-namespace) }
         - { name: app-name, value: $(params.app-name) }
@@ -342,7 +363,7 @@ spec:
         - { name: pipeline-run-name, value: $(params.pipeline-run-name) }
         - { name: config-json-b64, value: $(steps.resolve.results.config-json-b64) }
         - { name: only-on-success, value: $(params.domain-event-on-success-only) }
-        - { name: status, value: $(params.status) }
+        - { name: status, value: $(steps.resolve.results.status) }
         - { name: token-volume, value: broker-token }
 
     # Generic completion signal, deliberately NOT gated on success like the domain event
@@ -367,7 +388,7 @@ spec:
         - { name: flow-start-time, value: $(params.flow-start-time) }
         - { name: namespace, value: $(params.app-namespace) }
         - { name: pipeline-run-name, value: $(params.pipeline-run-name) }
-        - { name: tekton-status, value: $(params.status) }
+        - { name: tekton-status, value: $(steps.resolve.results.status) }
         - { name: token-volume, value: broker-token }
 
     # Re-raises any step failure so the TaskRun - and with it the PipelineRun - fails
