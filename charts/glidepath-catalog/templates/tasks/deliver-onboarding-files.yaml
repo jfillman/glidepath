@@ -831,7 +831,14 @@ spec:
           # this file - a legitimate "nothing to add" (file absent, or already tracked and
           # unchanged) exits this chain non-zero, which set -e would otherwise abort on.
           { [[ -d "${ENVS_ROOT}" ]] && git add "${ENVS_ROOT}"; } || true
+          # Nothing may be left to commit when the only change this run made was a seeded release
+          # file (committed on its own above) - `git commit` then exits 1 and, under set -e, failed
+          # the step after the seed had already been made (sky-marshall, 2026-10-12).
+          if git diff --cached --quiet; then
+            echo "app repo: no other files changed this run"
+          else
           git commit --quiet -m "$(printf 'Onboarding: re-sync .tekton boilerplate from the platform catalog\n\nRegenerated onboarding-resync.yaml plus one .tekton/flow-<name>.yaml per git-rooted flow declared under cicd.yaml'"'"'s pipelines: - see Glidepath docs/admin/onboarding-mechanics.md. Also scaffolds '"${ENVS_ROOT}"'/base.yaml, '"${ENVS_ROOT}"'/pr-env.yaml and '"${ENVS_ROOT}"'/envs/<lower-env>.yaml once each, only when missing (known-gap #17), and seeds a later Ground environment'"'"'s <env>.release.yaml from the environment before it (its own commit, above). No developer action needed beyond merging.')"
+          fi
           # --force: the only way this exact branch name already exists remotely is a
           # still-open resync PR from an earlier trigger - this run's freshly
           # regenerated content should replace it outright, not be rejected as a
