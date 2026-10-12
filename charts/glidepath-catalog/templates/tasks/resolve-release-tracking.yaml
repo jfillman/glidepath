@@ -65,5 +65,7 @@ spec:
           echo "no chain-id on this outcome event - pr-url/pr-created-at will be empty (app onboarded before chain-id existed, or a manual/direct invocation)." >&2
         fi
 
-        echo -n "${pr_url}" | tee "$(results.pr-url.path)"
-        echo -n "${pr_created_at}" | tee "$(results.pr-created-at.path)"
+        printf '%s' "${pr_url}" > "$(results.pr-url.path)"
+        echo "pr-url=${pr_url}"
+        printf '%s' "${pr_created_at}" > "$(results.pr-created-at.path)"
+        echo "pr-created-at=${pr_created_at}"

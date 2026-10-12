@@ -48,6 +48,32 @@ rationale comments.
   `AWS_RESPONSE_CHECKSUM_VALIDATION=when_required` on the API deployment's `api`
   container.
 
+- **Step logs are archived with per-line timestamps** (`result.watcher.logs_timestamps: true`,
+  the watcher's `-logs_timestamps` flag, 2026-10-12): the watcher reads each step's pod log
+  with `timestamps=true`, so every archived line starts with the container runtime's RFC3339
+  instant, exactly as a live `kubectl logs --timestamps` does. Tower parses that prefix out of
+  archived logs so a finished run's log view has the same time column as a running one's
+  (which it reads live from the Kubernetes API with the same option). Runs archived before
+  the flag took effect have no prefix and still render, just without times.
+
+## Task log conventions
+
+Everything a Task prints is read later, in Tower, next to the step it came from. Two rules
+keep that readable (both found the hard way, 2026-10-12):
+
+- **A result is written, then logged on its own line as `name=value`** - never
+  `echo -n "$x" | tee "$(results.name.path)"`. Results must have no trailing newline (a
+  `when:` gate compares the exact string; `$(steps.*.results.*)` env substitutions keep a
+  newline literally), so `tee` printed them with no newline either and consecutive results ran
+  together in the log (`./Containerfileghcr.io/…:0.1.7-5616e3d0.1.7truetrue2026-…`). Use
+  `printf '%s' "$x" > "$(results.name.path)"` for the file and `echo "name=$x"` for the log;
+  a result nobody needs to see in the log is written and not echoed.
+- **JSON in a log line is one line**: `yq -o=json -I=0 …` (or `jq -c`), never bare
+  `yq -o=json`, which pretty-prints and splits the message over several lines.
+
+Timestamps are not something a Task prints itself: the runtime stamps every line (above), so
+third-party steps (kaniko, trivy, cosign) are covered the same way as the toolbox scripts.
+
 ## Retention and its interaction with the pruner
 
 `watcher.completed_run_grace_period: "1h"` - the Results watcher archives a completed

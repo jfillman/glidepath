@@ -120,13 +120,16 @@ spec:
             exit 1
           fi
           echo "pinned image ${repository}:${tag} (${digest})"
-          echo -n "${repository}:${tag}" | tee "$(results.image-ref.path)"
+          _r="${repository}:${tag}"
+          printf '%s' "${_r}" > "$(results.image-ref.path)"
+          echo "image-ref=${_r}"
           exit 0
         fi
 
         IMAGE_REF='$(params.image-ref)'
         if [[ -n "${IMAGE_REF}" ]]; then
-          echo -n "${IMAGE_REF}" | tee "$(results.image-ref.path)"
+          printf '%s' "${IMAGE_REF}" > "$(results.image-ref.path)"
+          echo "image-ref=${IMAGE_REF}"
           exit 0
         fi
 
@@ -146,4 +149,6 @@ spec:
         # Same extraction as build-image.yaml: strip refs/tags/ and an optional 'v'.
         VERSION=$(echo "${GIT_TAG}" | sed -E 's|^refs/tags/v?||')
 
-        echo -n "${IMAGE_REPO}:${VERSION}-${SHORT_SHA}" | tee "$(results.image-ref.path)"
+        _r="${IMAGE_REPO}:${VERSION}-${SHORT_SHA}"
+        printf '%s' "${_r}" > "$(results.image-ref.path)"
+        echo "image-ref=${_r}"

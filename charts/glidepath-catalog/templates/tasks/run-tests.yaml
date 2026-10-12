@@ -65,8 +65,10 @@ spec:
         # boolean field a true default while still respecting an explicit false.
         ENABLED="$(jq -r 'if .build.unitTest.enabled == false then "false" else "true" end' <<< "${CFG}")"
         CMD="$(jq -r '.build.unitTest.command // "./test.sh"' <<< "${CFG}")"
-        echo -n "${ENABLED}" | tee "$(step.results.enabled.path)"
-        echo -n "${CMD}" | tee "$(step.results.command.path)"
+        printf '%s' "${ENABLED}" > "$(step.results.enabled.path)"
+        echo "enabled=${ENABLED}"
+        printf '%s' "${CMD}" > "$(step.results.command.path)"
+        echo "command=${CMD}"
 
         # Mirrors build-source.yaml's detection so test.sh's own `npm ci`/`yarn install`
         # reuses the tarballs build.sh just fetched (or vice versa - the two run
@@ -85,7 +87,8 @@ spec:
               ;;
           esac
         fi
-        echo -n "${CACHE_TYPE}" | tee "$(step.results.cache-type.path)"
+        printf '%s' "${CACHE_TYPE}" > "$(step.results.cache-type.path)"
+        echo "cache-type=${CACHE_TYPE}"
 
     - name: unit-test
       image: $(params.agent-image)
@@ -146,7 +149,8 @@ spec:
         date -u +"%Y-%m-%dT%H:%M:%S.%NZ" | tee "$(results.span-start-time.path)"
         if [[ "${TEST_ENABLED}" != "true" ]]; then
           echo "unit tests disabled in cicd.yaml, skipping"
-          echo -n "skipped" | tee "$(results.outcome.path)"
+          printf '%s' "skipped" > "$(results.outcome.path)"
+          echo "outcome=skipped"
         else
           # set +e here, not the whole script: `outcome`/span-end-time must still be
           # written on a real test failure - same "onError: continue, capture the
@@ -158,9 +162,11 @@ spec:
           TEST_EXIT_CODE=$?
           set -e
           if [[ "${TEST_EXIT_CODE}" -eq 0 ]]; then
-            echo -n "passed" | tee "$(results.outcome.path)"
+            printf '%s' "passed" > "$(results.outcome.path)"
+            echo "outcome=passed"
           else
-            echo -n "failed" | tee "$(results.outcome.path)"
+            printf '%s' "failed" > "$(results.outcome.path)"
+            echo "outcome=failed"
           fi
         fi
         date -u +"%Y-%m-%dT%H:%M:%S.%NZ" | tee "$(results.span-end-time.path)"

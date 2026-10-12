@@ -116,10 +116,12 @@ spec:
         } | tee "$(results.findings-summary.path)"
 
         if [[ "${EXIT_CODE}" -eq 0 ]]; then
-          echo -n "passed" | tee "$(results.outcome.path)"
+          printf '%s' "passed" > "$(results.outcome.path)"
+          echo "outcome=passed"
         else
           echo "sast-scan: semgrep reported blocking findings (exit ${EXIT_CODE})" >&2
-          echo -n "failed" | tee "$(results.outcome.path)"
+          printf '%s' "failed" > "$(results.outcome.path)"
+          echo "outcome=failed"
           exit 1
         fi
 

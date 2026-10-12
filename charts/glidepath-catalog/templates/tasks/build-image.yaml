@@ -244,18 +244,25 @@ spec:
         jq -e '(.build.platforms // ["arm64","amd64"]) | index("arm64") != null' <<< "${CFG}" >/dev/null && BUILD_ARM64="true" || true
         jq -e '(.build.platforms // ["arm64","amd64"]) | index("amd64") != null' <<< "${CFG}" >/dev/null && BUILD_AMD64="true" || true
 
-        echo -n "${CONTAINERFILE_PATH}" | tee "$(step.results.containerfile-path.path)"
-        echo -n "${IMAGE_REF}" | tee "$(step.results.image-ref.path)"
-        echo -n "${VERSION}" | tee "$(step.results.version.path)"
-        echo -n "${BUILD_ARM64}" | tee "$(step.results.build-arm64.path)"
-        echo -n "${BUILD_AMD64}" | tee "$(step.results.build-amd64.path)"
+        printf '%s' "${CONTAINERFILE_PATH}" > "$(step.results.containerfile-path.path)"
+        echo "containerfile-path=${CONTAINERFILE_PATH}"
+        printf '%s' "${IMAGE_REF}" > "$(step.results.image-ref.path)"
+        echo "image-ref=${IMAGE_REF}"
+        printf '%s' "${VERSION}" > "$(step.results.version.path)"
+        echo "version=${VERSION}"
+        printf '%s' "${BUILD_ARM64}" > "$(step.results.build-arm64.path)"
+        echo "build-arm64=${BUILD_ARM64}"
+        printf '%s' "${BUILD_AMD64}" > "$(step.results.build-amd64.path)"
+        echo "build-amd64=${BUILD_AMD64}"
         # -n here matters, unlike the two lines above it's not just style: this result is
         # read back by emit-image-ref-and-span via a cross-step env var substitution, not a
         # `cat`-based one - command substitution strips a trailing newline automatically,
         # a raw env var substitution doesn't. A bare `date | tee` here left one in, which
         # otel-cli's --start flag received literally - a real bug, found live: the span
         # silently never reached Tempo (no error, no exit-nonzero, just absent).
-        echo -n "$(date -u +"%Y-%m-%dT%H:%M:%S.%NZ")" | tee "$(step.results.span-start-time.path)"
+        _r="$(date -u +"%Y-%m-%dT%H:%M:%S.%NZ")"
+        printf '%s' "${_r}" > "$(step.results.span-start-time.path)"
+        echo "span-start-time=${_r}"
 
     - name: build-and-push-arm64
       # Bumped from v1.23.2-debug 2026-08-16 as a real, independently-worthwhile fix
@@ -512,10 +519,14 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         source "${PLATFORM_LIB}/otel.sh"
-        echo -n "${IMAGE_REF}" | tee "$(results.image-ref.path)"
-        echo -n "${IMAGE_REPO}" | tee "$(results.image-repo.path)"
-        echo -n "${VERSION}" | tee "$(results.version.path)"
-        echo -n "${IMAGE_REPO}" | tee "$(results.IMAGE_URL.path)"
+        printf '%s' "${IMAGE_REF}" > "$(results.image-ref.path)"
+        echo "image-ref=${IMAGE_REF}"
+        printf '%s' "${IMAGE_REPO}" > "$(results.image-repo.path)"
+        echo "image-repo=${IMAGE_REPO}"
+        printf '%s' "${VERSION}" > "$(results.version.path)"
+        echo "version=${VERSION}"
+        printf '%s' "${IMAGE_REPO}" > "$(results.IMAGE_URL.path)"
+        echo "IMAGE_URL=${IMAGE_REPO}"
         # image-digest is a TASK-level result (publish-multiarch-manifest writes it via
         # `crane digest`, now that this Task builds multi-arch - see that step's own
         # comment), not a step-level one - a cross-step "steps dot results dot name" env

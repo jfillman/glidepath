@@ -116,14 +116,16 @@ spec:
         # verify-attestation fix is still open, see that doc.
         if cosign download attestation --predicate-type cyclonedx "${IMAGE_REF}" >/dev/null 2>&1; then
           echo "generate-sbom: a cyclonedx attestation already exists for ${IMAGE_REF} - skipping, not generating a redundant one"
-          echo -n "passed" | tee "$(results.outcome.path)"
+          printf '%s' "passed" > "$(results.outcome.path)"
+          echo "outcome=passed"
           exit 0
         fi
 
         trivy image --skip-version-check --timeout 15m --format cyclonedx --output /tmp/sbom.json "${IMAGE_REF}"
         if [[ $? -ne 0 ]]; then
           echo "generate-sbom: trivy SBOM generation failed" >&2
-          echo -n "failed" | tee "$(results.outcome.path)"
+          printf '%s' "failed" > "$(results.outcome.path)"
+          echo "outcome=failed"
           exit 1
         fi
 
@@ -171,9 +173,11 @@ spec:
         EXIT_CODE=$?
 
         if [[ "${EXIT_CODE}" -eq 0 ]]; then
-          echo -n "passed" | tee "$(results.outcome.path)"
+          printf '%s' "passed" > "$(results.outcome.path)"
+          echo "outcome=passed"
         else
           echo "generate-sbom: cosign attest failed (exit ${EXIT_CODE})" >&2
-          echo -n "failed" | tee "$(results.outcome.path)"
+          printf '%s' "failed" > "$(results.outcome.path)"
+          echo "outcome=failed"
           exit 1
         fi

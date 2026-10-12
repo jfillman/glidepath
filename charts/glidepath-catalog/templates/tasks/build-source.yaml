@@ -68,7 +68,8 @@ spec:
         set -euo pipefail
         CFG='$(params.config-json)'
         BUILD_SCRIPT_PATH="$(jq -r '.build.script' <<< "${CFG}")"
-        echo -n "${BUILD_SCRIPT_PATH}" | tee "$(step.results.build-script-path.path)"
+        printf '%s' "${BUILD_SCRIPT_PATH}" > "$(step.results.build-script-path.path)"
+        echo "build-script-path=${BUILD_SCRIPT_PATH}"
 
         CACHE_ENABLED="$(jq -r '.build.cache.enabled // false' <<< "${CFG}")"
         AGENT="$(jq -r '.build.agent' <<< "${CFG}")"
@@ -110,8 +111,10 @@ spec:
             echo "build.cache: no ${LOCKFILE} found - caching anyway, but pin dependencies for repeatable builds" >&2
           fi
         fi
-        echo -n "${CACHE_TYPE}" | tee "$(step.results.cache-type.path)"
-        echo -n "${CACHE_SUBDIR}" | tee "$(step.results.cache-subdir.path)"
+        printf '%s' "${CACHE_TYPE}" > "$(step.results.cache-type.path)"
+        echo "cache-type=${CACHE_TYPE}"
+        printf '%s' "${CACHE_SUBDIR}" > "$(step.results.cache-subdir.path)"
+        echo "cache-subdir=${CACHE_SUBDIR}"
 
     - name: run-build-script
       image: $(params.agent-image)

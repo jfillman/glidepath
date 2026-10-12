@@ -188,5 +188,6 @@ spec:
             --arg b "${default_branch}" --arg body "${body}" '{title: $t, head: $h, base: $b, body: $body}')" | jq -r .html_url)"
           echo "opened pin PR for ${ENV}: ${pr_url}"
         fi
-        echo -n "${pr_url}" | tee "$(results.pr-url.path)"
+        printf '%s' "${pr_url}" > "$(results.pr-url.path)"
+        echo "pr-url=${pr_url}"
         echo -n "${digest}" > "$(results.digest.path)"
