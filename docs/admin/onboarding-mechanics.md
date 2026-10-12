@@ -146,6 +146,19 @@ The app chart's own resources (Triggers, RBAC) re-render on a `cicd.yaml` change
 for the same reason: the `ApplicationSet`'s generated `Application` reads `cicd.yaml`
 live from the app repo, so one push reaches both halves without a manual step.
 
+### What the resync scaffolds, once
+
+Besides `.tekton/`, the resync creates - only when missing, never overwriting - `glidepath/base.yaml`,
+`glidepath/pr-env.yaml` and `glidepath/envs/<env>.yaml` for every Ground environment `cicd.yaml` declares
+(known-gap #17). Since 2026-10-12 a Ground environment added *after* the first one also gets
+`glidepath/envs/<env>.release.yaml`, copied from the Ground environment before it in `cicd.yaml`'s order, as its
+own commit in `deploy-manifests.yaml`'s convention (`Deploy <app> to <env>: <image>`), so Backstage's deploy
+history reads it as a deploy. Without that the new environment was an empty namespace: the chart renders no
+workload without `release.image`, and the pipeline's deploy step only runs on the next *source* push, which a
+`cicd.yaml` or `glidepath/` change never is. Not seeded when the environment runs no workload
+(`rollout.enabled: false` / `rollout: null` in `base.yaml` or its own file, the same check `deploy-manifests.yaml`
+makes) or when the previous environment has no release file yet. The deploy step overwrites the file on its next run.
+
 ## A real deadlock this mechanism can fall into (found and fixed live)
 
 `onboarding-resync`'s own trigger file - the thing that would deliver a fix - is
