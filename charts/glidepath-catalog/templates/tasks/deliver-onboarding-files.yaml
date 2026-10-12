@@ -311,6 +311,7 @@ spec:
         # the hand-copied file also carried another app's image). The chart renders no
         # workload until release.image is set, so this is just a namespace until the first
         # build deploys. Never overwritten.
+        seeded_release_files=()
         if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && -f cicd.yaml ]]; then
           while IFS= read -r lower_env; do
             [[ -z "${lower_env}" ]] && continue
@@ -323,6 +324,48 @@ spec:
         envName: ${lower_env}
         ENVEOF
             echo "app repo: scaffolded ${ENVS_ROOT}/envs/${lower_env}.yaml (file was missing)"
+          done < <(yq -o=json '.deploy // {}' cicd.yaml | jq -r '[(.environments // [{name: "dev", tier: "ground"}])[] | select(.tier == "ground") | .name] | .[]')
+
+          # A Ground environment added later starts with the image of the Ground environment before
+          # it in cicd.yaml's order (2026-10-12: sky-marshall's new perf environment was an empty
+          # namespace - the chart renders no workload without release.image, and the pipeline's
+          # deploy step only runs on the next source push, which a cicd.yaml or glidepath/ change
+          # never is, so "add environment" produced nothing to look at). The release file is copied
+          # from the previous environment's and committed on its own, below, in deploy-manifests.yaml's
+          # commit-message convention ("Deploy <app> to <env>: <image>"), so Backstage's deploy history
+          # and Tower's Release matrix read it as the deploy it is. The next deploy step overwrites the
+          # file. Skipped where the environment runs no workload (rollout.enabled: false, or the older
+          # rollout: null, in base.yaml or its own file) - the same check deploy-manifests.yaml makes
+          # before refusing to deploy there - and for the first Ground environment, which has nothing
+          # to inherit from: its first build deploys to it. Never overwrites an existing release file.
+          prev_release=""
+          prev_env=""
+          while IFS= read -r lower_env; do
+            [[ -z "${lower_env}" ]] && continue
+            release_file="${ENVS_ROOT}/envs/${lower_env}.release.yaml"
+            if [[ ! -f "${release_file}" && -n "${prev_release}" ]]; then
+              human_files=()
+              [[ -f "${ENVS_ROOT}/base.yaml" ]] && human_files+=("${ENVS_ROOT}/base.yaml")
+              [[ -f "${ENVS_ROOT}/envs/${lower_env}.yaml" ]] && human_files+=("${ENVS_ROOT}/envs/${lower_env}.yaml")
+              no_workload="false"
+              if (( ${#human_files[@]} > 0 )); then
+                no_workload="$(yq eval-all '. as $i ireduce ({}; . * $i) | (has("rollout") and (.rollout == null or .rollout.enabled == false))' "${human_files[@]}")"
+              fi
+              seed_image="$(yq '(.release.image.repository // "") + ":" + (.release.image.tag // "")' "${prev_release}")"
+              if [[ "${no_workload}" == "true" ]]; then
+                echo "app repo: ${lower_env} runs no workload (rollout.enabled: false) - not seeding ${release_file}"
+              elif [[ "${seed_image}" == ":" || "${seed_image}" == *: || "${seed_image}" == :* ]]; then
+                echo "app repo: ${prev_env}'s release file names no image yet - not seeding ${release_file}"
+              else
+                cp "${prev_release}" "${release_file}"
+                seeded_release_files+=("${release_file}|${lower_env}|${seed_image}|${prev_env}")
+                echo "app repo: seeded ${release_file} with ${seed_image} from ${prev_env} (the deploy step overwrites it on its next run)"
+              fi
+            fi
+            if [[ -f "${release_file}" ]]; then
+              prev_release="${release_file}"
+              prev_env="${lower_env}"
+            fi
           done < <(yq -o=json '.deploy // {}' cicd.yaml | jq -r '[(.environments // [{name: "dev", tier: "ground"}])[] | select(.tier == "ground") | .name] | .[]')
         fi
 
@@ -772,6 +815,13 @@ spec:
           # onboarding-resync PR per repo that simply gets updated in place.
           branch_name="onboarding-resync"
           git checkout -b "${branch_name}"
+          # Seeded release files first, one commit each in deploy-manifests.yaml's message convention
+          # (see the seed block above): the first line is what Backstage parses for deploy history.
+          for seed in ${seeded_release_files[@]+"${seeded_release_files[@]}"}; do
+            IFS='|' read -r seed_file seed_env seed_image seed_prev <<<"${seed}"
+            git add "${seed_file}"
+            git commit --quiet -m "$(printf 'Deploy %s to %s: %s\n\nFirst image for a new environment, copied from %s'"'"'s release file by the onboarding mechanism so the environment runs something before the pipeline'"'"'s next deploy step overwrites this file.' "${APP_NAME}" "${seed_env}" "${seed_image}" "${seed_prev}")"
+          done
           git add .tekton/
           # ${ENVS_ROOT}/ (see the scaffold block above) holds untracked, one-time content outside
           # .tekton/ - `git add "${ENVS_ROOT}"` only stages what this run created or what a human
@@ -781,7 +831,7 @@ spec:
           # this file - a legitimate "nothing to add" (file absent, or already tracked and
           # unchanged) exits this chain non-zero, which set -e would otherwise abort on.
           { [[ -d "${ENVS_ROOT}" ]] && git add "${ENVS_ROOT}"; } || true
-          git commit --quiet -m "$(printf 'Onboarding: re-sync .tekton boilerplate from the platform catalog\n\nRegenerated onboarding-resync.yaml plus one .tekton/flow-<name>.yaml per git-rooted flow declared under cicd.yaml'"'"'s pipelines: - see Glidepath docs/admin/onboarding-mechanics.md. Also scaffolds '"${ENVS_ROOT}"'/base.yaml, '"${ENVS_ROOT}"'/pr-env.yaml and '"${ENVS_ROOT}"'/envs/<lower-env>.yaml once each, only when missing (known-gap #17). No developer action needed beyond merging.')"
+          git commit --quiet -m "$(printf 'Onboarding: re-sync .tekton boilerplate from the platform catalog\n\nRegenerated onboarding-resync.yaml plus one .tekton/flow-<name>.yaml per git-rooted flow declared under cicd.yaml'"'"'s pipelines: - see Glidepath docs/admin/onboarding-mechanics.md. Also scaffolds '"${ENVS_ROOT}"'/base.yaml, '"${ENVS_ROOT}"'/pr-env.yaml and '"${ENVS_ROOT}"'/envs/<lower-env>.yaml once each, only when missing (known-gap #17), and seeds a later Ground environment'"'"'s <env>.release.yaml from the environment before it (its own commit, above). No developer action needed beyond merging.')"
           # --force: the only way this exact branch name already exists remotely is a
           # still-open resync PR from an earlier trigger - this run's freshly
           # regenerated content should replace it outright, not be rejected as a
