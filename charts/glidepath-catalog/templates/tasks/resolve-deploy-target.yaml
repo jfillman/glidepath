@@ -126,7 +126,8 @@ spec:
         # already-defaulted - no clone needed, pass it straight through as both results.
         if [[ "${CONFIG_JSON}" != "{}" && -n "${CONFIG_JSON}" ]]; then
           TARGET="$(jq -r '.deploy.target // "k8s-rollout"' <<< "${CONFIG_JSON}" 2>/dev/null || echo "k8s-rollout")"
-          echo -n "${TARGET}" | tee "$(results.target.path)"
+          printf '%s' "${TARGET}" > "$(results.target.path)"
+          echo "target=${TARGET}"
           with_env_overrides "${CONFIG_JSON}" | tee "$(results.config-json.path)" > /dev/null
           exit 0
         fi
@@ -135,8 +136,9 @@ spec:
         # always has a real git-url - but fail safe to the schema default rather than
         # error, same philosophy as the event-chained branch's own fallback above).
         if [[ -z "${GIT_URL}" ]]; then
-          echo -n "k8s-rollout" | tee "$(results.target.path)"
-          echo -n "{}" | tee "$(results.config-json.path)" > /dev/null
+          printf '%s' "k8s-rollout" > "$(results.target.path)"
+          echo "target=k8s-rollout"
+          printf '%s' "{}" > "$(results.config-json.path)"
           exit 0
         fi
 
@@ -180,5 +182,6 @@ spec:
           RESOLVED_CONFIG="$(yq -o=json '.' "${workdir}/cicd.yaml" 2>/dev/null || echo "{}")"
           TARGET="$(jq -r '.deploy.target // "k8s-rollout"' <<< "${RESOLVED_CONFIG}" 2>/dev/null || echo "k8s-rollout")"
         fi
-        echo -n "${TARGET}" | tee "$(results.target.path)"
+        printf '%s' "${TARGET}" > "$(results.target.path)"
+        echo "target=${TARGET}"
         with_env_overrides "${RESOLVED_CONFIG}" | tee "$(results.config-json.path)" > /dev/null

@@ -100,7 +100,8 @@ spec:
         # defaulting true. run-tests.yaml's equivalent step already avoided this by
         # capturing into a variable first; mirrored here.
         ENABLED="$(jq -r 'if .test.enabled == false then "false" else "true" end' <<< '$(params.config-json)')"
-        echo -n "${ENABLED}" | tee "$(step.results.enabled.path)"
+        printf '%s' "${ENABLED}" > "$(step.results.enabled.path)"
+        echo "enabled=${ENABLED}"
 
     - name: execute-testworkflow
       image: {{ .Values.toolboxImage }}
@@ -123,18 +124,22 @@ spec:
 
         if [[ "${TEST_ENABLED}" != "true" ]]; then
           echo "test stage disabled in cicd.yaml, skipping"
-          echo -n "false" | tee "$(step.results.fallback-needed.path)"
-          echo -n "skipped" | tee "$(results.outcome.path)"
+          printf '%s' "false" > "$(step.results.fallback-needed.path)"
+          echo "fallback-needed=false"
+          printf '%s' "skipped" > "$(results.outcome.path)"
+          echo "outcome=skipped"
           exit 0
         fi
 
         WORKFLOW_FILE="glidepath/${TEST_NAME}.yaml"
         if [[ ! -f "${WORKFLOW_FILE}" ]]; then
           echo "no ${WORKFLOW_FILE} - falling back to ./integration-test.sh if present"
-          echo -n "true" | tee "$(step.results.fallback-needed.path)"
+          printf '%s' "true" > "$(step.results.fallback-needed.path)"
+          echo "fallback-needed=true"
           exit 0
         fi
-        echo -n "false" | tee "$(step.results.fallback-needed.path)"
+        printf '%s' "false" > "$(step.results.fallback-needed.path)"
+        echo "fallback-needed=false"
 
         WORKFLOW_NAME="${APP_NAME}-${TEST_NAME}"
         SECRET_NAME="${APP_NAME}-app-secrets"
@@ -222,7 +227,8 @@ spec:
         # a `set -e` early-exit would (same reasoning as sast-scan.yaml's own
         # onError: continue).
         STEP_SUMMARY="$(jq -r '.result.steps // {} | to_entries | map("\(.key): \(.value.status)") | join("\n")' <<< "${RESULT_JSON}" 2>/dev/null || echo "")"
-        echo -n "${STATUS:-timeout}" | tee "$(results.outcome.path)"
+        printf '%s' "${STATUS:-timeout}" > "$(results.outcome.path)"
+        echo "outcome=${STATUS:-timeout}"
         echo "${STEP_SUMMARY}" | tee "$(results.step-summary.path)"
 
         if [[ "${STATUS}" != "passed" ]]; then
@@ -250,7 +256,8 @@ spec:
         fi
         if [[ ! -f ./integration-test.sh ]]; then
           echo "warn: no ${TEST_NAME}.yaml under glidepath/ and no ./integration-test.sh found at repo root - skipping, not failing" >&2
-          echo -n "skipped" | tee "$(results.outcome.path)"
+          printf '%s' "skipped" > "$(results.outcome.path)"
+          echo "outcome=skipped"
           exit 0
         fi
         echo "running '${TEST_NAME}' against env '${TEST_ENV}', image ${IMAGE_REF}"
@@ -263,8 +270,10 @@ spec:
         FALLBACK_EXIT_CODE=$?
         set -e
         if [[ "${FALLBACK_EXIT_CODE}" -eq 0 ]]; then
-          echo -n "passed" | tee "$(results.outcome.path)"
+          printf '%s' "passed" > "$(results.outcome.path)"
+          echo "outcome=passed"
         else
-          echo -n "failed" | tee "$(results.outcome.path)"
+          printf '%s' "failed" > "$(results.outcome.path)"
+          echo "outcome=failed"
         fi
         exit "${FALLBACK_EXIT_CODE}"

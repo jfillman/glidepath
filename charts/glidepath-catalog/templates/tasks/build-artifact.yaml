@@ -106,7 +106,8 @@ spec:
           echo "error: ${ARTIFACT_TYPE} build produced no output file in ${OUT_DIR}." >&2
           exit 1
         fi
-        echo -n "${ARTIFACT_FILE}" | tee "$(step.results.artifact-file.path)"
+        printf '%s' "${ARTIFACT_FILE}" > "$(step.results.artifact-file.path)"
+        echo "artifact-file=${ARTIFACT_FILE}"
 
     - name: publish
       image: {{ .Values.toolboxImage }}
@@ -133,4 +134,5 @@ spec:
         oras push "${ARTIFACT_REF}" \
           "${ARTIFACT_FILE}:application/octet-stream" \
           --artifact-type "application/vnd.hangar.artifact.${ARTIFACT_TYPE}"
-        echo -n "${ARTIFACT_REF}" | tee "$(results.artifact-ref.path)"
+        printf '%s' "${ARTIFACT_REF}" > "$(results.artifact-ref.path)"
+        echo "artifact-ref=${ARTIFACT_REF}"

@@ -165,7 +165,9 @@ spec:
           # synthesized when genuinely absent, never overwrites an explicit declaration.
           pr_enabled="$(yq -r '.ephemeralEnvironments.pullRequest.enabled // false' cicd.yaml)"
           if [[ "${pr_enabled}" == "true" ]] && [[ "$(echo "${pipelines_json}" | jq -r 'has("pr-build")')" != "true" ]]; then
-            pr_labels_json="$(yq -o=json '.ephemeralEnvironments.pullRequest.labels // ["preview"]' cicd.yaml)"
+            # -I=0: one-line JSON, so the log line below reads `labels=["preview"]` instead of a pretty-printed
+            # array split over three lines (2026-10-12).
+            pr_labels_json="$(yq -o=json -I=0 '.ephemeralEnvironments.pullRequest.labels // ["preview"]' cicd.yaml)"
             # Base branch: reuse whichever push-triggered flow's branch is already
             # declared (this platform's convention for "the" release branch) - falls back
             # to main if no push flow exists at all.

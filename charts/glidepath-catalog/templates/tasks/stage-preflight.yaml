@@ -378,13 +378,13 @@ spec:
         # once landed in a result and broke Tekton's exact-string `when:` gates.
         # `if == true` rather than `// false`: jq's `//` treats false like null.
         flag() { jq -r "if ($1) == true then \"true\" else \"false\" end" /tmp/cicd-defaulted.json; }
-        echo -n "$(jq -r 'if .build.script != null and .build.script != "" then "true" else "false" end' /tmp/cicd-defaulted.json)" | tee "$(results.has-build-script.path)" > /dev/null
-        echo -n "$(flag .governance.sast)" | tee "$(results.sast.path)" > /dev/null
-        echo -n "$(flag .governance.imageScan)" | tee "$(results.image-scan.path)" > /dev/null
-        echo -n "$(flag .governance.policyCheck)" | tee "$(results.policy-check.path)" > /dev/null
-        echo -n "$(flag .governance.sbom)" | tee "$(results.sbom.path)" > /dev/null
-        echo -n "$(jq -r '(.build.artifacts // []) | index("python-wheel") != null' /tmp/cicd-defaulted.json)" | tee "$(results.artifacts-python-wheel.path)" > /dev/null
-        echo -n "$(jq -r '(.build.artifacts // []) | index("go-binary") != null' /tmp/cicd-defaulted.json)" | tee "$(results.artifacts-go-binary.path)" > /dev/null
+        printf '%s' "$(jq -r 'if .build.script != null and .build.script != "" then "true" else "false" end' /tmp/cicd-defaulted.json)" > "$(results.has-build-script.path)"
+        printf '%s' "$(flag .governance.sast)" > "$(results.sast.path)"
+        printf '%s' "$(flag .governance.imageScan)" > "$(results.image-scan.path)"
+        printf '%s' "$(flag .governance.policyCheck)" > "$(results.policy-check.path)"
+        printf '%s' "$(flag .governance.sbom)" > "$(results.sbom.path)"
+        printf '%s' "$(jq -r '(.build.artifacts // []) | index("python-wheel") != null' /tmp/cicd-defaulted.json)" > "$(results.artifacts-python-wheel.path)"
+        printf '%s' "$(jq -r '(.build.artifacts // []) | index("go-binary") != null' /tmp/cicd-defaulted.json)" > "$(results.artifacts-go-binary.path)"
 
         # build.agent -> image via build-agents.env (formerly resolve-build-agent-image's
         # own step). Only an error when a cicd.yaml was actually validated above - an
@@ -398,7 +398,7 @@ spec:
             exit 1
           fi
         fi
-        echo -n "${AGENT_IMAGE}" | tee "$(results.agent-image.path)" > /dev/null
+        printf '%s' "${AGENT_IMAGE}" > "$(results.agent-image.path)"
 
         echo "config resolved: ${CONFIG_SOURCE}, $(wc -c < "$(results.config-json.path)" | tr -d ' ') bytes compact"
         echo "  build.agent=${AGENT:-<none>} -> ${AGENT_IMAGE:-<none>}  build.script=$(cat "$(results.has-build-script.path)")  platforms=$(jq -c '.build.platforms // "default"' /tmp/cicd-defaulted.json)"

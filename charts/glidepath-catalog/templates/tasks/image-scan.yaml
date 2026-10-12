@@ -167,7 +167,8 @@ spec:
         if [[ "${EXIT_CODE}" -ne 0 || ! -s /tmp/scan-results.json ]]; then
           echo "trivy scan error - no findings available, see the step log above" | tee "$(results.findings-summary.path)"
           echo "image-scan: trivy itself failed before completing the scan (exit ${EXIT_CODE}) - not a vulnerability finding, see step log" >&2
-          echo -n "error" | tee "$(results.outcome.path)"
+          printf '%s' "error" > "$(results.outcome.path)"
+          echo "outcome=error"
           exit 1
         fi
 
@@ -195,10 +196,12 @@ spec:
         } | tee "$(results.findings-summary.path)"
 
         if [[ "${TOTAL_COUNT}" -eq 0 ]]; then
-          echo -n "passed" | tee "$(results.outcome.path)"
+          printf '%s' "passed" > "$(results.outcome.path)"
+          echo "outcome=passed"
         else
           echo "image-scan: trivy found ${TOTAL_COUNT} HIGH/CRITICAL vulnerabilities" >&2
-          echo -n "failed" | tee "$(results.outcome.path)"
+          printf '%s' "failed" > "$(results.outcome.path)"
+          echo "outcome=failed"
           exit 1
         fi
 
