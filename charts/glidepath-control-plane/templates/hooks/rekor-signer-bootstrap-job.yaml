@@ -1,0 +1,143 @@
+# platform/hooks/rekor-signer-bootstrap-job.yaml
+#
+# Gives Rekor a signing key that survives restarts (2026-10-14). Rekor signs every receipt (the Signed Entry
+# Timestamp cosign embeds in an image's OCI annotation) and every checkpoint with this key. The chart's default,
+# `--rekor_server.signer=memory`, makes a new key on every rekor-server start, so after a restart no receipt issued
+# before it can be checked again: found live, boarding-api 1.1.3's attestations were logged under a key Rekor no longer
+# had ("inclusion promise could not be verified" in Tower). Tower and the provenance gate now read entries fresh from
+# Rekor, which re-signs them with its current key, so this is not what makes them verify - it is what keeps the
+# receipts inside the images verifiable, offline, with plain cosign, for as long as the key lives.
+#
+# Same recipe as fulcio-bootstrap-job.yaml: generated inside the cluster, never in a repo, Infisical or a terminal;
+# idempotent (an existing rekor-signer Secret is never replaced, because replacing it is a key rotation). Rotating
+# deliberately is a manual step: delete the Secret, re-sync this chart, restart rekor-server (docs/admin/image-signing.md).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rekor-signer-bootstrap
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "hooks"
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+---
+# rekor-system may not exist yet on a fresh cluster (the Rekor Application creates it); same bounded namespace
+# exception fulcio-bootstrap takes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rekor-signer-bootstrap
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "hooks"
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rekor-signer-bootstrap
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "hooks"
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: rekor-signer-bootstrap }
+subjects:
+  - kind: ServiceAccount
+    name: rekor-signer-bootstrap
+    namespace: {{ .Release.Namespace }}
+---
+# Only the one Secret: get to see whether it exists, create to make it. No update or patch, so this Job can never
+# replace an existing key.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rekor-signer-bootstrap
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "hooks"
+  namespace: rekor-system
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["rekor-signer"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rekor-signer-bootstrap
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "hooks"
+  namespace: rekor-system
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: rekor-signer-bootstrap }
+subjects:
+  - kind: ServiceAccount
+    name: rekor-signer-bootstrap
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rekor-signer-bootstrap
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "hooks"
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      serviceAccountName: rekor-signer-bootstrap
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: {{ .Values.toolboxImage }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              if kubectl get secret rekor-signer -n rekor-system >/dev/null 2>&1; then
+                echo "rekor-signer already exists - skipping (idempotent no-op; replacing it would rotate Rekor's key)."
+                exit 0
+              fi
+
+              echo "==> creating rekor-system namespace (if missing)"
+              kubectl create namespace rekor-system --dry-run=client -o yaml | kubectl apply -f -
+
+              echo "==> generating Rekor's signing key (ECDSA P-256, PKCS#8) for {{ .Values.clusterName }}"
+              umask 077
+              openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out /tmp/private.pem
+              kubectl create secret generic rekor-signer -n rekor-system --from-file=private.pem=/tmp/private.pem
+              rm -f /tmp/private.pem
+
+              echo "rekor-signer created; restart rekor-server to start signing with it"
