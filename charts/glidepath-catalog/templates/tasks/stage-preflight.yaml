@@ -276,7 +276,11 @@ spec:
         git checkout --quiet FETCH_HEAD
 
         echo -n "${GIT_URL}" > "$(results.url.path)"
-        git rev-parse FETCH_HEAD | tr -d \'\n\' > "$(results.commit.path)"
+        # printf, not `| tr -d`: written as tr -d \'\n\' this deleted the characters ' and n, not the newline, so
+        # CHAINS-GIT_COMMIT carried a trailing newline into every build's SLSA provenance and the release gate's
+        # Conforma policy failed every release PR since 2026-10-08 ("Material digest ... is not a git commit sha",
+        # "Expected source code reference was not provided"). Found live on gitops-boarding-api#41 and #45.
+        printf '%s' "$(git rev-parse FETCH_HEAD)" > "$(results.commit.path)"
         echo "clone successful: ${GIT_URL} @ $(git rev-parse --short=12 FETCH_HEAD) (requested ${clone_revision}, depth 1, $(git ls-files | wc -l | tr -d ' ') files)"
         else
           echo "no source workspace bound (event-chained ${STAGE_NAME}) - nothing to clone"
