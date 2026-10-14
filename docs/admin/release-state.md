@@ -45,6 +45,15 @@ One ConfigMap per release, `release-tracking-<chain-id>`, in the Application's o
 The record is **not deleted when its outcome is read** (it used to be). The state machine needs
 it afterwards, and the sweeper removes it past its retention.
 
+Outside Glidepath, Tower's backend reads the records (`list` with the labels above, as its
+read identity on the dev cluster) for three things: the releases a rollback may target, the
+images an image prune must keep, and each release record's **outcome** (clean, rolled back,
+replaced before healthy, stopped before production), from `state`, `healthyAt`,
+`supersededBy`, `rolledBackBy`, `rollbackReason` and `image`. Tower writes the outcome into
+the release record in `gitops-<app>` once it is final, so it outlives the sweep; a release
+whose records were swept first, or written before phase 4 (no `image`), has no outcome. See
+Tower's `docs/release-records/index.md`.
+
 ## The state machine
 
 ![One release, from PR to terminal state](diagrams/release-state-machine.svg)
