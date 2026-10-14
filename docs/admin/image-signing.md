@@ -119,6 +119,31 @@ kubectl create secret generic fulcio-secret -n fulcio-system \
 CT log is disabled (`ct-log-url: ""` in `server.yaml`) - Fulcio runs without it, "not
 recommended for production" per its own docs, an accepted tradeoff (see above).
 
+## Rekor's signing key (2026-10-14)
+
+Rekor signs each entry's receipt (the Signed Entry Timestamp, or "inclusion promise", that cosign embeds in an
+image's OCI annotation) and each checkpoint. Until 2026-10-14 it ran with the Helm chart's default
+`--rekor_server.signer=memory`: a new key every time `rekor-server` started. Every receipt issued before a restart
+could then no longer be checked against the key Rekor publishes, although the entries themselves stay in the log
+(the Trillian tree is unchanged). Found live: boarding-api 1.1.3's attestations, logged on 2026-10-06 under log ID
+`f4f5...`, showed "inclusion promise could not be verified" in Tower after the 2026-10-10 restart (current log ID
+`88dc...`).
+
+- **The key now persists.** `rekor-signer` in `rekor-system` (an EC P-256 PKCS#8 key) is generated in the cluster
+  by `glidepath-control-plane`'s `rekor-signer-bootstrap` hook, the same way `fulcio-bootstrap` makes Fulcio's
+  root: never in git, Infisical or a terminal, and never replaced once it exists. `rekor-helm-values.yaml` mounts it
+  (`server.signer`, `server.signerFileSecretOptions`) and pins `--rekor_server.hostname`, so the checkpoint origin no
+  longer changes with the pod's name.
+- **Switching to it is one last key change.** Receipts issued before the switch stay uncheckable offline with their
+  embedded copy. Nothing on the platform relies on that copy:
+  - `verify-image-provenance` reads each entry from Rekor (`/api/v1/log/entries/<uuid>`), and Rekor re-signs the
+    receipt with its current key on every read. Confirmed 2026-10-14: the gate's own script verifies boarding-api 1.1.3.
+  - Tower does the same by log index (backstage `rekorEntries.ts`). The image signature (`.sig`), whose receipt
+    Chains does not attach, is found among the entries next to its attestations.
+- **Rotating deliberately:** delete the `rekor-signer` Secret, sync `glidepath-control-plane` (the hook makes a new
+  one), then restart `rekor-server`. Everything above keeps verifying; embedded receipts from before stop verifying
+  offline.
+
 ## Tekton Chains configuration
 
 Not previously installed on this cluster at all - installed as part of cluster bootstrap
