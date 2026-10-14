@@ -138,10 +138,16 @@ Deterministic (non-`generateName`) PipelineRun names fired by the broker follow
   the CEL filter chaining one step to the next can match on the exact previous step
   rather than any step with that stage name (see `flow-triggers.yaml`).
 - `chainSlug` (`$(body.customData.platform.chain_slug)`) is a two-word deterministic
-  stand-in for the flow's chain-id (see `cdevents.sh`'s `chain_id_to_slug`) - derived
-  from the first 4 hex chars of chain-id, which never changes across a flow, so every
+  stand-in for the flow's chain-id (see `catalog/lib/chain-slug.sh`'s `chain_id_to_slug`) -
+  derived from the first 4 hex chars of chain-id, which never changes across a flow, so every
   chained PipelineRun in the same flow instance shows the same two words, making them
   easy to spot as belonging together at a glance without reading the full chain-id.
+  One hex byte picks each word from a list of exactly 256 (adjective, then animal), so
+  every 4-hex prefix has its own slug: 65,536 in all, none repeated. `hack/ci/chain_slug_test.sh`
+  (catalog-ci) checks the lists: 256 each, no duplicates, no word in both, 2-6 lowercase
+  letters. Tower mirrors the lists (`src/tekton/chainSlug.ts`), and its release names
+  (ASPEN, BIRCH, CEDAR... tree names, per app) share no word with them, so "CEDAR, shipped
+  as amber-finch" names the release and the build unambiguously.
 - `$(body.context.id)` is a deterministic hash of the *emitting* PipelineRun's own name
   plus the event type it emitted (see `cdevents.sh`), truncated to 8 hex chars (down
   from an original 20, to make room for `chainSlug` within Kubernetes' 63-char name
