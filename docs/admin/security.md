@@ -3,6 +3,9 @@
 A single place to see the platform's security posture end to end. Each section links
 to the doc with the full depth - this page is the map, not the territory.
 
+Every rule here is also in Hangar's [business rules register](https://github.com/jfillman/hangar/blob/main/docs/policy/business-rules.md), with the rules of every other component.
+A change to a rule updates that page too.
+
 ## Threat model in one sentence
 
 Many tenants (Applications) share one cluster and one control plane; a compromised or
