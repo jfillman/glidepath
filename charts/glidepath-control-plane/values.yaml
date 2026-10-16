@@ -268,6 +268,11 @@ secretStore:
 #   glidepath: { relaySecretName: cluster-kind-prod-relay-token }
 clusters: []
 
+# The fleet's AWS account: the top-level aws: block of the same clusters.yaml (apron docs/clusters-file.md). Only
+# accountId is read here: it is forwarded to every app as cloudIdentity.awsAccountId (tenant-onboarding
+# ApplicationSet), which turns on web-identity cloud deploys (glidepath-app templates/identity/cloud-deployer.yaml).
+aws: {}
+
 # The release relay's fact endpoints (POST /facts/<cluster>, /argocd/<cluster>; ADR-0021). "emit"
 # (default) builds the CDEvent a fact implies and forwards it to the broker; "shadow" logs it
 # normalized without forwarding, for trying the path out beside another reporter.

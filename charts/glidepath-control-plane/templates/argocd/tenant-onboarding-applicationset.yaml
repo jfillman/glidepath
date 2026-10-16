@@ -111,6 +111,11 @@ spec:
               defaultChart:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
+              {{- with (.Values.aws | default dict).accountId }}
+              # The fleet's AWS account (clusters.yaml aws:): glidepath-app's cloud deploy identity.
+              cloudIdentity:
+                awsAccountId: {{ toString . | quote }}
+              {{- end }}
               {{- if .Values.clusterName }}
               # ADR-0024: the control plane's name and each known cluster's zone, for glidepath-app's environment checks.
               clusterTaxonomy:
