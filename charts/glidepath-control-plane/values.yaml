@@ -164,6 +164,17 @@ tenantOnboardingApplicationSetName: ""
 # had no timestamp anchor to prove Fulcio's short-lived (10-minute) leaf cert was valid
 # AT SIGNING TIME, so cosign correctly rejected it as expired by release-PR time on
 # every real release (docs/admin/release-guardrails.md's "known open issue").
+# Public ServiceAccount token issuers Fulcio accepts besides the in-cluster default
+# (https://kubernetes.default.svc.cluster.local, always present). A cluster that signs its
+# tokens under its own public issuer (apron clusterIdentity, e.g.
+# https://hangarplatform.dev/oidc/<cluster>) lists it here BEFORE switching, so Chains keeps
+# signing across the switch; templates/hooks/fulcio-bootstrap-job.yaml rewrites fulcio-config
+# and restarts fulcio-server when this list changes. Set chains.configPatch's
+# signers.x509.fulcio.issuer to the new issuer after the switch, and add it to
+# glidepath-catalog's sigstoreIssuers so verification accepts it.
+fulcio:
+  publicIssuers: []
+
 chains:
   configPatch:
     signers.x509.fulcio.enabled: "true"

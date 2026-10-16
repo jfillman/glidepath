@@ -185,7 +185,8 @@ spec:
           --out "${workdir}/trusted-root.json"
 
         identity_regexp="^https://kubernetes\.io/namespaces/{{ .Values.tektonChainsNamespace }}/serviceaccounts/.*$"
-        issuer="https://kubernetes.default.svc.cluster.local"
+        # Exact match on any of .Values.sigstoreIssuers (values.yaml).
+        issuer_regexp='^({{ range $i, $iss := .Values.sigstoreIssuers }}{{ if $i }}|{{ end }}{{ regexQuoteMeta $iss }}{{ end }})$'
 
         # No separate bare-image `cosign verify` - Chains here only produces attestations
         # (.att), not a standalone image signature (.sig, which needs a TaskRun-level type
@@ -339,7 +340,7 @@ spec:
             --insecure-ignore-sct=true \
             --trusted-root "${workdir}/trusted-root.json" \
             --certificate-identity-regexp "${identity_regexp}" \
-            --certificate-oidc-issuer "${issuer}" \
+            --certificate-oidc-issuer-regexp "${issuer_regexp}" \
             --type slsaprovenance
 
           payload_file="${att_dir}/provenance-${i}.json"

@@ -99,6 +99,14 @@ backstageHostAliasIP: ""
 # gitops-cluster-dev/50-platform-cicd/tekton-operator/) - the sole install path now.
 tektonChainsNamespace: tekton-pipelines
 
+# OIDC issuers a Chains signing certificate may name (the `iss` of the ServiceAccount token
+# Fulcio exchanged). verify-image-provenance.yaml/verify-sast-attestation.yaml accept any of
+# them, matched exactly. The kind default is the API server's built-in issuer; a cluster with
+# its own public issuer (apron clusterIdentity) lists that one too, and keeps the old one for
+# as long as attestations signed under it still need to verify.
+sigstoreIssuers:
+  - https://kubernetes.default.svc.cluster.local
+
 # Single source of truth for every guardrail gate enforced on a gitops-repo release PR
 # (docs/admin/release-guardrails.md). Adding or removing a gate here is only PART of the
 # change - it also needs its own catalog Pipeline (a dedicated one for a real gate, or

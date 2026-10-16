@@ -103,6 +103,28 @@ currently justified by any real gap it would close.
    pattern. A new binding, not a widened existing one - this platform's consistent
    "additive, don't touch what you don't own" RBAC discipline.
 
+### A cluster with its own public ServiceAccount issuer
+
+A cluster can sign its ServiceAccount tokens under a public issuer instead of the kind
+default (apron `clusterIdentity`, for example `https://hangarplatform.dev/oidc/kiac-dev`,
+which AWS IAM and other clusters can verify). Fulcio and the verify Tasks match on the
+token's `iss`, so the switch is staged:
+
+1. **Before the switch:** add the issuer to `fulcio.publicIssuers` (glidepath-control-plane)
+   and to `sigstoreIssuers` (glidepath-catalog), keeping the default in both. The
+   `fulcio-bootstrap` hook rewrites `fulcio-config` on every sync (only the signing root is
+   created once) and restarts `fulcio-server` when the issuer list changes, because the file
+   is mounted by `subPath`. A public issuer has no `ca-cert`: Fulcio fetches its discovery
+   document over the internet with system CA roots, so `fulcio-system` needs egress to it.
+2. **Switch** the API server's first `--service-account-issuer` (apron
+   `hack/cluster-identity.sh issuer`). The Chains and SBOM tokens live 600 s, so tokens
+   under the old issuer are gone within ~10 minutes.
+3. **After the switch:** set `chains.configPatch`'s `signers.x509.fulcio.issuer` to the
+   new issuer. Keep the old one in `sigstoreIssuers` for as long as images signed before the
+   switch still need to verify. The default entry in `fulcio-config` stops working after
+   the switch: the API server's discovery document now names the new issuer, so Fulcio
+   logs an error for it and skips it (not fatal).
+
 Root CA: a one-time, manually-bootstrapped `fileca` (self-signed ed25519 root, matching
 Fulcio's own CI test recipe), stored as the `fulcio-secret` Secret in `fulcio-system`,
 never automated via a Job - same precedent as this platform's other one-time bootstrap

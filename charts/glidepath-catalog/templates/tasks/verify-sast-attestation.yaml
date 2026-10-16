@@ -112,7 +112,8 @@ spec:
         # verification against it - confirmed live, this is the actual root cause of
         # the previously-only-"narrowed" sbom+policyCheck conflict).
         identity_regexp="^https://kubernetes\.io/namespaces/{{ .Values.tektonChainsNamespace }}/serviceaccounts/.*$"
-        issuer="https://kubernetes.default.svc.cluster.local"
+        # Exact match on any of .Values.sigstoreIssuers (values.yaml).
+        issuer_regexp='^({{ range $i, $iss := .Values.sigstoreIssuers }}{{ if $i }}|{{ end }}{{ regexQuoteMeta $iss }}{{ end }})$'
         att_dir="${workdir}/attestations"
         mkdir -p "${att_dir}"
         cosign download attestation "${image_ref}" > "${att_dir}/all-attestations.jsonl" 2>/dev/null || true
@@ -230,7 +231,7 @@ spec:
             --insecure-ignore-sct=true \
             --trusted-root "${workdir}/trusted-root.json" \
             --certificate-identity-regexp "${identity_regexp}" \
-            --certificate-oidc-issuer "${issuer}" \
+            --certificate-oidc-issuer-regexp "${issuer_regexp}" \
             --type slsaprovenance
 
           payload_file="${att_dir}/provenance-${i}.json"

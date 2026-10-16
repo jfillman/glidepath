@@ -132,6 +132,10 @@ rules:
   - apiGroups: [""]
     resources: ["secrets", "configmaps"]
     verbs: ["get", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["fulcio-server"]
+    verbs: ["get", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -219,35 +223,29 @@ spec:
             - |
               set -euo pipefail
 
+              # The signing root is minted once (see the header); fulcio-config is not secret and is
+              # rewritten on every sync, so a new issuer in .Values.fulcio.publicIssuers reaches a
+              # cluster that was bootstrapped long ago.
               if kubectl get secret fulcio-secret -n fulcio-system >/dev/null 2>&1; then
-                echo "fulcio-secret already exists - skipping (idempotent no-op)."
+                echo "fulcio-secret already exists - keeping the signing root (idempotent)."
                 echo "To rotate the root deliberately, use hack/generate-cluster-values.sh FORCE=1 instead."
-                exit 0
-              fi
+              else
+                echo "==> creating fulcio-system namespace"
+                kubectl create namespace fulcio-system --dry-run=client -o yaml | kubectl apply -f -
 
-              echo "==> creating fulcio-system namespace"
-              kubectl create namespace fulcio-system --dry-run=client -o yaml | kubectl apply -f -
+                echo "==> generating a fresh, independent Fulcio root CA for {{ .Values.clusterName }}"
+                PASSPHRASE="$(openssl rand -base64 32)"
+                openssl req -x509 -newkey ed25519 -sha256 \
+                  -keyout /tmp/key.pem -out /tmp/cert.pem \
+                  -subj "/CN={{ .Values.clusterName }}-fulcio-root" -days 36500 \
+                  -passout "pass:${PASSPHRASE}"
 
-              echo "==> reading this cluster's own API server root CA (kube-root-ca.crt)"
-              ISSUER_CA_CERT="$(kubectl get configmap kube-root-ca.crt -n default -o jsonpath='{.data.ca\.crt}')"
-              if [[ -z "${ISSUER_CA_CERT}" ]]; then
-                echo "error: could not read kube-root-ca.crt/ca.crt from default namespace." >&2
-                exit 1
-              fi
+                echo "==> creating fulcio-secret + fulcio-server-config"
+                kubectl create secret generic fulcio-secret -n fulcio-system \
+                  --from-file=/tmp/cert.pem --from-file=/tmp/key.pem \
+                  --dry-run=client -o yaml | kubectl apply -f -
 
-              echo "==> generating a fresh, independent Fulcio root CA for {{ .Values.clusterName }}"
-              PASSPHRASE="$(openssl rand -base64 32)"
-              openssl req -x509 -newkey ed25519 -sha256 \
-                -keyout /tmp/key.pem -out /tmp/cert.pem \
-                -subj "/CN={{ .Values.clusterName }}-fulcio-root" -days 36500 \
-                -passout "pass:${PASSPHRASE}"
-
-              echo "==> creating fulcio-secret + fulcio-server-config"
-              kubectl create secret generic fulcio-secret -n fulcio-system \
-                --from-file=/tmp/cert.pem --from-file=/tmp/key.pem \
-                --dry-run=client -o yaml | kubectl apply -f -
-
-              cat > /tmp/server.yaml <<SERVERCONFIG
+                cat > /tmp/server.yaml <<SERVERCONFIG
               ca: fileca
               fileca-cert: /etc/fulcio-secret/cert.pem
               fileca-key: /etc/fulcio-secret/key.pem
@@ -257,15 +255,26 @@ spec:
               grpc-port: "5554"
               metrics-port: "2112"
               SERVERCONFIG
-              kubectl create secret generic fulcio-server-config -n fulcio-system \
-                --from-file=/tmp/server.yaml \
-                --dry-run=client -o yaml | kubectl apply -f -
+                kubectl create secret generic fulcio-server-config -n fulcio-system \
+                  --from-file=/tmp/server.yaml \
+                  --dry-run=client -o yaml | kubectl apply -f -
 
-              echo "==> creating fulcio-root-ca (platform-catalog) + fulcio-config (fulcio-system)"
-              kubectl create configmap fulcio-root-ca -n platform-catalog \
-                --from-file=cert.pem=/tmp/cert.pem \
-                --dry-run=client -o yaml | kubectl apply -f -
+                echo "==> creating fulcio-root-ca (platform-catalog)"
+                kubectl create configmap fulcio-root-ca -n platform-catalog \
+                  --from-file=cert.pem=/tmp/cert.pem \
+                  --dry-run=client -o yaml | kubectl apply -f -
+              fi
 
+              echo "==> reading this cluster's own API server root CA (kube-root-ca.crt)"
+              ISSUER_CA_CERT="$(kubectl get configmap kube-root-ca.crt -n default -o jsonpath='{.data.ca\.crt}')"
+              if [[ -z "${ISSUER_CA_CERT}" ]]; then
+                echo "error: could not read kube-root-ca.crt/ca.crt from default namespace." >&2
+                exit 1
+              fi
+
+              # Public issuers (apron clusterIdentity) are fetched over the internet with the
+              # image's own CA roots, so they carry no ca-cert. Each must serve
+              # <issuer>/.well-known/openid-configuration naming itself.
               {
                 echo "oidc-issuers:"
                 echo "  https://kubernetes.default.svc.cluster.local:"
@@ -274,9 +283,27 @@ spec:
                 echo "    type: \"kubernetes\""
                 echo "    ca-cert: |"
                 echo "${ISSUER_CA_CERT}" | sed 's/^/      /'
+                {{- range .Values.fulcio.publicIssuers }}
+                echo "  {{ . }}:"
+                echo "    issuer-url: \"{{ . }}\""
+                echo "    client-id: \"sigstore\""
+                echo "    type: \"kubernetes\""
+                {{- end }}
               } > /tmp/config.yaml
-              kubectl create configmap fulcio-config -n fulcio-system \
-                --from-file=config.yaml=/tmp/config.yaml \
-                --dry-run=client -o yaml | kubectl apply -f -
+
+              CURRENT="$(kubectl get configmap fulcio-config -n fulcio-system -o jsonpath='{.data.config\.yaml}' 2>/dev/null || true)"
+              if [[ "${CURRENT}" == "$(cat /tmp/config.yaml)" ]]; then
+                echo "==> fulcio-config unchanged"
+              else
+                echo "==> writing fulcio-config (fulcio-system)"
+                kubectl create configmap fulcio-config -n fulcio-system \
+                  --from-file=config.yaml=/tmp/config.yaml \
+                  --dry-run=client -o yaml | kubectl apply -f -
+                # fulcio-server mounts config.yaml by subPath, which never sees ConfigMap updates.
+                if [[ -n "${CURRENT}" ]] && kubectl get deployment fulcio-server -n fulcio-system >/dev/null 2>&1; then
+                  echo "==> restarting fulcio-server to load the new issuer list"
+                  kubectl rollout restart deployment/fulcio-server -n fulcio-system
+                fi
+              fi
 
               echo "fulcio bootstrap complete"
