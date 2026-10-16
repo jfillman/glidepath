@@ -31,6 +31,7 @@ The role is glidepath-deploy-<FUNCTION_NAME cut to 47> in that account: the one 
 for this function (compositions/awslambdatarget/templates/render-target-resources/deploy-role.yaml, same cut).
 The AWS CLI exchanges the token for a session itself.
 
+If STS refuses that role (not created yet, or a function no AwsLambdaTarget manages), it says so and falls back.
 Otherwise the app-secrets keys, as before.
 */ -}}
 {{- define "glidepath-catalog.awsLambdaCredentials" -}}
@@ -48,8 +49,14 @@ aws_credentials() {
     export AWS_ROLE_ARN="arn:aws:iam::$(cat "${account_file}"):role/glidepath-deploy-${FUNCTION_NAME:0:47}"
     export AWS_WEB_IDENTITY_TOKEN_FILE="${token}"
     export AWS_ROLE_SESSION_NAME="$(printf 'glidepath-%s' "${TASKRUN_NAME:-deploy}" | cut -c1-64)"
-    echo "credentials: assuming ${AWS_ROLE_ARN} (web identity, no stored key)"
-    return 0
+    if aws sts get-caller-identity >/dev/null 2>/tmp/aws-assume-error; then
+      echo "credentials: assuming ${AWS_ROLE_ARN} (web identity, no stored key)"
+      return 0
+    fi
+    # The role can lag the switch (the target creates it a reconcile after the registry names the account), or
+    # be missing for a function the target doesn't manage. Use the app's key while one exists rather than fail.
+    echo "warning: could not assume ${AWS_ROLE_ARN}: $(tail -1 /tmp/aws-assume-error)" >&2
+    unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_SESSION_NAME
   fi
   if [[ -f /var/run/secrets/platform/aws-access-key-id && -f /var/run/secrets/platform/aws-secret-access-key ]]; then
     export AWS_ACCESS_KEY_ID="$(cat /var/run/secrets/platform/aws-access-key-id)"
