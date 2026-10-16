@@ -1,0 +1,34 @@
+{{- /*
+The cloud deploy identity (SPEC-glidepath-deployer-federation.md). Rendered once the control plane passes the fleet's
+AWS account (cloudIdentity.awsAccountId, from clusters.yaml's aws: block).
+
+- ServiceAccount glidepath-cloud-deployer: the only subject an app's AWS deploy roles trust
+  (system:serviceaccount:<this namespace>:glidepath-cloud-deployer, Airframe's AwsLambdaTarget deploy role). The
+  deploy stage runs deploy-aws-lambda as it (flow-triggers.yaml, and the root of a promote flow), and the target's
+  bootstrap Job runs as it. No RBAC: it never talks to the Kubernetes API, only to AWS STS with a projected token,
+  so its API token is not mounted either.
+- ConfigMap glidepath-cloud-identity: the account id, so deploy-lambda can name the role without a cicd.yaml field.
+*/ -}}
+{{- with .Values.cloudIdentity.awsAccountId }}
+{{- $appNamespace := include "glidepath-app.namespace" $ }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: glidepath-cloud-deployer
+  labels:
+    {{- include "glidepath-app.labels" $ | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: glidepath-cloud-identity
+  labels:
+    {{- include "glidepath-app.labels" $ | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+data:
+  awsAccountId: {{ toString . | quote }}
+{{- end }}

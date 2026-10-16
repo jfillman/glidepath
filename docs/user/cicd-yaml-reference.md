@@ -603,6 +603,13 @@ secrets:
 Updates an existing Lambda function's container image and waits for the update to
 complete.
 
+**Credentials.** Where the platform runs web-identity cloud deploys (the fleet's `clusters.yaml` names an AWS
+account; your namespace then has the ConfigMap `glidepath-cloud-identity`), the deploy stage needs **no AWS
+secrets**: `deploy-aws-lambda` runs as the ServiceAccount `glidepath-cloud-deployer` and assumes
+`glidepath-deploy-<functionName>`, an IAM role that Airframe's `AwsLambdaTarget` creates for your function and that
+may only push to its repository and update its code. Drop the two `secrets:` entries once that works. Without it,
+the two `aws-*` secrets above are used, as before; a run that has both uses the role.
+
 Lambda can only pull a container image from Amazon ECR, never from `ghcr.io`, where this
 pipeline builds, signs and scans everything. So the deploy stage copies the image for you:
 
@@ -610,7 +617,7 @@ pipeline builds, signs and scans everything. So the deploy stage copies the imag
    in (so there is no repository field to set; the function must already exist with an
    ECR image).
 2. It copies the matching per-architecture image (`<tag>-arm64` or `<tag>-amd64`) into that
-   repository with your `aws-*` secrets and checks the digest is unchanged. Lambda does not
+   repository with the role (or your `aws-*` secrets) and checks the digest is unchanged. Lambda does not
    accept a multi-architecture image index, so the function's architecture decides which
    one is copied. Your `build.platforms` must include it (an app that built only `amd64`
    cannot deploy to an `arm64` function, and the stage says so).

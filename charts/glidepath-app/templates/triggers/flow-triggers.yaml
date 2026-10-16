@@ -271,6 +271,15 @@ spec:
             volumeClaimTemplate:
               spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: {{ include "glidepath-app.sourceVolumeSize" (dict "size" $.Values.build.sourceVolume.size) }} } } }
         {{- end }}
+        {{- /* Web-identity cloud deploys (templates/identity/cloud-deployer.yaml): only the deploy stage's
+        Pipeline has deploy-aws-lambda, and Tekton refuses a taskRunSpecs entry naming a task its Pipeline
+        lacks (see the podTemplate note below), hence the stage check. Every other task in the run stays on
+        pipeline-runner. */ -}}
+        {{- if and (eq $stageName "deploy") $.Values.cloudIdentity.awsAccountId }}
+        taskRunSpecs:
+          - pipelineTaskName: deploy-aws-lambda
+            serviceAccountName: glidepath-cloud-deployer
+        {{- end }}
         taskRunTemplate:
           serviceAccountName: pipeline-runner
           {{- /* backstage.prod.kiac.local isn't real DNS anywhere a pod's CoreDNS can
