@@ -608,7 +608,8 @@ account; your namespace then has the ConfigMap `glidepath-cloud-identity`), the 
 secrets**: `deploy-aws-lambda` runs as the ServiceAccount `glidepath-cloud-deployer` and assumes
 `glidepath-deploy-<functionName>`, an IAM role that Airframe's `AwsLambdaTarget` creates for your function and that
 may only push to its repository and update its code. Drop the two `secrets:` entries once that works. Without it,
-the two `aws-*` secrets above are used, as before; a run that has both uses the role.
+the two `aws-*` secrets above are used, as before; a run that has both uses the role. How it works:
+[cloud-deploy-identity.md](../admin/cloud-deploy-identity.md).
 
 Lambda can only pull a container image from Amazon ECR, never from `ghcr.io`, where this
 pipeline builds, signs and scans everything. So the deploy stage copies the image for you:

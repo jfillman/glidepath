@@ -41,6 +41,7 @@ nav:
           - Notifications: admin/notifications.md
           - Secrets management: admin/secrets-management.md
           - App secrets: admin/app-secrets.md
+          - Cloud deploy identity (AWS): admin/cloud-deploy-identity.md
           - Ephemeral environments: admin/ephemeral-environments.md
           - Naming conventions: admin/naming-conventions.md
       - Architecture decisions: admin/adr/README.md
