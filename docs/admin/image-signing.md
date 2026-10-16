@@ -114,7 +114,9 @@ token's `iss`, so the switch is staged:
    and to `sigstoreIssuers` (glidepath-catalog), keeping the default in both. The
    `fulcio-bootstrap` hook rewrites `fulcio-config` on every sync (only the signing root is
    created once) and restarts `fulcio-server` when the issuer list changes, because the file
-   is mounted by `subPath`. A public issuer has no `ca-cert`: Fulcio fetches its discovery
+   is mounted by `subPath`. Argo CD doesn't diff hooks, so `fulcio-server` carries a
+   `checksum/public-issuers` annotation: changing the list makes the app OutOfSync, and the
+   auto-sync runs the hook. A public issuer has no `ca-cert`: Fulcio fetches its discovery
    document over the internet with system CA roots, so `fulcio-system` needs egress to it.
 2. **Switch** the API server's first `--service-account-issuer` (apron
    `hack/cluster-identity.sh issuer`). The Chains and SBOM tokens live 600 s, so tokens
