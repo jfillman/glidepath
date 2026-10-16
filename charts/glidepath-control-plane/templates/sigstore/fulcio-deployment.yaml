@@ -30,6 +30,10 @@ spec:
       labels:
         app: fulcio-server
       annotations:
+        # fulcio-config is written by the fulcio-bootstrap hook, which Argo CD never diffs: without this, a
+        # change to fulcio.publicIssuers leaves the app Synced and the hook never runs. With it, the Deployment
+        # is OutOfSync, auto-sync runs the PreSync hook (new fulcio-config) and then rolls this pod onto it.
+        checksum/public-issuers: {{ toJson .Values.fulcio.publicIssuers | sha256sum | trunc 16 }}
         prometheus.io/scrape: "true"
         prometheus.io/path: /metrics
         prometheus.io/port: "2112"
