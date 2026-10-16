@@ -41,23 +41,26 @@ Only the `deploy` Pipeline contains `deploy-aws-lambda`, and Tekton refuses a `t
 its Pipeline lacks. That is why the entry is added only for the deploy stage, and only to flows rooted at `deploy`.
 A promote flow picks it up at the next onboarding resync.
 
-## How the step chooses its credentials
+## How the step gets its access
 
-![How the deploy step picks its credentials](diagrams/cloud-deploy-identity/05-deploy-credentials.png)
+![How the deploy step gets its AWS access](diagrams/cloud-deploy-identity/05-deploy-credentials.png)
 
-The step uses the role when all three hold: the namespace has `glidepath-cloud-identity`, the pod's token belongs to
-`glidepath-cloud-deployer`, and STS accepts the role. Otherwise it uses the app's `aws-access-key-id` /
-`aws-secret-access-key` from `app-secrets`, and fails only when there is neither. The log says which:
+The step checks three things in order: the namespace has `glidepath-cloud-identity`, the pod's token belongs to
+`glidepath-cloud-deployer`, and STS accepts the role. If all hold it assumes the role; if one fails, the deploy stops
+with an error that names the missing piece and its fix. There is no other way in: a key in `app-secrets` is not
+read, and `deploy-lambda` doesn't mount `app-secrets` at all. A successful run logs:
 
 ```
 credentials: assuming arn:aws:iam::700017004810:role/glidepath-deploy-glidepath-smoke-fn (web identity, no stored key)
-credentials: access key from app-secrets
-warning: could not assume arn:aws:iam::…: An error occurred (AccessDenied) …
 ```
 
-Why a fallback: switching every app at once would break any deploy that ran before its role existed (the role is
-created a reconcile after the switch). The fallback lets each app move when it is ready and be checked before its
-key is deleted. It goes away in phase 4.
+**Why there used to be a fallback, and why it's gone.** Until phase 4 the step fell back to the app's
+`aws-access-key-id`/`aws-secret-access-key` when it couldn't assume the role. That covered the switch: a deploy that
+ran before its function's role existed (the role is created a reconcile after the registry names the account) would
+otherwise have failed. Once every Lambda app had deployed through its role, and no Secret on either cluster still
+held an AWS key, the fallback was code that could only ever hand a deploy a long-lived key again, so it was removed
+(2026-10-16). `charts/glidepath-catalog/tests/aws_credentials_test.sh` holds each path, including "never reads a
+stored key".
 
 ## Why it is built this way
 
@@ -86,8 +89,9 @@ kubectl -n $NS logs "$(kubectl -n $NS get $TR -o jsonpath='{.status.podName}')" 
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `credentials: access key from app-secrets` | The ConfigMap is missing, or the run isn't using `glidepath-cloud-deployer` | Check `cloudIdentity` reached the app (Argo CD `<app>-cicd`); for a promote flow, run the onboarding resync |
-| `warning: could not assume … AccessDenied` | The role doesn't exist yet, or its trust names another namespace | Check the target's `<xr>-deploy` Role is Ready |
+| `error: no AWS account for cloud deploys in this namespace` | The ConfigMap `glidepath-cloud-identity` is missing | The cluster's `clusters.yaml` entry needs `aws.accountId`; check `cloudIdentity` reached the app (Argo CD `<app>-cicd`) |
+| `error: this step is not running as glidepath-cloud-deployer` | The run didn't give the ServiceAccount to `deploy-aws-lambda` | For a promote flow, run the onboarding resync; don't hand-edit `taskRunSpecs` |
+| `error: could not assume … AccessDenied` | The role doesn't exist yet, or its trust names another namespace | Check the target's `<xr>-deploy` Role is Ready; a function without an `AwsLambdaTarget` has no role |
 | `InvalidIdentityToken` | AWS can't fetch or verify kiac-dev's keys | `curl https://hangarplatform.dev/oidc/kiac-dev/jwks.json`; after a cluster rebuild, `hack/kiac-dev-cluster-identity.sh` in gitops-cluster-dev |
 | A PipelineRun is refused by `glidepath-cloud-deployer-pipelineruns` | It gives the ServiceAccount to the wrong task, run-wide, or with pod-template `env` | Use the generated flow; don't hand-edit `taskRunSpecs` |
 
@@ -96,4 +100,3 @@ kubectl -n $NS logs "$(kubectl -n $NS get $TR -o jsonpath='{.status.podName}')" 
 - **ECS** (`deploy-ecs`) still uses the stored key, until its deploy path has run against AWS and gets its own role.
 - **Azure Container Apps** uses a stored service principal secret; the same pattern applies through Azure workload
   identity federation.
-- **The key fallback** stays until every Lambda app has deployed through its role (phase 4 of the migration).

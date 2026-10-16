@@ -41,6 +41,15 @@ jobs:
       - run: python3 charts/glidepath-catalog/tests/validate_config_envs_test.py
       - run: python3 charts/glidepath-catalog/tests/resolve_deploy_target_env_test.py
 
+  # deploy-lambda's AWS login: web identity only, a clear error for each missing piece, never a stored key.
+  aws-credentials:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: pip install pyyaml
+      - run: charts/glidepath-catalog/tests/aws_credentials_test.sh
+
   # The flow slug's word lists: 256 x 256, no duplicates, and the chain-id -> slug
   # mapping Tower's mirror (src/tekton/chainSlug.ts) is pinned to.
   chain-slug:

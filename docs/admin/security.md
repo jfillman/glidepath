@@ -124,8 +124,8 @@ A Lambda deploy assumes an IAM role made for that one function, `glidepath-deplo
 one-hour Kubernetes token for one hour of AWS access. Only the `deploy-aws-lambda` step and the target's bootstrap
 Job run as the ServiceAccount the role trusts (`glidepath-cloud-deployer`); every other step, including the ones that
 run the app's own code, has no AWS access. Admission policies on kiac-dev decide who may run as that ServiceAccount
-by who created the object, not by labels. The stored key remains a fallback until phase 4, and ECS and Azure still
-use stored keys. See [cloud-deploy-identity.md](cloud-deploy-identity.md).
+by who created the object, not by labels. There is no stored-key fallback: a step that can't assume its role fails.
+ECS and Azure deploys still use stored keys (known gap 43). See [cloud-deploy-identity.md](cloud-deploy-identity.md).
 
 ## Multi-cluster: no credential ever crosses the boundary
 

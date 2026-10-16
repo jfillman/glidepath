@@ -57,16 +57,9 @@ spec:
     - name: config-json
       type: string
       description: Reads .deploy.lambda.{functionName,region} from it directly, same pattern as deploy-ecs.yaml.
-  # Same optional, mount-as-files app-secrets pattern as deploy-ecs.yaml - an app using
-  # deploy.target: aws-lambda is expected to declare:
-  #   secrets:
-  #     - name: aws-access-key-id
-  #     - name: aws-secret-access-key
+  # No app-secrets: AWS access is a web identity only (glidepath-catalog.awsLambdaCredentials). Until 2026-10-16 an
+  # app could list aws-access-key-id/aws-secret-access-key; phase 4 of the deploy federation removed that path.
   volumes:
-    - name: app-secrets
-      secret:
-        secretName: app-secrets
-        optional: true
     # Only matters when the ghcr.io package is private (see the header). Optional so its
     # absence degrades to an unauthenticated pull instead of a pod stuck on a missing Secret.
     - name: registry-credentials
@@ -95,9 +88,6 @@ spec:
     - name: prepare
       image: public.ecr.aws/aws-cli/aws-cli:2.37.9
       volumeMounts:
-        - name: app-secrets
-          mountPath: /var/run/secrets/platform
-          readOnly: true
         - name: aws-web-identity
           mountPath: /var/run/secrets/aws-web-identity
           readOnly: true
@@ -235,9 +225,6 @@ spec:
     - name: update-function
       image: public.ecr.aws/aws-cli/aws-cli:2.37.9
       volumeMounts:
-        - name: app-secrets
-          mountPath: /var/run/secrets/platform
-          readOnly: true
         - name: aws-web-identity
           mountPath: /var/run/secrets/aws-web-identity
           readOnly: true
