@@ -815,6 +815,20 @@ into. Declaring `env: staging` on a deploy step without also listing `staging` u
 `deploy.environments` is rejected at `preflight` time, instead of
 failing later with a bare `Forbidden` RBAC error deep inside the deploy Task.
 
+### What starts a build
+
+A push to the flow's branch starts it, with one exception: a push that changes **only** `cicd.yaml`, files
+under `glidepath/` (environment values, release pins) or files under `.tekton/` (the generated pipeline files)
+builds nothing. Editing your pipeline config, an environment's values or merging an onboarding re-sync PR
+changes what runs next, not the code, so it doesn't rebuild. A `cicd.yaml` change that adds a flow doesn't
+start it either; the flow runs on the next push that matches it. If a push mixes those files with a code change,
+it builds.
+
+The one push of that kind that does build is the merge of your app's **first** onboarding PR (the one that adds
+`.tekton/onboarding-resync.yaml`): it starts the app's first build, so a new app builds and deploys without
+anyone pushing code. To build again without a code change, push an empty commit
+(`git commit --allow-empty -m "rebuild"`).
+
 ### Event-chained flows (downstream chaining)
 
 Stages after the root are always event-chained - they're triggered by CDEvents emitted
