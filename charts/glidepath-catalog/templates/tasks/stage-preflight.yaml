@@ -324,7 +324,7 @@ spec:
           # Applies every schemas/cicd.schema.json "default" the developer's cicd.yaml
           # left unset, recursively, so config-json is always a COMPLETE document - a
           # Task never sees an absent key for a field the schema says has a default.
-          # (build.containerfile once reached kaniko as the literal ".../null" path
+          # (build.containerfile once reached the image builder as the literal ".../null" path
           # because a Task's own `// default` was missing - applying defaults once,
           # centrally, closes that whole bug class.) Only walks `properties`;
           # `pipelines`' dynamic per-flow-name keys have no schema defaults.

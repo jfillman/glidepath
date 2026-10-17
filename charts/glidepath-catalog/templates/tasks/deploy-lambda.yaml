@@ -16,17 +16,19 @@
 #                     ECR repository, and mints an ECR login for the copy. No new cicd.yaml
 #                     field is needed: a PackageType Image function always already has an
 #                     image, and the repository that image lives in is where the new one goes.
-#   2. copy-to-ecr:   crane copy of the per-architecture image (see below) into that repository,
-#                     then compares the source and destination digests.
+#   2. copy-to-ecr:   crane copy of the function's architecture's image (see below) into that
+#                     repository, then compares the source and destination digests.
 #   3. update-function: update-function-code against the ECR digest, then waits.
 # An image-ref that is already an ECR URI (an app that builds to ECR directly) skips the copy.
 #
-# Why the PER-ARCH tag and not image-ref itself: Lambda does not accept a multi-architecture
-# image index, only a single-platform manifest. build-image.yaml always publishes
-# <image-ref>-arm64 and/or <image-ref>-amd64 as single-platform images, but the unsuffixed tag
-# is an OCI index when both were built. So this copies the one matching the function's
-# configured architecture. An app that built only the other architecture fails with a message
-# saying so, instead of Lambda's own cryptic manifest error.
+# Why not image-ref itself: Lambda does not accept a multi-architecture image index, only a
+# single-platform manifest, and image-ref is an OCI index when build-image built both
+# platforms. So this resolves the manifest for the function's configured architecture inside
+# that index (`crane digest --platform`) and copies it by digest. A single-platform image-ref is
+# a plain manifest already; its config's architecture is checked against the function's. An
+# app that built only the other architecture fails with a message saying so, instead of
+# Lambda's own cryptic manifest error. (Until 2026-10-17 kaniko builds also published
+# per-arch <image-ref>-arm64/-amd64 tags and this copied those; BuildKit publishes none.)
 #
 # What the copy does NOT carry: cosign signatures and attestations stay on ghcr.io (they are
 # separate tags keyed by digest). The digest is preserved, so they remain verifiable there.
@@ -37,7 +39,7 @@
 #
 # Dedicated step images, not toolboxImage (Alpine/musl vs. the AWS CLI v2 installer's glibc):
 # public.ecr.aws/aws-cli/aws-cli for the AWS calls, and the same digest-pinned crane image
-# build-image.yaml already runs for the copy.
+# deploy-ecs.yaml runs for the copy.
 #
 # Private ghcr.io packages: registry-credentials is merged into the copy's registry login the
 # same way image-scan.yaml reads it; a public package needs nothing.
@@ -165,7 +167,6 @@ spec:
         REGISTRY_HOST="${REPO%%/*}"
         ECR_REGION="$(sed -E 's/^[0-9]{12}\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com$/\1/' <<<"${REGISTRY_HOST}")"
         TAG="${IMAGE_REF##*:}"
-        SRC="${IMAGE_REF}-${ARCH}"
 
         # ECR login token (valid 12h, minted per run, never stored). Merged over any ghcr.io
         # credentials so a private package can still be pulled by the same crane call.
@@ -178,15 +179,16 @@ spec:
           jq -n --arg reg "${REGISTRY_HOST}" --arg auth "${AUTH}" '{auths: {($reg): {auth: $auth}}}' > /work/docker/config.json
         fi
 
-        printf '%s' "${SRC}" > /work/src
+        printf '%s' "${IMAGE_REF}" > /work/image-ref
+        printf '%s' "${ARCH}" > /work/arch
         printf '%s' "${REPO}:${TAG}" > /work/dst
         printf '%s' "${REPO}" > /work/repo
         echo "function ${FUNCTION_NAME}: architecture ${ARCH_RAW}, current image repository ${REPO}"
-        echo "will copy ${SRC} -> ${REPO}:${TAG}"
+        echo "will copy the linux/${ARCH} image of ${IMAGE_REF} -> ${REPO}:${TAG}"
 
     - name: copy-to-ecr
-      # The same digest-pinned crane image build-image.yaml's publish-multiarch-manifest step
-      # runs (see its comment on why :debug and why a digest pin). Needs a shell, hence debug.
+      # The same digest-pinned crane image deploy-ecs.yaml's copy step runs (see its comment on
+      # why :debug and why a digest pin). Needs a shell, hence debug.
       image: gcr.io/go-containerregistry/crane@sha256:e78770b31258a3846f878036d9c1f63fbe4c871f9f56990bf77fd95c013e3c1b
       volumeMounts:
         - name: work
@@ -201,12 +203,23 @@ spec:
           echo "nothing to copy."
           exit 0
         fi
-        SRC="$(cat /work/src)"
+        IMAGE_REF="$(cat /work/image-ref)"
+        ARCH="$(cat /work/arch)"
         DST="$(cat /work/dst)"
         REPO="$(cat /work/repo)"
 
-        if ! crane manifest "${SRC}" >/dev/null 2>&1; then
-          echo "error: ${SRC} does not exist. build-image.yaml publishes a per-architecture tag only for a platform it built, and this function's architecture is the suffix of that tag - check build.platforms in cicd.yaml includes the Lambda function's architecture." >&2
+        # The single-platform manifest for this architecture: inside the index for a
+        # multi-platform build, the manifest itself for a single-platform one.
+        if ! PLATFORM_DIGEST="$(crane digest --platform "linux/${ARCH}" "${IMAGE_REF}")"; then
+          echo "error: ${IMAGE_REF} has no linux/${ARCH} image - check build.platforms in cicd.yaml includes the Lambda function's architecture." >&2
+          exit 1
+        fi
+        SRC="${IMAGE_REF%:*}@${PLATFORM_DIGEST}"
+        # crane digest --platform returns a single-platform manifest's own digest whatever
+        # its platform, so check what was actually built.
+        BUILT_ARCH="$(crane config "${SRC}" | sed -n 's/.*"architecture":"\([^"]*\)".*/\1/p')"
+        if [ "${BUILT_ARCH}" != "${ARCH}" ]; then
+          echo "error: ${IMAGE_REF} is a linux/${BUILT_ARCH} image, but the Lambda function is ${ARCH} - check build.platforms in cicd.yaml includes the function's architecture." >&2
           exit 1
         fi
 

@@ -4,7 +4,7 @@
 
 Onboarding an Application needs two structurally different things: somewhere its CI
 pipelines actually execute (with RBAC for `pipeline-runner`, PaC's `Repository` CR, the
-chaining `Trigger` CRs, kaniko's registry-push credentials), and somewhere the deployed
+chaining `Trigger` CRs, the image build's registry-push credentials), and somewhere the deployed
 application itself runs and serves traffic. Putting both in one namespace would mean
 pipeline execution RBAC and running-workload RBAC share the same blast radius, and
 every additional upper environment (`staging`, `prod`) would have to fight the same
@@ -17,7 +17,7 @@ with `-cicd` and each real environment name treated as **peer** values of `<env>
 a base-plus-suffix pair:
 
 - `<type>-<app-name>-cicd` - the Application's CI control plane. `pipeline-runner` and
-  its RBAC live here; PaC creates `build`/`test` PipelineRuns here; kaniko's push
+  its RBAC live here; PaC creates `build`/`test` PipelineRuns here; the image build's push
   credentials sit here. Pipelines *execute* here, nothing else.
 - `<type>-<app-name>-<env>` (one per real environment: `dev`, and later `staging`/
   `prod` per `cicd.yaml`'s `deploy.upperEnvironments`) - where the long-lived

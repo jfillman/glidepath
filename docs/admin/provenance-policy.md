@@ -150,8 +150,8 @@ even when real signatures exist for the resolved digest (confirmed live, not ass
 does not resolve tag→digest internally the way a normal image pull does). The registry
 call requests **both** Docker v2 and OCI manifest media types in its `Accept` header -
 requesting only the older Docker v2 type gets a real, confirmed-live 404 ("OCI manifest
-found, but Accept header does not support OCI manifests") for kaniko's OCI-format
-manifests, even though the manifest genuinely exists.
+found, but Accept header does not support OCI manifests") for the OCI-format
+manifests build-image pushes, even though the manifest genuinely exists.
 
 ## Policy construction
 
@@ -373,7 +373,7 @@ expected imageID sha256:f531d4eda8c7... to be separable by @
 
 That digest belonged to this platform's own shared toolbox image, not the app image.
 Root cause: `kubectl get taskrun ... -o json | jq '.status.steps[].imageID'` showed every
-step running a registry-pulled image (kaniko, `node`, `git-clone`) reports a
+step running a registry-pulled image (BuildKit, `node`, `git-clone`) reports a
 properly-qualified `repo@sha256:digest` imageID, but every step running the toolbox image
 - at the time only `kind load docker-image`d (or
 `ctr images import`ed) rather than pulled from a real
@@ -390,7 +390,7 @@ Fixed in two parts (see `docs/image-signing.md` for the full writeup and the upd
    `ghcr.io/jfillman/glidepath-toolbox`  instead of
    `kind load`ed, so its imageID is always registry-qualified. A freshly-pushed GHCR
    package defaults to private, so `pipeline-runner` now carries `imagePullSecrets:
-   [{name: registry-credentials}]` (reusing the Secret kaniko already pushes with) rather
+   [{name: registry-credentials}]` (reusing the Secret the image build already pushes with) rather
    than also flipping the package to public.
 2. `artifacts.taskrun.storage` is now `""` (disabled) rather than `"oci"` - this
    platform's own provenance consumer only ever checks PipelineRun-level attestations, so
@@ -477,7 +477,7 @@ given the stakes of getting this wrong.
 
 Two real bugs surfaced while wiring this up:
 
-1. Kaniko's `image-digest` is a **Task**-level result (`--digest-file=$(results.image-digest.path)`),
+1. `build-image`'s `image-digest` is a **Task**-level result (written by its build step),
    not a step-level one - a cross-step step-result reference to it silently resolves to the
    literal, unresolved placeholder string rather than erroring. Task-level result files
    live at the stable, documented `/tekton/results/<name>` path regardless of which step

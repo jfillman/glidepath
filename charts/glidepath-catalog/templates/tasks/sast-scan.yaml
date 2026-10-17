@@ -7,7 +7,7 @@
 #
 # Runs on the official semgrep/semgrep image directly, not the shared toolbox image -
 # Semgrep ships no downloadable binary release to pin, so the usual static-binary
-# pattern (gitsign/ec/cosign) doesn't apply. Same exception already made for kaniko
+# pattern (gitsign/ec/cosign) doesn't apply. Same exception already made for BuildKit
 # (build-image.yaml).
 #
 # Rules: p/ci + p/security-audit (both free, no Semgrep App token needed - `--config

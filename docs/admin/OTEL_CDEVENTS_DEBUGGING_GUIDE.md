@@ -311,7 +311,7 @@ otel_task_span_send "test-span" "$traceparent" "$STAGE_SPAN_ID" \
 
 # Expected structure for build stage:
 # [build] 14:32:05 → 14:32:50 (45s total)
-#   ├─ [build-image] 14:32:06 → 14:32:45 (39s) ← Kaniko is expensive
+#   ├─ [build-image] 14:32:06 → 14:32:45 (39s) ← the image build is expensive
 #   ├─ [sast-scan] 14:32:05 → 14:32:25 (20s, concurrent)
 #   └─ [unit-test] 14:32:05 → 14:32:20 (15s, concurrent)
 

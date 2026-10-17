@@ -73,9 +73,9 @@ Audited live: three genuinely different patterns existed under one implied name,
    afford a dedicated trailing step.**
 2. **The same `otel_task_span_send` call, folded into a step doing something else**:
    `build-image.yaml`'s `emit-image-ref-result` step also sends the Task's span, for a
-   real structural reason (kaniko has no shell, so the span has to be sent from
-   whichever bash step runs after it, and that step already exists to extract kaniko's
-   results) - but the step's name didn't disclose the second job. **Fixed**: renamed to
+   real structural reason (the image builder's image has no otel-cli, so the span has
+   to be sent from whichever toolbox step runs after it, and that step already exists to
+   publish the build's results) - but the step's name didn't disclose the second job. **Fixed**: renamed to
    `emit-image-ref-and-span`. When a span-send has to be folded into another step for a
    similar structural reason, name the step to disclose both jobs - never let a name
    describe only one of two things a step does.
@@ -95,11 +95,11 @@ visible.
 Other step-name patterns already consistent, keep using them: `resolve-*` for
 config/parameter-resolution steps that run before the real work (`resolve-build-config`,
 `resolve-test-command`, `resolve-build-script-path`), and a plain verb (or
-verb-noun) for the step doing the actual work (`scan`, `build-and-push-arm64`/
-`build-and-push-amd64`, `publish-multiarch-manifest`, `run-build-script`, `unit-test`,
-`generate-and-attest`). build-image.yaml's build-and-push split into two arch-suffixed
-steps + a manifest-combining step on 2026-09-22 (multi-arch build support) - kept the
-same verb-noun shape per-arch rather than inventing a new pattern.
+verb-noun) for the step doing the actual work (`scan`, `build-and-push`,
+`run-build-script`, `unit-test`,
+`generate-and-attest`). build-image.yaml's build step was split into two arch-suffixed
+kaniko steps plus a manifest-combining step on 2026-09-22 and folded back into one
+`build-and-push` when BuildKit replaced kaniko on 2026-10-17.
 
 ## PipelineRun naming
 

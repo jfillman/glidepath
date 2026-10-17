@@ -8,7 +8,7 @@ metadata:
     {{- include "glidepath-app.labels" . | nindent 4 }}
     hangar.io/subcomponent: "identity"
   namespace: {{ $appNamespace }}
-# Reuses kaniko's registry-credentials Secret so TaskRun pods can pull the private
+# Reuses the image build's registry-credentials Secret so TaskRun pods can pull the private
 # glidepath-toolbox image from this deployment's own registry.
 imagePullSecrets:
   - name: registry-credentials

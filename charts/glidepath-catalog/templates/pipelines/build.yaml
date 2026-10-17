@@ -124,7 +124,7 @@ spec:
     # runs test.sh directly against checked-out source, sharing no output with this Task).
     # Skipped entirely for teams building inside a multi-stage Containerfile instead (see
     # validate-cicd-config.yaml's has-build-script result). build-image still waits for
-    # both (real or skipped) before kaniko builds+pushes, so nothing publishes unless
+    # both (real or skipped) before BuildKit builds+pushes, so nothing publishes unless
     # tests pass - the compile step is just no longer serialized behind tests.
     - name: build-source
       runAfter: [preflight]
@@ -171,7 +171,7 @@ spec:
 
 
     # Unlike sast-scan, runAfter stays build-image - there's no image to scan until
-    # kaniko has pushed one. A failing scan can't unpublish the already-pushed dev image,
+    # BuildKit has pushed one. A failing scan can't unpublish the already-pushed dev image,
     # but it still fails this Task, which fails the whole PipelineRun (red build).
     - name: image-scan
       runAfter: [build-image]

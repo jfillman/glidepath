@@ -57,8 +57,11 @@ platform's PaaS/RBAC posture.
   `:latest`.** A source change under `glidepath/broker/cmd/` does nothing to a running
   cluster until you rebuild, push, and `kubectl rollout restart` the affected
   Deployment - there's no CI wired to a private cluster to do this automatically.
-- **Pod Security Standards `restricted` + kaniko**: validate this combination against
-  your actual target CNI before onboarding real apps - see
+- **Image builds need Pod Security `baseline`, a binfmt handler, and seccompDefault off.**
+  `build-image` runs rootless BuildKit as UID 1000; it creates a user namespace, so a
+  namespace enforcing `restricted` rejects it, and a kubelet with `seccompDefault: true`
+  blocks it unless you give the step a Localhost seccomp profile. Building amd64 on an
+  arm64 node (or the reverse) needs binfmt_misc handlers registered on the node. See
   [rootless-builds.md](rootless-builds.md).
 - **Tekton's Affinity Assistant is off (`coschedule: disabled`).** Set in the cluster repo's
   `50-platform-cicd/tekton-operator/tektonconfig.yaml` (2026-10-09). The default (`workspaces`)

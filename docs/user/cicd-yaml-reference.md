@@ -32,7 +32,7 @@ build:
                                  # patchable. Used for unit tests regardless of which
                                  # build strategy (below) you pick.
   script: ./build.sh            # Optional. Omit entirely to build your whole app
-                                 # inside a multi-stage Containerfile instead (kaniko
+                                 # inside a multi-stage Containerfile instead (BuildKit
                                  # builds `containerfile` directly, build-source is
                                  # skipped). Presence/absence is the switch - there's
                                  # no separate boolean, so a typo can't silently
@@ -51,7 +51,7 @@ build:
   cache:
     enabled: false                # Optional, default false. Only applies to the
                                    # `script` build path - the Containerfile-only path
-                                   # gets kaniko's own layer cache instead, for free.
+                                   # gets BuildKit's registry layer cache instead, free.
     size: small                   # Optional, default "small". One of small (1Gi),
                                    # medium (2.5Gi), large (5Gi), xlarge (8Gi). Not
                                    # resizable after onboarding without losing the
@@ -64,7 +64,7 @@ build:
                                    # medium (5Gi), large (10Gi), xlarge (20Gi). Sizes
                                    # the ephemeral `source` workspace every stage's
                                    # PipelineRun gets (checked-out repo + build output +
-                                   # kaniko's build context) - bump this if a build fails
+                                   # the image build context) - bump this if a build fails
                                    # with "no space left on device", NOT build.cache
                                    # (that's a separate, persistent dependency cache).
                                    # One value applies to every stage's source workspace
@@ -307,11 +307,14 @@ a build, pick whichever fits:
   [examples/08-containerfile-only-build.yaml](examples/08-containerfile-only-build.yaml)):
   omit `build.script` entirely and do the whole build inside `build.containerfile`
   (`FROM ... AS builder` / `RUN npm ci && npm run build` / `COPY --from=builder`). The
-  `build-source` Task is skipped entirely and kaniko builds the Containerfile directly.
-  Build caching in this path comes from kaniko's own layer cache, not `build.cache` -
+  `build-source` Task is skipped entirely and BuildKit builds the Containerfile directly.
+  Build caching in this path comes from BuildKit's layer cache (kept in a
+  `<image>-buildcache` package next to your image), not `build.cache` -
   order your Containerfile's `COPY package*.json` / `RUN npm ci` *before* copying the
   rest of the source, or the cache invalidates on every source change regardless of
-  whether dependencies changed.
+  whether dependencies changed. If you build for both architectures, compile in a
+`FROM --platform=$BUILDPLATFORM` stage - see
+[Multi-architecture images](#multi-architecture-images-buildplatform).
 
 `build.agent` is required either way - unit tests always run inside it, independent of
 which build strategy you pick.
@@ -328,7 +331,7 @@ regardless of build strategy - no `cicd.yaml` field turns this on, it's always a
 
 Declare an `ARG` for whichever one you want and use it however your language needs -
 nothing consumes these automatically, so an app that doesn't declare the `ARG` sees no
-effect at all (kaniko silently ignores a `--build-arg` with no matching `ARG`). The
+effect at all (BuildKit ignores a build arg with no matching `ARG`). The
 motivating case is Go, which has no manifest-embedded version convention the way
 Node/Python/Maven do:
 
@@ -346,6 +349,37 @@ The same two args are also set as this image's `org.opencontainers.image.version
 `org.opencontainers.image.revision` OCI labels (readable via `crane config`/`docker
 inspect` with no Containerfile changes needed) - the build-arg path is only for baking
 version info *inside* the binary itself, which the OCI labels alone can't do.
+
+## Multi-architecture images (`$BUILDPLATFORM`)
+
+`build.platforms` defaults to both `arm64` and `amd64`, and the build node is arm64, so the
+amd64 image's RUN steps run under QEMU emulation - slow, and the Go compiler crashes under it
+([known-gaps #37](../admin/known-gaps.md)). `build-image` uses BuildKit, which lets a stage
+run on the build node's own platform and cross-compile for the target instead:
+
+```dockerfile
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /app
+COPY . .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o app .
+
+FROM alpine:3.22
+COPY --from=build /app/app /app
+CMD ["/app"]
+```
+
+Only the build stage needs `--platform=$BUILDPLATFORM`; the final stage stays on the target
+platform. This works for anything whose output doesn't depend on the build machine's
+architecture: Go, a Java jar (`mvn package` in a `$BUILDPLATFORM` Maven stage, copied into a
+target-platform JRE stage), a Node or Python app with no native modules. A stage that must
+run target-platform binaries (installing native npm modules, `apk add` in the final stage)
+still emulates. The `script` path avoids the question entirely: `build.script` runs natively
+and the Containerfile only copies its output.
+
+The image is published as one OCI image index under the real tag. There are no
+`-arm64`/`-amd64` tags (kaniko builds published those until 2026-10-17).
 
 ## Additional artifacts (`build.artifacts`)
 
@@ -380,7 +414,7 @@ to drift out of sync.
 ## Build dependency caching (`build.cache`)
 
 Only applies to the `build.script` path above - the multi-stage-Containerfile path
-caches via kaniko's own layers instead (see above). Opt in with:
+caches via BuildKit's layer cache instead (see above). Opt in with:
 
 ```yaml
 build:
@@ -419,7 +453,7 @@ Not resizable live after onboarding - changing `size` later means recreating the
 ## Build source volume (`build.sourceVolume`)
 
 Every stage's PipelineRun clones the repo into a `source` Tekton workspace - the checked-
-out tree, `build.script`'s own output (`dist/`, `target/`, ...), and kaniko's build
+out tree, `build.script`'s own output (`dist/`, `target/`, ...), and the image build
 context all live there. For most apps the default is plenty; a large monorepo-style repo
 or a build that produces a lot of intermediate output can fill it, which shows up as a
 build failing with `no space left on device` rather than any error from your own build

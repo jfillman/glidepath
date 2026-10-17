@@ -55,10 +55,8 @@ spec:
   results:
     - name: artifact-ref
       description: The published artifact's full reference, e.g. ghcr.io/acme/payment-api:1.8.3-go-binary.
-  # Same Secret/key mapping build-image.yaml's kaniko steps use, mounted the way
-  # publish-multiarch-manifest's crane step consumes it (DOCKER_CONFIG env pointing at a
-  # config.json-containing directory) - oras is docker-credential-compatible the same way
-  # crane is.
+  # Same Secret/key mapping build-image.yaml pushes with, consumed via DOCKER_CONFIG
+  # pointing at a config.json-containing directory - oras is docker-credential-compatible.
   volumes:
     - name: registry-credentials
       secret:

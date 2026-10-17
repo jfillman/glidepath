@@ -40,7 +40,7 @@ automatically instead of serving stale packages; yarn uses one shared per-packag
 ## Build source volume sizing
 
 T-shirt-sized `build.sourceVolume.size` (small/medium/large/xlarge) for the ephemeral
-per-run `source` workspace - checked-out repo, build output, kaniko's build context.
+per-run `source` workspace - checked-out repo, build output, the image build context.
 Bump it if a large build fails with `no space left on device`. See
 [cicd-yaml-reference.md](cicd-yaml-reference.md#build-source-volume-buildsourcevolume).
 

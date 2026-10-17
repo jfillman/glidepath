@@ -49,8 +49,8 @@ spec:
     - name: outcome
       description: "'passed'/'failed' - a real result, never 'stub'. Fails only on a genuine generation/signing/push error, not on SBOM content - there's no security verdict to gate on here, unlike sast-scan/image-scan."
   # Registry push credentials for cosign's attestation upload - same Secret/key mapping
-  # kaniko uses in build-image.yaml, consumed via DOCKER_CONFIG (cosign's standard
-  # credential-resolution env var) instead of kaniko's hardcoded lookup path.
+  # build-image.yaml pushes with, consumed via DOCKER_CONFIG (cosign's standard
+  # credential-resolution env var).
   volumes:
     - name: registry-credentials
       secret:

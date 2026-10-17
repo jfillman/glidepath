@@ -138,8 +138,8 @@ spec:
         # decoded.
         registry_auth="$(jq -r --arg r "${registry}" '.auths[$r].auth // empty' "${DOCKER_CONFIG}/config.json" | base64 -d)"
         token="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 ${registry_auth:+-u "${registry_auth}"} "https://${registry}/token?service=${registry}&scope=repository:${repo}:pull" | jq -r '.token')"
-        # Accept both Docker v2 and OCI manifest media types - kaniko pushes OCI-format
-        # manifests, and requesting only the Docker v2 type 404s even though the manifest exists.
+        # Accept both Docker v2 and OCI manifest/index media types - build-image pushes OCI-format
+        # manifests (an OCI index for a multi-platform build), and requesting only the Docker v2 type 404s even though the manifest exists.
         digest="$(curl -fsSL -D - -o /dev/null --retry 3 --retry-connrefused --max-time 15 \
           -H "Authorization: Bearer ${token}" \
           -H "Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \

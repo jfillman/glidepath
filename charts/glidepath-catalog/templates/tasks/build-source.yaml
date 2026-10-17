@@ -1,7 +1,7 @@
 # catalog/tasks/build-source.yaml
 #
 # Runs the app's own build.sh inside its resolved build-agent image, before
-# build-image.yaml packages the result with kaniko. Split into its own Task so it can run
+# build-image.yaml packages the result with BuildKit. Split into its own Task so it can run
 # concurrently with unit-test, host the dependency-cache workspace, and get its own
 # retry/observability separate from the image push. Optional - build.yaml's when: clause
 # skips it for apps building entirely inside a Containerfile (see has-build-script result).
@@ -13,7 +13,7 @@ metadata:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
 spec:
-  description: Runs build.script (if cicd.yaml defines one) inside the resolved build-agent image, before kaniko packages the result.
+  description: Runs build.script (if cicd.yaml defines one) inside the resolved build-agent image, before BuildKit packages the result.
   workspaces:
     - name: source
   # Per-app dependency-download cache PVC (charts/glidepath-app/templates/env/
