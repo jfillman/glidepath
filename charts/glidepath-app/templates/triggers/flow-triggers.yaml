@@ -272,12 +272,14 @@ spec:
               spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: {{ include "glidepath-app.sourceVolumeSize" (dict "size" $.Values.build.sourceVolume.size) }} } } }
         {{- end }}
         {{- /* Web-identity cloud deploys (templates/identity/cloud-deployer.yaml): only the deploy stage's
-        Pipeline has deploy-aws-lambda, and Tekton refuses a taskRunSpecs entry naming a task its Pipeline
-        lacks (see the podTemplate note below), hence the stage check. Every other task in the run stays on
-        pipeline-runner. */ -}}
+        Pipeline has deploy-aws-lambda and deploy-aws-ecs (both always, each gated by a `when` on the target), and
+        Tekton refuses a taskRunSpecs entry naming a task its Pipeline lacks (see the podTemplate note below),
+        hence the stage check. Every other task in the run stays on pipeline-runner. */ -}}
         {{- if and (eq $stageName "deploy") $.Values.cloudIdentity.awsAccountId }}
         taskRunSpecs:
           - pipelineTaskName: deploy-aws-lambda
+            serviceAccountName: glidepath-cloud-deployer
+          - pipelineTaskName: deploy-aws-ecs
             serviceAccountName: glidepath-cloud-deployer
         {{- end }}
         taskRunTemplate:

@@ -3,11 +3,11 @@ The cloud deploy identity (SPEC-glidepath-deployer-federation.md). Rendered once
 AWS account (cloudIdentity.awsAccountId, from clusters.yaml's aws: block).
 
 - ServiceAccount glidepath-cloud-deployer: the only subject an app's AWS deploy roles trust
-  (system:serviceaccount:<this namespace>:glidepath-cloud-deployer, Airframe's AwsLambdaTarget deploy role). The
-  deploy stage runs deploy-aws-lambda as it (flow-triggers.yaml, and the root of a promote flow), and the target's
+  (system:serviceaccount:<this namespace>:glidepath-cloud-deployer, the deploy roles of Airframe's AwsLambdaTarget and AwsEcsTarget). The
+  deploy stage runs deploy-aws-lambda and deploy-aws-ecs as it (flow-triggers.yaml, and the root of a promote flow), and the target's
   bootstrap Job runs as it. No RBAC: it never talks to the Kubernetes API, only to AWS STS with a projected token,
   so its API token is not mounted either.
-- ConfigMap glidepath-cloud-identity: the account id, so deploy-lambda can name the role without a cicd.yaml field.
+- ConfigMap glidepath-cloud-identity: the account id, so deploy-lambda and deploy-ecs can name the role without a cicd.yaml field.
 */ -}}
 {{- with .Values.cloudIdentity.awsAccountId }}
 {{- $appNamespace := include "glidepath-app.namespace" $ }}

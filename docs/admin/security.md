@@ -120,12 +120,13 @@ namespace - see [release.md](release.md#how-the-github-apps-private-key-stays-ou
 
 ## Cloud deploys: no stored AWS key
 
-A Lambda deploy assumes an IAM role made for that one function, `glidepath-deploy-<functionName>`, by trading a
-one-hour Kubernetes token for one hour of AWS access. Only the `deploy-aws-lambda` step and the target's bootstrap
-Job run as the ServiceAccount the role trusts (`glidepath-cloud-deployer`); every other step, including the ones that
-run the app's own code, has no AWS access. Admission policies on kiac-dev decide who may run as that ServiceAccount
-by who created the object, not by labels. There is no stored-key fallback: a step that can't assume its role fails.
-ECS and Azure deploys still use stored keys (known gap 43). See [cloud-deploy-identity.md](cloud-deploy-identity.md).
+A Lambda or ECS deploy assumes an IAM role made for that one function or service (`glidepath-deploy-<functionName>`,
+`glidepath-deploy-ecs-<service>`) by trading a one-hour Kubernetes token for one hour of AWS access. Only the
+`deploy-aws-lambda` and `deploy-aws-ecs` steps and the Lambda target's bootstrap Job run as the ServiceAccount the
+roles trust (`glidepath-cloud-deployer`); every other step, including the ones that run the app's own code, has no
+AWS access. Admission policies on kiac-dev decide who may run as that ServiceAccount by who created the object, not
+by labels. There is no stored-key fallback: a step that can't assume its role fails. Azure deploys still use a stored
+secret (known gap 43). See [cloud-deploy-identity.md](cloud-deploy-identity.md).
 
 ## Multi-cluster: no credential ever crosses the boundary
 
