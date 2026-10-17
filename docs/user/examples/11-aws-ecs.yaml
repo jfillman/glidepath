@@ -7,7 +7,8 @@
 #   1. An Airframe AwsEcsTarget per environment, committed to tenants/<app>/xr-requests/ in the dev
 #      cluster's tenants repo (Airframe docs/user/cloud-targets.md). It creates the ECS cluster,
 #      service and first task definition, an ECR repository for the images, and the deploy role
-#      the pipeline assumes.
+#      the pipeline assumes. An app created with deployTarget: aws-ecs (Go, Node.js, Python or
+#      Spring Boot) already has the dev one and this file's dev environment; add the others.
 #   2. Nothing else. There is no AWS key to put anywhere: the deploy step proves who it is with a
 #      short-lived token and AWS grants it one hour of access to that target's deploy role
 #      (docs/admin/cloud-deploy-identity.md).
@@ -49,7 +50,7 @@ deploy:
     - name: dev
       tier: ground              # ground: deployed automatically by the ci flow above
       ecs:                      # this environment's service: an AwsEcsTarget's status.cicd
-        cluster: example-app            # the ECS cluster (the target's spec.appName)
+        cluster: example-app-dev        # the ECS cluster: one per environment, <appName>-<env>
         service: example-app-dev        # the service (<appName>-<env>); its ECR repository and
                                         # deploy role (glidepath-deploy-ecs-<service>) are named
                                         # after it
@@ -60,8 +61,8 @@ deploy:
       tier: flight              # flight: deployed only when a release pin PR for prod is merged.
                                 # Onboarding generates the promote-prod flow that does it; it does
                                 # not appear under pipelines.
-      ecs:                      # a second AwsEcsTarget, created with spec.env: prod
-        cluster: example-app
+      ecs:                      # a second AwsEcsTarget, created with spec.env: prod: its own cluster,
+        cluster: example-app-prod     # service, network, ECR repository and deploy role
         service: example-app-prod
         containerName: example-app
         region: us-east-1
