@@ -163,11 +163,13 @@ spec:
         # Pod Security Standards (SC-01, docs/admin/security.md "Build isolation"):
         # every build pod runs in this namespace. baseline is the ceiling rootless
         # BuildKit allows (rootlesskit needs a user namespace, which restricted
-        # forbids - ADR-0026). Rolled out warn+audit first, enforce after a clean
-        # run of every pipeline kind.
+        # forbids - ADR-0026). Rolled out warn+audit first; enforce went on
+        # 2026-10-17 after every pipeline kind ran clean under them.
         managedNamespaceMetadata:
           labels:
             hangar.io/managed-secrets: "true"
+            pod-security.kubernetes.io/enforce: baseline
+            pod-security.kubernetes.io/enforce-version: latest
             pod-security.kubernetes.io/warn: baseline
             pod-security.kubernetes.io/warn-version: latest
             pod-security.kubernetes.io/audit: baseline

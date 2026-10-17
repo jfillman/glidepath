@@ -9,7 +9,7 @@
 
 | Requirement | Why |
 |---|---|
-| Pod Security `baseline` or `privileged` on the app's `-cicd` namespace | rootlesskit creates a user namespace; `restricted` (`allowPrivilegeEscalation: false`, RuntimeDefault seccomp) blocks that |
+| Pod Security `baseline` or `privileged` on the app's `-cicd` namespace (Glidepath sets and enforces `baseline`) | rootlesskit creates a user namespace; `restricted` (`allowPrivilegeEscalation: false`, RuntimeDefault seccomp) blocks that |
 | kubelet `seccompDefault: false`, or a Localhost seccomp profile on the step | RuntimeDefault seccomp blocks the user-namespace setup |
 | binfmt_misc handlers on the build node for every foreign platform | RUN steps in a target-platform stage run emulated; kiac-dev registers them with `00-bootstrap/binfmt/` (gitops-cluster-dev) |
 | A `registry-credentials` dockerconfigjson Secret in the namespace | Push credentials, mounted at `/home/user/.docker` |
@@ -17,6 +17,11 @@
 The step runs as UID 1000, adds no capabilities, mounts nothing from the host and sets no
 seccomp or AppArmor profile. That is the shape that passes `baseline`: setting either profile
 to `Unconfined`, as BuildKit's own Kubernetes examples do, is rejected by `baseline`.
+
+Every `-cicd` namespace carries `pod-security.kubernetes.io/enforce: baseline` (with `warn`
+and `audit` at the same level), applied by the tenant-onboarding ApplicationSet's
+`managedNamespaceMetadata`. A Task change that adds a privileged field fails at pod
+creation, not silently. See [security.md](security.md#build-isolation).
 
 ## Cross-architecture builds
 
