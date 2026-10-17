@@ -37,7 +37,7 @@ deploy:
       tier: ground
     - name: staging
       tier: flight
-      cluster: kind-prod          # the upper cluster staging runs on (see docs/admin/multi-cluster.md)
+      cluster: example-prod       # the upper cluster staging runs on (see docs/admin/multi-cluster.md)
 
 pipelines:
   manual-release:
