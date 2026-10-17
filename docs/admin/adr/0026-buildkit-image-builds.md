@@ -3,7 +3,7 @@
 *Status: Accepted (2026-10-17). Supersedes [ADR-0010](0010-kaniko-rootless-builds.md). Built: `build-image`
 runs one rootless BuildKit step for every requested platform; `deploy-lambda` resolves the function's
 platform from the image index; the GoApplication scaffold cross-compiles from `$BUILDPLATFORM` (airframe).
-Not built: a Pod Security label on the app `-cicd` namespaces.*
+Every `-cicd` namespace enforces Pod Security `baseline` (2026-10-17, tenant-onboarding ApplicationSet).*
 
 ## Context
 
@@ -59,8 +59,8 @@ The switch was made in one step for every app, with no per-app opt-in period.
 ## Consequences
 
 - Builds meet Pod Security `baseline`, not `restricted`, and only because the kubelet's `seccompDefault` is off.
-  A cluster that turns it on needs a Localhost seccomp profile for the build step. Nothing enforces `baseline`
-  yet; labelling the app `-cicd` namespaces `pod-security.kubernetes.io/enforce: baseline` is the follow-up.
+  A cluster that turns it on needs a Localhost seccomp profile for the build step. Every `-cicd`
+  namespace enforces `baseline` since 2026-10-17 (see [security.md](../security.md#build-isolation)).
 - A Containerfile that compiles in a `$BUILDPLATFORM` stage builds the other architecture natively. One that
   compiles in a target-platform stage still emulates and is still slow (and still crashes for Go); existing
   apps change their Containerfile to benefit. The `script` + thin Containerfile shape was never affected.
