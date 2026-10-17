@@ -104,9 +104,8 @@ clusterRoles: [control-plane, workloads]
 # tenant LIST must not, or a second cluster's install would onboard the first
 # cluster's real, live tenants too.
 #
-# Empty by default - derived from clusterName above
-# (https://github.com/<owner>/platform-cicd-<clusterName>-tenants.git, <owner> from
-# platformCicdRepoUrl) unless explicitly set here.
+# Required: the tenants repo chosen when Apron built this cluster (tenantsRepo in its
+# cluster.yaml). No derived default - every cluster's tenants repo is named at build time.
 tenantsRepoUrl: ""
 
 # Backstage, for the notify-backstage host alias. Both empty by default (normal: Backstage resolves by real DNS, and
@@ -126,8 +125,8 @@ defaultChart: {}
 # the real name collision this guards against and why it's a value, not an in-place
 # rename.
 #
-# Empty by default - derived as "platform-cicd-tenant-onboarding" unless explicitly
-# set here.
+# Empty by default - derived as "glidepath-tenant-onboarding" unless explicitly set
+# here.
 tenantOnboardingApplicationSetName: ""
 
 # Fulcio's root key/cert material is no longer a Helm value at all (ADR-0006's

@@ -109,7 +109,7 @@ This control plane's own Infisical project slug and the Secret holding its ident
 conventions for appRef platform-cicd on cluster clusterName (infisical-project.yaml), unless set explicitly.
 */}}
 {{- define "glidepath-control-plane.infisicalProjectSlug" -}}
-{{- .Values.secretStore.infisical.projectSlug | default (printf "platform-cicd-%s" (required "clusterName must be set" .Values.clusterName)) -}}
+{{- .Values.secretStore.infisical.projectSlug | default (printf "glidepath-%s" (required "clusterName must be set" .Values.clusterName)) -}}
 {{- end -}}
 
 {{- define "glidepath-control-plane.infisicalCredentialsSecretName" -}}
