@@ -234,15 +234,15 @@ spec:
         fi
 
         # Web-identity cloud deploys (glidepath-app templates/identity/cloud-deployer.yaml): when this namespace has
-        # the glidepath-cloud-identity ConfigMap, a flow rooted at the deploy stage runs deploy-aws-lambda as the
-        # ServiceAccount glidepath-cloud-deployer, the one the function's IAM role trusts. Event-chained deploys get
+        # the glidepath-cloud-identity ConfigMap, a flow rooted at the deploy stage runs deploy-aws-lambda and
+        # deploy-aws-ecs as the ServiceAccount glidepath-cloud-deployer, the one the target's deploy role trusts. Event-chained deploys get
         # the same from flow-triggers.yaml. Read live rather than passed in: it exists exactly when glidepath-app
         # rendered it.
         CLOUD_DEPLOYER=false
-        if [[ "${DEPLOY_TARGET}" == "aws-lambda" ]] \
+        if [[ "${DEPLOY_TARGET}" == "aws-lambda" || "${DEPLOY_TARGET}" == "aws-ecs" ]] \
            && kubectl get configmap glidepath-cloud-identity -n "${APP_NAMESPACE}" >/dev/null 2>&1; then
           CLOUD_DEPLOYER=true
-          echo "glidepath-cloud-identity present: deploy-rooted flows run deploy-aws-lambda as glidepath-cloud-deployer"
+          echo "glidepath-cloud-identity present: deploy-rooted flows run deploy-aws-lambda and deploy-aws-ecs as glidepath-cloud-deployer"
         fi
         if [[ "${DEPLOY_TARGET}" != "k8s-rollout" ]]; then
           echo "deploy.target is ${DEPLOY_TARGET}: not scaffolding environment files (no chart, no per-environment namespace)"
@@ -430,12 +430,14 @@ spec:
           # stage reads its image from this pin instead of rebuilding.
           local pin_file="${13:-}"
           local on_event="" branch_line="" cel_line="" tag_param_line="" pod_template_block="" task_run_specs_block=""
-          # Only the deploy Pipeline has deploy-aws-lambda; naming it in another stage's taskRunSpecs is refused by
-          # Tekton (see the podTemplate note below).
+          # Only the deploy Pipeline has deploy-aws-lambda and deploy-aws-ecs; naming them in another stage's
+          # taskRunSpecs is refused by Tekton (see the podTemplate note below).
           if [[ "${CLOUD_DEPLOYER}" == "true" && "${root_stage}" == "deploy" ]]; then
             task_run_specs_block="
           taskRunSpecs:
             - pipelineTaskName: deploy-aws-lambda
+              serviceAccountName: glidepath-cloud-deployer
+            - pipelineTaskName: deploy-aws-ecs
               serviceAccountName: glidepath-cloud-deployer"
           fi
           # Run-wide taskRunTemplate.podTemplate (2026-10-08), not a per-task

@@ -57,7 +57,7 @@ spec:
     - name: config-json
       type: string
       description: Reads .deploy.lambda.{functionName,region} from it directly, same pattern as deploy-ecs.yaml.
-  # No app-secrets: AWS access is a web identity only (glidepath-catalog.awsLambdaCredentials). Until 2026-10-16 an
+  # No app-secrets: AWS access is a web identity only (glidepath-catalog.awsCredentials). Until 2026-10-16 an
   # app could list aws-access-key-id/aws-secret-access-key; phase 4 of the deploy federation removed that path.
   volumes:
     # Only matters when the ghcr.io package is private (see the header). Optional so its
@@ -69,7 +69,7 @@ spec:
         items:
           - key: .dockerconfigjson
             path: config.json
-    # Web identity (see glidepath-catalog.awsLambdaCredentials in _helpers.tpl). The token is projected for whatever
+    # Web identity (see glidepath-catalog.awsCredentials in _helpers.tpl). The token is projected for whatever
     # ServiceAccount the pod runs as; only glidepath-cloud-deployer's is used.
     - name: aws-web-identity
       projected:
@@ -120,7 +120,8 @@ spec:
 
         export AWS_DEFAULT_REGION="${REGION}"
 
-        {{- include "glidepath-catalog.awsLambdaCredentials" . | nindent 8 }}
+        {{- include "glidepath-catalog.awsCredentials" . | nindent 8 }}
+        aws_credentials "glidepath-deploy-${FUNCTION_NAME:0:47}"
 
         ECR_RE='^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/'
 
@@ -245,7 +246,8 @@ spec:
         FUNCTION_NAME="$(jq -r '.deploy.lambda.functionName // ""' <<<"${CONFIG_JSON}")"
         export AWS_DEFAULT_REGION="$(jq -r '.deploy.lambda.region // "us-east-1"' <<<"${CONFIG_JSON}")"
 
-        {{- include "glidepath-catalog.awsLambdaCredentials" . | nindent 8 }}
+        {{- include "glidepath-catalog.awsCredentials" . | nindent 8 }}
+        aws_credentials "glidepath-deploy-${FUNCTION_NAME:0:47}"
 
         IMAGE_URI="$(cat /work/final-image-uri)"
         echo "updating Lambda function ${FUNCTION_NAME} to ${IMAGE_URI}..."

@@ -573,18 +573,21 @@ deploy:
                                   # task definition - checked, not assumed
     region: us-east-1            # default
     # taskDefinitionFamily: ""   # defaults to "<app-name>-<env>"
-
-secrets:
-  - name: aws-access-key-id
-  - name: aws-secret-access-key
 ```
 
-The two `secrets:` entries are required for `aws-ecs` - credentials come from this
-app's own secret store (see [app-secrets.md](../admin/app-secrets.md)), the same
-mechanism every other per-app credential already uses, not a new platform-wide AWS
-account. `deploy-ecs.yaml` registers a new task-definition revision with the built
-image, updates the named service to it, and waits for ECS's own stability check -
-nothing is deployed via this cluster's ArgoCD/Rollout machinery for this target.
+An Airframe `AwsEcsTarget` creates the cluster, the service and its first task definition, and its
+`status.cicd` carries exactly this block. `deploy-ecs.yaml` copies the built image into the
+service's ECR repository (Fargate can only pull a private image from there), registers a new
+task-definition revision with that ECR digest, updates the named service to it, and waits for
+ECS's own stability check - nothing is deployed via this cluster's ArgoCD/Rollout machinery for
+this target.
+
+**Credentials: none to set.** `deploy-aws-ecs` runs as the ServiceAccount
+`glidepath-cloud-deployer` and assumes `glidepath-deploy-ecs-<service>`, the IAM role the
+`AwsEcsTarget` creates for the service: push to its ECR repository, register task definitions,
+update this service and pass its execution role to ECS, nothing else. Until 2026-10-16 an app
+listed `aws-access-key-id`/`aws-secret-access-key`; those entries are now ignored and can be
+deleted. How it works: [cloud-deploy-identity.md](../admin/cloud-deploy-identity.md).
 
 #### `aws-lambda`
 

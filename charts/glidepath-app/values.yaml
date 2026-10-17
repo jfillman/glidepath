@@ -195,7 +195,7 @@ clusterTaxonomy: {}
 
 # The fleet's cloud identity, passed in by the control plane from clusters.yaml's aws: block. With awsAccountId set,
 # this chart renders the ServiceAccount glidepath-cloud-deployer and the ConfigMap glidepath-cloud-identity
-# (templates/identity/cloud-deployer.yaml), and the deploy stage runs deploy-aws-lambda as that ServiceAccount, so
+# (templates/identity/cloud-deployer.yaml), and the deploy stage runs deploy-aws-lambda and deploy-aws-ecs as that ServiceAccount, so
 # the deploy assumes the function's own IAM role instead of using an access key. Unset: access keys, as before.
 cloudIdentity:
   awsAccountId: ""
