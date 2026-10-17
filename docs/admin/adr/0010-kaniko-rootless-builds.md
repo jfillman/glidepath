@@ -1,5 +1,8 @@
 # ADR-0010: Kaniko for rootless image builds under PSS `restricted`
 
+*Status: Superseded by [ADR-0026](0026-buildkit-image-builds.md) (2026-10-17). Kaniko was archived upstream, emulated every
+cross-architecture build in full, and needs root inside its container, so the `restricted` claim below never held.*
+
 ## Context
 
 The platform's whole premise is vanilla Kubernetes with no distribution-specific

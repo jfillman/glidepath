@@ -63,7 +63,7 @@ start-time: 2025-08-06T14:32:20.234567890Z
 
 ### 1.3 Building & Publishing Image
 
-Task `build-image.yaml` runs kaniko and emits a span:
+Task `build-image.yaml` runs BuildKit and emits a span:
 
 ```bash
 # In emit-image-ref-and-span step:

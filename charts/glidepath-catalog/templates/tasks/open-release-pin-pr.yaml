@@ -107,7 +107,7 @@ spec:
 
         image_repo="${IMAGE_REF%:*}"
         image_tag="${IMAGE_REF##*:}"
-        # oras, not crane: crane is not in the toolbox (build-image runs it from its own image).
+        # oras, not crane: crane is not in the toolbox.
         # For a multi-arch image this is the index digest, the same one build-image pins.
         digest="$(oras resolve "${IMAGE_REF}" | tr -d '\n')"
         [[ "${digest}" == sha256:* ]] || { echo "error: could not resolve a digest for ${IMAGE_REF} (got '${digest}')" >&2; exit 1; }

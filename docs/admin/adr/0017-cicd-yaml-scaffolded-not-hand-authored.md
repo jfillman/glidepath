@@ -29,7 +29,7 @@ build-only `cicd.yaml` alongside its other src-repo boilerplate - same
 create-once-then-hands-off `managementPolicies` as `package.json`/`Dockerfile`/
 etc., so a developer's first real edit isn't fought by drift correction.
 `build.script` is omitted (every scaffolded Dockerfile does its own build,
-single-stage or multi-stage; kaniko builds it directly) and `unitTest.enabled`
+single-stage or multi-stage; the image builder builds it directly) and `unitTest.enabled`
 starts `false` (no test script exists yet). `build.agent` maps directly onto
 the stack's own version field (`nodeVersion`/`javaVersion`/`goVersion`/
 `pythonVersion`).

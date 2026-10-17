@@ -1,94 +1,53 @@
 # catalog/tasks/build-image.yaml
 #
-# Resolves the Containerfile path + image tag, then builds+pushes a real multi-arch
-# (linux/arm64 + linux/amd64) image with kaniko + crane. "Containerfile" (not
-# "Dockerfile") is this platform's deliberate, vendor-neutral term for the same
-# file - renamed from build.dockerfile 2026-09-22, see schemas/cicd.schema.json.
-# The architectural expectation for app repos is that build.sh (catalog/tasks/
-# build-source.yaml, a separate Task as of Phase 3 item 8.1) does the actual build (npm
-# ci, compiling, whatever the language needs) and the Containerfile becomes a thin
-# packaging step that copies already-built artifacts rather than re-running the build
-# itself - see nodejs-demo-app's build.sh/Containerfile for the reference shape. Teams
-# doing the whole build inside a multi-stage Containerfile instead (no separate
-# build.sh) skip build-source entirely (see that file's own header) - this Task doesn't
-# need to know which case it is, kaniko just builds whatever Containerfile it's given
+# Resolves the Containerfile path + image tag, then builds and pushes a multi-arch
+# (linux/arm64 and/or linux/amd64) image with rootless BuildKit. "Containerfile" (not
+# "Dockerfile") is this platform's deliberate, vendor-neutral term for the same file -
+# renamed from build.dockerfile 2026-09-22, see schemas/cicd.schema.json. The
+# architectural expectation for app repos is that build.sh (catalog/tasks/
+# build-source.yaml) does the actual build and the Containerfile is a thin packaging
+# step that copies already-built artifacts - see nodejs-demo-app's build.sh/Containerfile
+# for the reference shape. Teams doing the whole build inside a multi-stage Containerfile
+# instead skip build-source entirely; this Task builds whatever Containerfile it's given
 # either way.
 #
-# The actual image-build steps still run on kaniko - a deliberate, narrow exception to
-# "pipeline step code is bash": kaniko's image has no shell by design (that's what makes
-# rootless builds work under Pod Security "restricted" - see docs/rootless-builds.md).
-# This mirrors a precedent already in the platform's own lineage: the old system's
-# git-clone Task likewise used a purpose-built compiled binary rather than bash, for the
-# same class of reason. Every OTHER step here, and in every other catalog Task, is bash.
+# BuildKit replaced kaniko on 2026-10-17 (ADR-0026, superseding ADR-0010): kaniko was
+# archived upstream in June 2025 (v1.24.0 was the last release), and it ignored per-stage
+# `FROM --platform=$BUILDPLATFORM`, so every RUN step of the amd64 image ran under QEMU on
+# kiac-dev's arm64 node - Go compilers crashed there (known-gaps #37) and in-Containerfile
+# Java/Node builds ran several times slower. BuildKit honors $BUILDPLATFORM, so a
+# Containerfile that compiles in a `FROM --platform=$BUILDPLATFORM` stage and
+# cross-compiles to $TARGETARCH never emulates the compiler - only RUN steps in
+# target-platform stages still go through the binfmt handlers 00-bootstrap/binfmt/
+# registers (gitops-cluster-dev). Measured in the Phase 0 spike: a Go scaffold-shaped
+# build for both platforms, push included, in 37s, where the kaniko amd64 step crashed in
+# `lfstack.push` on the same Containerfile. A Containerfile that compiles in a
+# target-platform stage (the old GoApplication scaffold) still emulates and still hits
+# #37 - BuildKit does not fix that by itself; the Containerfile has to opt in.
 #
-# Multi-arch, per-app configurable (2026-09-22): builds linux/arm64 (kiac-dev, native)
-# and/or linux/amd64 (kind-prod, cross-built via kaniko's --custom-platform under QEMU
-# emulation - see 00-bootstrap/binfmt/ in gitops-cluster-dev, a DaemonSet that registers
-# binfmt_misc handlers on kiac-dev's node; without it the amd64 build step below fails
-# outright with "exec format error", confirmed live before that DaemonSet existed),
-# per cicd.yaml's build.platforms (schemas/cicd.schema.json, defaults to both). Original
-# design (same day) built both unconditionally for every app; revised same day after
-# realizing that's real wasted work for an app like backstage that only ever deploys to
-# one cluster (kind-prod) and never the other - see gitops-cluster-kind-prod/60-backstage/
-# backstage/deployment.yaml's own image-tag history for the incident this solves.
+# One buildctl invocation builds every requested platform (in parallel) and pushes the
+# real OCI image index - no per-arch tags, no crane step. One platform requested pushes a
+# plain single-platform manifest under the real tag, same as the old crane-cp case.
+# buildctl adds no attestation manifests unless asked (unlike `docker buildx`), so the
+# index holds only the platform images and Chains/Conforma see the same IMAGE_URL/
+# IMAGE_DIGEST shape as before.
 #
-# Known issue: a Go app's amd64 leg can crash go build itself under this QEMU
-# emulation - not one bug, at least two independent ones hit live on boarding-api,
-# 2026-09-22 (arm64 always builds the identical source fine, natively; only the
-# emulated amd64 leg ever crashes):
-#   1. "runtime: lfstack.push invalid packing" - a GC address-layout bug (bisected
-#      upstream to QEMU commit 2d708164e0, "linux-user: Define TASK_UNMAPPED_BASE
-#      in $guest/target_mman.h", present in qemu-v10.2.3, 00-bootstrap/binfmt/'s
-#      version as of this date). `ENV GOGC=off` in the app's own Containerfile
-#      avoids it (never runs the GC pass that trips over the bad address).
-#   2. SIGSEGV inside runtime.sysmon/runtime.netpoll (netpoll_epoll.go), which
-#      recurred identically even with GOGC=off AND GODEBUG=asyncpreemptoff=1 both
-#      set - a second, unrelated QEMU bug, most likely in its epoll_pwait2
-#      emulation (Go 1.21+ uses that syscall for netpoll's sub-millisecond
-#      precision; QEMU linux-user support for it is recent and evidently still
-#      incomplete in this platform's version). No known GODEBUG/env-var mitigation
-#      found for this one after two real attempts - if you're tempted to try a
-#      third, check the real chart-rendered TaskRun logs first, not just theory.
-# golang/go#69255 tracks a real runtime-side fix for bug 1, landing in Go 1.25.4;
-# no fix tracked for bug 2. Kaniko doesn't propagate its own process environment
-# into RUN steps, so any GODEBUG/GOGC-style mitigation has to go in the affected
-# app's own Containerfile, not here.
+# Layer cache: an OCI cache manifest in a separate package per app,
+# <image-repo>-buildcache:latest (mode=max, so intermediate build stages are cached too).
+# A separate package rather than a tag on the app's own package keeps the cache out of
+# Tower's Images tab and image prune, which list every tagged version of the app package.
+# The first build of an app logs "failed to configure registry cache importer ... not
+# found" and carries on - that's the expected cold-cache path, not a failure.
 #
-# Tried and confirmed NOT to work (2026-09-22, also live on boarding-api): avoiding
-# QEMU for the build stage entirely via `FROM --platform=$BUILDPLATFORM ... AS build`
-# + `RUN GOARCH=$TARGETARCH go build ...` (Go cross-compiles natively - no emulation
-# should be needed to just compile for a different arch). kaniko does NOT honor a
-# per-stage --platform override when --custom-platform is set on the invocation (as
-# it always is here, once per arch) - the "native" stage still pulled and ran under
-# the emulated target platform regardless, regressing straight back to bug 1. Not
-# pursuing this further - if kaniko ever adds real per-stage platform support, it's
-# worth revisiting, but there's no --build-arg/flag workaround for this today.
-#
-# kaniko itself has no multi-arch/manifest-list capability (it only ever produces one
-# single-platform image per invocation, no equivalent of `docker buildx build --platform
-# a,b` or a manifest-push command) - so this Task runs kaniko once per requested arch,
-# each pushing to its own throwaway `-arm64`/`-amd64`-suffixed tag, then uses crane
-# (google/go-containerregistry) to either combine both into a real OCI image index (both
-# platforms requested) or just retag the single build under the real tag (one platform
-# requested) - either way publishing the real, unsuffixed tag every downstream consumer
-# already expects. The per-arch `-arm64`/`-amd64` tags stay published after a two-platform
-# build (harmless - crane reuses their already-pushed blobs by digest, no extra storage,
-# useful for debugging a single arch in isolation) but nothing should deploy against them
-# directly.
-#
-# Tekton has no per-STEP conditional execution (`when:` only gates whole PipelineTasks,
-# and splitting this into separate per-arch Tasks would mean multiple possible Task names
-# producing build-image's results, which Tekton's $(tasks.X.results.Y) can't reference
-# dynamically - "whichever one ran" isn't expressible) - so each kaniko step below gates
-# itself internally: a thin `#!/busybox/sh` script checks resolve-build-config's
-# build-arm64/build-amd64 results and exits 0 immediately if that platform wasn't
-# requested, `exec`ing straight into kaniko (never wrapping/monitoring it) otherwise.
-# kaniko's `-debug` image (already used here for the SSL_CERT_FILE fix below) does bundle
-# a busybox shell at /busybox/sh, confirmed live - the "kaniko has no shell" framing
-# above is about its slim/production image, not this one. This keeps build-image a single
-# stable Task name with a fixed result set regardless of which platforms a given app
-# requests, at the cost of an unwanted platform's step still starting a container (cheap -
-# a few seconds - vs. actually running kaniko, which is what's expensive).
+# Privilege model (docs/admin/rootless-builds.md): the BuildKit step runs as UID 1000 via
+# rootlesskit, no privileged container, no capabilities added, no host mounts. It sets no
+# seccomp or AppArmor profile, so the pod passes Pod Security "baseline" - the explicit
+# `Unconfined` profiles BuildKit's own docs (and the Tekton catalog buildkit Task) use are
+# rejected by baseline. Not "restricted": rootlesskit has to create a user namespace,
+# which RuntimeDefault seccomp and allowPrivilegeEscalation=false both block (tried live,
+# with and without hostUsers: false). This relies on the kubelet's seccompDefault being
+# off (it is on kiac-dev); a cluster that turns it on needs a Localhost seccomp profile for
+# this step.
 #
 # Config resolution below is plain bash with no span wrapping - it's sub-second work,
 # and otel-cli's per-invocation overhead isn't worth it for that (see docs/tracing.md).
@@ -102,7 +61,7 @@ metadata:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
 spec:
-  description: Resolves the Containerfile path + image tag, then builds+pushes a multi-arch (arm64+amd64) image with kaniko + crane.
+  description: Resolves the Containerfile path + image tag, then builds+pushes a multi-arch (arm64+amd64) image with rootless BuildKit.
   workspaces:
     - name: source
   params:
@@ -128,10 +87,10 @@ spec:
       description: "\"true\" tags the image as <12-char-sha> alone, skipping the <version>-<short-sha> scheme below entirely. Set by deliver-onboarding-files.yaml for pull_request-triggered flows only - a PR's package.json version isn't something ArgoCD's pullRequest generator can read at manifest-generation time (glidepath-app's ephemeral-envs.yaml computes this exact image reference independently, from .head_sha alone, to know what to deploy), so PR images need a tag ephemeral-envs.yaml can predict without it."
     - name: flow-traceparent
       type: string
-      description: Root traceparent for the whole flow (from start-flow-root-span) - gives the kaniko-duration span its trace id. See emit-image-ref-and-span's own span-emission comment for why this Task can't wrap kaniko directly.
+      description: Root traceparent for the whole flow (from start-flow-root-span) - gives the build-duration span its trace id. See emit-image-ref-and-span's own span-emission comment for why this Task can't wrap the build directly.
     - name: stage-span-id
       type: string
-      description: The current stage's own span id (from start-stage-span) - the kaniko-duration span is parented to it.
+      description: The current stage's own span id (from start-stage-span) - the build-duration span is parented to it.
   results:
     - name: image-digest
     - name: image-ref
@@ -143,10 +102,10 @@ spec:
       description: Same value as image-repo, duplicated under Conforma's exact-cased Task-level type-hint name - policy/release/lib/tekton/task_results.rego's build_tasks() looks for a task with results *ending in* "IMAGE_URL"/"IMAGE_DIGEST", independent of and unrelated to Chains' own artifacts.taskrun.storage signing/storage config (confirmed live before adding this - it only reads predicate.buildConfig.tasks[].results, which Chains already populates for every task regardless of storage settings). See docs/provenance-policy.md.
     - name: IMAGE_DIGEST
       description: Same value as image-digest, duplicated under Conforma's exact-cased Task-level type-hint name - see IMAGE_URL above.
-  # Registry push credentials for kaniko. A `kubernetes.io/dockerconfigjson` Secret
+  # Registry push credentials for BuildKit. A `kubernetes.io/dockerconfigjson` Secret
   # named registry-credentials must exist in the Application's own namespace (not -dev) -
-  # see docs/onboarding.md. Mounted at kaniko's default docker-config lookup path so no
-  # extra kaniko flag is needed.
+  # see docs/onboarding.md. Mounted at the rootless image's $HOME/.docker, which
+  # DOCKER_CONFIG points at.
   volumes:
     - name: registry-credentials
       secret:
@@ -162,13 +121,11 @@ spec:
         - name: containerfile-path
         - name: image-ref
         - name: version
-          description: "Resolved VERSION alone (no -<sha> suffix) - exists so build-and-push-{arm64,amd64} can set org.opencontainers.image.version without re-parsing it back out of image-ref."
-        - name: build-arm64
-          description: "\"true\"/\"false\" - whether cicd.yaml's build.platforms includes arm64 (default: both platforms, so default is \"true\")."
-        - name: build-amd64
-          description: "\"true\"/\"false\" - same as build-arm64, for amd64."
+          description: "Resolved VERSION alone (no -<sha> suffix) - exists so build-and-push can set org.opencontainers.image.version without re-parsing it back out of image-ref."
+        - name: platforms
+          description: "BuildKit platform list from cicd.yaml's build.platforms, e.g. \"linux/arm64,linux/amd64\" (default: both)."
         - name: span-start-time
-          description: Stamped immediately before kaniko starts - see emit-image-ref-and-span's span-emission comment for why the actual span is sent from there instead of here.
+          description: Stamped immediately before BuildKit starts - see emit-image-ref-and-span's span-emission comment for why the actual span is sent from there instead of here.
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -180,7 +137,7 @@ spec:
         # now applies every schema default (including this one) onto
         # config-json centrally before any Task sees it - see that Task's own
         # comment for the real bug this used to be (a missing key handed
-        # kaniko a literal ".../null" path) before that central fix existed.
+        # the builder a literal ".../null" path) before that central fix existed.
         CONTAINERFILE_PATH="$(jq -r '.build.containerfile // "./Containerfile"' <<< "${CFG}")"
         SHORT_SHA="$(cut -c1-7 <<< "$(params.git-revision)")"
         SRC="$(workspaces.source.path)"
@@ -232,17 +189,14 @@ spec:
           IMAGE_REF="$(params.image-repo):${VERSION}-${SHORT_SHA}"
         fi
         # Defaults to both platforms when build.platforms is omitted entirely, matching
-        # schemas/cicd.schema.json's own default - jq's `// ["arm64","amd64"]` only
-        # kicks in when the key is absent/null, not when it's an explicit (possibly
-        # single-element) array, so an app that sets platforms: [amd64] gets exactly
-        # that, not both.
-        # `|| true` on each: jq -e exits non-zero for a legitimate "false" match (the
-        # platform genuinely isn't requested), which under this script's `set -e` would
-        # otherwise abort the whole step - not an error case, so it must not fail the build.
-        BUILD_ARM64="false"
-        BUILD_AMD64="false"
-        jq -e '(.build.platforms // ["arm64","amd64"]) | index("arm64") != null' <<< "${CFG}" >/dev/null && BUILD_ARM64="true" || true
-        jq -e '(.build.platforms // ["arm64","amd64"]) | index("amd64") != null' <<< "${CFG}" >/dev/null && BUILD_AMD64="true" || true
+        # schemas/cicd.schema.json's own default - jq's `// ["arm64","amd64"]` only kicks
+        # in when the key is absent/null, so an app that sets platforms: [amd64] gets
+        # exactly that. Sorted and de-duplicated so the order is stable in logs.
+        PLATFORMS="$(jq -r '(.build.platforms // ["arm64","amd64"]) | unique | map("linux/" + .) | join(",")' <<< "${CFG}")"
+        if [[ -z "${PLATFORMS}" ]]; then
+          echo "error: build.platforms resolved to an empty set - schema's minItems:1 should have caught this at validate-cicd-config. Refusing to publish nothing." >&2
+          exit 1
+        fi
 
         printf '%s' "${CONTAINERFILE_PATH}" > "$(step.results.containerfile-path.path)"
         echo "containerfile-path=${CONTAINERFILE_PATH}"
@@ -250,10 +204,8 @@ spec:
         echo "image-ref=${IMAGE_REF}"
         printf '%s' "${VERSION}" > "$(step.results.version.path)"
         echo "version=${VERSION}"
-        printf '%s' "${BUILD_ARM64}" > "$(step.results.build-arm64.path)"
-        echo "build-arm64=${BUILD_ARM64}"
-        printf '%s' "${BUILD_AMD64}" > "$(step.results.build-amd64.path)"
-        echo "build-amd64=${BUILD_AMD64}"
+        printf '%s' "${PLATFORMS}" > "$(step.results.platforms.path)"
+        echo "platforms=${PLATFORMS}"
         # -n here matters, unlike the two lines above it's not just style: this result is
         # read back by emit-image-ref-and-span via a cross-step env var substitution, not a
         # `cat`-based one - command substitution strips a trailing newline automatically,
@@ -264,237 +216,105 @@ spec:
         printf '%s' "${_r}" > "$(step.results.span-start-time.path)"
         echo "span-start-time=${_r}"
 
-    - name: build-and-push-arm64
-      # Bumped from v1.23.2-debug 2026-08-16 as a real, independently-worthwhile fix
-      # (that image's baked-in ca-certificates.crt was dated 2024-07-08 - over 2 years
-      # stale) - but NOT what actually caused the live "x509: certificate signed by
-      # unknown authority" failure this session hit pushing to ghcr.io (confirmed by
-      # direct test: v1.24.0's own 2025-05-21 bundle hit the byte-identical error).
-      # v1.24.0 is the latest kaniko release as of this fix (no newer tag exists) -
-      # kept pinned, not "latest", same reasoning as every other version pin here.
-      image: gcr.io/kaniko-project/executor:v1.24.0-debug
-      # Requests only, no limits (2026-10-09): see docs/admin/pipeline-performance.md "Step resources".
+    - name: build-and-push
+      # Pinned by digest (multi-arch index) - same reasoning as every other version pin
+      # here. -rootless is the variant that runs as UID 1000 under rootlesskit; see this
+      # file's header for the privilege model.
+      image: moby/buildkit:v0.33.1-rootless@sha256:f8a833b2de9d68e27f0815e4a737abdfaf8a2e4c615650557df11025101557b4
+      # Requests only, no limits (2026-10-09): see docs/admin/pipeline-performance.md "Step
+      # resources". Double the old per-arch kaniko step's request: one step now builds both
+      # platforms in parallel.
       computeResources:
-        requests: { cpu: 250m, memory: 256Mi }
-      # Uses `script:` (not a plain `command:` invocation of the executor binary) only
-      # for the thin platform-gate check below - the moment that check passes, `exec`
-      # replaces the shell process with kaniko directly, so kaniko still ends up as the
-      # step's actual running process, not something wrapped/monitored by bash. See this
-      # file's header comment for why per-step conditional skipping needs a shell at all
-      # (Tekton has no native per-step `when:`), and why kaniko's `-debug` image (already
-      # needed here for the SSL_CERT_FILE fix below) can support one - it bundles a real
-      # busybox shell at /busybox/sh, confirmed live, unlike its slim/production image.
+        requests: { cpu: 500m, memory: 512Mi }
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      # No SSL_CERT_FILE override (kaniko needed one): this image is Alpine-based with a
+      # real /etc/ssl/certs, which is on the SSL_CERT_DIR list Tekton injects - confirmed
+      # live in the Phase 0 spike.
       #
-      # SSL_CERT_FILE override - the REAL root cause, found live via a direct kubectl
-      # exec into a real kaniko pod: Tekton's own entrypoint injects
-      # SSL_CERT_DIR=/tekton-custom-certs:/etc/ssl/certs:/etc/pki/tls/certs into every
-      # step (its built-in custom-CA-injection mechanism, config-trusted-cabundle -
-      # empty/optional here, nobody's populated it). kaniko's own debug image doesn't
-      # have ANY of those paths - confirmed live, `/etc/ssl/certs` doesn't exist at all
-      # in this image. Its real bundle lives at the non-standard
-      # /kaniko/ssl/certs/ca-certificates.crt, which Tekton's injected SSL_CERT_DIR
-      # never points at - so Go's x509 verifier finds zero trusted CAs and every TLS
-      # connection fails, regardless of kaniko version. Confirmed live: setting
-      # SSL_CERT_FILE here (which Go checks in addition to SSL_CERT_DIR, and which
-      # takes precedence for the single-file case) turned the TLS error into a
-      # completely different, expected registry-auth error - proving this was the
-      # actual, complete fix, not a partial one.
+      # Cross-step results as env vars, not inline $(steps.*.results.*) in the script:
+      # Tekton's admission webhook only allows stepResult substitutions in env, command and
+      # args. $(workspaces.source.path) is a different substitution class and stays inline.
       env:
-        - name: SSL_CERT_FILE
-          value: /kaniko/ssl/certs/ca-certificates.crt
-        # BUILD_ARM64/CONTAINERFILE_PATH/IMAGE_REF as env vars, not inline $(steps.*.results.*)
-        # in the script body below - Tekton's admission webhook rejects cross-step result
-        # substitutions anywhere except env/command/args ("stepResult substitutions are
-        # only allowed in env, command and args"), a real error hit live the first time
-        # this Task actually ran as a TaskRun (not caught by this session's earlier
-        # testing, which exercised the same shell logic in hand-written raw Pods that
-        # never went through Tekton's admission webhook at all). $(workspaces.source.path)
-        # below is a different substitution class (workspace, not stepResult) and stays
-        # inline - confirmed by this same error only naming the script fields, not
-        # rejecting the whole Task outright.
-        - name: BUILD_ARM64
-          value: $(steps.resolve-build-config.results.build-arm64)
-        - name: CONTAINERFILE_PATH
-          value: $(steps.resolve-build-config.results.containerfile-path)
-        - name: IMAGE_REF
-          value: $(steps.resolve-build-config.results.image-ref)
-        # OCI annotations (docs/admin/known-gaps.md gap: "no image-signing.md
-        # revision/version labels") - kaniko's --label applies unconditionally,
-        # regardless of what the app's own Containerfile declares, so this needs no
-        # opt-in from app teams. See docs/provenance-policy.md/docs/image-signing.md
-        # for how Chains' own attestations relate to these (complementary, not
-        # redundant - Chains proves what built it, these labels are the image's own
-        # inspectable self-description, e.g. `crane config`/`docker inspect` with no
-        # attestation store involved).
-        - name: OCI_VERSION
-          value: $(steps.resolve-build-config.results.version)
-        - name: OCI_REVISION
-          value: $(params.git-revision)
-        - name: OCI_SOURCE
-          value: $(params.git-url)
-        - name: OCI_CREATED
-          value: $(steps.resolve-build-config.results.span-start-time)
-      volumeMounts:
-        - name: registry-credentials
-          mountPath: /kaniko/.docker
-          readOnly: true
-      # --build-arg=HANGAR_VERSION/HANGAR_GIT_REVISION below (docs/admin/known-gaps.md
-      # gap #24: Go apps have no version-injection path) - unlike the OCI --label flags
-      # above, --build-arg only takes effect for a Containerfile that declares a matching
-      # `ARG`, so it's a true no-op (not even a warning) for every existing app that
-      # doesn't. Deliberately generic (not Go-specific): a Go app's Containerfile does
-      # `ARG HANGAR_VERSION` + `ARG HANGAR_GIT_REVISION` then
-      # `go build -ldflags "-X <pkg>.Version=$HANGAR_VERSION -X <pkg>.Commit=$HANGAR_GIT_REVISION"`,
-      # but nothing here assumes Go - any language's Containerfile can consume the same
-      # two args however it needs to. See docs/user/cicd-yaml-reference.md.
-      script: |
-        #!/busybox/sh
-        set -eu
-        if [ "${BUILD_ARM64}" != "true" ]; then
-          echo "arm64 not in this app's cicd.yaml build.platforms - skipping"
-          exit 0
-        fi
-        exec /kaniko/executor \
-          --dockerfile=$(workspaces.source.path)/${CONTAINERFILE_PATH} \
-          --context=$(workspaces.source.path) \
-          --destination=${IMAGE_REF}-arm64 \
-          --custom-platform=linux/arm64 \
-          --cache=true \
-          --cache-ttl=336h \
-          --label=org.opencontainers.image.version=${OCI_VERSION} \
-          --label=org.opencontainers.image.revision=${OCI_REVISION} \
-          --label=org.opencontainers.image.source=${OCI_SOURCE} \
-          --label=org.opencontainers.image.created=${OCI_CREATED} \
-          --build-arg=HANGAR_VERSION=${OCI_VERSION} \
-          --build-arg=HANGAR_GIT_REVISION=${OCI_REVISION}
-
-    - name: build-and-push-amd64
-      # Same image/flags as build-and-push-arm64 above (see that step's comments for
-      # the kaniko version pin and SSL_CERT_FILE fix, both apply identically here) -
-      # only --custom-platform and --destination differ. Runs on kiac-dev's arm64 node
-      # same as the arm64 leg, but under QEMU emulation via the binfmt_misc handlers
-      # 00-bootstrap/binfmt/ registers on that node (gitops-cluster-dev) - without that
-      # DaemonSet this step fails immediately with "exec format error" on the first RUN
-      # instruction that isn't a pure data copy. --custom-platform is kaniko's real flag
-      # name (--customPlatform is accepted but logs a deprecation warning - confirmed
-      # live testing this).
-      image: gcr.io/kaniko-project/executor:v1.24.0-debug
-      # Requests only, no limits (2026-10-09): see docs/admin/pipeline-performance.md "Step resources".
-      computeResources:
-        requests: { cpu: 250m, memory: 256Mi }
-      env:
-        - name: SSL_CERT_FILE
-          value: /kaniko/ssl/certs/ca-certificates.crt
-        # See build-and-push-arm64's own comment on why these are env vars, not inline
-        # $(steps.*.results.*) in the script body.
-        - name: BUILD_AMD64
-          value: $(steps.resolve-build-config.results.build-amd64)
-        - name: CONTAINERFILE_PATH
-          value: $(steps.resolve-build-config.results.containerfile-path)
-        - name: IMAGE_REF
-          value: $(steps.resolve-build-config.results.image-ref)
-        # See build-and-push-arm64's own comment on these OCI label env vars.
-        - name: OCI_VERSION
-          value: $(steps.resolve-build-config.results.version)
-        - name: OCI_REVISION
-          value: $(params.git-revision)
-        - name: OCI_SOURCE
-          value: $(params.git-url)
-        - name: OCI_CREATED
-          value: $(steps.resolve-build-config.results.span-start-time)
-      volumeMounts:
-        - name: registry-credentials
-          mountPath: /kaniko/.docker
-          readOnly: true
-      script: |
-        #!/busybox/sh
-        set -eu
-        if [ "${BUILD_AMD64}" != "true" ]; then
-          echo "amd64 not in this app's cicd.yaml build.platforms - skipping"
-          exit 0
-        fi
-        exec /kaniko/executor \
-          --dockerfile=$(workspaces.source.path)/${CONTAINERFILE_PATH} \
-          --context=$(workspaces.source.path) \
-          --destination=${IMAGE_REF}-amd64 \
-          --custom-platform=linux/amd64 \
-          --cache=true \
-          --cache-ttl=336h \
-          --label=org.opencontainers.image.version=${OCI_VERSION} \
-          --label=org.opencontainers.image.revision=${OCI_REVISION} \
-          --label=org.opencontainers.image.source=${OCI_SOURCE} \
-          --label=org.opencontainers.image.created=${OCI_CREATED} \
-          --build-arg=HANGAR_VERSION=${OCI_VERSION} \
-          --build-arg=HANGAR_GIT_REVISION=${OCI_REVISION}
-
-    - name: publish-multiarch-manifest
-      # Combines whichever single-arch image(s) got pushed above into the real,
-      # unsuffixed tag every downstream consumer expects - kaniko itself has no
-      # manifest-list/multi-arch capability (see this file's header comment), so this is
-      # a separate step using crane (google/go-containerregistry), not kaniko. Three
-      # cases, all real and exercised (not just the both-platforms one): both requested
-      # -> a real OCI image index via `crane index append`; exactly one requested (e.g.
-      # backstage, amd64-only) -> `crane cp` just aliases that single arch-suffixed image
-      # under the real tag, no index wrapper for a genuinely single-platform image;
-      # neither requested -> cicd.yaml's build.platforms resolved to an empty set, which
-      # the schema's minItems:1 should already reject at validate-cicd-config - reaching
-      # this branch means that validation was bypassed somehow, so fail loudly rather
-      # than silently publish nothing.
-      #
-      # Pinned by digest, not the `:debug` tag alone - gcr.io/go-containerregistry/crane
-      # only publishes ONE floating `debug` tag (no versioned debug variant exists in
-      # that registry, confirmed live via the GCR tags-list API before adding this), so a
-      # digest pin is the only way to keep this reproducible the way every other version
-      # in this file is pinned. `:debug` (not the plain, distroless default image)
-      # specifically because this step needs a shell to run crane + write a Task result -
-      # the distroless variant has no shell at all, same reasoning as kaniko's own
-      # debug-image choice above. Shebang is /busybox/sh, not /bin/sh - this image is
-      # busybox-based, confirmed against upstream's own documented usage.
-      image: gcr.io/go-containerregistry/crane@sha256:e78770b31258a3846f878036d9c1f63fbe4c871f9f56990bf77fd95c013e3c1b
-      env:
+        # Runs the build processes without a separate PID-namespace sandbox - required
+        # when buildkitd itself runs inside an unprivileged container (BuildKit's own
+        # rootless-on-Kubernetes guidance).
+        - name: BUILDKITD_FLAGS
+          value: --oci-worker-no-process-sandbox
         - name: DOCKER_CONFIG
-          value: /crane/.docker
-        # See build-and-push-arm64's own comment on why these are env vars, not inline
-        # $(steps.*.results.*) in the script body - the same admission-webhook rejection
-        # applies here.
+          value: /home/user/.docker
+        - name: CONTAINERFILE_PATH
+          value: $(steps.resolve-build-config.results.containerfile-path)
         - name: IMAGE_REF
           value: $(steps.resolve-build-config.results.image-ref)
-        - name: BUILD_ARM64
-          value: $(steps.resolve-build-config.results.build-arm64)
-        - name: BUILD_AMD64
-          value: $(steps.resolve-build-config.results.build-amd64)
+        - name: PLATFORMS
+          value: $(steps.resolve-build-config.results.platforms)
+        - name: CACHE_REF
+          value: $(params.image-repo)-buildcache:latest
+        # OCI annotations (known-gaps #23): labels apply regardless of what the app's own
+        # Containerfile declares, so this needs no opt-in from app teams. See
+        # docs/provenance-policy.md/docs/image-signing.md for how Chains' attestations
+        # relate to these (complementary: Chains proves what built it, these labels are
+        # the image's own inspectable self-description).
+        - name: OCI_VERSION
+          value: $(steps.resolve-build-config.results.version)
+        - name: OCI_REVISION
+          value: $(params.git-revision)
+        - name: OCI_SOURCE
+          value: $(params.git-url)
+        - name: OCI_CREATED
+          value: $(steps.resolve-build-config.results.span-start-time)
       volumeMounts:
         - name: registry-credentials
-          mountPath: /crane/.docker
+          mountPath: /home/user/.docker
           readOnly: true
+      # HANGAR_VERSION/HANGAR_GIT_REVISION build-args (known-gaps #24: Go apps have no
+      # version-injection path) only take effect for a Containerfile that declares a
+      # matching `ARG`, so they're a no-op for every app that doesn't. Generic, not
+      # Go-specific - see docs/user/cicd-yaml-reference.md.
+      #
+      # --dockerfile and --context are both the source workspace root; filename is the
+      # Containerfile's path relative to it (validate-cicd-config has already normalized
+      # build.containerfile, default ./Containerfile).
       script: |
-        #!/busybox/sh
+        #!/bin/sh
         set -eu
-        if [ "${BUILD_ARM64}" = "true" ] && [ "${BUILD_AMD64}" = "true" ]; then
-          crane index append \
-            -m "${IMAGE_REF}-arm64" \
-            -m "${IMAGE_REF}-amd64" \
-            -t "${IMAGE_REF}"
-        elif [ "${BUILD_ARM64}" = "true" ]; then
-          crane cp "${IMAGE_REF}-arm64" "${IMAGE_REF}"
-        elif [ "${BUILD_AMD64}" = "true" ]; then
-          crane cp "${IMAGE_REF}-amd64" "${IMAGE_REF}"
-        else
-          echo "error: build.platforms resolved to an empty set - schema's minItems:1 should have caught this at validate-cicd-config. Refusing to publish nothing." >&2
+        SRC="$(workspaces.source.path)"
+        echo "platforms=${PLATFORMS}"
+        buildctl-daemonless.sh build \
+          --frontend dockerfile.v0 \
+          --local context="${SRC}" \
+          --local dockerfile="${SRC}" \
+          --opt filename="${CONTAINERFILE_PATH}" \
+          --opt platform="${PLATFORMS}" \
+          --opt label:org.opencontainers.image.version="${OCI_VERSION}" \
+          --opt label:org.opencontainers.image.revision="${OCI_REVISION}" \
+          --opt label:org.opencontainers.image.source="${OCI_SOURCE}" \
+          --opt label:org.opencontainers.image.created="${OCI_CREATED}" \
+          --opt build-arg:HANGAR_VERSION="${OCI_VERSION}" \
+          --opt build-arg:HANGAR_GIT_REVISION="${OCI_REVISION}" \
+          --import-cache type=registry,ref="${CACHE_REF}" \
+          --export-cache type=registry,ref="${CACHE_REF}",mode=max,oci-mediatypes=true,image-manifest=true \
+          --output type=image,name="${IMAGE_REF}",push=true,oci-mediatypes=true \
+          --metadata-file /tmp/build-metadata.json
+        # The pushed image's digest (the index digest for a multi-platform build). The
+        # image has no jq; the metadata file is flat JSON with one containerimage.digest.
+        DIGEST="$(sed -n 's/.*"containerimage.digest": *"\(sha256:[0-9a-f]*\)".*/\1/p' /tmp/build-metadata.json | head -n1)"
+        if [ -z "${DIGEST}" ]; then
+          echo "error: buildctl pushed but wrote no containerimage.digest to its metadata file" >&2
+          cat /tmp/build-metadata.json >&2
           exit 1
         fi
+        printf '%s' "${DIGEST}" > "$(results.image-digest.path)"
+        echo "image-digest=${DIGEST}"
 
-        crane digest "${IMAGE_REF}" | tr -d '\n' | tee "$(results.image-digest.path)"
-
-    # Sends the span covering the whole build-image duration (both kaniko legs plus the
-    # manifest-combine) - not from within any of those steps themselves, since none of
-    # them have otel-cli (kaniko's debug image has a shell now, per the platform-gating
-    # steps above, but never otel-cli; crane's image doesn't either). Using this step's
-    # own start (immediately after publish-multiarch-manifest exits) as the span's end
-    # time is an approximation, not kaniko/crane's exact internal finish instant - close
-    # enough for real diagnostic purposes, and there's no cheaper way to get closer
-    # without adding otel-cli to one of those images, which would reintroduce the exact
-    # problem this exception avoids. Only reached if every prior step succeeded (a
+    # Sends the span covering the whole build-image duration - not from within the
+    # build-and-push step itself, since the BuildKit image has no otel-cli. Using this
+    # step's own start (immediately after build-and-push exits) as the span's end time is
+    # an approximation, not BuildKit's exact internal finish instant - close enough for
+    # real diagnostic purposes, and there's no cheaper way to get closer without adding
+    # otel-cli to that image. Only reached if every prior step succeeded (a
     # failure halts the TaskRun before this step runs) - same honest, documented gap as
     # build-source.yaml/run-tests.yaml's own emit-span steps.
     - name: emit-image-ref-and-span
@@ -527,9 +347,8 @@ spec:
         echo "version=${VERSION}"
         printf '%s' "${IMAGE_REPO}" > "$(results.IMAGE_URL.path)"
         echo "IMAGE_URL=${IMAGE_REPO}"
-        # image-digest is a TASK-level result (publish-multiarch-manifest writes it via
-        # `crane digest`, now that this Task builds multi-arch - see that step's own
-        # comment), not a step-level one - a cross-step "steps dot results dot name" env
+        # image-digest is a TASK-level result (build-and-push writes it from BuildKit's
+        # metadata file), not a step-level one - a cross-step "steps dot results dot name" env
         # var reference only
         # applies to step-scoped results and silently resolves to the literal unresolved
         # placeholder string for a task-level one (confirmed live, a real bug on the first

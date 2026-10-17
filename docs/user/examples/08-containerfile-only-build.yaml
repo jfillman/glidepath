@@ -2,7 +2,7 @@
 #
 # The second of the two build strategies - see ../cicd-yaml-reference.md's "Two build
 # strategies". Omitting `build.script` entirely switches the whole build into your
-# Containerfile: kaniko builds it directly, and the separate build-source Task (which
+# Containerfile: BuildKit builds it directly, and the separate build-source Task (which
 # would otherwise run your build.sh) is skipped completely - there's presence/absence
 # of `script`, no separate boolean, so there's no way to have this silently mean the
 # wrong thing via an unrelated typo.
@@ -10,7 +10,7 @@
 # build.agent is still required even here - unit tests always run inside it,
 # independent of which build strategy you pick.
 #
-# Build caching in this path comes from kaniko's own layer cache, not build.cache (that
+# Build caching in this path comes from BuildKit's layer cache, not build.cache (that
 # field only applies to the build.script path) - order your Containerfile so
 # `COPY package*.json .` / `RUN npm ci` happens BEFORE copying the rest of your source,
 # standard Docker layer-caching practice, or the cache invalidates on every source

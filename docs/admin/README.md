@@ -29,7 +29,7 @@ architecture.md wherever relevant.
 - [image-signing.md](image-signing.md) - Fulcio/cosign keyless signing
 - [provenance-policy.md](provenance-policy.md) - SLSA attestation policy
 - [commit-signing.md](commit-signing.md) - gitsign commit verification
-- [rootless-builds.md](rootless-builds.md) - kaniko under Pod Security `restricted`
+- [rootless-builds.md](rootless-builds.md) - rootless BuildKit image builds and the Pod Security level they meet
 
 **Release & operations**
 - [release.md](release.md) - the GitOps promotion flow, step by step

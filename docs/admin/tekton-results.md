@@ -72,7 +72,7 @@ keep that readable (both found the hard way, 2026-10-12):
   `yq -o=json`, which pretty-prints and splits the message over several lines.
 
 Timestamps are not something a Task prints itself: the runtime stamps every line (above), so
-third-party steps (kaniko, trivy, cosign) are covered the same way as the toolbox scripts.
+third-party steps (BuildKit, trivy, cosign) are covered the same way as the toolbox scripts.
 
 ## Retention and its interaction with the pruner
 

@@ -327,7 +327,7 @@ That digest belonged to this platform's own shared toolbox image
 (`ghcr.io/jfillman/glidepath-toolbox`), not the app image - and the reason became
 clear once every step's `containerStatus.imageID` was inspected directly
 (`kubectl get taskrun ... -o json | jq '.status.steps[].imageID'`): steps running a
-registry-pulled image (kaniko, `node`, `git-clone`) report a properly-qualified
+registry-pulled image (BuildKit, `node`, `git-clone`) report a properly-qualified
 `repo@sha256:digest` imageID, but steps running the toolbox image - at the time
 side-loaded onto the node (`kind load docker-image` or
 `ctr images import`) rather than pulled from a real registry - reported a **bare**
@@ -346,7 +346,7 @@ nearly every step in every pipeline, this broke signing for every real build.
    `docker save`/`ctr images import` dance. (A freshly-pushed GHCR package defaults to
    *private*, unlike `nodejs-demo-app`'s image, which was made public separately at some
    point - rather than also flipping toolbox to public, `pipeline-runner` now carries
-   `imagePullSecrets: [{name: registry-credentials}]`, reusing the same Secret kaniko
+   `imagePullSecrets: [{name: registry-credentials}]`, reusing the same Secret the image build
    already pushes with. See `charts/glidepath-app/templates/identity/pipeline-runner.yaml`.)
 2. **Defense in depth**: `artifacts.taskrun.storage` is now `""` (disabled) rather than
    `"oci"`. This platform's own provenance consumer

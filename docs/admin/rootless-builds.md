@@ -1,22 +1,48 @@
-# Rootless image builds under Pod Security Standards "restricted"
+# Rootless image builds
 
-`charts/glidepath-catalog/templates/tasks/build-image.yaml` uses [kaniko](https://github.com/GoogleContainerTools/kaniko)
-rather than Docker-in-Docker or a privileged `buildah`/`buildctl` daemon, specifically so
-image builds work under PSS `restricted` (no privileged containers, no host
-namespaces/mounts, non-root by default) - a deliberate "vanilla Kubernetes, portable"
-decision: no distribution-specific privilege escalation for the shared build identity,
-on any cluster this platform runs on.
+`charts/glidepath-catalog/templates/tasks/build-image.yaml` builds images with rootless
+[BuildKit](https://github.com/moby/buildkit) (`moby/buildkit:<version>-rootless`, run with
+`buildctl-daemonless.sh`), one daemon per TaskRun. See
+[ADR-0026](adr/0026-buildkit-image-builds.md) for why it replaced kaniko on 2026-10-17.
 
-This is flagged in the plan as a Phase 0 validation item, not assumed to just work:
-kaniko under `restricted` is a well-trodden combination, but confirm it on your actual
-target cluster/CNI/storage class **before** onboarding real application repos - a
-build-tooling problem discovered after a dozen apps are already relying on the shared
-`build-image` Task is a much more expensive fix than catching it in Phase 0.
+## What the build step needs
 
-If kaniko turns out not to fit (e.g. certain multi-stage Dockerfile features, build
-cache behavior on your storage backend), `buildah` in rootless mode is the fallback
-worth evaluating next - rootless mode support has matured, but it's less
-battle-tested specifically for the "no shell privileges at all" constraint kaniko was
-built around. Either way, this is the one Task in the whole
-catalog with a deliberate, documented exception to "step code is bash" - see the note at
-the top of `build-image.yaml`.
+| Requirement | Why |
+|---|---|
+| Pod Security `baseline` or `privileged` on the app's `-cicd` namespace | rootlesskit creates a user namespace; `restricted` (`allowPrivilegeEscalation: false`, RuntimeDefault seccomp) blocks that |
+| kubelet `seccompDefault: false`, or a Localhost seccomp profile on the step | RuntimeDefault seccomp blocks the user-namespace setup |
+| binfmt_misc handlers on the build node for every foreign platform | RUN steps in a target-platform stage run emulated; kiac-dev registers them with `00-bootstrap/binfmt/` (gitops-cluster-dev) |
+| A `registry-credentials` dockerconfigjson Secret in the namespace | Push credentials, mounted at `/home/user/.docker` |
+
+The step runs as UID 1000, adds no capabilities, mounts nothing from the host and sets no
+seccomp or AppArmor profile. That is the shape that passes `baseline`: setting either profile
+to `Unconfined`, as BuildKit's own Kubernetes examples do, is rejected by `baseline`.
+
+## Cross-architecture builds
+
+The build node is arm64. For an amd64 image, a stage written `FROM --platform=$BUILDPLATFORM`
+runs natively and cross-compiles (`GOARCH=$TARGETARCH`, a Java jar, a pure-JS bundle); every
+other stage's RUN steps go through QEMU. Emulation is slow and crashes the Go compiler
+([known-gaps.md](known-gaps.md) #37), so Containerfiles that compile should compile in a
+`$BUILDPLATFORM` stage. See
+[cicd-yaml-reference.md](../user/cicd-yaml-reference.md#multi-architecture-images-buildplatform).
+
+## Cache
+
+Each app gets a second GHCR package, `<image-repo>-buildcache`, holding one OCI cache
+manifest (`latest`, `mode=max`). The first build logs `failed to configure registry cache
+importer ... not found` and carries on. Deleting the package only costs one cold build.
+
+## Checking a cluster
+
+To see whether a build pod would be admitted at a given level, label a scratch namespace and
+dry-run the step's pod spec against it:
+
+```bash
+kubectl create ns pss-check
+kubectl label ns pss-check pod-security.kubernetes.io/enforce=baseline
+kubectl create --dry-run=server -n pss-check -f build-pod.yaml
+```
+
+Admission is not enough: a `restricted`-shaped pod is admitted and then fails inside
+rootlesskit. Run a real build once on a new cluster before onboarding apps.

@@ -22,12 +22,12 @@
         },
         "script": {
           "type": "string",
-          "description": "Build script the platform runs inside the agent image before packaging. Must be bash. Omit entirely for teams doing the whole build inside a multi-stage Containerfile - the separate build-source stage is skipped and kaniko builds `containerfile` directly. No default: presence/absence is the switch, so it can't silently mean 'skip' via an unrelated typo."
+          "description": "Build script the platform runs inside the agent image before packaging. Must be bash. Omit entirely for teams doing the whole build inside a multi-stage Containerfile - the separate build-source stage is skipped and BuildKit builds `containerfile` directly. No default: presence/absence is the switch, so it can't silently mean 'skip' via an unrelated typo."
         },
         "containerfile": {
           "type": "string",
           "default": "./Containerfile",
-          "description": "Path to a multi-stage Containerfile kaniko builds directly - only consulted when build.script is omitted. \"Containerfile\" (not \"Dockerfile\") is this platform's deliberate, vendor-neutral term for the same OCI-buildable file format - kaniko itself has no opinion on the name, and it's the same file whichever name your repo uses."
+          "description": "Path to a multi-stage Containerfile BuildKit builds directly - only consulted when build.script is omitted. \"Containerfile\" (not \"Dockerfile\") is this platform's deliberate, vendor-neutral term for the same OCI-buildable file format - BuildKit itself has no opinion on the name, and it's the same file whichever name your repo uses."
         },
         "platforms": {
           "type": "array",
@@ -35,7 +35,7 @@
           "minItems": 1,
           "uniqueItems": true,
           "default": ["arm64", "amd64"],
-          "description": "Which architectures build-image.yaml builds and publishes as a real multi-arch image (via kaniko x N + a crane manifest-index combine - kaniko itself has no multi-arch capability). Defaults to both, since kiac-dev (arm64) and kind-prod (amd64) both run real workloads. Set to a single value only for an app that provably never deploys to the other cluster (e.g. backstage, a kind-prod-only singleton) - every kaniko run for an unrequested platform is skipped, not just unpublished, so this is a real build-time cost saving, not just a registry-tidiness knob."
+          "description": "Which architectures build-image.yaml builds and publishes as a real multi-arch image (one BuildKit invocation publishes an OCI image index; compile in a FROM --platform=$BUILDPLATFORM stage to avoid emulating the other architecture). Defaults to both, since kiac-dev (arm64) and kind-prod (amd64) both run real workloads. Set to a single value only for an app that provably never deploys to the other cluster (e.g. backstage, a kind-prod-only singleton) - an unrequested platform is never built, not just unpublished, so this is a real build-time cost saving, not just a registry-tidiness knob."
         },
         "artifacts": {
           "type": "array",
@@ -60,7 +60,7 @@
             "enabled": {
               "type": "boolean",
               "default": false,
-              "description": "Persistent dependency-download cache for build-source (npm's package cache / Maven's local repository, not node_modules/target itself - see docs/cicd-yaml-reference.md). No `type` field: derived from `agent`'s prefix (nodejs-* -> npm, openjdk-* -> maven), not a second, redundantly-declarable field. One shared directory per tool, never keyed by a lockfile hash - npm's cache is content-addressed and Maven's local repository is laid out per exact version, so neither can serve a stale package and a dependency bump only fetches what changed. Shared by build-source and (npm/yarn only) run-tests' unit-test step. A no-op (logged, not an error) for agents without cache support yet (python-*/go-1.22). Teams with no build.script (whole build inside a multi-stage Dockerfile) get layer caching for free from kaniko instead."
+              "description": "Persistent dependency-download cache for build-source (npm's package cache / Maven's local repository, not node_modules/target itself - see docs/cicd-yaml-reference.md). No `type` field: derived from `agent`'s prefix (nodejs-* -> npm, openjdk-* -> maven), not a second, redundantly-declarable field. One shared directory per tool, never keyed by a lockfile hash - npm's cache is content-addressed and Maven's local repository is laid out per exact version, so neither can serve a stale package and a dependency bump only fetches what changed. Shared by build-source and (npm/yarn only) run-tests' unit-test step. A no-op (logged, not an error) for agents without cache support yet (python-*/go-1.22). Teams with no build.script (whole build inside a multi-stage Dockerfile) get layer caching for free from BuildKit instead."
             },
             "size": {
               "type": "string",
@@ -78,7 +78,7 @@
               "type": "string",
               "enum": ["small", "medium", "large", "xlarge"],
               "default": "small",
-              "description": "T-shirt size for the ephemeral `source` workspace every stage's PipelineRun gets (small=2Gi, medium=5Gi, large=10Gi, xlarge=20Gi). This is the checked-out git repo plus build.script's own output plus kaniko's build context - distinct from build.cache (a separate, persistent, per-app dependency-download cache). Exists because a large build can genuinely fill this workspace's disk ('no space left on device'), not because of anything cache-related. Not per-stage: one size applies to every stage's source workspace for this app (build/test/deploy/release all declare the same `source` workspace shape), since build is normally the only stage large enough to need this, and a single per-app knob is simpler than one per stage. Not resizable live - each PipelineRun's workspace is a fresh, ephemeral volumeClaimTemplate-backed PVC (unlike build.cache's persistent one), so a size change just takes effect on the next run, nothing to migrate."
+              "description": "T-shirt size for the ephemeral `source` workspace every stage's PipelineRun gets (small=2Gi, medium=5Gi, large=10Gi, xlarge=20Gi). This is the checked-out git repo plus build.script's own output plus the image build context - distinct from build.cache (a separate, persistent, per-app dependency-download cache). Exists because a large build can genuinely fill this workspace's disk ('no space left on device'), not because of anything cache-related. Not per-stage: one size applies to every stage's source workspace for this app (build/test/deploy/release all declare the same `source` workspace shape), since build is normally the only stage large enough to need this, and a single per-app knob is simpler than one per stage. Not resizable live - each PipelineRun's workspace is a fresh, ephemeral volumeClaimTemplate-backed PVC (unlike build.cache's persistent one), so a size change just takes effect on the next run, nothing to migrate."
             }
           }
         }

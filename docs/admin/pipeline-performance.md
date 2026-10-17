@@ -50,7 +50,8 @@ from 5 to 239 s on repos of a few files, following node CPU load.
 | Where | Request | Applies to |
 |---|---|---|
 | TektonConfig `options.configMaps.config-defaults` (cluster repo) | 25m CPU, 32Mi | Every container that sets none, including Tekton's init containers |
-| `build-source` `run-build-script`, `run-tests` `unit-test`, `build-artifact` `build`, both `build-image` kaniko steps | 250m, 256Mi | The app's own build and test work |
+| `build-source` `run-build-script`, `run-tests` `unit-test`, `build-artifact` `build` | 250m, 256Mi | The app's own build and test work |
+| `build-image` `build-and-push` | 500m, 512Mi | Image build; both platforms in parallel in one step |
 | `sast-scan` `scan` | 200m, 256Mi | Semgrep |
 | `image-scan` `scan` | 100m, 256Mi | Trivy client (the server does the DB work) |
 | `generate-sbom` `generate-and-attest` | 100m, 128Mi | Trivy SBOM + cosign |
@@ -97,10 +98,14 @@ Details are in [release-guardrails.md](release-guardrails.md).
 
 ## Still open
 
-- **amd64 builds under QEMU** (review item 1, deferred). Every image is built for both architectures, and
-  the amd64 half runs emulated on the arm64 build node. A Backstage build spends 11 of its 25 minutes in
-  `build-image`. The fix derives the platforms from the clusters an app actually deploys to and needs an
-  `arch` field in the cluster registry ([ADR-0024](adr/0024-cluster-taxonomy-zone-roles-tier.md)).
+- **amd64 builds under QEMU** (review item 1, partly addressed). `build-image` moved from kaniko to BuildKit
+  on 2026-10-17 ([ADR-0026](adr/0026-buildkit-image-builds.md)): both platforms build in parallel in one
+  step, and a Containerfile that compiles in a `FROM --platform=$BUILDPLATFORM` stage cross-compiles natively
+  instead of emulating (a Go scaffold-shaped build for both platforms took 37 s). RUN steps in target-platform
+  stages still emulate, so an app that builds inside its Containerfile without `$BUILDPLATFORM` (Backstage:
+  11 of its 25 minutes in `build-image` under kaniko) is still slow until its Containerfile opts in. Deriving
+  the platforms from the clusters an app deploys to still needs an `arch` field in the cluster registry
+  ([ADR-0024](adr/0024-cluster-taxonomy-zone-roles-tier.md)).
 - **The dev cluster's control plane is under pressure.** `kube-scheduler` and `kube-controller-manager`
   restart on lease timeouts with node memory around 86%. That sets the floor under every number here.
 - **No PaC `concurrency_limit`.** A burst of pushes starts every build at once.

@@ -33,7 +33,7 @@
 # service.deployed event (and Slack/Backstage notify) off resolve-image-ref's result.
 #
 # Dedicated step images, not toolboxImage (Alpine/musl vs. the AWS CLI v2 installer's glibc):
-# public.ecr.aws/aws-cli/aws-cli for the AWS calls, and the same digest-pinned crane image
+# public.ecr.aws/aws-cli/aws-cli for the AWS calls, and a digest-pinned crane image
 # build-image.yaml and deploy-lambda.yaml run for the copy.
 apiVersion: tekton.dev/v1
 kind: Task
@@ -158,8 +158,9 @@ spec:
         echo "will copy ${IMAGE_REF} -> ${REPO}:${TAG}"
 
     - name: copy-to-ecr
-      # The same digest-pinned crane image build-image.yaml's publish-multiarch-manifest step
-      # runs (see its comment on why :debug and why a digest pin). Needs a shell, hence debug.
+      # Pinned by digest, not the `:debug` tag alone: gcr.io/go-containerregistry/crane only
+      # publishes one floating `debug` tag. `:debug` (not the distroless default) because this
+      # step needs a shell; it is busybox-based, hence /busybox/sh.
       image: gcr.io/go-containerregistry/crane@sha256:e78770b31258a3846f878036d9c1f63fbe4c871f9f56990bf77fd95c013e3c1b
       volumeMounts:
         - name: work

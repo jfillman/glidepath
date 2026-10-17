@@ -17,14 +17,14 @@ build:
   # Which Tekton buildpack/image family compiles+lints this Application - see
   # templates/pipelines-as-code catalog wiring for the agent->Task mapping.
   agent: nodejs-20
-  # Path to a multi-stage Containerfile kaniko builds directly - only consulted
+  # Path to a multi-stage Containerfile BuildKit builds directly - only consulted
   # when build.script is omitted (whole build inside the Containerfile, no
   # separate build-source stage). "Containerfile" is this platform's
   # deliberate, vendor-neutral term for the same file Docker calls a
   # Dockerfile - renamed from `dockerfile:` 2026-09-22, app repos migrate on
   # their own schedule (each app renames its own Dockerfile -> Containerfile).
   containerfile: ./Containerfile
-  # Which architecture(s) kaniko builds+pushes, then crane assembles into one
+  # Which architecture(s) BuildKit builds+pushes as one
   # multi-arch manifest (build-image.yaml). Matches cicd.schema.json's own
   # default - added here 2026-09-22 alongside build-image.yaml's own
   # containerfile-default fix, since this fixture file had drifted from the

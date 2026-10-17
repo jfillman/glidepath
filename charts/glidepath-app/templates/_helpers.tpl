@@ -41,7 +41,7 @@ Defaults to "small".
 
 {{/*
 glidepath-app.sourceVolumeSize - t-shirt size lookup for build.sourceVolume.size, the
-ephemeral per-PipelineRun source workspace (checkout + build + kaniko context) - a
+ephemeral per-PipelineRun source workspace (checkout + build + image build context) - a
 separate, larger table than cacheSize above. Duplicated as bash in
 glidepath-catalog's deliver-onboarding-files.yaml, which renders at Tekton runtime
 rather than Helm time and so can't call this helper.

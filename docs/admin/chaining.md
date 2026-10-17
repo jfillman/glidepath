@@ -86,7 +86,7 @@ separate, PEER namespaces with different jobs, not a base-plus-suffix pair:
 - `<type>-<app-name>-cicd` is the Application's *CI control plane* - where
   `pipeline-runner` and its RBAC live, where PaC actually creates build/test
   PipelineRuns (that's where the `Repository` CR and the chaining `Trigger` CRs from
-  `charts/glidepath-app/templates/triggers/*.yaml` live), where kaniko's registry
+  `charts/glidepath-app/templates/triggers/*.yaml` live), where the image build's registry
   push credentials sit. Pipelines *execute* here.
 - `<type>-<app-name>-<env>` is where the *deployed application* actually runs - the
   long-lived `Deployment`/`Service` serving traffic. `deploy-manifests.yaml` derives

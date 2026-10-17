@@ -138,9 +138,16 @@ dev as an authenticated event, never as a push in the other direction. See
 
 ## Build isolation
 
-Image builds run under Pod Security Standards `restricted` via kaniko - no privileged
-containers, no host namespaces or mounts, non-root by default, on any cluster this
-platform runs on. See [rootless-builds.md](rootless-builds.md).
+Image builds run rootless BuildKit as UID 1000: no privileged container, no added
+capabilities, no host namespaces or mounts, and no seccomp or AppArmor override, so a
+build pod meets Pod Security Standards **`baseline`**. It does not meet `restricted`:
+rootlesskit must create a user namespace, which `allowPrivilegeEscalation: false` and the
+RuntimeDefault seccomp profile both block (tested 2026-10-17, also with `hostUsers: false`).
+Until 2026-10-17 builds ran kaniko as **root** in the container, and these docs claimed
+`restricted`; that was never true. The app `-cicd` namespaces carry no Pod Security label
+today, so nothing enforces either level - labelling them `enforce: baseline` is the next
+step. See [rootless-builds.md](rootless-builds.md) and
+[ADR-0026](adr/0026-buildkit-image-builds.md).
 
 ## Known, accepted gaps
 
