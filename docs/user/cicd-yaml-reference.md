@@ -6,7 +6,9 @@ owns everything under `.tekton/` (pure boilerplate, generated at onboarding, see
 [install-guide.md](install-guide.md)) and the shared catalog (`catalog/`).
 
 This doc covers every field. If you just want a working file fast, see
-[quickstart.md](quickstart.md) or copy one of [examples/](examples/) instead.
+[quickstart.md](quickstart.md) or copy one of [examples/](examples/) instead: for a cloud app,
+[11-aws-ecs.yaml](examples/11-aws-ecs.yaml) or [12-aws-lambda.yaml](examples/12-aws-lambda.yaml)
+is a complete, commented file to start from.
 
 ![cicd.yaml fields mapped to what actually runs: build/deploy/release blocks each drive one stage, an undeclared stage never runs](diagrams/cicd-yaml-mapping.svg)
 
@@ -78,19 +80,59 @@ test:
                                  # value - checked by preflight.
 
 # --- deploy: optional block. See "The deploy: block" below. ---
+# Deploying to AWS ECS or Lambda instead of Kubernetes? Start from examples/11-aws-ecs.yaml
+# or examples/12-aws-lambda.yaml: complete files with every cloud field explained.
 deploy:
+  target: k8s-rollout            # Optional, default k8s-rollout: an Argo Rollout on this
+                                 # platform's clusters. Or aws-ecs, aws-lambda,
+                                 # azure-container-apps: the deploy stage updates that cloud
+                                 # resource instead. Per app, not per environment.
   environments:                  # Optional, default [{name: dev, tier: ground}]. Every
-    - { name: dev, tier: ground } # environment, once, in promotion order. A deploy step's
+                                 # environment, once, in promotion order. A deploy step's
                                  # `env` (below, under pipelines:) MUST be listed here, a
-                                 # release step's must be tier: flight, or
-                                 # preflight rejects the flow before anything
-                                 # runs. A flight env on another physical cluster sets
-                                 # cluster: - see docs/multi-cluster.md.
-  strategy: rollout               # Optional, default "rollout" (Argo Rollouts
+                                 # release step's must be tier: flight, or preflight rejects
+                                 # the flow before anything runs.
+    - name: dev                  # REQUIRED. Lowercase letters, digits, -; at most 31 chars.
+      tier: ground               # REQUIRED. ground: deployed on every push by a deploy step.
+                                 # flight: deployed only through an approved release (a
+                                 # gitops release PR; for a cloud target, a release pin PR
+                                 # on this repo, ADR-0020).
+    - name: prod
+      tier: flight
+      cluster: kind-prod         # Flight only: the cluster this env runs on, when it isn't
+                                 # the app's own (Kubernetes targets). See multi-cluster.md.
+      production: true           # Optional. The env serving real users; must be flight.
+      # chart: {...}             # Optional per-env override of deploy.chart (below).
+      # ecs / lambda / azureContainerApps: this env's cloud resource, for a cloud target.
+      #   Fields set here override the app-level block below, field by field:
+      # ecs: { cluster: my-app, service: my-app-prod, containerName: my-app, region: us-east-1 }
+  # --- Cloud targets: the app-level resource (each env may override it, above). Copy the
+  # values from the Airframe target's status.cicd; Glidepath never creates the resource.
+  # ecs:                         # target: aws-ecs. An AwsEcsTarget creates all of it.
+  #   cluster: my-app            #   the ECS cluster
+  #   service: my-app-dev        #   the service; its ECR repo and deploy role are named after it
+  #   containerName: my-app      #   the container whose image each deploy replaces
+  #   region: us-east-1          #   default us-east-1
+  #   taskDefinitionFamily: ""   #   default <app>-<env>
+  # lambda:                      # target: aws-lambda. An AwsLambdaTarget creates it.
+  #   functionName: my-fn        #   its deploy role is glidepath-deploy-<functionName>
+  #   region: us-east-1
+  # azureContainerApps:          # target: azure-container-apps.
+  #   resourceGroup: my-rg
+  #   appName: my-app
+  # No AWS secrets: cloud deploys assume the target's deploy role with a short-lived token
+  # (docs/admin/cloud-deploy-identity.md). Azure still uses app secrets (known gap 43).
+  strategy: rollout              # Optional, default "rollout" (Argo Rollouts
                                  # canary/blue-green) - the only strategy actually
                                  # implemented. "deployment" is still schema-valid
                                  # but has NO EFFECT - nothing renders a plain
                                  # Deployment anymore.
+  # releaseFile: "glidepath/envs/{env}.release.yaml"  # Optional (Kubernetes): where the
+                                 # deploy/release stages write the machine-owned release
+                                 # record. Exactly one {env} placeholder.
+  # chart: { repoURL: ..., path: ..., targetRevision: ... }  # Optional (Kubernetes): the
+                                 # Helm chart environments render; unset = the cluster's
+                                 # default (Airframe's airframe-application). See below.
 
 # --- ephemeralEnvironments: optional block. See features.md for the full writeup. ---
 ephemeralEnvironments:
@@ -527,8 +569,9 @@ deploy:
 An environment may only override the block for the app's own target (a `lambda` override on an ECS
 app is refused), and the target itself is per app, not per environment. The deploy step for
 environment `test` resolves to `orders-fn-test` in `us-east-1`. The resources must already exist,
-as before: Glidepath only updates what is there. Credentials are still one set per app, so every
-environment must be reachable with them.
+as before: Glidepath only updates what is there (an Airframe `AwsLambdaTarget` / `AwsEcsTarget` per
+environment creates them). There is no shared credential: each environment's deploy assumes the deploy
+role of its own function or service ([cloud-deploy-identity.md](../admin/cloud-deploy-identity.md)).
 
 ### `chart` - the Helm chart your environments render
 

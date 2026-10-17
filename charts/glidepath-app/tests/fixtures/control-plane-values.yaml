@@ -1,0 +1,23 @@
+# What the control plane's tenant-onboarding ApplicationSet hands glidepath-app besides the app's own cicd.yaml: the
+# tenant identity file (tenants/<app>/identity.yaml) and the injected values. Generic stand-ins for the real ones
+# (smoke-ecs on kiac-dev, 2026-10-17), used by examples_test.py to render every docs/user/examples file the way
+# Argo CD renders a real app.
+platformIdentity:
+  appName: example-app
+  type: app
+  gitopsRepoUrl: https://github.com/example-org/gitops-example-app
+  appRepoUrl: https://github.com/example-org/example-app
+  githubOwner: example-org
+  catalogNamespace: platform-catalog
+  registerPipelinesAsCode: true
+cloudIdentity:
+  awsAccountId: "012345678901"
+clusterTaxonomy:
+  self: kind-dev
+  zones:
+    kind-dev: lower
+    kind-prod: upper
+defaultChart:
+  path: charts/airframe-application
+  repoURL: https://github.com/example-org/airframe.git
+  targetRevision: v0.0.0
