@@ -159,6 +159,16 @@ spec:
         # automatically - see that file's header. managedNamespaceMetadata only takes
         # effect alongside CreateNamespace=true (ArgoCD re-applies it every sync, so a
         # label added here later also lands on an already-existing namespace).
+        #
+        # Pod Security Standards (SC-01, docs/admin/security.md "Build isolation"):
+        # every build pod runs in this namespace. baseline is the ceiling rootless
+        # BuildKit allows (rootlesskit needs a user namespace, which restricted
+        # forbids - ADR-0026). Rolled out warn+audit first, enforce after a clean
+        # run of every pipeline kind.
         managedNamespaceMetadata:
           labels:
             hangar.io/managed-secrets: "true"
+            pod-security.kubernetes.io/warn: baseline
+            pod-security.kubernetes.io/warn-version: latest
+            pod-security.kubernetes.io/audit: baseline
+            pod-security.kubernetes.io/audit-version: latest

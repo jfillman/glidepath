@@ -144,9 +144,12 @@ build pod meets Pod Security Standards **`baseline`**. It does not meet `restric
 rootlesskit must create a user namespace, which `allowPrivilegeEscalation: false` and the
 RuntimeDefault seccomp profile both block (tested 2026-10-17, also with `hostUsers: false`).
 Until 2026-10-17 builds ran kaniko as **root** in the container, and these docs claimed
-`restricted`; that was never true. The app `-cicd` namespaces carry no Pod Security label
-today, so nothing enforces either level - labelling them `enforce: baseline` is the next
-step. See [rootless-builds.md](rootless-builds.md) and
+`restricted`; that was never true. Since 2026-10-17 every `-cicd` namespace the
+tenant-onboarding ApplicationSet creates carries Pod Security `warn` and `audit` at
+`baseline` (`managedNamespaceMetadata` in
+`charts/glidepath-control-plane/templates/argocd/tenant-onboarding-applicationset.yaml`).
+Nothing **enforces** it yet: `enforce: baseline` follows once every pipeline kind has run
+clean under warn/audit. See [rootless-builds.md](rootless-builds.md) and
 [ADR-0026](adr/0026-buildkit-image-builds.md).
 
 ## Known, accepted gaps
