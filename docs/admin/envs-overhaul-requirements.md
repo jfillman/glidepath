@@ -177,7 +177,7 @@ management; ConfigTab and the Glidepath tab stop editing env lists and env files
 ```
 Environments                                                [ + Add environment ]
 ┌────────────────────┬──────────────────────────────────────────────────────────┐
-│ dev      Ground    │  prod   Flight · kind-prod · Kubernetes      ● Healthy   │
+│ dev      Ground    │  prod   Flight · example-prod · Kubernetes   ● Healthy   │
 │  Kubernetes  ●     │  Image 1.4.0-ab12cd3   promoted 2d ago                   │
 │ test     Ground    │ ┌────────┬──────────┬──────────┬───────────────────────┐  │
 │  Kubernetes  ●     │ │Settings│ Values   │ Promotion│ Danger zone           │  │

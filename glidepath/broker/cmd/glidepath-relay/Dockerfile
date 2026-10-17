@@ -1,5 +1,5 @@
 # Build context is platform/broker/:
-#   docker build -f cmd/glidepath-relay/Dockerfile -t ghcr.io/jfillman/glidepath-relay:latest .
+#   docker build -f cmd/glidepath-relay/Dockerfile -t ghcr.io/<owner>/glidepath-relay:latest .
 FROM golang:1.22-alpine AS build
 WORKDIR /src
 COPY go.mod ./

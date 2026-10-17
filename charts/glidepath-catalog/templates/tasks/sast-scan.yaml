@@ -89,7 +89,7 @@ spec:
         #
         # --metrics=off (2026-10-09, report item 9): no usage telemetry to semgrep.dev from
         # a build. The rule packs are still fetched from the registry: measured in fresh
-        # pods on kiac-dev, registry and vendored rules both scan gate-api in 3-10 s (the
+        # pods on the dev cluster, registry and vendored rules both scan gate-api in 3-10 s (the
         # fetch is well under a second), and the 5-239 s spread of this step in Tekton
         # Results tracks node CPU contention, not the fetch. Vendoring was also ruled out
         # on licence grounds: the packs are under the Semgrep Rules License v1.0, and

@@ -22,7 +22,7 @@ is stored, and one app's pipeline can't touch another app's function or service.
    hour (it is replaced before it expires).
 2. The step sets `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`. The AWS command-line tool sees them and trades
    the token for credentials on its own; no step calls STS by hand.
-3. AWS checks the token against kiac-dev's published keys (`https://hangarplatform.dev/oidc/kiac-dev`) and against
+3. AWS checks the token against the dev cluster's published keys (its registry `serviceAccountIssuer`, e.g. `https://<issuer-host>/oidc/<dev-cluster>`) and against
    the role's trust policy, which names exactly this namespace and ServiceAccount.
 4. The step copies the image into the target's ECR repository and updates the function, or registers a new task
    definition and updates the service.
@@ -108,7 +108,7 @@ kubectl -n $NS logs "$(kubectl -n $NS get $TR -o jsonpath='{.status.podName}')" 
 | `error: this step is not running as glidepath-cloud-deployer` | The run didn't give the ServiceAccount to `deploy-aws-lambda` / `deploy-aws-ecs` | For a promote flow, run the onboarding resync; don't hand-edit `taskRunSpecs` |
 | `error: could not assume … AccessDenied` | The role doesn't exist yet, or its trust names another namespace | Check the target's `<xr>-deploy` Role is Ready; a function or service without an `AwsLambdaTarget` / `AwsEcsTarget` has no role |
 | `error: no ECR repository '<service>'` | The ECS service has no `AwsEcsTarget`, or its repository isn't created yet | Check the target's `ecr-repository` is Ready |
-| `InvalidIdentityToken` | AWS can't fetch or verify kiac-dev's keys | `curl https://hangarplatform.dev/oidc/kiac-dev/jwks.json`; after a cluster rebuild, `hack/kiac-dev-cluster-identity.sh` in gitops-cluster-dev |
+| `InvalidIdentityToken` | AWS can't fetch or verify the dev cluster's keys | `curl <serviceAccountIssuer>/jwks.json`; after a cluster rebuild, re-publish the cluster identity (Apron `clusterIdentity`) |
 | A PipelineRun is refused by `glidepath-cloud-deployer-pipelineruns` | It gives the ServiceAccount to the wrong task, run-wide, or with pod-template `env` | Use the generated flow; don't hand-edit `taskRunSpecs` |
 
 ## Not covered yet

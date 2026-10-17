@@ -1,0 +1,7 @@
+# What a cluster repo passes glidepath-catalog (the platform-cicd-catalog Application): the fleet's Airframe chart
+# (cluster-defaults.yaml) and where its validator image is published. Generic names; used by this chart's tests and CI.
+defaultChart:
+  repoURL: https://github.com/example-org/airframe.git
+  path: charts/airframe-application
+  targetRevision: v0.0.0
+valuesValidatorRepository: ghcr.io/example-org/airframe-validate

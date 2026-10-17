@@ -50,45 +50,43 @@ trivyServerUrl: http://trivy-server.platform-system.svc.cluster.local:4954
 # The cluster's default environment chart (ADR-0023 slice 1). Set from the cluster repo's cluster-defaults.yaml
 # (the platform-cicd-catalog Application reads it as a value file), the same file the environment ApplicationSets
 # and glidepath-app read, so the values gate validates against the chart environments actually render.
+# No repoURL/targetRevision default: the fleet's Airframe repo and version are input. validate-values.yaml fails the
+# render without targetRevision (when valuesValidatorImage is unset) and passes repoURL to the validator.
 defaultChart:
-  repoURL: https://github.com/jfillman/airframe.git
+  repoURL: ""
   path: charts/airframe-application
-  targetRevision: v0.3.118
+  targetRevision: ""
 
 # The image the values-validation gate (tasks/validate-values.yaml) runs against a gitops PR's values files.
 # It must provide `validate-values [--app NAME] FILE...` on its PATH, exit 0 = valid. Empty (the default) means
 # Airframe's own validator at the default chart's tag: workflow airframe-validate-image publishes
 # <valuesValidatorRepository>:<tag> for every Airframe release tag, carrying that tag's chart. Set it only for a
-# validator that does not follow the chart tag. Public, like the toolbox image.
-valuesValidatorRepository: ghcr.io/jfillman/airframe-validate
+# validator that does not follow the chart tag. Public, like the toolbox image. No default: the validator image is
+# Airframe's published artifact, so where it lives follows the fleet's Airframe (set it beside defaultChart, e.g.
+# ghcr.io/<owner>/airframe-validate). The render fails when both this and valuesValidatorImage are empty.
+valuesValidatorRepository: ""
 valuesValidatorImage: ""
 
 # Base URL of the Backstage backend that notify-backstage.yaml POSTs to. One Backstage
 # instance platform-wide (not one per cluster, not one per Application), so this is a
-# chart-level value rather than a per-app cicd.yaml field. Genuinely cross-cluster in
-# this platform - every Pipeline runs on the dev cluster, Backstage runs elsewhere - so
-# this is a real Gateway hostname (e.g. http://backstage.prod.kiac.local), NOT an
-# in-cluster Service DNS name, and NOT Backstage's own :7007 Service port (the Gateway's
-# only listener is port 80 - confirmed live, :7007 isn't reachable from outside
-# Backstage's own cluster at all). Empty by default - notify-backstage.yaml treats an
-# empty value the same as notifications.backstage.enabled being unset: skip cleanly,
-# don't fail the pipeline. See docs/admin/notifications.md.
+# chart-level value rather than a per-app cicd.yaml field. Every Pipeline runs on the dev
+# cluster and Backstage may run on another, so this is normally Backstage's externally
+# reachable Gateway URL (e.g. http://backstage.example.internal), NOT an in-cluster
+# Service DNS name, and the Gateway's listener port rather than Backstage's own :7007
+# Service port. Empty by default - notify-backstage.yaml treats an empty value the same as
+# notifications.backstage.enabled being unset: skip cleanly, don't fail the pipeline. See
+# docs/admin/notifications.md.
 backstageBaseUrl: ""
 
-# Companion to backstageBaseUrl above - the hostname it names isn't real DNS anywhere a
-# pod's CoreDNS can see (only resolves on a developer's own laptop, via
-# refresh-kiac-hosts.sh writing /etc/hosts after a kiac VM restart), so reaching it from
-# a pod requires this IP baked into hostAliases. Read by deliver-onboarding-files.yaml
-# when generating a new/resynced app's git-rooted .tekton/*.yaml PipelineRuns, and
-# duplicated in glidepath-app/values.yaml (same value, same reasoning as
-# toolboxImage/testkubeNamespace's own cross-chart duplication - glidepath-app's own
-# flow-triggers.yaml/release-outcome-trigger.yaml need it too, for the CDEvents-chained
-# steps a flow's git-rooted first step doesn't cover). kiac's `container` runtime hands
-# out a fresh IP on every VM boot, so - like Fulcio material and the Infisical IP
-# elsewhere in this platform - this is a manually-maintained value: bump it (`container
-# list`, the target cluster's own control-plane address) whenever that cluster restarts,
-# in step with backstageBaseUrl above. Empty by default so a fresh/canary install
-# doesn't render a hostAliases entry pointed at a stale IP.
+# Companion to backstageBaseUrl above, for a Backstage hostname a pod's DNS cannot resolve:
+# when set, deliver-onboarding-files.yaml writes a run-wide hostAliases entry pinning
+# backstageBaseUrl's host to this IP into a new/resynced app's git-rooted .tekton/*.yaml
+# PipelineRuns (setting it without backstageBaseUrl fails the render). Must equal
+# glidepath-control-plane's backstageHostAliasIP, which forwards the same alias to every
+# app's glidepath-app (flow-triggers.yaml/release-outcome-trigger.yaml, for the
+# CDEvents-chained steps a flow's git-rooted first step doesn't cover). A lab IP that changes
+# on restart has to be updated in both when it changes. Empty by default (and normally): no
+# hostAliases entry is rendered.
 backstageHostAliasIP: ""
 
 # Cluster-agnostic namespace derivation: which namespace Tekton Chains runs in -

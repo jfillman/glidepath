@@ -1,0 +1,4 @@
+# What a cluster repo passes glidepath-control-plane (the platform-cicd-control-plane Application). Generic names;
+# used by this chart's tests.
+platformCicdRepoUrl: https://github.com/example-org/glidepath.git
+clusterName: example-dev

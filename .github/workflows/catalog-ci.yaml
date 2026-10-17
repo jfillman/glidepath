@@ -67,11 +67,12 @@ jobs:
         uses: azure/setup-helm@v4
 
       - name: helm lint
-        run: helm lint charts/glidepath-catalog
+        run: helm lint charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml
 
       - name: helm template (full render)
         run: |
           helm template glidepath-catalog charts/glidepath-catalog \
+            -f charts/glidepath-catalog/tests/values.example.yaml \
             --namespace platform-catalog > /tmp/rendered.yaml
 
       - name: Structural sanity check

@@ -21,16 +21,16 @@
 # git-clone Task likewise used a purpose-built compiled binary rather than bash, for the
 # same class of reason. Every OTHER step here, and in every other catalog Task, is bash.
 #
-# Multi-arch, per-app configurable (2026-09-22): builds linux/arm64 (kiac-dev, native)
-# and/or linux/amd64 (kind-prod, cross-built via kaniko's --custom-platform under QEMU
-# emulation - see 00-bootstrap/binfmt/ in gitops-cluster-dev, a DaemonSet that registers
-# binfmt_misc handlers on kiac-dev's node; without it the amd64 build step below fails
+# Multi-arch, per-app configurable (2026-09-22): builds linux/arm64 (native on an arm64
+# dev cluster) and/or linux/amd64 (cross-built via kaniko's --custom-platform under QEMU
+# emulation - see 00-bootstrap/binfmt/ in the dev cluster's repo, a DaemonSet that registers
+# binfmt_misc handlers on the dev cluster's node; without it the amd64 build step below fails
 # outright with "exec format error", confirmed live before that DaemonSet existed),
 # per cicd.yaml's build.platforms (schemas/cicd.schema.json, defaults to both). Original
 # design (same day) built both unconditionally for every app; revised same day after
 # realizing that's real wasted work for an app like backstage that only ever deploys to
-# one cluster (kind-prod) and never the other - see gitops-cluster-kind-prod/60-backstage/
-# backstage/deployment.yaml's own image-tag history for the incident this solves.
+# one cluster and never the other - see that cluster repo's 60-backstage/backstage/
+# deployment.yaml image-tag history for the incident this solves.
 #
 # Known issue: a Go app's amd64 leg can crash go build itself under this QEMU
 # emulation - not one bug, at least two independent ones hit live on boarding-api,
@@ -371,9 +371,9 @@ spec:
     - name: build-and-push-amd64
       # Same image/flags as build-and-push-arm64 above (see that step's comments for
       # the kaniko version pin and SSL_CERT_FILE fix, both apply identically here) -
-      # only --custom-platform and --destination differ. Runs on kiac-dev's arm64 node
+      # only --custom-platform and --destination differ. Runs on the dev cluster's arm64 node
       # same as the arm64 leg, but under QEMU emulation via the binfmt_misc handlers
-      # 00-bootstrap/binfmt/ registers on that node (gitops-cluster-dev) - without that
+      # 00-bootstrap/binfmt/ registers on that node (the dev cluster's repo) - without that
       # DaemonSet this step fails immediately with "exec format error" on the first RUN
       # instruction that isn't a pure data copy. --custom-platform is kaniko's real flag
       # name (--customPlatform is accepted but logs a deprecation warning - confirmed

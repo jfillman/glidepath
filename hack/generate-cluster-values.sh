@@ -14,8 +14,8 @@
 # (openssl run by hand, kube-root-ca.crt copy-pasted, YAML assembled manually) with a
 # single script run. Produces <output-dir>/values-<context>.yaml, meant to land next
 # to the ArgoCD Application that consumes it via a multi-source $ref - e.g.:
-#   ./hack/generate-cluster-values.sh kind-dev kind-dev \
-#     ../gitops-cluster-dev/50-platform-cicd/glidepath-control-plane
+#   ./hack/generate-cluster-values.sh <dev-cluster> <dev-cluster> \
+#     ../<cluster-repo>/50-platform-cicd/platform-cicd-control-plane
 # platform-cicd carries no cluster-specific state this way, staying installable
 # standalone on any cluster. Note this OVERWRITES values-<context>.yaml's clusterName/
 # fulcio fields specifically (see step 4 below) - preserve any other keys already in
@@ -114,7 +114,7 @@ kubectl --context "${CONTEXT}" create namespace fulcio-system --dry-run=client -
 kubectl --context "${CONTEXT}" create secret generic fulcio-secret -n fulcio-system \
   --from-file="${TMPDIR}/cert.pem" --from-file="${TMPDIR}/key.pem" \
   --dry-run=client -o yaml | kubectl --context "${CONTEXT}" apply -f -
-# Schema confirmed live against an existing working install (kind-dev's own
+# Schema confirmed live against an existing working install (the dev cluster's own
 # fulcio-server-config) - not documented anywhere upstream in this repo beyond "matches
 # Fulcio's own CI test recipe" (docs/image-signing.md), so pinned here explicitly now
 # that it's been verified once: `ca: fileca` backend, cert/key paths matching where

@@ -20,18 +20,18 @@ func newTestHandler(t *testing.T, mode string) (*handler, *[][]byte) {
 	cs := fake.NewSimpleClientset(
 		&corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: registryConfigMap, Namespace: platformNamespace},
-			Data:       map[string]string{"kind-prod": `{"relaySecretName":"relay-kind-prod"}`},
+			Data:       map[string]string{"example-prod": `{"relaySecretName":"relay-example-prod"}`},
 		},
 		&corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "relay-kind-prod", Namespace: platformNamespace},
+			ObjectMeta: metav1.ObjectMeta{Name: "relay-example-prod", Namespace: platformNamespace},
 			Data:       map[string][]byte{"token": []byte("tok")},
 		},
 		&corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: "release-tracking-chain1", Namespace: "app-gate-api-cicd"},
 			Data: map[string]string{
-				"appNamespace": "app-gate-api-cicd", "appName": "gate-api", "env": "staging", "cluster": "kind-prod",
+				"appNamespace": "app-gate-api-cicd", "appName": "gate-api", "env": "staging", "cluster": "example-prod",
 				"gitUrl": "https://github.com/o/gate-api.git", "gitRevision": "abc123",
-				"flowStartTime": "2026-10-05T10:00:00Z", "configJson": testConfigJSON, "releaseId": "chain1:kind-prod/staging",
+				"flowStartTime": "2026-10-05T10:00:00Z", "configJson": testConfigJSON, "releaseId": "chain1:example-prod/staging",
 			},
 		},
 	)
@@ -61,13 +61,13 @@ func post(h *handler, cluster, auth, body string) *httptest.ResponseRecorder {
 
 func TestFactsEmitAndIdempotency(t *testing.T) {
 	h, sent := newTestHandler(t, "emit")
-	rel := "chain1:kind-prod/staging"
+	rel := "chain1:example-prod/staging"
 
-	if c := post(h, "kind-prod", "Bearer tok", factBody(rel, "Progressing", 3, "3")).Code; c != 202 {
+	if c := post(h, "example-prod", "Bearer tok", factBody(rel, "Progressing", 3, "3")).Code; c != 202 {
 		t.Fatalf("progressing: %d", c)
 	}
-	post(h, "kind-prod", "Bearer tok", factBody(rel, "Healthy", 3, "3"))
-	post(h, "kind-prod", "Bearer tok", factBody(rel, "Healthy", 4, "4")) // scale or heartbeat: new generation
+	post(h, "example-prod", "Bearer tok", factBody(rel, "Healthy", 3, "3"))
+	post(h, "example-prod", "Bearer tok", factBody(rel, "Healthy", 4, "4")) // scale or heartbeat: new generation
 	if len(*sent) != 2 {
 		t.Fatalf("want 2 forwarded events (the repeat is suppressed by release state), got %d", len(*sent))
 	}
@@ -91,7 +91,7 @@ func between(s, a, b string) string {
 
 func TestFactsShadowForwardsNothing(t *testing.T) {
 	h, sent := newTestHandler(t, "")
-	post(h, "kind-prod", "Bearer tok", factBody("chain1:kind-prod/staging", "Healthy", 3, "3"))
+	post(h, "example-prod", "Bearer tok", factBody("chain1:example-prod/staging", "Healthy", 3, "3"))
 	if len(*sent) != 0 {
 		t.Fatalf("shadow mode must not forward, got %d", len(*sent))
 	}
@@ -103,16 +103,16 @@ func TestFactsIgnoredAndRejected(t *testing.T) {
 		name, cluster, auth, body string
 		code                      int
 	}{
-		{"bad token", "kind-prod", "Bearer nope", factBody("chain1:kind-prod/staging", "Healthy", 3, "3"), 401},
-		{"no token", "kind-prod", "", factBody("chain1:kind-prod/staging", "Healthy", 3, "3"), 401},
-		{"untracked rollout", "kind-prod", "Bearer tok", `{"ns":"x","name":"y","generation":1,"annotations":{},"status":{"phase":"Healthy","observedGeneration":"1"}}`, 202},
-		{"stale generation", "kind-prod", "Bearer tok", factBody("chain1:kind-prod/staging", "Healthy", 4, "3"), 202},
-		{"no phase we map", "kind-prod", "Bearer tok", factBody("chain1:kind-prod/staging", "Unknown", 3, "3"), 202},
-		{"unknown record", "kind-prod", "Bearer tok", factBody("nochain:kind-prod/staging", "Healthy", 3, "3"), 202},
-		{"release-id names another cluster", "kind-prod", "Bearer tok", factBody("chain1:other/staging", "Healthy", 3, "3"), 400},
-		{"malformed release-id", "kind-prod", "Bearer tok", factBody("garbage", "Healthy", 3, "3"), 400},
-		{"record env differs from release-id", "kind-prod", "Bearer tok", factBody("chain1:kind-prod/prod", "Healthy", 3, "3"), 400},
-		{"not json", "kind-prod", "Bearer tok", `{`, 400},
+		{"bad token", "example-prod", "Bearer nope", factBody("chain1:example-prod/staging", "Healthy", 3, "3"), 401},
+		{"no token", "example-prod", "", factBody("chain1:example-prod/staging", "Healthy", 3, "3"), 401},
+		{"untracked rollout", "example-prod", "Bearer tok", `{"ns":"x","name":"y","generation":1,"annotations":{},"status":{"phase":"Healthy","observedGeneration":"1"}}`, 202},
+		{"stale generation", "example-prod", "Bearer tok", factBody("chain1:example-prod/staging", "Healthy", 4, "3"), 202},
+		{"no phase we map", "example-prod", "Bearer tok", factBody("chain1:example-prod/staging", "Unknown", 3, "3"), 202},
+		{"unknown record", "example-prod", "Bearer tok", factBody("nochain:example-prod/staging", "Healthy", 3, "3"), 202},
+		{"release-id names another cluster", "example-prod", "Bearer tok", factBody("chain1:other/staging", "Healthy", 3, "3"), 400},
+		{"malformed release-id", "example-prod", "Bearer tok", factBody("garbage", "Healthy", 3, "3"), 400},
+		{"record env differs from release-id", "example-prod", "Bearer tok", factBody("chain1:example-prod/prod", "Healthy", 3, "3"), 400},
+		{"not json", "example-prod", "Bearer tok", `{`, 400},
 	}
 	for _, c := range cases {
 		if got := post(h, c.cluster, c.auth, c.body).Code; got != c.code {
@@ -126,8 +126,8 @@ func TestFactsIgnoredAndRejected(t *testing.T) {
 
 func TestFactsAppNamespaceCannotEscape(t *testing.T) {
 	h, sent := newTestHandler(t, "emit")
-	b := strings.Replace(factBody("chain1:kind-prod/staging", "Healthy", 3, "3"), "app-gate-api-cicd", "kube-system", 1)
-	if c := post(h, "kind-prod", "Bearer tok", b).Code; c != 202 || len(*sent) != 0 {
+	b := strings.Replace(factBody("chain1:example-prod/staging", "Healthy", 3, "3"), "app-gate-api-cicd", "kube-system", 1)
+	if c := post(h, "example-prod", "Bearer tok", b).Code; c != 202 || len(*sent) != 0 {
 		t.Fatalf("a fact naming a non-app namespace must be ignored, code=%d sent=%d", c, len(*sent))
 	}
 }

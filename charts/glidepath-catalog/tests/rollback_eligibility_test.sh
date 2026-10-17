@@ -6,7 +6,7 @@ set -u
 cd "$(dirname "$0")/../../.."
 fail=0
 script="$(mktemp)"
-helm template t charts/glidepath-catalog --show-only templates/tasks/extract-promoted-image.yaml \
+helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only templates/tasks/extract-promoted-image.yaml \
   | python3 -c "
 import sys,yaml
 t=yaml.safe_load(sys.stdin.read())
@@ -38,19 +38,19 @@ img() { echo "ghcr.io/o/sky-marshall:0.1.$1-abc"; }
 seven="$(for i in 1 2 3 4 5 6 7; do printf '%s,' "$(rec "r$i" "$(img $i)" "2026-10-0${i}T00:00:00Z")"; done)"
 seven="${seven%,}"
 
-got="$(run "$(img 3)" kind-prod/staging/release.yaml "$seven")"
+got="$(run "$(img 3)" example-prod/staging/release.yaml "$seven")"
 [[ "$got" == true\|*r3* ]] || { echo "FAIL: an image among the last five healthy releases is eligible: $got"; fail=1; }
-grep -q "hangar.io/app=sky-marshall,hangar.io/env=staging,hangar.io/cluster=kind-prod" "${ARGSLOG}" \
+grep -q "hangar.io/app=sky-marshall,hangar.io/env=staging,hangar.io/cluster=example-prod" "${ARGSLOG}" \
   || { echo "FAIL: records must be selected by app, env and cluster: $(cat "${ARGSLOG}")"; fail=1; }
-got="$(run "$(img 2)" kind-prod/staging/release.yaml "$seven")"
+got="$(run "$(img 2)" example-prod/staging/release.yaml "$seven")"
 [[ "$got" == false\|* ]] || { echo "FAIL: the sixth-newest healthy release is outside the window: $got"; fail=1; }
-got="$(run "$(img 9)" kind-prod/staging/release.yaml "$(rec bad "$(img 9)" ""),$seven")"
+got="$(run "$(img 9)" example-prod/staging/release.yaml "$(rec bad "$(img 9)" ""),$seven")"
 [[ "$got" == false\|* ]] || { echo "FAIL: a release that never reached healthy is not a target: $got"; fail=1; }
 got="$(run "$(img 7)" glidepath/releases/prod.yaml "$seven")"
 [[ "$got" == false\|*"not a Kubernetes"* ]] || { echo "FAIL: a cloud release pin is never advisory: $got"; fail=1; }
-got="$(run "$(img 7)" kind-prod/staging/release.yaml "$seven" 1)"
+got="$(run "$(img 7)" example-prod/staging/release.yaml "$seven" 1)"
 [[ "$got" == false\|*"could not read"* ]] || { echo "FAIL: unreadable records mean not eligible: $got"; fail=1; }
-got="$(run "$(img 7)" kind-prod/staging/values.yaml "$seven")"
+got="$(run "$(img 7)" example-prod/staging/values.yaml "$seven")"
 [[ "$got" == true\|* ]] || { echo "FAIL: values.yaml (pre-split) environments are covered too: $got"; fail=1; }
 
 [ $fail -eq 0 ] && echo ok || exit 1

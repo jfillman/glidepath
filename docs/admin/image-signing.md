@@ -106,7 +106,7 @@ currently justified by any real gap it would close.
 ### A cluster with its own public ServiceAccount issuer
 
 A cluster can sign its ServiceAccount tokens under a public issuer instead of the kind
-default (apron `clusterIdentity`, for example `https://hangarplatform.dev/oidc/kiac-dev`,
+default (apron `clusterIdentity`, for example `https://<issuer-host>/oidc/<cluster>`,
 which AWS IAM and other clusters can verify). Fulcio and the verify Tasks match on the
 token's `iss`, so the switch is staged:
 

@@ -5,7 +5,7 @@ set -u
 cd "$(dirname "$0")/../../.."
 fail=0
 tmp="$(mktemp -d)"
-helm template t charts/glidepath-catalog --show-only templates/tasks/resolve-merged-pr.yaml \
+helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only templates/tasks/resolve-merged-pr.yaml \
   | python3 -c "import sys,yaml; print(yaml.safe_load(sys.stdin.read())['spec']['steps'][0]['script'])" \
   | sed "s#\$(results.pr-number.path)#${tmp}/pr#; s#\$(results.merged.path)#${tmp}/merged#; s#\$(results.merged-at.path)#${tmp}/mergedat#" > "${tmp}/script.sh"
 

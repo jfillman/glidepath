@@ -303,8 +303,8 @@ One-time setup per app, same spirit as the release stage's onboarding steps.
    `<APP_REPO_URL>`, `<GITHUB_OWNER>` substituted:
    ```
    sed -e 's#<APP_NAMESPACE>#platform-cicd-demo#g' -e 's#<APP_NAME>#nodejs-demo-app#g' \
-       -e 's#<APP_REPO_URL>#https://github.com/jfillman/nodejs-demo-app#g' \
-       -e 's#<GITHUB_OWNER>#jfillman#g' \
+       -e 's#<APP_REPO_URL>#https://github.com/<owner>/nodejs-demo-app#g' \
+       -e 's#<GITHUB_OWNER>#<owner>#g' \
      charts/glidepath-app/templates/argocd/ephemeral-envs.yaml | kubectl apply -f -
    ```
    This renders a second `AppProject` of the same name into `argocd-apps` alongside the
@@ -316,7 +316,7 @@ One-time setup per app, same spirit as the release stage's onboarding steps.
 3. **Apply the token-refresher CronJob**, same substitutions:
    ```
    sed -e 's#<APP_NAMESPACE>#app-nodejs-demo-app-cicd#g' -e 's#<APP_NAME>#nodejs-demo-app#g' \
-       -e 's#<GITHUB_OWNER>#jfillman#g' \
+       -e 's#<GITHUB_OWNER>#<owner>#g' \
      charts/glidepath-app/templates/argocd/ephemeral-envs.yaml | kubectl apply -f -
    ```
 

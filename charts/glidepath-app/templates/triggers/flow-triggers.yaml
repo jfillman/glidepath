@@ -284,7 +284,7 @@ spec:
         {{- end }}
         taskRunTemplate:
           serviceAccountName: pipeline-runner
-          {{- /* backstage.prod.kiac.local isn't real DNS anywhere a pod's CoreDNS can
+          {{- /* Backstage's hostname may not be real DNS anywhere a pod's CoreDNS can
           see (see values.yaml's own backstageHostAliasIP comment) - whichever Task pod
           posts to Backstage needs it baked in via hostAliases to resolve it at all.
           Run-wide podTemplate (2026-10-08), not a per-task taskRunSpecs entry: the
@@ -297,13 +297,7 @@ spec:
           nothing and has no task-name coupling. Skipped entirely when
           backstageHostAliasIP is empty, not rendered with a blank ip - Tekton would
           reject that as an invalid hostAliases entry. */ -}}
-          {{- if $.Values.backstageHostAliasIP }}
-          podTemplate:
-            hostAliases:
-              - ip: {{ $.Values.backstageHostAliasIP }}
-                hostnames:
-                  - backstage.prod.kiac.local
-          {{- end }}
+          {{- include "glidepath-app.backstageHostAliases" $ }}
 ---
 apiVersion: triggers.tekton.dev/v1beta1
 kind: Trigger

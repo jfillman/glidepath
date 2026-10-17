@@ -626,7 +626,7 @@ cluster repo's cluster-defaults.yaml. Falls back to idpServiceCatalog for an ins
 */}}
 {{- define "glidepath-app.defaultChart" -}}
 {{- $d := .Values.defaultChart | default dict -}}
-repoURL: {{ $d.repoURL | default .Values.idpServiceCatalog.repoUrl }}
+repoURL: {{ $d.repoURL | default .Values.idpServiceCatalog.repoUrl | required "defaultChart.repoURL must be set: the control plane passes it from the cluster repo's cluster-defaults.yaml (or set idpServiceCatalog.repoUrl for a standalone install)" }}
 path: {{ $d.path | default "charts/airframe-application" }}
 targetRevision: {{ $d.targetRevision | default .Values.idpServiceCatalog.chartVersion }}
 {{- end }}
@@ -668,7 +668,9 @@ ApplicationSet template.
   helm:
     valuesObject:
       appName: {{ $ctx.Values.platformIdentity.appName }}
-      cluster: {{ $ctx.Values.devClusterName }}
+      cluster: {{ include "glidepath-app.devCluster" $ctx }}
+      {{- /* A Ground environment runs on the dev (control-plane) cluster: its registry type is dev. */}}
+      clusterType: dev
       envName: "{{ "{{" }}.envName{{ "}}" }}"
       namespace:
         labels:
@@ -691,5 +693,35 @@ ApplicationSet template.
   helm:
     valuesObject:
       cicdNamespace: {{ include "glidepath-app.namespace" $ctx }}
+{{- end }}
+{{- end -}}
+
+{{/*
+glidepath-app.devCluster - the dev (control-plane) cluster's name: the cluster this app's pipelines, Ground
+environments and PR previews run on. Its registry name, which is also its kubectl context (one name per cluster).
+Comes from input, never a default: devClusterName when set (a standalone install), else clusterTaxonomy.self, which
+glidepath-control-plane forwards from its own clusterName. Fails the render when neither is set.
+*/}}
+{{- define "glidepath-app.devCluster" -}}
+{{- $self := (.Values.clusterTaxonomy).self -}}
+{{- if and .Values.devClusterName $self (ne .Values.devClusterName $self) -}}
+{{- fail (printf "devClusterName '%s' and clusterTaxonomy.self '%s' name different clusters: the dev cluster is the control-plane cluster, so set only one" .Values.devClusterName $self) -}}
+{{- end -}}
+{{- .Values.devClusterName | default $self | required "the dev cluster's name is not set: glidepath-control-plane forwards it as clusterTaxonomy.self (from its clusterName); a standalone install sets devClusterName" -}}
+{{- end -}}
+
+{{/*
+glidepath-app.backstageHostAliases - a run-wide taskRunTemplate podTemplate that pins Backstage's hostname to an IP,
+for a Backstage hostname a pod's DNS cannot resolve. Renders nothing unless backstageHostAliasIP is set; then
+backstageHostAliasHostname (the host part of the catalog's backstageBaseUrl) is required. Indented for a
+taskRunTemplate: block (10 spaces). Usage: {{ include "glidepath-app.backstageHostAliases" $ }}
+*/}}
+{{- define "glidepath-app.backstageHostAliases" -}}
+{{- if .Values.backstageHostAliasIP }}
+          podTemplate:
+            hostAliases:
+              - ip: {{ .Values.backstageHostAliasIP }}
+                hostnames:
+                  - {{ required "backstageHostAliasIP is set but backstageHostAliasHostname is empty: set it to the host in the catalog's backstageBaseUrl" .Values.backstageHostAliasHostname }}
 {{- end }}
 {{- end -}}

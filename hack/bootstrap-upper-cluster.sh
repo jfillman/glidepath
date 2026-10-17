@@ -11,15 +11,21 @@
 # repo) plus Argo CD notifications for sync failures; both post facts to the release relay
 # (docs/admin/release-state.md). The earlier sync-hook Jobs are gone (ADR-0021).
 #
-# Targets an EXISTING cluster context - never runs `kind create cluster`. Note:
-# "kind-prod" (the first upper cluster) is named "prod" but currently
-# hosts the "staging" environment per cicd.yaml's env->cluster mapping - see
-# docs/admin/multi-cluster.md's terminology note. Idempotent, safe to re-run.
+# Targets an EXISTING cluster context - never runs `kind create cluster`. The context is
+# the cluster's registry name (one name per cluster, chosen when Apron builds it) and
+# must be given: UPPER_CLUSTER_CONTEXT=<cluster> hack/bootstrap-upper-cluster.sh, or as
+# the first argument. A cluster's name says nothing about which environments it hosts
+# (cicd.yaml's deploy.environments maps those). Idempotent, safe to re-run.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-CONTEXT="${UPPER_CLUSTER_CONTEXT:-kind-prod}"
+CONTEXT="${1:-${UPPER_CLUSTER_CONTEXT:-}}"
+if [[ -z "${CONTEXT}" ]]; then
+  echo "usage: $0 <upper-cluster-context>   (or UPPER_CLUSTER_CONTEXT=<context>)" >&2
+  echo "  the cluster's registry name, which is also its kubectl context" >&2
+  exit 2
+fi
 ARGOCD_CHART_VERSION="10.3.2" # app version v3.5.0 - pinned deliberately, not "latest" -
                                # an untracked "latest" install is how this platform lost
                                # any record of which version was actually running before
@@ -50,7 +56,7 @@ fi
 
 log "Cross-cluster reachability (informational, verified once live)"
 echo "  podman's kind provider puts every kind cluster's node container on one shared"
-echo "  bridge network by default - the dev cluster and kind-prod's nodes reach each"
+echo "  bridge network by default - the dev cluster's and ${CONTEXT}'s nodes reach each"
 echo "  other directly by container IP, no 'podman network connect' needed. A NodePort Service"
 echo "  on either cluster is reachable from the other's pods on the same basis. See"
 echo "  docs/admin/multi-cluster.md."
@@ -71,9 +77,9 @@ echo "  applications/ path needs a one-time root Application pointed at it. See"
 echo "  docs/admin/multi-cluster.md's Phase D section; done by hand for the first tenant."
 
 log "Outcome-relay token (2026-08-19: Infisical-backed, once per cluster, not per app)"
-echo "  ${CONTEXT}'s own platform-cicd-kind-prod-style Infisical project (see"
-echo "  gitops-cluster-kind-prod/10-crds-operators/external-secrets/ for the real"
-echo "  example) needs a platform-outcome-relay-token key holding the SAME value that"
+echo "  ${CONTEXT}'s own platform-cicd-${CONTEXT} Infisical project (see that cluster"
+echo "  repo's 10-crds-operators/external-secrets/) needs a platform-outcome-relay-token"
+echo "  key holding the SAME value that"
 echo "  backs cluster-registry.relaySecretName on the dev cluster - plant it once, via"
 echo "  the Infisical UI/API, never through this script or pasted through chat."
 echo "  airframe-application's own release-tracking/relay-token-external-secret.yaml syncs"

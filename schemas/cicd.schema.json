@@ -35,7 +35,7 @@
           "minItems": 1,
           "uniqueItems": true,
           "default": ["arm64", "amd64"],
-          "description": "Which architectures build-image.yaml builds and publishes as a real multi-arch image (via kaniko x N + a crane manifest-index combine - kaniko itself has no multi-arch capability). Defaults to both, since kiac-dev (arm64) and kind-prod (amd64) both run real workloads. Set to a single value only for an app that provably never deploys to the other cluster (e.g. backstage, a kind-prod-only singleton) - every kaniko run for an unrequested platform is skipped, not just unpublished, so this is a real build-time cost saving, not just a registry-tidiness knob."
+          "description": "Which architectures build-image.yaml builds and publishes as a real multi-arch image (via kaniko x N + a crane manifest-index combine - kaniko itself has no multi-arch capability). Defaults to both, since a fleet can run arm64 and amd64 clusters side by side. Set to a single value only for an app that provably never deploys to the other cluster (e.g. a singleton that runs on one cluster only) - every kaniko run for an unrequested platform is skipped, not just unpublished, so this is a real build-time cost saving, not just a registry-tidiness knob."
         },
         "artifacts": {
           "type": "array",
@@ -66,7 +66,7 @@
               "type": "string",
               "enum": ["small", "medium", "large", "xlarge"],
               "default": "small",
-              "description": "T-shirt size for this app's own cache PVC (small=1Gi, medium=2.5Gi, large=5Gi, xlarge=8Gi - same dictionary as the old cd-pipelines-user Helm chart's buildSpec.cacheSize). One PVC per app, specifically so this can vary per app. Chosen at onboarding time, not resizable live afterward - kind-observe's default storage class has allowVolumeExpansion: false, so changing this later means recreating the PVC (and losing its cached content), not a live resize."
+              "description": "T-shirt size for this app's own cache PVC (small=1Gi, medium=2.5Gi, large=5Gi, xlarge=8Gi - same dictionary as the old cd-pipelines-user Helm chart's buildSpec.cacheSize). One PVC per app, specifically so this can vary per app. Chosen at onboarding time, not resizable live afterward - a kind cluster's default storage class has allowVolumeExpansion: false, so changing this later means recreating the PVC (and losing its cached content), not a live resize."
             }
           }
         },
@@ -368,7 +368,7 @@
                     "name": { "type": "string" },
                     "gitopsRepo": {
                       "type": "string",
-                      "description": "Only meaningful (and required) on a gitops-image-bump step: the gitops repo (by name, e.g. 'gitops-cluster-kind-man') to open the image-bump PR against. Unlike release's gitops-<app-name> convention, this stage is for a hand-deployed singleton/cluster-config component whose manifests don't live in a per-app gitops repo, so the target repo must be named explicitly. Requires an extra Repository CR granting this app's CI namespace write access - see platformIdentity.extraGitopsRepos in the tenant identity.yaml (not this repo's cicd.yaml, since it's a trust/authorization grant the app owner doesn't self-serve)."
+                      "description": "Only meaningful (and required) on a gitops-image-bump step: the gitops repo (by name, e.g. 'gitops-cluster-example-prod') to open the image-bump PR against. Unlike release's gitops-<app-name> convention, this stage is for a hand-deployed singleton/cluster-config component whose manifests don't live in a per-app gitops repo, so the target repo must be named explicitly. Requires an extra Repository CR granting this app's CI namespace write access - see platformIdentity.extraGitopsRepos in the tenant identity.yaml (not this repo's cicd.yaml, since it's a trust/authorization grant the app owner doesn't self-serve)."
                     },
                     "manifestPath": {
                       "type": "string",

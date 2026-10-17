@@ -254,7 +254,7 @@ func TestHealthyAtOutlivesTheState(t *testing.T) {
 }
 
 func TestRollbackReleaseNamesTheReleaseItReplaced(t *testing.T) {
-	s := &relState{State: stMerged, Kind: releaseKindRollback, RollbackOf: "old:kind-prod/staging"}
+	s := &relState{State: stMerged, Kind: releaseKindRollback, RollbackOf: "old:example-prod/staging"}
 	var last decision
 	for i, f := range []*fact{mk("Progressing", "h2", false), mk("Healthy", "h2", false), mk("Healthy", "h2", false)} {
 		d := reduce(s, f, t0.Add(time.Duration(i)*time.Second))
@@ -265,13 +265,13 @@ func TestRollbackReleaseNamesTheReleaseItReplaced(t *testing.T) {
 			t.Errorf("a repeat Healthy must not roll back twice: %v %q", kinds(d), d.RolledBack)
 		}
 	}
-	if !eq(kinds(last), []string{kindSuccess, kindRolledBack}) || last.RolledBack != "old:kind-prod/staging" {
+	if !eq(kinds(last), []string{kindSuccess, kindRolledBack}) || last.RolledBack != "old:example-prod/staging" {
 		t.Errorf("healthy rollback: emitted %v rolledBack %q", kinds(last), last.RolledBack)
 	}
 }
 
 func TestPromoteReleaseNeverRollsBack(t *testing.T) {
-	s := &relState{State: stMerged, Kind: "promote", RollbackOf: "x:kind-prod/staging"}
+	s := &relState{State: stMerged, Kind: "promote", RollbackOf: "x:example-prod/staging"}
 	replay(s, []*fact{mk("Progressing", "h1", false)})
 	if d := reduce(s, mk("Healthy", "h1", false), t0.Add(time.Minute)); d.RolledBack != "" {
 		t.Errorf("only a rollback release marks another rolled-back")
