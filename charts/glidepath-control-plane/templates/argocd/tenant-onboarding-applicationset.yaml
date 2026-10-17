@@ -107,6 +107,13 @@ spec:
                 appRepoUrl: "{{ "{{" }}.platformIdentity.appRepoUrl{{ "}}" }}"
                 githubOwner: "{{ "{{" }}.platformIdentity.githubOwner{{ "}}" }}"
                 catalogNamespace: "{{ "{{" }}.platformIdentity.catalogNamespace{{ "}}" }}"
+              # This repo, for glidepath-app's own sources (glidepath-env, glidepath-pr-preview-notify): no default there.
+              platformCicdRepoUrl: {{ .Values.platformCicdRepoUrl | quote }}
+              {{- with .Values.backstageHostAliasIP }}
+              # Pins backstageBaseUrl's host to this IP in every generated PipelineRun (values.yaml backstageHostAliasIP).
+              backstageHostAliasIP: {{ . | quote }}
+              backstageHostAliasHostname: {{ (urlParse (required "backstageHostAliasIP is set but backstageBaseUrl is empty: the host alias pins backstageBaseUrl's host" $.Values.backstageBaseUrl)).hostname | quote }}
+              {{- end }}
               {{- with .Values.defaultChart }}
               defaultChart:
                 {{- toYaml . | nindent 16 }}
@@ -118,6 +125,7 @@ spec:
               {{- end }}
               {{- if .Values.clusterName }}
               # ADR-0024: the control plane's name and each known cluster's zone, for glidepath-app's environment checks.
+              # self is also the dev cluster glidepath-app renders Ground environments and previews onto.
               clusterTaxonomy:
                 {{- include "glidepath-control-plane.clusterTaxonomy" . | nindent 16 }}
               {{- end }}

@@ -31,6 +31,27 @@ Steps for a brand-new cluster:
    state never lives inside `platform-cicd` itself.
 4. Push. ArgoCD takes it from there.
 
+### Values the cluster repo must supply
+
+None of these has a default naming a cluster, an owner or a lab host; a render without
+the required ones fails with a message naming the value.
+
+| Chart | Value | Required | Usual source |
+|---|---|---|---|
+| `glidepath-control-plane` | `platformCicdRepoUrl` | yes | this repo's URL in the fleet's GitHub owner (`clusters.yaml` `scm.owner`) |
+| `glidepath-control-plane` | `clusterName` | yes | the cluster's registry name (= kubectl context), from `clusters.yaml` |
+| `glidepath-control-plane` | `clusters`, `aws` | no | `clusters.yaml` as a value file |
+| `glidepath-control-plane` | `defaultChart` | yes, for apps | `cluster-defaults.yaml` as a value file |
+| `glidepath-control-plane` | `backstageBaseUrl`, `backstageHostAliasIP` | no | only for a Backstage hostname a pod cannot resolve |
+| `glidepath-catalog` | `defaultChart.repoURL`, `defaultChart.targetRevision` | yes | `cluster-defaults.yaml` as a value file |
+| `glidepath-catalog` | `valuesValidatorRepository` (or `valuesValidatorImage`) | yes | where the fleet's Airframe publishes `airframe-validate` |
+| `glidepath-catalog` | `backstageBaseUrl`, `backstageHostAliasIP` | no | same values as the control plane's |
+
+The control plane forwards `platformCicdRepoUrl`, `defaultChart`, the Backstage alias and
+`clusterTaxonomy` (whose `self` is `clusterName`: the dev cluster) to every app's
+`glidepath-app`; an app's Ground environments and previews render with that cluster name
+and `clusterType: dev`.
+
 This keeps `platform-cicd` installable standalone on any cluster - it carries zero
 cluster-specific secrets or identity in its own repo. For local/`kind` development,
 `hack/kind-config.yaml` creates a raw, Calico-enabled cluster to point ArgoCD at -

@@ -47,6 +47,10 @@ doraExporterImage: ghcr.io/jfillman/glidepath-dora-exporter:latest
 # "latest" tag caused here.
 interceptorImage: ghcr.io/jfillman/glidepath-token-review-interceptor:sha-4140967
 
+# templates/clusters/glidepath-relay.yaml's own image (the release relay, ADR-0021) - same reasoning as
+# doraExporterImage above. Was a literal in the template.
+relayImage: ghcr.io/jfillman/glidepath-relay:p4-48fca37
+
 # templates/tekton/tekton-results-relay.yaml's own image - same reasoning as
 # doraExporterImage above (real registry-published tag, not a local-only build).
 tektonResultsRelayImage: ghcr.io/jfillman/glidepath-tekton-results-relay:latest
@@ -76,12 +80,11 @@ trivyServer:
 # already-flagged proper-release-workflow follow-up instead of worked around here.
 platformCicdRepoUrl: ""
 
-# Cluster-agnostic derivation input: tenantsRepoUrl/tenantOnboardingApplicationSetName
-# below are DERIVED from this by convention for any cluster that doesn't explicitly
-# override them - see templates/argocd/tenant-onboarding-applicationset.yaml's own
-# header for the exact `default` expressions. Set this to the cluster's own name (e.g.
-# "kind-dev") for any new cluster instead of hand-typing both derived fields
-# separately.
+# This control plane's cluster: its cluster-registry name, which is also its kubectl context (one name per
+# cluster, chosen when Apron builds it - the cluster repo passes it, never a default here). tenantsRepoUrl below is
+# derived from it by convention when not set (templates/argocd/tenant-onboarding-applicationset.yaml), and it is
+# forwarded to every app as clusterTaxonomy.self: the dev cluster glidepath-app renders Ground environments and PR
+# previews onto. glidepath-app fails its render without it.
 clusterName: ""
 
 # This cluster's place in the cluster taxonomy (ADR-0024), used only when `clusters` below has no record named
@@ -102,9 +105,17 @@ clusterRoles: [control-plane, workloads]
 # cluster's real, live tenants too.
 #
 # Empty by default - derived from clusterName above
-# (https://github.com/jfillman/platform-cicd-<clusterName>-tenants.git) unless
-# explicitly set here.
+# (https://github.com/<owner>/platform-cicd-<clusterName>-tenants.git, <owner> from
+# platformCicdRepoUrl) unless explicitly set here.
 tenantsRepoUrl: ""
+
+# Backstage, for the notify-backstage host alias. Both empty by default (normal: Backstage resolves by real DNS, and
+# nothing is forwarded). Set backstageHostAliasIP only when Backstage's hostname is not resolvable from a pod: it is
+# then forwarded to every app's glidepath-app with backstageBaseUrl's host as the pinned hostname. backstageBaseUrl
+# must equal glidepath-catalog's own backstageBaseUrl (the URL notify-backstage posts to), and backstageHostAliasIP
+# that chart's backstageHostAliasIP (its deliver-onboarding-files Task writes the same alias into .tekton files).
+backstageBaseUrl: ""
+backstageHostAliasIP: ""
 
 # The cluster's default environment chart ({repoURL, path, targetRevision}), from the cluster repo's
 # cluster-defaults.yaml (the control plane Application reads it as a value file). Forwarded to every app's
@@ -211,7 +222,9 @@ secretStore:
     # header for why it's a dedicated project, not a reused app project. Only used for
     # genuinely platform-wide material (registry-credentials, github-app-creds,
     # relay tokens) - never app secrets, see docs/admin/app-secrets.md.
-    projectSlug: platform-cicd-kind-dev
+    # No default: "platform-cicd-<clusterName>" by the SecretStore Composition's convention (see
+    # infisical-project.yaml) - set it to that when it is not set here.
+    projectSlug: ""
     # In-cluster Service DNS for airframe's self-hosted Infisical install
     # (gitops-cluster-dev/10-crds-operators/infisical) - only correct when this chart
     # runs on the same cluster that hosts Infisical, see cluster-secret-store.yaml.
@@ -223,12 +236,13 @@ secretStore:
     # "platform-cicd-infisical-creds" under the old infisical-secretstore-operator;
     # renamed 2026-09-18 to match provider-infisical's naming exactly rather than
     # fighting it.
-    credentialsSecretName: platform-cicd-kind-dev-infisical-creds
+    # No default: "<projectSlug>-infisical-creds" when not set here.
+    credentialsSecretName: ""
 
 # 2026-08-19: no per-Application ClusterSecretStore/appSecretStores list rendered by
 # this chart any more - a real, live redundancy caught after the previous fix:
 # rendering "<type>-<appName>-secret-store" here, mirrored field-for-field from that
-# Application's own idp-managed ClusterSecretStore (<appName>-<devClusterName>,
+# Application's own idp-managed ClusterSecretStore (<appName>-<dev cluster>,
 # provisioned by idp's NodeJSApplication XR), meant two live objects pointed at the
 # exact same Infisical project - confirmed live, byte-identical specs except that
 # idp's own store ALSO carries a namespaceRegexes scope this chart's mirror never had
@@ -259,13 +273,13 @@ secretStore:
 # Without a record for this control plane's own cluster, clusterZone/clusterRoles describe it (standalone installs).
 # A remote record is also what turns on glidepath-relay (templates/clusters/glidepath-relay.yaml).
 #
-# - name: kind-dev
+# - name: example-dev
 #   zone: lower
 #   roles: [control-plane, workloads]
-# - name: kind-prod
+# - name: example-prod
 #   zone: upper
 #   roles: [workloads, platform-services]
-#   glidepath: { relaySecretName: cluster-kind-prod-relay-token }
+#   glidepath: { relaySecretName: cluster-example-prod-relay-token }
 clusters: []
 
 # The fleet's AWS account: the top-level aws: block of the same clusters.yaml (apron docs/clusters-file.md). Only

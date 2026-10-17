@@ -55,7 +55,7 @@ lives and how every chart consumes it.
 
 An Application's own secrets (Slack webhook, SAST scan credentials, ...) - see
 [app-secrets.md](app-secrets.md) - come from THAT Application's own idp-managed
-`ClusterSecretStore` (`<appName>-<devClusterName>`, e.g. `checkout-api-dev`,
+`ClusterSecretStore` (`<appName>-<dev cluster>`, the control plane's `clusterName`, e.g. `checkout-api-example-dev`,
 provisioned by idp's `NodeJSApplication` XR) - referenced **directly, by name**, from
 `glidepath-app`'s own `app-secrets-external-secret.yaml`. No platform-cicd-rendered
 store in between. Never a platform-cicd-owned project either - app secrets are the app

@@ -1,7 +1,7 @@
 # catalog/pipelines/gitops-image-bump.yaml
 #
 # For a hand-deployed singleton/cluster-config component with no gitops-<app-name> repo
-# and no dev/upper promotion flow (e.g. Backstage on kind-man - see
+# and no dev/upper promotion flow (e.g. Backstage - see
 # idp/docs/backstage-design.md). Always event-chained from build's artifact.published
 # (never git-rooted, never chained-from by anything else today) - a much smaller
 # Pipeline than release.yaml on purpose: no flow-root span/DORA/Slack plumbing, since

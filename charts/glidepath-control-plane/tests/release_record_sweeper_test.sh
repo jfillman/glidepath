@@ -6,7 +6,7 @@ set -u
 cd "$(dirname "$0")/../../.."
 fail=0
 script="$(mktemp)"
-helm template t charts/glidepath-control-plane --set platformCicdRepoUrl=https://x/y.git \
+helm template t charts/glidepath-control-plane -f charts/glidepath-control-plane/tests/values.example.yaml \
   --show-only templates/broker/release-record-sweeper-cronjob.yaml \
   | python3 -c "
 import sys,yaml
@@ -87,7 +87,7 @@ refute "no list permission is skipped, not fatal" "EVENT" "$out"
 # rollback-eligibility window and outlive retention; a sixth, older one does not.
 healthy_rec() { # name healthyAt app
   jq -n --arg n "$1" --arg h "$2" --arg app "${3:-x}" --arg old "$(ago 30 days)" \
-    '{metadata:{name:$n,creationTimestamp:$old,labels:{"hangar.io/app":$app,"hangar.io/env":"staging","hangar.io/cluster":"kind-prod"}},
+    '{metadata:{name:$n,creationTimestamp:$old,labels:{"hangar.io/app":$app,"hangar.io/env":"staging","hangar.io/cluster":"example-prod"}},
       data:{state:"superseded",stateAt:$old,healthyAt:$h}}'
 }
 window=""

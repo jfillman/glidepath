@@ -62,6 +62,9 @@ jobs:
             '  appRepoUrl: https://github.com/fixture-org/fixture-app' \
             '  githubOwner: fixture-org' \
             '  catalogNamespace: platform-catalog' \
+            'platformCicdRepoUrl: https://github.com/fixture-org/glidepath.git' \
+            'devClusterName: fixture-dev' \
+            'defaultChart: { repoURL: https://github.com/fixture-org/airframe.git, path: charts/airframe-application, targetRevision: v0.0.0 }' \
             > /tmp/fixtures/platform-identity.yaml
 
           printf '%s\n' \
@@ -217,4 +220,4 @@ jobs:
 
           mkdir -p /tmp/chart-dist
           helm package charts/glidepath-app --version "${chart_version}" --app-version "${chart_version}" -d /tmp/chart-dist
-          helm push "/tmp/chart-dist/glidepath-app-${chart_version}.tgz" oci://ghcr.io/jfillman/charts
+          helm push "/tmp/chart-dist/glidepath-app-${chart_version}.tgz" "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"

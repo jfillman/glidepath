@@ -43,7 +43,7 @@ spec:
       description: PaC's body.pull_request.number - the changed files are those between the PR's base and revision. Empty means "just this commit".
     - name: validator-image
       type: string
-      default: {{ .Values.valuesValidatorImage | default (printf "%s:%s" .Values.valuesValidatorRepository (required "defaultChart.targetRevision must be set" .Values.defaultChart.targetRevision)) | quote }}
+      default: {{ .Values.valuesValidatorImage | default (printf "%s:%s" (required "valuesValidatorRepository (or valuesValidatorImage) must be set" .Values.valuesValidatorRepository) (required "defaultChart.targetRevision must be set" .Values.defaultChart.targetRevision)) | quote }}
       description: The validator image. Must provide `validate-values [--app NAME] FILE...` on its PATH.
     - name: app-name
       type: string

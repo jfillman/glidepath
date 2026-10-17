@@ -6,7 +6,7 @@
 set -u
 cd "$(dirname "$0")/../../.."
 fail=0
-rendered="$(helm template t charts/glidepath-catalog)"
+rendered="$(helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml)"
 exprs="$(grep -o "yq eval-all '[^']*'" <<<"${rendered}" | sort -u)"
 [[ "$(wc -l <<<"${exprs}" | tr -d ' ')" == 1 ]] || { echo "FAIL: the two tasks must use one expression, got: ${exprs}"; fail=1; }
 q="$(sed -E "s/^yq eval-all '(.*)'$/\1/" <<<"$(head -1 <<<"${exprs}")")"

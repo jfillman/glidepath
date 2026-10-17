@@ -20,7 +20,7 @@ CATALOG = os.path.join(ROOT, "charts", "glidepath-catalog")
 
 def program():
     out = subprocess.run(
-        ["helm", "template", "t", CATALOG, "-s", "templates/tasks/resolve-deploy-target.yaml"],
+        ["helm", "template", "t", CATALOG, "-f", os.path.join(CATALOG, "tests", "values.example.yaml"), "-s", "templates/tasks/resolve-deploy-target.yaml"],
         capture_output=True, text=True, check=True,
     ).stdout
     script = yaml.safe_load(out)["spec"]["steps"][0]["script"]

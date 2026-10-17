@@ -408,6 +408,12 @@ spec:
           *) SOURCE_VOLUME_STORAGE="2Gi" ;;
         esac
         BACKSTAGE_HOST_ALIAS_IP="{{ .Values.backstageHostAliasIP }}"
+        # The hostname pinned to that IP: backstageBaseUrl's host. Both or neither (values.yaml).
+        {{- if .Values.backstageHostAliasIP }}
+        BACKSTAGE_HOST_ALIAS_HOSTNAME="{{ (urlParse (required "backstageHostAliasIP is set but backstageBaseUrl is empty: the host alias pins backstageBaseUrl's host" .Values.backstageBaseUrl)).hostname }}"
+        {{- else }}
+        BACKSTAGE_HOST_ALIAS_HOSTNAME=""
+        {{- end }}
 
         # PaC's dynamic-variable syntax uses the same double-brace delimiter Helm renders
         # this file with, so writing it literally would make Helm try to parse it instead
@@ -454,7 +460,7 @@ spec:
               hostAliases:
                 - ip: ${BACKSTAGE_HOST_ALIAS_IP}
                   hostnames:
-                    - backstage.prod.kiac.local"
+                    - ${BACKSTAGE_HOST_ALIAS_HOSTNAME}"
           fi
           # deploy/release/test can all be a flow's git-rooted first step (e.g. a tag push
           # deploying straight to prod). Their Pipelines read env/test-name/cluster/name as

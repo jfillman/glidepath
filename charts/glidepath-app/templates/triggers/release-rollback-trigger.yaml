@@ -70,13 +70,7 @@ spec:
         taskRunTemplate:
           serviceAccountName: pipeline-runner
           {{- /* Same Backstage host alias as release-outcome-trigger.yaml: this run posts to Backstage. */ -}}
-          {{- if .Values.backstageHostAliasIP }}
-          podTemplate:
-            hostAliases:
-              - ip: {{ .Values.backstageHostAliasIP }}
-                hostnames:
-                  - backstage.prod.kiac.local
-          {{- end }}
+          {{- include "glidepath-app.backstageHostAliases" . }}
 ---
 apiVersion: triggers.tekton.dev/v1beta1
 kind: Trigger

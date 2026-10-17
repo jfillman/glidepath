@@ -63,8 +63,8 @@ These are invisible while the ruleset is not enforced and would surface the day 
 ## Applying it
 
 ```bash
-hack/apply-guardrail-ruleset.sh --dry-run --approvals 0 jfillman/gitops-flight-api     # inspect
-hack/apply-guardrail-ruleset.sh --approvals 2 --bypass-app-id <crossplane-app-id> jfillman/gitops-<app> ...
+hack/apply-guardrail-ruleset.sh --dry-run --approvals 0 <owner>/gitops-flight-api     # inspect
+hack/apply-guardrail-ruleset.sh --approvals 2 --bypass-app-id <crossplane-app-id> <owner>/gitops-<app> ...
 ```
 
 Re-run it whenever `releaseGuardrails` changes: it updates the ruleset by name. Adding a gate to the registry without

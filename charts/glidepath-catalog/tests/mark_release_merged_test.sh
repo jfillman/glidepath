@@ -5,7 +5,7 @@ set -u
 cd "$(dirname "$0")/../../.."
 fail=0
 script="$(mktemp)"
-helm template t charts/glidepath-catalog --show-only templates/tasks/mark-release-merged.yaml \
+helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only templates/tasks/mark-release-merged.yaml \
   | python3 -c "import sys,yaml; print(yaml.safe_load(sys.stdin.read())['spec']['steps'][0]['script'])" > "$script"
 
 stubdir="$(mktemp -d)"

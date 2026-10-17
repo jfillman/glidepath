@@ -57,7 +57,7 @@ func labelRecord(t *testing.T, h *handler, state string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm.Labels = map[string]string{"hangar.io/subcomponent": "release-tracking", "hangar.io/app": "gate-api", "hangar.io/env": "staging", "hangar.io/cluster": "kind-prod"}
+	cm.Labels = map[string]string{"hangar.io/subcomponent": "release-tracking", "hangar.io/app": "gate-api", "hangar.io/env": "staging", "hangar.io/cluster": "example-prod"}
 	cm.Data["state"], cm.Data["prCreatedAt"] = state, "2026-10-05T10:00:00Z"
 	if _, err := h.clientset.CoreV1().ConfigMaps("app-gate-api-cicd").Update(context.Background(), cm, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestArgoSyncFailureReachesTheRelease(t *testing.T) {
 	h, sent := newTestHandler(t, "emit")
 	labelRecord(t, h, "merged")
 
-	if c := argoPost(h, "kind-prod", "Bearer tok", argoBody("Running", 1, "gate-api", "staging")).Code; c != 202 {
+	if c := argoPost(h, "example-prod", "Bearer tok", argoBody("Running", 1, "gate-api", "staging")).Code; c != 202 {
 		t.Fatalf("code %d", c)
 	}
 	if len(*sent) != 2 || !strings.Contains(string((*sent)[1]), `"outcome":"failure"`) {
@@ -84,14 +84,14 @@ func TestArgoSyncFailureReachesTheRelease(t *testing.T) {
 		t.Errorf("record: %v", d)
 	}
 	// later retries and the final Failed are the same failure
-	argoPost(h, "kind-prod", "Bearer tok", argoBody("Running", 3, "gate-api", "staging"))
-	argoPost(h, "kind-prod", "Bearer tok", argoBody("Failed", 4, "gate-api", "staging"))
+	argoPost(h, "example-prod", "Bearer tok", argoBody("Running", 3, "gate-api", "staging"))
+	argoPost(h, "example-prod", "Bearer tok", argoBody("Failed", 4, "gate-api", "staging"))
 	if len(*sent) != 2 {
 		t.Errorf("retries must not send more failure events, sent %d", len(*sent))
 	}
 	// Argo's retry works: the Rollout reports, the release recovers and is reported healthy
-	post(h, "kind-prod", "Bearer tok", factBody(rel1, "Progressing", 3, "3"))
-	post(h, "kind-prod", "Bearer tok", factBody(rel1, "Healthy", 3, "3"))
+	post(h, "example-prod", "Bearer tok", factBody(rel1, "Progressing", 3, "3"))
+	post(h, "example-prod", "Bearer tok", factBody(rel1, "Healthy", 3, "3"))
 	if len(*sent) != 3 || record1(t, h)["state"] != "healthy" {
 		t.Errorf("recovery: sent %d state %s", len(*sent), record1(t, h)["state"])
 	}
@@ -114,7 +114,7 @@ func TestArgoFactsThatAreNotAReleaseFailing(t *testing.T) {
 		{"not json", "Bearer tok", `{`, 400},
 	}
 	for _, c := range cases {
-		if got := argoPost(h, "kind-prod", c.auth, c.body).Code; got != c.code {
+		if got := argoPost(h, "example-prod", c.auth, c.body).Code; got != c.code {
 			t.Errorf("%s: got %d want %d", c.name, got, c.code)
 		}
 	}
@@ -126,7 +126,7 @@ func TestArgoFactsThatAreNotAReleaseFailing(t *testing.T) {
 func TestArgoSyncFailureIgnoresAnUnmergedProposal(t *testing.T) {
 	h, sent := newTestHandler(t, "emit")
 	labelRecord(t, h, "proposed") // PR open, not merged: a sync now is not this release
-	argoPost(h, "kind-prod", "Bearer tok", argoBody("Failed", 5, "gate-api", "staging"))
+	argoPost(h, "example-prod", "Bearer tok", argoBody("Failed", 5, "gate-api", "staging"))
 	if len(*sent) != 0 || record1(t, h)["state"] != "proposed" {
 		t.Errorf("a proposed release must not be marked failed: sent %d %v", len(*sent), record1(t, h))
 	}

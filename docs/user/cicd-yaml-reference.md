@@ -567,8 +567,8 @@ deploy:
   environments:                       # the order here is the promotion order
     - { name: dev,     tier: ground }
     - { name: test,    tier: ground }
-    - { name: staging, tier: flight, cluster: kind-prod }
-    - { name: prod,    tier: flight, cluster: kind-prod, production: true }
+    - { name: staging, tier: flight, cluster: example-prod }
+    - { name: prod,    tier: flight, cluster: example-prod, production: true }
 ```
 
 | Field | Meaning |
