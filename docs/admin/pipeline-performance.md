@@ -90,6 +90,10 @@ Details are in [release-guardrails.md](release-guardrails.md).
   public repo or the public toolbox image.
 - A push whose HEAD is a merge commit no longer hides a real change from Pipelines-as-Code. The push
   exemption reads every commit in the push (`body.commits`), not PaC's HEAD-only `files.all`.
+- The merge of an app's first onboarding PR builds (2026-10-17): it is recognised by a commit adding
+  `.tekton/onboarding-resync.yaml`, which only the first onboarding does. Before, every file in it was exempt and a
+  new app waited for someone to push code. `hack/ci/build-exemption-cel` checks the expression with cel-go against
+  15 push payloads in catalog-ci, including that a `cicd.yaml` change never builds, directly or through its resync.
 
 ## Still open
 

@@ -551,7 +551,14 @@ spec:
               # PaC drops an empty added/modified/removed list from each commit, so every key is guarded: unguarded,
               # a merge push with nothing removed failed CEL evaluation ("no such key: removed") and built nothing
               # (backstage#86, 2026-10-09).
-              local exempt_guard='!(has(body.commits) && body.commits.exists(c, (has(c.added) ? size(c.added) : 0) + (has(c.modified) ? size(c.modified) : 0) + (has(c.removed) ? size(c.removed) : 0) > 0) && body.commits.all(c, ((has(c.added) ? c.added : []) + (has(c.modified) ? c.modified : []) + (has(c.removed) ? c.removed : [])).all(f, f == "cicd.yaml" || f.startsWith("glidepath/") || f.startsWith(".tekton/"))))'
+              # One exception (2026-10-17): the push that merges an app's FIRST onboarding PR builds, so a new app gets
+              # its first build without anyone pushing code. Every file in that PR is exempt (.tekton/, and glidepath/
+              # for a Kubernetes app), so since .tekton/ pushes were exempted nothing started it; Tower's "First build
+              # and checks" waited (customs-api). It is recognised by a commit ADDING .tekton/onboarding-resync.yaml:
+              # only the first onboarding does that, every resync modifies it. Not "adds this flow's file": a cicd.yaml
+              # change that adds a flow would then build through its resync, and a cicd.yaml change must never start
+              # a build. hack/ci/build-exemption-cel checks this expression with cel-go against 15 push payloads.
+              local exempt_guard='!(has(body.commits) && body.commits.exists(c, (has(c.added) ? size(c.added) : 0) + (has(c.modified) ? size(c.modified) : 0) + (has(c.removed) ? size(c.removed) : 0) > 0) && body.commits.all(c, ((has(c.added) ? c.added : []) + (has(c.modified) ? c.modified : []) + (has(c.removed) ? c.removed : [])).all(f, f == "cicd.yaml" || f.startsWith("glidepath/") || f.startsWith(".tekton/"))) && !body.commits.exists(c, has(c.added) && c.added.exists(f, f == ".tekton/onboarding-resync.yaml")))'
               [[ -z "${pin_file}" ]] && loop_guard="${loop_guard} && ${exempt_guard}"
               # Same on-cel-expression-drops-on-event/on-target-branch gap as the
               # pull_request case below, hit live 2026-08-24: this flow's on-target-branch

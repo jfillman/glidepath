@@ -20,6 +20,7 @@ on:
       - "schemas/**"
       - "catalog/lib/chain-slug.sh"
       - "hack/ci/chain_slug_test.sh"
+      - "hack/ci/build-exemption-cel/**"
   push:
     branches: [main]
     paths:
@@ -28,6 +29,7 @@ on:
       - "schemas/**"
       - "catalog/lib/chain-slug.sh"
       - "hack/ci/chain_slug_test.sh"
+      - "hack/ci/build-exemption-cel/**"
 
 jobs:
   # validate-cicd-config must hand every Task a config-json whose environment fields agree, whichever
@@ -40,6 +42,18 @@ jobs:
       - run: pip install pyyaml
       - run: python3 charts/glidepath-catalog/tests/validate_config_envs_test.py
       - run: python3 charts/glidepath-catalog/tests/resolve_deploy_target_env_test.py
+
+  # The config-only build exemption every push flow carries, evaluated with cel-go (what Pipelines-as-Code uses)
+  # against 15 push payloads: cicd.yaml/glidepath//.tekton/ changes never build, the first onboarding merge does.
+  build-exemption-cel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: hack/ci/build-exemption-cel/go.mod
+      - run: go run .
+        working-directory: hack/ci/build-exemption-cel
 
   # deploy-lambda's AWS login: web identity only, a clear error for each missing piece, never a stored key.
   aws-credentials:
