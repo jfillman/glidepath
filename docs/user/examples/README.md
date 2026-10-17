@@ -1,10 +1,12 @@
 # Pipeline examples
 
-Ten complete, schema-valid `cicd.yaml` files, each fully commented, covering the shapes
+Twelve complete, schema-valid `cicd.yaml` files, each fully commented, covering the shapes
 you're most likely to actually want. Copy whichever is closest to your needs and adjust.
+**Deploying to AWS instead of Kubernetes? Start with 11 (ECS) or 12 (Lambda).**
 
 Every file here is validated against `schemas/cicd.schema.json` and rendered through the
-real Helm chart as part of this repo's own checks - if it's in this folder, it works.
+real Helm chart by `charts/glidepath-app/tests/examples_test.py`, in CI - if it's in this
+folder, it works. (Until 2026-10-17 nothing actually checked this, and 05 had stopped rendering.)
 
 | # | File | Shape |
 |---|---|---|
@@ -18,6 +20,8 @@ real Helm chart as part of this repo's own checks - if it's in this folder, it w
 | 8 | [08-containerfile-only-build.yaml](08-containerfile-only-build.yaml) | Whole build inside a multi-stage Containerfile |
 | 9 | [09-ephemeral-environments.yaml](09-ephemeral-environments.yaml) | A live preview environment per PR/branch |
 | 10 | [10-production-grade.yaml](10-production-grade.yaml) | Everything together - path filters, caching, governance, notifications |
+| 11 | [11-aws-ecs.yaml](11-aws-ecs.yaml) | AWS ECS (Fargate): dev on every push, prod through a release pin; no AWS key |
+| 12 | [12-aws-lambda.yaml](12-aws-lambda.yaml) | AWS Lambda (container image): dev on every push, prod through a release pin; no AWS key |
 
 ## Quick visual index
 

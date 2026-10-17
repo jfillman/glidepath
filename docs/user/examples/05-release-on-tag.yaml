@@ -29,6 +29,16 @@ build:
   agent: nodejs-20
   script: ./build.sh
 
+# Every environment a flow names must be declared here, in promotion order (ADR-0019). A release step's env must be
+# tier: flight; leaving staging out makes the chart refuse the whole file.
+deploy:
+  environments:
+    - name: dev
+      tier: ground
+    - name: staging
+      tier: flight
+      cluster: kind-prod          # the upper cluster staging runs on (see docs/admin/multi-cluster.md)
+
 pipelines:
   manual-release:
     trigger:

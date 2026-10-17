@@ -1,0 +1,59 @@
+# Example 12: deploy to an AWS Lambda function (container image), dev on every push, prod through an
+# approved release
+#
+# For a function app (Airframe's LambdaFunction template scaffolds this file for you). Start here if
+# you are configuring one by hand.
+#
+# Before this file can deploy anything, the infrastructure has to exist. Glidepath never creates it:
+#   1. An Airframe AwsLambdaTarget per environment (or LambdaFunction's spec.target.enabled for the
+#      first one), in tenants/<app>/xr-requests/ in the dev cluster's tenants repo (Airframe
+#      docs/user/cloud-targets.md). It creates the ECR repository, the execution role, the function
+#      (seeded with a placeholder image), its Function URL, and the deploy role the pipeline assumes.
+#   2. Nothing else. There is no AWS key: the deploy step assumes glidepath-deploy-<functionName>
+#      with a short-lived token (docs/admin/cloud-deploy-identity.md).
+#
+# Where the deploy.lambda values come from: the AwsLambdaTarget's status, once it is Ready.
+#   kubectl -n app-<app>-cicd get awslambdatarget <name> -o jsonpath='{.status.cicd}'
+#
+# What happens:
+#   push to main -> [build] -> [deploy dev]                      (every push, no approval)
+#   Tower "Promote" (or a release step) -> a pin PR on this repo  (glidepath/releases/prod.yaml)
+#   merge the pin PR -> [deploy prod]                            (ADR-0020)
+#
+# Each deploy copies the image into the function's ECR repository (Lambda only pulls from ECR) and
+# updates the function's code to it. Lambda takes a single-architecture image, so the deploy copies
+# the <tag>-arm64 or <tag>-amd64 image matching the function's architecture: build.platforms must
+# include it.
+apiVersion: platform/v1
+kind: PipelineConfig
+
+build:
+  agent: nodejs-22
+  platforms: [arm64]            # AwsLambdaTarget defaults to arm64 (spec.architecture)
+  containerfile: ./Containerfile
+
+pipelines:
+  ci:
+    trigger: { source: git, event: push, branch: main }
+    steps:
+      - stage: build
+      - stage: deploy
+        env: dev
+
+deploy:
+  target: aws-lambda
+  environments:
+    - name: dev
+      tier: ground
+      lambda:                   # this environment's function: an AwsLambdaTarget's status.cicd
+        functionName: example-fn        # its deploy role is glidepath-deploy-<functionName>
+        region: us-east-1
+    - name: prod
+      tier: flight              # deployed only when the prod release pin PR is merged
+      lambda:
+        functionName: example-fn-prod
+        region: us-east-1
+
+notifications:
+  backstage:
+    enabled: true

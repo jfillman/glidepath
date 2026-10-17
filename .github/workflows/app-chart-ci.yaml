@@ -14,12 +14,14 @@ on:
       - "charts/glidepath-app/**"
       - ".github/workflows/app-chart-ci.yaml"
       - "schemas/**"
+      - "docs/user/examples/**"
   push:
     branches: [main]
     paths:
       - "charts/glidepath-app/**"
       - ".github/workflows/app-chart-ci.yaml"
       - "schemas/**"
+      - "docs/user/examples/**"
 
 jobs:
   lint:
@@ -39,6 +41,8 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: pip install pyyaml jsonschema
       - run: python3 charts/glidepath-app/tests/envs_model_test.py
+      # Every docs/user/examples file validates against the schema and renders through this chart.
+      - run: python3 charts/glidepath-app/tests/examples_test.py
 
   fixture-matrix:
     runs-on: ubuntu-latest

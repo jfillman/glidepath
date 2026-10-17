@@ -69,9 +69,35 @@ test:
   name: ""
 
 deploy:
-  # The app's environments come from cicd.yaml's deploy.environments (ADR-0019; unset = one Ground env, dev).
-  # No default here: the old lowerEnvironments/upperEnvironments/promotionOrder keys were removed 2026-10-07,
-  # and glidepath-app.validateEnvironments refuses them.
+  # cicd.yaml's deploy: block. Every field, explained: docs/user/cicd-yaml-reference.md ("Everything, annotated"
+  # and "The deploy: block"); complete files to copy: docs/user/examples/ (11-aws-ecs.yaml, 12-aws-lambda.yaml
+  # for cloud apps). The fields below are commented out on purpose: they have no chart default.
+  #
+  # target: k8s-rollout           # or aws-ecs / aws-lambda / azure-container-apps; per app
+  #
+  # environments:                  # every environment once, in promotion order (ADR-0019). Unset: one Ground
+  #   - name: dev                  # environment, dev. The removed lowerEnvironments/upperEnvironments/
+  #     tier: ground               # promotionOrder keys are refused (glidepath-app.validateEnvironments).
+  #   - name: prod
+  #     tier: flight               # deployed only through an approved release
+  #     cluster: kind-prod         # Kubernetes flight env on another cluster
+  #     production: true
+  #     # ecs / lambda / azureContainerApps: this env's cloud resource (overrides the app-level block below)
+  #
+  # ecs:                           # target aws-ecs: from the AwsEcsTarget's status.cicd
+  #   cluster: my-app
+  #   service: my-app-dev
+  #   containerName: my-app
+  #   region: us-east-1
+  # lambda:                        # target aws-lambda: from the AwsLambdaTarget's status.cicd
+  #   functionName: my-fn
+  #   region: us-east-1
+  # azureContainerApps:            # target azure-container-apps
+  #   resourceGroup: my-rg
+  #   appName: my-app
+  #
+  # releaseFile: "glidepath/envs/{env}.release.yaml"   # Kubernetes: where the release record is written
+  # chart: {}                      # Kubernetes: the chart environments render (unset: the cluster default)
   #
   # How this Application's workload is deployed - "rollout" (an Argo Rollout via the
   # airframe-application chart) is the only supported value today, and the default.
