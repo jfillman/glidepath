@@ -14,7 +14,7 @@
 # BuildKit replaced kaniko on 2026-10-17 (ADR-0026, superseding ADR-0010): kaniko was
 # archived upstream in June 2025 (v1.24.0 was the last release), and it ignored per-stage
 # `FROM --platform=$BUILDPLATFORM`, so every RUN step of the amd64 image ran under QEMU on
-# kiac-dev's arm64 node - Go compilers crashed there (known-gaps #37) and in-Containerfile
+# the dev cluster's arm64 node - Go compilers crashed there (known-gaps #37) and in-Containerfile
 # Java/Node builds ran several times slower. BuildKit honors $BUILDPLATFORM, so a
 # Containerfile that compiles in a `FROM --platform=$BUILDPLATFORM` stage and
 # cross-compiles to $TARGETARCH never emulates the compiler - only RUN steps in
@@ -46,7 +46,7 @@
 # rejected by baseline. Not "restricted": rootlesskit has to create a user namespace,
 # which RuntimeDefault seccomp and allowPrivilegeEscalation=false both block (tried live,
 # with and without hostUsers: false). This relies on the kubelet's seccompDefault being
-# off (it is on kiac-dev); a cluster that turns it on needs a Localhost seccomp profile for
+# off (it is on the lab's dev cluster); a cluster that turns it on needs a Localhost seccomp profile for
 # this step.
 #
 # Config resolution below is plain bash with no span wrapping - it's sub-second work,
