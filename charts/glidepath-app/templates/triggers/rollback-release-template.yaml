@@ -71,11 +71,5 @@ spec:
         taskRunTemplate:
           serviceAccountName: pipeline-runner
           {{- /* Run-wide podTemplate, same shape and reasoning as flow-triggers.yaml. */ -}}
-          {{- if .Values.backstageHostAliasIP }}
-          podTemplate:
-            hostAliases:
-              - ip: {{ .Values.backstageHostAliasIP }}
-                hostnames:
-                  - backstage.prod.kiac.local
-          {{- end }}
+          {{- include "glidepath-app.backstageHostAliases" . }}
 {{- end }}

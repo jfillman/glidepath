@@ -142,7 +142,9 @@ spec:
           helm:
             valuesObject:
               appName: {{ .Values.platformIdentity.appName }}
-              cluster: {{ .Values.devClusterName }}
+              cluster: {{ include "glidepath-app.devCluster" . }}
+              # A preview runs on the dev (control-plane) cluster: its registry type is dev.
+              clusterType: dev
               envName: "pr-{{ "{{" }}.number{{ "}}" }}"
               release:
                 image:
@@ -189,7 +191,7 @@ spec:
         # regular env) rather than a conditional resource inside airframe-application
         # (shared by every tier) or a Tekton Task (runs before ArgoCD has even
         # attempted to deploy, so it can't know whether the sync will succeed).
-        - repoURL: {{ .Values.platformCicdRepoUrl }}
+        - repoURL: {{ required "platformCicdRepoUrl must be set (glidepath-control-plane forwards it)" .Values.platformCicdRepoUrl }}
           targetRevision: main
           path: charts/glidepath-pr-preview-notify
           helm:

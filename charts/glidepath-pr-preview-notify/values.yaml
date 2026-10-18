@@ -28,4 +28,5 @@ serviceName: ""
 ingressBaseDomain: ""
 argocdUIBaseURL: ""
 
-toolboxImage: ghcr.io/jfillman/glidepath-toolbox:latest
+# Always passed by glidepath-app's ephemeral-envs.yaml (its own toolboxImage); no default here.
+toolboxImage: ""

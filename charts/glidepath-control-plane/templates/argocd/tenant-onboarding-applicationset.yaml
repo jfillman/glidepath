@@ -26,8 +26,8 @@
 # owner comes from platformCicdRepoUrl (via the githubOwner helper), not a hardcoded
 # org, so this convention works for any fork/deployment of this chart.
 {{- $githubOwner := include "glidepath-control-plane.githubOwner" . }}
-{{- $tenantsRepoUrl := .Values.tenantsRepoUrl | default (printf "https://github.com/%s/platform-cicd-%s-tenants.git" $githubOwner .Values.clusterName) }}
-{{- $tenantOnboardingSetName := .Values.tenantOnboardingApplicationSetName | default "platform-cicd-tenant-onboarding" }}
+{{- $tenantsRepoUrl := required "tenantsRepoUrl must be set: the tenants repo chosen when Apron built this cluster (tenantsRepo in its cluster.yaml)" .Values.tenantsRepoUrl }}
+{{- $tenantOnboardingSetName := .Values.tenantOnboardingApplicationSetName | default "glidepath-tenant-onboarding" }}
 #
 # Source 0 renders straight from this git repo at main HEAD, not the OCI chart
 # app-chart-ci.yaml's `publish` job also pushes on every push - ArgoCD's semver-range
@@ -59,12 +59,12 @@
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
-  # Value, not a hardcoded name: a real collision was found with an unrelated idp
-  # ApplicationSet also named "tenant-onboarding". Renaming in place would delete-and-
-  # regenerate every tenant's Application via k8s GC (they carry ownerReferences +
-  # resources-finalizer back to this object), transiently pruning their live pipeline
-  # resources - so this defaults to the original name (zero cutover for existing
-  # clusters) and only a colliding cluster overrides it.
+  # Value, not a hardcoded name: a real collision was found with an unrelated
+  # ApplicationSet also named "tenant-onboarding". Renaming it on a live cluster
+  # deletes and regenerates every tenant's Application via k8s GC (they carry
+  # ownerReferences + resources-finalizer back to this object), so set it once when a
+  # cluster is built and leave it. Defaults to glidepath-tenant-onboarding (the old
+  # platform-cicd-tenant-onboarding name was retired with the October 2026 rebuild).
   name: {{ $tenantOnboardingSetName }}
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
@@ -107,6 +107,13 @@ spec:
                 appRepoUrl: "{{ "{{" }}.platformIdentity.appRepoUrl{{ "}}" }}"
                 githubOwner: "{{ "{{" }}.platformIdentity.githubOwner{{ "}}" }}"
                 catalogNamespace: "{{ "{{" }}.platformIdentity.catalogNamespace{{ "}}" }}"
+              # This repo, for glidepath-app's own sources (glidepath-env, glidepath-pr-preview-notify): no default there.
+              platformCicdRepoUrl: {{ .Values.platformCicdRepoUrl | quote }}
+              {{- with .Values.backstageHostAliasIP }}
+              # Pins backstageBaseUrl's host to this IP in every generated PipelineRun (values.yaml backstageHostAliasIP).
+              backstageHostAliasIP: {{ . | quote }}
+              backstageHostAliasHostname: {{ (urlParse (required "backstageHostAliasIP is set but backstageBaseUrl is empty: the host alias pins backstageBaseUrl's host" $.Values.backstageBaseUrl)).hostname | quote }}
+              {{- end }}
               {{- with .Values.defaultChart }}
               defaultChart:
                 {{- toYaml . | nindent 16 }}
@@ -118,6 +125,7 @@ spec:
               {{- end }}
               {{- if .Values.clusterName }}
               # ADR-0024: the control plane's name and each known cluster's zone, for glidepath-app's environment checks.
+              # self is also the dev cluster glidepath-app renders Ground environments and previews onto.
               clusterTaxonomy:
                 {{- include "glidepath-control-plane.clusterTaxonomy" . | nindent 16 }}
               {{- end }}

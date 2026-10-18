@@ -1,13 +1,15 @@
 # hack/kind-config.yaml
 #
-# `kind create cluster --config hack/kind-config.yaml` - the "create a raw cluster"
+# `kind create cluster --name <cluster> --config hack/kind-config.yaml` - the "create a raw cluster"
 # step before installing ArgoCD and pointing it at a gitops-cluster-<name> repo (see
 # docs/admin/installation.md). Disables kind's default CNI (kindnet doesn't enforce
 # NetworkPolicy) so Calico can be installed instead - a hard prerequisite if this
 # platform's NetworkPolicy layer should actually do anything.
+#
+# No name here: the cluster's name is your input (--name), and kind makes its kubectl
+# context kind-<name>. Register the cluster under that context name (one name per cluster).
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
-name: platform-cicd
 networking:
   disableDefaultCNI: true
   podSubnet: "192.168.0.0/16"

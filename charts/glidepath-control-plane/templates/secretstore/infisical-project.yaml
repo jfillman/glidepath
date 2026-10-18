@@ -3,7 +3,7 @@
 # 2026-09-18: migrated off the hand-rolled infisical-secretstore-operator's
 # InfisicalProject CR (secrets.idp.io/v1alpha1) - that operator is being
 # decommissioned now that idp's own SecretStore Composition has already cut every
-# per-app project over to github.com/jfillman/provider-infisical's real resource
+# per-app project over to provider-infisical's real resource
 # chain. This control plane's own project needed the same migration to unblock
 # removing the operator entirely.
 #
@@ -23,29 +23,29 @@
 # appRef.name: "platform-cicd" is NOT a real onboarded Application - the XRD's own
 # schema says this field is "Labeling/audit only - not a live lookup", so a
 # synthetic name here doesn't collide with or misrepresent any real app. cluster:
-# "kind-dev" (this chart is a true singleton, always installed on the cluster that
+# .Values.clusterName (this chart is a true singleton, always installed on the cluster that
 # hosts Infisical - see cluster-secret-store.yaml). This computes the exact same
-# project slug ("platform-cicd-kind-dev") the old InfisicalProject CR already used,
+# project slug ("platform-cicd-<clusterName>") the old InfisicalProject CR already used,
 # so the cutover reuses the identical slug (after deleting the old CR to free it -
 # same one-at-a-time, backup-verified procedure used for every app-tier project).
 #
 # KNOWN, ACCEPTED SIDE EFFECT: this Composition also renders its OWN
-# ClusterSecretStore, named after the project slug ("platform-cicd-kind-dev") - a
+# ClusterSecretStore, named after the project slug ("platform-cicd-<clusterName>") - a
 # second, unused ClusterSecretStore alongside this chart's own
 # cluster-secret-store.yaml (name: platform-secret-store, unchanged, still the ONLY
 # store any real ExternalSecret in this platform references - confirmed 40+
 # references across 5 repos, all by that fixed name, none renamed). Unlike the past
 # "real live redundancy" bug this file's own history already warns about (two
 # ACTIVELY-USED stores with inconsistent scope), this one is inert: nothing
-# references "platform-cicd-kind-dev" as a store name, so it carries no correctness
+# references "platform-cicd-<clusterName>" as a store name, so it carries no correctness
 # risk - just one harmless extra object. Removing it would mean forking this
 # Composition or adding a "skip ClusterSecretStore" toggle to catalog.hangar.io's own
 # XRD, out of scope for this decommission.
 #
 # The synthetic identityId Secret this Composition produces is named
-# "<projectSlug>-infisical-creds" = "platform-cicd-kind-dev-infisical-creds" (NOT
+# "<projectSlug>-infisical-creds" = "platform-cicd-<clusterName>-infisical-creds" (NOT
 # the old operator's "platform-cicd-infisical-creds") - see values.yaml's own
-# secretStore.infisical.credentialsSecretName, updated to match. cluster-secret-
+# secretStore.infisical.credentialsSecretName (defaulted to match, _helpers.tpl). cluster-secret-
 # store.yaml itself needed no changes: it already sources credentialsSecretName from
 # .Values, not a hardcoded name.
 # Tier 2 domain-rename migration (see memory project_tier2_domain_rename_plan.md): adopted by id
@@ -55,7 +55,7 @@
 apiVersion: catalog.hangar.io/v1alpha1
 kind: SecretStore
 metadata:
-  name: platform-cicd-kind-dev
+  name: {{ include "glidepath-control-plane.infisicalProjectSlug" . }}
   namespace: platform-system
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
@@ -63,5 +63,5 @@ metadata:
 spec:
   appRef:
     name: platform-cicd
-  cluster: kind-dev
+  cluster: {{ required "clusterName must be set" .Values.clusterName }}
   environmentSlug: shared

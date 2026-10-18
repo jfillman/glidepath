@@ -116,14 +116,14 @@ Notifications tab and via the stock Backstage sidebar bell icon
 
 Unlike Slack's per-Application webhook, there is exactly one Backstage instance
 platform-wide (not one per cluster) - every CI/CD Pipeline runs on the dev cluster
-(see `devClusterName`), but Backstage itself runs on a different cluster entirely. So
+(the control plane's `clusterName`), but Backstage itself may run on a different cluster. So
 the target URL and credential are **cluster-level chart values, not per-Application
 `cicd.yaml`/secrets entries**, and reaching Backstage at all is a real cross-cluster
 call, not an in-cluster one:
 
 1. **Configure `glidepath-catalog`'s `backstageBaseUrl`** (a cluster-config value, set
-   via the `platform-cicd-catalog` Application's `valuesObject` in `gitops-cluster-dev`
-   - not the chart's own tracked default) to Backstage's real externally-reachable
+   via the `platform-cicd-catalog` Application's `valuesObject` in the dev cluster's repo
+   - the chart has no default) to Backstage's real externally-reachable
    Gateway hostname, e.g. `http://backstage.prod.example.internal`. **Not** an in-cluster
    Service DNS name (`backstage.<ns>.svc.cluster.local`) - that only resolves on
    Backstage's own cluster, not the dev cluster the pipeline actually runs on. **Port 80,
@@ -132,16 +132,15 @@ call, not an in-cluster one:
    Backstage's own Service port, never exposed on the node IP directly. Confirmed live:
    `curl -H "Host: backstage.prod.example.internal" http://<node-ip>:80/` returns 200, `:7007`
    gets connection refused.
-2. **Set `glidepath-app`'s `backstageHostAliasIP`** to that same hostname's current real
-   IP. `backstage.prod.example.internal` isn't real DNS anywhere a pod's CoreDNS can see - it
-   only resolves on a developer's own workstation, via a local hosts-file entry. `notify-backstage`'s Task pod needs the same
-   hostname baked into its own `hostAliases` (`flow-triggers.yaml`/
-   `release-outcome-trigger.yaml`'s `taskRunSpecs`) to resolve it at build time. The
-   cluster's node gets a fresh IP on every restart (no static-address option),
-   so - like Fulcio material and the Infisical IP elsewhere in this platform - this is a
-   manually-maintained value: bump it (the target cluster's own
-   control-plane address) whenever that cluster restarts, in step with whatever value
-   step 1 above uses.
+2. **Only if that hostname is not real DNS for a pod**, set `backstageHostAliasIP` to its
+   current IP on both `glidepath-catalog` and `glidepath-control-plane`, and the same
+   `backstageBaseUrl` on `glidepath-control-plane` too: the control plane forwards the IP,
+   with `backstageBaseUrl`'s host as the hostname, to every app's `glidepath-app`
+   (`backstageHostAliasIP`/`backstageHostAliasHostname`). Nothing is pinned by default.
+   Every generated PipelineRun then carries a run-wide `hostAliases` entry, so the
+   `notify-backstage` pod resolves the hostname. A lab IP that changes when the cluster
+   restarts has to be updated in both charts when it changes; leave both empty when
+   Backstage has real DNS.
 3. **Mint a Backstage static service token** scoped to the notifications plugin only
    (`backend.auth.externalAccess`, `type: static`, `accessRestrictions: [{plugin:
    notifications}]` - see Backstage's own [service-to-service auth

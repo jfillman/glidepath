@@ -80,8 +80,8 @@ spec:
             seccompProfile: { type: RuntimeDefault }
           containers:
             - name: sweep
-              image: ghcr.io/jfillman/glidepath-toolbox:latest
-              imagePullPolicy: IfNotPresent  # published to ghcr.io/jfillman, not kind-loaded
+              image: {{ .Values.toolboxImage }}
+              imagePullPolicy: IfNotPresent  # a published image (toolboxImage), not kind-loaded
               securityContext:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true

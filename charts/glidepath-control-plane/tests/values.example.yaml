@@ -1,0 +1,5 @@
+# What a cluster repo passes glidepath-control-plane (the glidepath-control-plane Application). Generic names;
+# used by this chart's tests.
+platformCicdRepoUrl: https://github.com/example-org/glidepath.git
+clusterName: example-dev
+tenantsRepoUrl: https://github.com/example-org/gitops-example-dev-tenants.git

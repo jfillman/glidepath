@@ -33,7 +33,12 @@ IDENTITY = {
         "appRepoUrl": "https://github.com/o/sample",
         "githubOwner": "o",
         "catalogNamespace": "platform-catalog",
-    }
+    },
+    # What glidepath-control-plane passes every app (tenant-onboarding ApplicationSet): no default for any of them.
+    "platformCicdRepoUrl": "https://github.com/example-org/glidepath.git",
+    "defaultChart": {"repoURL": "https://github.com/example-org/airframe.git", "path": "charts/airframe-application",
+                     "targetRevision": "v0.0.0"},
+    "devClusterName": "example-dev",
 }
 
 BUILD_DEPLOY = [{"stage": "build"}, {"stage": "deploy", "env": "dev"}]
@@ -79,9 +84,9 @@ TWINS = [
     (
         "kubernetes, Ground + cluster-mapped Flight",
         WITH_RELEASE,
-        {"lowerEnvironments": ["dev"], "upperEnvironments": [{"name": "staging", "cluster": "kind-prod"}],
+        {"lowerEnvironments": ["dev"], "upperEnvironments": [{"name": "staging", "cluster": "example-prod"}],
          "promotionOrder": ["dev", "staging"]},
-        [{"name": "dev", "tier": "ground"}, {"name": "staging", "tier": "flight", "cluster": "kind-prod"}],
+        [{"name": "dev", "tier": "ground"}, {"name": "staging", "tier": "flight", "cluster": "example-prod"}],
     ),
     (
         "kubernetes, Flight on the app's own cluster (plain-name form)",
@@ -93,10 +98,10 @@ TWINS = [
         "kubernetes, two Ground envs and two Flight envs",
         WITH_RELEASE,
         {"lowerEnvironments": ["dev", "test"],
-         "upperEnvironments": [{"name": "staging", "cluster": "kind-prod"}, {"name": "prod", "cluster": "kind-prod"}],
+         "upperEnvironments": [{"name": "staging", "cluster": "example-prod"}, {"name": "prod", "cluster": "example-prod"}],
          "promotionOrder": ["dev", "test", "staging", "prod"]},
         [{"name": "dev", "tier": "ground"}, {"name": "test", "tier": "ground"},
-         {"name": "staging", "tier": "flight", "cluster": "kind-prod"}, {"name": "prod", "tier": "flight", "cluster": "kind-prod"}],
+         {"name": "staging", "tier": "flight", "cluster": "example-prod"}, {"name": "prod", "tier": "flight", "cluster": "example-prod"}],
     ),
     (
         "kubernetes, no environments declared (the default Ground dev)",
@@ -142,7 +147,7 @@ class RenderEquivalence(unittest.TestCase):
         self.assertNotIn(("Role", "allow-pipeline-runner-deploy"), names)
         self.assertIn("charts/glidepath-env", out)
         flat = out
-        self.assertIn("kind-prod", flat)
+        self.assertIn("example-prod", flat)
 
     def test_cloud_target_gets_no_deploy_rbac(self):
         _, steps, old, envs = TWINS[5]
@@ -170,7 +175,7 @@ class Validation(unittest.TestCase):
         self.assertIn("expected ground or flight", self.fails([{"name": "dev", "tier": "lower"}]))
 
     def test_ground_with_cluster_is_not_supported_yet(self):
-        self.assertIn("not supported yet", self.fails([{"name": "dev", "tier": "ground", "cluster": "kind-other"}]))
+        self.assertIn("not supported yet", self.fails([{"name": "dev", "tier": "ground", "cluster": "example-other"}]))
 
     def test_cloud_target_allows_flight_without_kubernetes_artifacts(self):
         # ADR-0020: a cloud Flight environment is approved by a release pin PR on the source repo.
@@ -183,7 +188,7 @@ class Validation(unittest.TestCase):
 
     def test_cloud_flight_refuses_a_cluster(self):
         err = self.fails(
-            [{"name": "dev", "tier": "ground"}, {"name": "prod", "tier": "flight", "cluster": "kind-prod"}],
+            [{"name": "dev", "tier": "ground"}, {"name": "prod", "tier": "flight", "cluster": "example-prod"}],
             extra={"target": "aws-lambda", "lambda": {"functionName": "f"}},
         )
         self.assertIn("has no cluster", err)
@@ -311,7 +316,7 @@ class LowerEnvsChart(unittest.TestCase):
     def test_unset_renders_the_cluster_default_with_no_patch(self):
         a = lower_envs(cicd(BUILD_DEPLOY, {"environments": [{"name": "dev", "tier": "ground"}]}))
         src = self.chart_of(a)
-        self.assertEqual((src["repoURL"], src["path"]), ("https://github.com/jfillman/airframe.git", "charts/airframe-application"))
+        self.assertEqual((src["repoURL"], src["path"]), ("https://github.com/example-org/airframe.git", "charts/airframe-application"))
         self.assertNotIn("templatePatch", a["spec"])
         self.assertTrue(a["spec"]["syncPolicy"]["preserveResourcesOnDeletion"])
 
@@ -335,7 +340,7 @@ class LowerEnvsChart(unittest.TestCase):
         a = lower_envs(cicd(BUILD_DEPLOY, {"chart": {"targetRevision": "v2"}, "environments": [
             {"name": "dev", "tier": "ground"},
             {"name": "test", "tier": "ground", "chart": {"targetRevision": "v3-canary"}},
-            {"name": "staging", "tier": "flight", "cluster": "kind-prod", "chart": {"targetRevision": "v4"}},
+            {"name": "staging", "tier": "flight", "cluster": "example-prod", "chart": {"targetRevision": "v4"}},
         ]}))
         self.assertEqual(self.chart_of(a)["targetRevision"], "v2")
         patch = a["spec"]["templatePatch"]
@@ -377,11 +382,11 @@ class Schema(unittest.TestCase):
 
     def test_new_shape_is_accepted(self):
         self.valid(cicd(BUILD_DEPLOY, {"environments": [{"name": "dev", "tier": "ground"},
-                                                         {"name": "staging", "tier": "flight", "cluster": "kind-prod"}]}))
+                                                         {"name": "staging", "tier": "flight", "cluster": "example-prod"}]}))
 
     def test_old_shape_is_refused(self):
         self.invalid(cicd(WITH_RELEASE, {"lowerEnvironments": ["dev"],
-                                         "upperEnvironments": [{"name": "staging", "cluster": "kind-prod"}],
+                                         "upperEnvironments": [{"name": "staging", "cluster": "example-prod"}],
                                          "promotionOrder": ["dev", "staging"]}))
 
     def test_mixing_the_shapes_is_refused(self):
@@ -404,7 +409,7 @@ class Schema(unittest.TestCase):
 
 
 
-TAXONOMY = {"clusterTaxonomy": {"self": "kind-dev", "zones": {"kind-dev": "lower", "kind-prod": "upper", "edge-1": "lower"}}}
+TAXONOMY = {"clusterTaxonomy": {"self": "example-dev", "zones": {"example-dev": "lower", "example-prod": "upper", "edge-1": "lower"}}}
 
 
 def with_taxonomy(identity=IDENTITY):
@@ -418,7 +423,7 @@ class ClusterTaxonomy(unittest.TestCase):
         return cicd(WITH_RELEASE, {"environments": [{"name": "dev", "tier": "ground"}, *flight]})
 
     def test_production_on_an_upper_cluster_renders(self):
-        code, _, err = render(self.envs({"name": "staging", "tier": "flight", "cluster": "kind-prod", "production": True}), with_taxonomy())
+        code, _, err = render(self.envs({"name": "staging", "tier": "flight", "cluster": "example-prod", "production": True}), with_taxonomy())
         self.assertEqual(code, 0, err)
 
     def test_production_on_the_control_plane_cluster_is_refused(self):
@@ -440,24 +445,106 @@ class ClusterTaxonomy(unittest.TestCase):
     def test_unregistered_cluster_is_refused(self):
         code, _, err = render(self.envs({"name": "staging", "tier": "flight", "cluster": "nowhere"}), with_taxonomy())
         self.assertNotEqual(code, 0)
-        self.assertIn("not in the cluster registry (known: edge-1, kind-dev, kind-prod)", err)
+        self.assertIn("not in the cluster registry (known: edge-1, example-dev, example-prod)", err)
 
     def test_without_taxonomy_only_the_tier_rule_applies(self):
         code, _, err = render(self.envs({"name": "staging", "tier": "flight", "cluster": "nowhere", "production": True}))
         self.assertEqual(code, 0, err)
 
     def test_taxonomy_does_not_change_a_valid_render(self):
-        cfg = self.envs({"name": "staging", "tier": "flight", "cluster": "kind-prod"})
+        cfg = self.envs({"name": "staging", "tier": "flight", "cluster": "example-prod"})
         _, plain, _ = render(cfg)
         _, taxed, _ = render(cfg, with_taxonomy())
         self.assertEqual(docs(plain), docs(taxed))
 
     def test_schema_accepts_production_and_refuses_a_non_boolean(self):
-        cfg = self.envs({"name": "staging", "tier": "flight", "cluster": "kind-prod", "production": True})
+        cfg = self.envs({"name": "staging", "tier": "flight", "cluster": "example-prod", "production": True})
         jsonschema.validate(cfg, SCHEMA)
         cfg["deploy"]["environments"][1]["production"] = "yes"
         with self.assertRaises(jsonschema.ValidationError):
             jsonschema.validate(cfg, SCHEMA)
+
+
+def without(identity, *keys):
+    return {k: v for k, v in identity.items() if k not in keys}
+
+
+class DevClusterInput(unittest.TestCase):
+    """2026-10-16: the dev cluster's name is input (no literal default); airframe-application gets clusterType: dev."""
+
+    def preview_config(self):
+        config = cicd(BUILD_DEPLOY, {"environments": [{"name": "dev", "tier": "ground"}]})
+        config["ephemeralEnvironments"] = {"pullRequest": {"enabled": True}}
+        return config
+
+    def chart_values(self, out):
+        sets = [d for d in docs(out) if d.get("kind") == "ApplicationSet"]
+        lower = [d for d in sets if d["metadata"]["name"].endswith("-lower-envs")][0]
+        pr = [d for d in sets if "pullRequest" in str(d["spec"].get("generators"))][0]
+        return [a["spec"]["template"]["spec"]["sources"][0]["helm"]["valuesObject"] for a in (lower, pr)]
+
+    def test_ground_and_preview_pass_cluster_and_cluster_type_dev(self):
+        rc, out, err = render(self.preview_config())
+        self.assertEqual(rc, 0, err[:400])
+        for v in self.chart_values(out):
+            self.assertEqual((v["cluster"], v["clusterType"]), ("example-dev", "dev"))
+
+    def test_the_dev_cluster_comes_from_the_forwarded_taxonomy(self):
+        ident = {**without(IDENTITY, "devClusterName"), **TAXONOMY}
+        rc, out, err = render(self.preview_config(), ident)
+        self.assertEqual(rc, 0, err[:400])
+        for v in self.chart_values(out):
+            self.assertEqual(v["cluster"], "example-dev")
+
+    def test_no_dev_cluster_fails_the_render(self):
+        rc, _, err = render(self.preview_config(), without(IDENTITY, "devClusterName"))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("the dev cluster's name is not set", err)
+
+    def test_disagreeing_dev_cluster_and_taxonomy_fail(self):
+        ident = {**IDENTITY, "clusterTaxonomy": {"self": "example-other", "zones": {"example-other": "lower"}}}
+        rc, _, err = render(self.preview_config(), ident)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("name different clusters", err)
+
+    def test_app_secrets_store_is_named_after_the_dev_cluster(self):
+        config = self.preview_config()
+        config["secrets"] = [{"name": "slack-webhook-url"}]
+        rc, out, err = render(config)
+        self.assertEqual(rc, 0, err[:400])
+        es = [d for d in docs(out) if d.get("kind") == "ExternalSecret" and d["metadata"]["name"] == "app-secrets"][0]
+        self.assertEqual(es["spec"]["secretStoreRef"]["name"], "sample-example-dev")
+
+    def test_no_default_chart_repo_fails_the_render(self):
+        rc, _, err = render(self.preview_config(), without(IDENTITY, "defaultChart"))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("defaultChart.repoURL must be set", err)
+
+
+class BackstageHostAlias(unittest.TestCase):
+    """No lab hostname or IP by default: the alias renders only when both values are set."""
+
+    def flow_runs(self, identity):
+        config = cicd(BUILD_DEPLOY, {"environments": [{"name": "dev", "tier": "ground"}]})
+        rc, out, err = render(config, identity)
+        return rc, out, err
+
+    def test_unset_renders_no_host_alias(self):
+        rc, out, err = self.flow_runs(IDENTITY)
+        self.assertEqual(rc, 0, err[:400])
+        self.assertNotIn("hostAliases", out)
+
+    def test_set_pins_the_given_hostname(self):
+        rc, out, err = self.flow_runs({**IDENTITY, "backstageHostAliasIP": "10.0.0.5",
+                                       "backstageHostAliasHostname": "backstage.example.internal"})
+        self.assertEqual(rc, 0, err[:400])
+        self.assertIn("backstage.example.internal", out)
+        self.assertIn("10.0.0.5", out)
+
+    def test_ip_without_hostname_fails(self):
+        rc, _, err = self.flow_runs({**IDENTITY, "backstageHostAliasIP": "10.0.0.5"})
+        self.assertNotEqual(rc, 0)
+        self.assertIn("backstageHostAliasHostname is empty", err)
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ SCHEMA = open(os.path.join(ROOT, "schemas", "cicd.schema.json")).read()
 
 def task_script():
     out = subprocess.run(
-        ["helm", "template", "t", CATALOG, "-s", "templates/tasks/stage-preflight.yaml"],
+        ["helm", "template", "t", CATALOG, "-f", os.path.join(CATALOG, "tests", "values.example.yaml"), "-s", "templates/tasks/stage-preflight.yaml"],
         capture_output=True, text=True, check=True,
     ).stdout
     steps = yaml.safe_load(out)["spec"]["steps"]
@@ -67,7 +67,7 @@ OLD_KEYS = ("lowerEnvironments", "upperEnvironments", "promotionOrder")
 
 class ConfigJsonEnvironments(unittest.TestCase):
     def test_the_declared_list_is_passed_through(self):
-        envs = [{"name": "dev", "tier": "ground"}, {"name": "staging", "tier": "flight", "cluster": "kind-prod"}]
+        envs = [{"name": "dev", "tier": "ground"}, {"name": "staging", "tier": "flight", "cluster": "example-prod"}]
         d = config_json({**BASE, "deploy": {"environments": envs}})
         self.assertEqual(d["environments"], envs)
 

@@ -297,7 +297,7 @@ spec:
       }')"
 
     # --retry-all-errors (not just --retry-connrefused) because the connect
-    # failures actually seen live against backstage.prod.kiac.local ("Failed to
+    # failures actually seen live against a lab Backstage hostname ("Failed to
     # connect ... after 3061 ms: Could not connect to server") are plain connect
     # timeouts, not ECONNREFUSED - --retry-connrefused alone never retries those.
     # Failure here is intentionally non-fatal to the step (if/then, not a bare

@@ -1,6 +1,6 @@
 # Build context is glidepath/broker/:
-#   docker build -f cmd/token-review-interceptor/Dockerfile -t ghcr.io/jfillman/glidepath-token-review-interceptor:latest .
-# Cross-compiles on the build host: kiac-dev is arm64, kind-prod amd64, so CI pushes both (broker-image-ci.yaml).
+#   docker build -f cmd/token-review-interceptor/Dockerfile -t ghcr.io/<owner>/glidepath-token-review-interceptor:latest .
+# Cross-compiles on the build host: the fleet runs arm64 and amd64 clusters, so CI pushes both (broker-image-ci.yaml).
 FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH

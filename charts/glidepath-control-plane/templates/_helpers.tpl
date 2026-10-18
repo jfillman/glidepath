@@ -103,3 +103,15 @@ every known cluster's zone.
 {{- end -}}
 {{- dict "self" $self.name "zones" $zones | toYaml -}}
 {{- end -}}
+
+{{/*
+This control plane's own Infisical project slug and the Secret holding its identityId: the SecretStore Composition's
+conventions for appRef platform-cicd on cluster clusterName (infisical-project.yaml), unless set explicitly.
+*/}}
+{{- define "glidepath-control-plane.infisicalProjectSlug" -}}
+{{- .Values.secretStore.infisical.projectSlug | default (printf "glidepath-%s" (required "clusterName must be set" .Values.clusterName)) -}}
+{{- end -}}
+
+{{- define "glidepath-control-plane.infisicalCredentialsSecretName" -}}
+{{- .Values.secretStore.infisical.credentialsSecretName | default (printf "%s-infisical-creds" (include "glidepath-control-plane.infisicalProjectSlug" .)) -}}
+{{- end -}}

@@ -12,7 +12,7 @@ work="$(mktemp -d)"
 
 # A step's script cut down to the helper and its call: from aws_token_subject() to the `aws_credentials "..."` line.
 extract() { # task-file step-name out
-  helm template t charts/glidepath-catalog --show-only "templates/tasks/$1" \
+  helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only "templates/tasks/$1" \
     | python3 -c "
 import sys,yaml
 t=yaml.safe_load(sys.stdin.read())
@@ -78,7 +78,7 @@ check "STS refuses the role: fails, names the target's Role" ecs-update.sh 1 "$A
 
 # No cloud deploy Task reads a stored key or mounts app-secrets.
 for task in deploy-lambda deploy-ecs; do
-  rendered="$(helm template t charts/glidepath-catalog --show-only templates/tasks/$task.yaml)"
+  rendered="$(helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only templates/tasks/$task.yaml)"
   scripts="$(python3 -c "import sys,yaml; print('\n'.join(s.get('script','') for s in yaml.safe_load(sys.stdin.read())['spec']['steps']))" <<<"${rendered}")"
   [[ -n "${scripts}" ]] || { echo "FAIL $task: no step scripts extracted"; fail=1; }
   if grep -q 'aws-access-key-id\|AWS_ACCESS_KEY_ID\|AWS_SECRET_ACCESS_KEY' <<<"${scripts}"; then

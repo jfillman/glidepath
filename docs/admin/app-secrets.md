@@ -8,8 +8,8 @@ motivated building this generically instead of one-off per secret).
 ## Where the backend store lives
 
 **2026-08-19: every Application secret comes directly from that Application's own
-idp-managed Infisical `ClusterSecretStore`** - `<appName>-<devClusterName>` (e.g.
-`checkout-api-dev`), the exact same object airframe's
+idp-managed Infisical `ClusterSecretStore`** - `<appName>-<dev cluster>` (e.g.
+`checkout-api-example-dev`), the exact same object airframe's
 `NodeJSApplication` XR provisions and `airframe-application`'s own
 `external-secret.yaml`/`notify-external-secret.yaml` already reference. `platform-cicd-
 app`'s own `app-secrets-external-secret.yaml` references it **by name, directly** - no
@@ -45,7 +45,7 @@ secrets:
 
 **A real, accepted coupling**: an Application's CI secrets now require that Application
 to have been onboarded through idp's `NodeJSApplication` XR (which is what actually
-provisions `<appName>-<devClusterName>`) - a platform-cicd tenant that predates or
+provisions `<appName>-<dev cluster>`) - a platform-cicd tenant that predates or
 skips idp onboarding has no such store, so its `secrets:` entries simply stay not-ready
 (a normal ESO error status, not a hard pipeline failure - nothing mounts a missing key
 differently than an unconfigured one, see below).
@@ -53,7 +53,8 @@ differently than an unconfigured one, see below).
 No control-plane values list and no per-Application app-chart value name the backend
 any more (the old `appSecretStores` list and `appSecretStore.secretName` field are both
 gone) - the backend is entirely determined by `platformIdentity.appName` plus the app
-chart's own `devClusterName` value, computed the same deterministic way idp's own
+dev cluster's name (`clusterTaxonomy.self`, which the control plane forwards from its
+`clusterName`; `devClusterName` only for a standalone install), computed the same deterministic way idp's own
 Composition computes its store's name.
 
 ## `cicd.yaml`
@@ -136,8 +137,8 @@ wired into every pipeline via the existing, unconditional `notify` `finally` tas
 
 - `helm lint`/`helm template` the app chart (with and without `secrets:` set),
   confirming the `ExternalSecret` renders correctly and `secretStoreRef.name` matches
-  the `<appName>-<devClusterName>` naming convention idp's own store uses.
-- Live: the real `<appName>-<devClusterName>` `ClusterSecretStore` confirmed to exist
+  the `<appName>-<dev cluster>` naming convention idp's own store uses.
+- Live: the real `<appName>-<dev cluster>` `ClusterSecretStore` confirmed to exist
   and validate (`kubectl get clustersecretstore <name> -o jsonpath='{.status.
   conditions}'`), and the resulting `app-secrets` Secret confirmed to hold the same
   value already live in that app's own Infisical project - not a copy anywhere else.

@@ -2,8 +2,8 @@
 #
 # Opens a PR bumping the image reference of a plain Kubernetes Deployment manifest
 # (not airframe-application's Helm values.yaml - see open-release-pr.yaml for that shape).
-# For a hand-deployed singleton/cluster-config component (e.g. Backstage on kind-man,
-# gitops-cluster-kind-man's 60-backstage/backstage/deployment.yaml) that has no
+# For a hand-deployed singleton/cluster-config component (e.g. Backstage, in its
+# cluster repo's 60-backstage/backstage/deployment.yaml) that has no
 # gitops-<app-name> repo of its own and no dev/upper promotion flow - see
 # idp/docs/backstage-design.md and this app's own cicd.yaml header.
 #
@@ -40,7 +40,7 @@ spec:
       type: string
     - name: gitops-repo
       type: string
-      description: Name (not URL) of the target gitops repo, e.g. "gitops-cluster-kind-man". Required - see this Task's own header for why it's explicit rather than derived.
+      description: Name (not URL) of the target gitops repo, e.g. "gitops-cluster-example-prod". Required - see this Task's own header for why it's explicit rather than derived.
     - name: manifest-path
       type: string
       description: Path within gitops-repo to the plain Deployment manifest to patch, e.g. "60-backstage/backstage/deployment.yaml".
@@ -141,7 +141,7 @@ spec:
         # that whole path onto them too - a field the k8s API server silently prunes
         # on apply, which ArgoCD then reports as permanent OutOfSync drift (the git
         # manifest carries the field forever, the live object never does). Hit for
-        # real on gitops-cluster-kind-man's backstage bump 2026-09-01 (commit
+        # real on a cluster repo's backstage bump 2026-09-01 (commit
         # b56b807) - confirmed live via `yq eval-all` that the unscoped form touches
         # all three documents, and that this scoped form touches only the Deployment.
         yq -i -e "(select(.kind == \"Deployment\") | .spec.template.spec.containers[0].image) = \"${IMAGE_REF}\"" "${MANIFEST_PATH}"
