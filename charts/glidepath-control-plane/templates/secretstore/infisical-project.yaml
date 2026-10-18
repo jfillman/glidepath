@@ -20,12 +20,12 @@
 # Baking a real bearer token into values.yaml/git was rejected outright (this
 # platform's own standing "never persist credentials" posture).
 #
-# appRef.name: "platform-cicd" is NOT a real onboarded Application - the XRD's own
+# appRef.name: "glidepath" (was "platform-cicd" before 2026-10-17) is NOT a real onboarded Application - the XRD's own
 # schema says this field is "Labeling/audit only - not a live lookup", so a
 # synthetic name here doesn't collide with or misrepresent any real app. cluster:
 # .Values.clusterName (this chart is a true singleton, always installed on the cluster that
-# hosts Infisical - see cluster-secret-store.yaml). This computes the exact same
-# project slug ("platform-cicd-<clusterName>") the old InfisicalProject CR already used,
+# hosts Infisical - see cluster-secret-store.yaml). This computes the project
+# slug "glidepath-<clusterName>" (it was "platform-cicd-<clusterName>", the old InfisicalProject CR's),
 # so the cutover reuses the identical slug (after deleting the old CR to free it -
 # same one-at-a-time, backup-verified procedure used for every app-tier project).
 #
@@ -62,6 +62,8 @@ metadata:
     hangar.io/subcomponent: "secretstore"
 spec:
   appRef:
-    name: platform-cicd
+    # glidepath, not platform-cicd: the Composition names the project and its credentials Secret
+    # <appRef.name>-<cluster>, and cluster-secret-store.yaml reads glidepath-<clusterName> (_helpers.tpl).
+    name: glidepath
   cluster: {{ required "clusterName must be set" .Values.clusterName }}
   environmentSlug: shared

@@ -106,7 +106,8 @@ every known cluster's zone.
 
 {{/*
 This control plane's own Infisical project slug and the Secret holding its identityId: the SecretStore Composition's
-conventions for appRef platform-cicd on cluster clusterName (infisical-project.yaml), unless set explicitly.
+conventions for appRef glidepath on cluster clusterName (infisical-project.yaml), unless set explicitly. The two
+must agree: the Composition names the project and the Secret <appRef.name>-<cluster>.
 */}}
 {{- define "glidepath-control-plane.infisicalProjectSlug" -}}
 {{- .Values.secretStore.infisical.projectSlug | default (printf "glidepath-%s" (required "clusterName must be set" .Values.clusterName)) -}}
