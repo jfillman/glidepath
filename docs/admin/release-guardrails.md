@@ -130,6 +130,17 @@ failed, it was not from the shared repository, or it is too old. A new build is 
 ride; `/retest qa-` re-reads the registry. `qa` is a content gate: on an eligible rollback it reports without
 blocking (ADR-0021 decision 8), which is where an older ride would otherwise trip it.
 
+**`qa.required` (catalog values, default `false`).** While it is false the gate runs on every release PR and posts
+what it found, but never fails the check: report-only, so an app that has no check ride yet is not blocked while
+every app gets one (the comment reads "advisory until the gate is required" and names what was missing). Set it to
+`true` once every app with a Flight environment has `apps/<app>/check-ride.yaml` in the check-rides repository and
+a `role: check-ride` test step; from then on a release PR without a passing, recent ride fails `qa`. Who can change
+it: it is a chart value of `glidepath-catalog`, so the default is a glidepath PR (platform maintainers, CI), and a
+single cluster overrides it in its catalog Application's values (the cluster repo's `50-glidepath/glidepath-catalog`,
+cluster admins). It is not in `cicd.yaml` and not a Tower setting: no app team or release approver can turn the gate
+off for one release. On GitHub Free a failed check still cannot block a merge (GATE-03), so `true` makes a bypass
+detectable (GATE-04), not impossible.
+
 **How the image gates find the image (2026-10-09).** `sast`, `image-scan`, `sbom`, `qa` and the provenance half of
 `provenance` share the `resolve-promoted-image` StepAction: two GitHub API reads against the PR (its base, the
 files changed between that base and the head commit, then the one manifest's content) - no clone of the gitops

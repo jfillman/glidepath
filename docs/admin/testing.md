@@ -92,6 +92,13 @@ enough; a new build is a new digest and needs its own ride. `qa` is a content ga
 ran healthy it reports without blocking, since the newest ride for that image may well be
 older than `qa.maxAge`.
 
+The gate is **report-only until the catalog's `qa.required` is `true`** (default `false`,
+2026-10-19): it runs on every release PR and posts what it found, but a missing or failed
+ride does not fail the check, so an app without a check ride is not blocked while every app
+gets one. The knob is a chart value of `glidepath-catalog`, changed by a glidepath PR (the
+default) or in a cluster's catalog Application values (one cluster); never by an app's
+`cicd.yaml` or from Tower. See [release-guardrails.md](release-guardrails.md).
+
 One thing the gate had to get right that the older attestation readers did not: a digest
 with test provenances on it carries several attestations, each signed under its own
 short-lived Fulcio certificate, and `cosign download attestation` does not list them in

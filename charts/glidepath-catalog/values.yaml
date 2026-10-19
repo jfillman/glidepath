@@ -141,6 +141,16 @@ qa:
   # time (the provenance's buildFinishedOn only if the entry has none) to the gate's run.
   # Ns, Nm, Nh or Nd. A rollback to an eligible target is advisory and not held to this.
   maxAge: 72h
+  # false (the default): the gate runs on every release PR and reports what it found, but
+  # does not fail the check - report-only, so an app that has no check ride yet is not
+  # blocked while every app gets one. true: a release PR without a passing, recent check
+  # ride fails the qa check (an eligible rollback stays advisory either way). This is a
+  # platform knob, not an app setting: the chart default lives here (a glidepath PR) and a
+  # cluster overrides it through its catalog Application's values (the cluster repo's
+  # 50-glidepath/glidepath-catalog) - platform maintainers only, never cicd.yaml or Tower.
+  # Flip it once every app with a Flight environment has apps/<app>/check-ride.yaml in the
+  # check-rides repository and a role: check-ride step.
+  required: false
 
 releaseGuardrails:
   - name: sast
