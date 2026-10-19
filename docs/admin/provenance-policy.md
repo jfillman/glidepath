@@ -553,6 +553,16 @@ envelope signature (`.signatures[0].sig`, indexed from each layer blob once) and
 an attestation matching no layer fails the gate. Taking `.layers[0]`'s cert for every line was the bug behind
 `sast`/`provenance` failing with "transparency log certificate does not match" on boarding-api 2.0.0-926d566.
 
+**Only the build provenance reaches Conforma (2026-10-19).** The release policy is written for a build: a check-ride
+`test` PipelineRun's provenance has no `build-image`/`run-tests` tasks and no source materials, and Chains attests a
+failed ride too, so feeding every verified provenance to one `ec validate input` call failed
+`tasks.required_tasks_found`, `tasks.successful_pipeline_tasks`, `slsa_source_correlated` and
+`slsa_source_version_controlled` on the same digest (PipelineRun provenance-zcbw6 on gitops-boarding-api#70).
+`verify-image-provenance` now keeps, after cosign verification, only the provenance(s) whose PipelineRun carried the
+`tekton.dev/pipeline=build` label (Chains copies the run's labels into `invocation.environment.labels`) or whose
+`buildConfig.tasks[]` has a `build-image` entry, logs each skipped one, and fails if none is left. Test provenances
+are the `qa` gate's business ([testing.md](testing.md)). The policy itself is unchanged.
+
 ## A real, unrelated incident hit mid-testing: the cluster's disk filled to 100%
 
 While re-verifying the two gap-closure fixes, a `deploy` PipelineRun died mid-run with
