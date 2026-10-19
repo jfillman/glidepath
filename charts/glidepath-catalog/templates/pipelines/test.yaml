@@ -44,6 +44,10 @@ spec:
     - name: test-name
       type: string
       description: "TestWorkflow name - the step's own `testName`, or cicd.yaml's top-level test.name. validateFlows requires one of the two to resolve."
+    - name: test-timeout
+      type: string
+      default: "10m"
+      description: "How long run-testworkflow waits for the TestWorkflowExecution to reach a terminal status (Ns/Nm/Nh). Not yet settable from cicd.yaml: the step-level field is phase 1 of the test framework spec."
     - name: app-namespace
       type: string
     - name: app-name
@@ -103,6 +107,11 @@ spec:
         - { name: env, value: $(params.env) }
         - { name: test-name, value: $(params.test-name) }
         - { name: app-name, value: $(params.app-name) }
+        - { name: app-namespace, value: $(params.app-namespace) }
+        - { name: git-url, value: $(params.git-url) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: chain-id, value: $(tasks.preflight.results.chain-id) }
+        - { name: timeout, value: $(params.test-timeout) }
 
   # One finally Task, one pod (2026-10-08) - replaces the six separate finally tasks this
   # Pipeline used to carry (end-test-stage-span, end-flow, notify, notify-backstage,
