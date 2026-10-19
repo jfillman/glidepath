@@ -1,27 +1,47 @@
 # catalog/tasks/qa-gate.yaml
 #
-# The `qa` release-guardrail gate (docs/admin/release-guardrails.md), given its own
-# dedicated Task/Pipeline (qa-check.yaml) ahead of having any real logic, rather than
-# routing through the fully-generic, shared governance-check Pipeline the way itsm/
-# policy-validation still do. Both are legitimate ways to stand up a stub gate - this
-# one is for when you already know the gate's eventual real shape (what it'll need to
-# check, what params it'll take) and want graduating it later to be a single-file
-# swap of this Task's own step, matching exactly how sast/image-scan/provenance/sbom
-# themselves graduated (see docs/admin/governance-stubs.md's "Landing a real
-# implementation" section) - not a three-file change (new Task + new Pipeline +
-# repointed onboarding template) done all at once later.
+# The real `qa` release gate (docs/admin/release-guardrails.md; docs/admin/testing.md,
+# phase 3 of the test contract). Real since 2026-10-19: until then this Task called the
+# shared governance-stub StepAction and always passed (ADR-0003's loud stub), scaffolded
+# with its own Pipeline so that graduating it would be a swap of this one step. It was.
 #
-# repo-url/revision are accepted now (unused by the stub step below) so the eventual
-# real QA-verification logic - reading back the test stage's own recorded outcome for
-# this commit, per the still-open design question in pull-request-qa.yaml's own header
-# - has them already threaded through without any Pipeline/onboarding-template rewiring.
+# What it verifies: that a check ride - the one TestWorkflow per app that a release
+# depends on, `<app>-check-ride` synced from the shared check-rides repository by Argo
+# CD, never a file from the app repo - ran against the exact image this PR promotes and
+# passed, recently. The evidence is the test PipelineRun's own SLSA provenance: Tekton
+# Chains signs every completed test run and attaches it to the tested image digest, and
+# its buildConfig.tasks[] entry named `run-testworkflow` carries the stage's results
+# (outcome, role, workflow-source, tests-total/passed/failed/skipped, execution-id). The
+# same mechanism verify-sast-attestation.yaml uses to read sast-scan's build-time outcome.
 #
-# Still calls the shared governance-stub StepAction, not a bespoke inline script - same
-# loud "no real check implemented yet" logging + governance.stub=true child span +
-# literal "stub" result as every other not-yet-real gate (ADR-0003). "Always returns
-# true" (never fails, never blocks a merge) is exactly what that StepAction already
-# does - reused here, not reimplemented, so this stays honestly indistinguishable from
-# any other stub in Grafana's pipeline-detail panel until real logic actually lands.
+# Chains attests FAILED runs too (seen live 2026-10-19), and a digest carries one
+# provenance per test run (re-runs, the team's own `role: test` steps), so presence is
+# never a pass. Each attestation is verified first (cosign, platform Fulcio identity, real
+# Rekor tlog entry - the exact flags verify-sast-attestation.yaml uses), then the
+# run-testworkflow entries with role=check-ride are selected and the policy applied:
+#
+#   - outcome=passed and tests-failed=0 (an empty tests-failed means no JUnit report,
+#     which a check ride must leave - treated as failed, not as zero);
+#   - workflow-source is `argocd:<.Values.qa.checkRidesApplication>` - the ride came
+#     from the shared repository through the fence, not from the app repo;
+#   - younger than .Values.qa.maxAge, measured from the attestation's Rekor
+#     integratedTime (a timestamp Rekor signed, not one the pipeline wrote), falling
+#     back to the provenance's metadata.buildFinishedOn only if the entry carries none.
+#
+# One ride meeting all three is a pass. Otherwise the failure names what was missing,
+# in order of what the newest ride got wrong: no ride ran for this digest / it failed
+# (with its outcome and counts) / it was not from the shared repository / it is too
+# old. The counts and the Testkube execution id go into findings-summary, which
+# comment-pr-check-result puts in the PR comment on a pass; on a failure the comment
+# carries the log tail, so the verdict is the last thing this script prints.
+#
+# cosign/trusted-root/digest-resolution mechanism duplicated from verify-sast-
+# attestation.yaml rather than shared - same "a little duplication is safer than
+# re-touching an already-verified, security-sensitive Task" precedent as that file.
+# The image is resolved by extract-promoted-image in qa-check.yaml (not inline here)
+# because that Task also decides rollback eligibility: `qa` is a content gate, so on a
+# rollback to an image that already ran healthy it reports without blocking
+# (ADR-0021 decision 8) - a 72h-old ride is exactly what a rollback would trip over.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -29,39 +49,344 @@ metadata:
   labels:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
-    hangar.io/stub: "true"
 spec:
-  description: Placeholder for real QA/test-completion verification - always succeeds, loudly marked as not yet a real check.
+  description: Verifies that a check ride from the shared check-rides repository ran against the promoted image and passed recently, from the image's own Chains-signed test provenance.
   params:
-    - name: repo-url
+    - name: image-ref
       type: string
-      default: ""
-      description: The gitops repo's own URL - PaC's repo_url. Unused by the stub step; threaded through for the real implementation to come.
-    - name: revision
+      description: Full image reference (repo:tag) the PR promotes - the digest's test provenances carry the check ride's results.
+    - name: check-rides-application
       type: string
-      default: ""
-      description: The gitops PR's head commit - PaC's revision. Unused by the stub step; threaded through for the real implementation to come.
-    - name: flow-traceparent
+      default: {{ .Values.qa.checkRidesApplication | quote }}
+      description: The Argo CD Application that syncs the check-rides repository; a ride counts only when run-testworkflow recorded workflow-source "argocd:<this>".
+    - name: max-age
       type: string
-      default: ""
-      description: Leave empty when there's no flow/stage context (e.g. a PR-triggered GitOps-repo check) - see governance-stub.yaml for the same convention.
-    - name: stage-span-id
-      type: string
-      default: ""
-      description: The calling stage's own span id (from start-stage-span) - this gate's span is parented to it. Ignored when flow-traceparent is empty.
+      default: {{ .Values.qa.maxAge | quote }}
+      description: How old the newest passing check ride may be (Ns, Nm, Nh or Nd), from its Rekor integration time to now.
   results:
     - name: outcome
-      value: $(steps.stub.results.outcome)
+      description: "'passed' or 'failed' - a real verdict, never 'stub'."
+    - name: findings-summary
+      description: One paragraph for the PR comment - the ride's counts, Testkube execution id, source and age on a pass; what was missing on a failure.
+  # Registry pull credentials for this Task's own hand-rolled GHCR digest-resolution
+  # curl calls AND for `cosign download attestation`/`cosign verify-blob-attestation`
+  # below - identical need and Secret/key mapping as verify-sast-attestation.yaml.
+  volumes:
+    - name: registry-credentials
+      secret:
+        secretName: registry-credentials
+        items:
+          - key: .dockerconfigjson
+            path: config.json
   steps:
-    - name: stub
-      ref:
-        resolver: cluster
-        params:
-          - { name: kind, value: stepaction }
-          - { name: name, value: governance-stub }
-          - { name: namespace, value: {{ .Release.Namespace }} }
+    - name: verify
+      image: {{ .Values.toolboxImage }}
       imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
-      params:
-        - { name: gate-name, value: qa }
-        - { name: flow-traceparent, value: $(params.flow-traceparent) }
-        - { name: stage-span-id, value: $(params.stage-span-id) }
+      volumeMounts:
+        - name: registry-credentials
+          mountPath: /var/run/secrets/registry
+          readOnly: true
+      env:
+        - name: IMAGE_REF
+          value: $(params.image-ref)
+        - name: CHECK_RIDES_APPLICATION
+          value: $(params.check-rides-application)
+        - name: MAX_AGE
+          value: $(params.max-age)
+        - name: CHECK_RIDE_WORKFLOW
+          value: {{ .Values.checkRide.workflowName | quote }}
+        - name: DOCKER_CONFIG
+          value: /var/run/secrets/registry
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/retry.sh"
+        workdir="$(mktemp -d)"
+
+        fail() {
+          # The verdict is the last line of the log: comment-pr-check-result quotes the
+          # tail of this pod's log in the PR comment on a failure.
+          printf '%s' "failed" > "$(results.outcome.path)"
+          printf '%s' "$1" > "$(results.findings-summary.path)"
+          echo "FAIL: $1" >&2
+          exit 1
+        }
+
+        if ! [[ "${MAX_AGE}" =~ ^([0-9]+)([smhd])$ ]]; then
+          fail "qa.maxAge '${MAX_AGE}' is not Ns, Nm, Nh or Nd - a catalog values error, not a finding about this image."
+        fi
+        case "${BASH_REMATCH[2]}" in
+          s) max_age_s=$((BASH_REMATCH[1]));;
+          m) max_age_s=$((BASH_REMATCH[1] * 60));;
+          h) max_age_s=$((BASH_REMATCH[1] * 3600));;
+          d) max_age_s=$((BASH_REMATCH[1] * 86400));;
+        esac
+        expected_source="argocd:${CHECK_RIDES_APPLICATION}"
+
+        # Tag -> digest resolution, identical to verify-sast-attestation.yaml's own -
+        # cosign's attestation lookup is digest-keyed, a plain tag genuinely fails with
+        # "no signatures found" even when real attestations exist.
+        registry="${IMAGE_REF%%/*}"
+        rest="${IMAGE_REF#*/}"
+        repo="${rest%:*}"
+        tag="${rest##*:}"
+        registry_auth="$(jq -r --arg r "${registry}" '.auths[$r].auth // empty' "${DOCKER_CONFIG}/config.json" | base64 -d)"
+        token="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 ${registry_auth:+-u "${registry_auth}"} "https://${registry}/token?service=${registry}&scope=repository:${repo}:pull" | jq -r '.token')"
+        digest="$(curl -fsSL -D - -o /dev/null --retry 3 --retry-connrefused --max-time 15 \
+          -H "Authorization: Bearer ${token}" \
+          -H "Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
+          "https://${registry}/v2/${repo}/manifests/${tag}" \
+          | grep -i '^docker-content-digest:' | tr -d '\r' | awk '{print $2}')"
+        if [[ -z "${digest}" ]]; then
+          fail "could not resolve a digest for ${IMAGE_REF} - is the image in the registry?"
+        fi
+        image_ref="${registry}/${repo}@${digest}"
+        echo "Looking for a passing check ride in the test provenance of ${image_ref}"
+        echo "policy: workflow-source=${expected_source}, outcome=passed, tests-failed=0, younger than ${MAX_AGE}"
+
+        kubectl get configmap fulcio-root-ca -n platform-catalog \
+          -o jsonpath='{.data.cert\.pem}' > "${workdir}/fulcio-root.pem"
+        # Fetched live, not from a cached ConfigMap - see verify-image-provenance.yaml.
+        curl -fsSL --max-time 10 http://rekor-server.rekor-system.svc/api/v1/log/publicKey > "${workdir}/rekor.pub"
+        cosign trusted-root create \
+          --fulcio="url=http://fulcio-server.fulcio-system.svc,certificate-chain=${workdir}/fulcio-root.pem" \
+          --rekor="url=http://rekor-server.rekor-system.svc,public-key=${workdir}/rekor.pub,start-time=2020-01-01T00:00:00Z" \
+          --no-default-ctfe --no-default-tsa \
+          --out "${workdir}/trusted-root.json"
+
+        # Manual type-filter-then-verify-blob-attestation, not a single `cosign
+        # verify-attestation --type slsaprovenance` call - see verify-image-provenance.yaml
+        # for the live incident (cosign's own --type filter does not reliably exclude a
+        # differently-formatted attestation before identity verification).
+        identity_regexp="^https://kubernetes\.io/namespaces/{{ .Values.tektonChainsNamespace }}/serviceaccounts/.*$"
+        # Exact match on any of .Values.sigstoreIssuers (values.yaml).
+        issuer_regexp='^({{ range $i, $iss := .Values.sigstoreIssuers }}{{ if $i }}|{{ end }}{{ regexQuoteMeta $iss }}{{ end }})$'
+        att_dir="${workdir}/attestations"
+        mkdir -p "${att_dir}"
+        cosign download attestation "${image_ref}" > "${att_dir}/all-attestations.jsonl" 2>/dev/null || true
+        if [[ ! -s "${att_dir}/all-attestations.jsonl" ]]; then
+          fail "no check ride ran for ${image_ref}: the digest carries no attestations at all (no build or test provenance)."
+        fi
+
+        att_token=""
+        i=0
+        layer_count=0
+        verified_files=()
+        while IFS= read -r line; do
+          is_bundle="$(jq -r 'has("dsseEnvelope")' <<<"${line}")"
+          if [[ "${is_bundle}" == "true" ]]; then
+            payload_b64="$(jq -r '.dsseEnvelope.payload' <<<"${line}")"
+          else
+            payload_b64="$(jq -r '.payload' <<<"${line}")"
+          fi
+          predicate_type="$(echo "${payload_b64}" | base64 -d | jq -r '.predicateType')"
+          if [[ "${predicate_type}" != "https://slsa.dev/provenance/v0.2" ]]; then
+            continue
+          fi
+
+          if [[ "${is_bundle}" == "true" ]]; then
+            cert_der_b64="$(jq -r '.verificationMaterial.certificate.rawBytes' <<<"${line}")"
+            sig_b64="$(jq -r '.dsseEnvelope.signatures[0].sig' <<<"${line}")"
+          else
+            # The .att manifest has one layer per attestation, each signed under its own
+            # short-lived Fulcio cert. Take THIS line's layer's cert, not layer 0's: a
+            # digest with test provenances on it (every image a check ride ran against -
+            # the normal case for this gate) has several. Confirmed live 2026-10-19 on
+            # boarding-api 2.0.0-926d566: five layers, five certs, and the layer-0
+            # shortcut fails cosign with "transparency log certificate does not match"
+            # on every layer but the first. `cosign download attestation` does not emit
+            # the layers in manifest order (checked with cosign 3.1.3: the SBOM bundle
+            # first, then the legacy layers shuffled), and a layer's signature annotation
+            # is empty for an attestation (the signature lives in the DSSE envelope), so
+            # the pairing is by the envelope signature: each layer blob is read once and
+            # indexed by its signature, and a line whose signature matches no layer is a
+            # hard failure, never a fallback to another layer's cert.
+            if [[ -z "${att_token}" ]]; then
+              att_token="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 ${registry_auth:+-u "${registry_auth}"} "https://${registry}/token?service=${registry}&scope=repository:${repo}:pull" | jq -r '.token')"
+              att_manifest="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 -H "Authorization: Bearer ${att_token}" \
+                -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+                "https://${registry}/v2/${repo}/manifests/sha256-${digest#sha256:}.att")"
+              layer_count="$(jq '.layers | length' <<<"${att_manifest}")"
+              for ((n = 0; n < layer_count; n++)); do
+                layer_digest="$(jq -r --argjson n "${n}" '.layers[$n].digest' <<<"${att_manifest}")"
+                curl -fsSL -L --retry 3 --retry-connrefused --max-time 15 -H "Authorization: Bearer ${att_token}" \
+                  "https://${registry}/v2/${repo}/blobs/${layer_digest}" \
+                  | jq -r '.signatures[0].sig // empty' > "${att_dir}/layer-sig-${n}.txt"
+              done
+            fi
+            sig_b64="$(jq -r '.signatures[0].sig' <<<"${line}")"
+            layer_index=""
+            for ((n = 0; n < layer_count; n++)); do
+              if [[ -n "${sig_b64}" && "$(cat "${att_dir}/layer-sig-${n}.txt")" == "${sig_b64}" ]]; then
+                layer_index="${n}"
+                break
+              fi
+            done
+            if [[ -z "${layer_index}" ]]; then
+              fail "an attestation on ${image_ref} matches none of the ${layer_count} layers of its .att manifest by envelope signature - cannot pair it with its signing certificate."
+            fi
+            cert_pem="$(jq -r --argjson n "${layer_index}" '.layers[$n].annotations["dev.sigstore.cosign/certificate"]' <<<"${att_manifest}")"
+            cert_der_b64="$(echo "${cert_pem}" | openssl x509 -outform DER | base64 | tr -d '\n')"
+          fi
+          payload_type="$(jq -r 'if has("dsseEnvelope") then .dsseEnvelope.payloadType else .payloadType end' <<<"${line}")"
+
+          printf '%s' "${cert_der_b64}" > "${att_dir}/cert-${i}.txt"
+          printf '%s' "${payload_b64}" > "${att_dir}/payload-${i}.txt"
+          printf '%s' "${sig_b64}" > "${att_dir}/sig-${i}.txt"
+          printf '%s' "${payload_type}" > "${att_dir}/ptype-${i}.txt"
+
+          # Real tlog entry lookup, keyed by sha256 of the raw DSSE payload bytes, retried
+          # for rekor-redis's index lag - see verify-image-provenance.yaml for both.
+          payload_hash="$(echo "${payload_b64}" | base64 -d | sha256sum | awk '{print $1}')"
+          rekor_uuid_file="${att_dir}/rekor-uuid-${i}.txt"
+          rekor_index_lookup() {
+            local uuid
+            uuid="$(curl -fsSL --max-time 10 -X POST -H "Content-Type: application/json" \
+              -d "{\"hash\": \"sha256:${payload_hash}\"}" \
+              http://rekor-server.rekor-system.svc/api/v1/index/retrieve | jq -r '.[0] // empty')"
+            [[ -n "${uuid}" ]] || return 1
+            printf '%s' "${uuid}" > "${rekor_uuid_file}"
+          }
+          if ! with_retry 6 -- rekor_index_lookup; then
+            fail "no Rekor tlog entry found for attestation payload hash ${payload_hash} after retrying - was it signed before Rekor was deployed, or before transparency.enabled was set?"
+          fi
+          rekor_uuid="$(cat "${rekor_uuid_file}")"
+          rekor_entry="$(curl -fsSL --max-time 10 "http://rekor-server.rekor-system.svc/api/v1/log/entries/${rekor_uuid}" | jq ".[\"${rekor_uuid}\"]")"
+          rekor_body_b64="$(jq -r '.body' <<<"${rekor_entry}")"
+          integrated_time="$(jq -r '.integratedTime // empty' <<<"${rekor_entry}")"
+          # -j (not -r): the checkpoint's own trailing newline is part of the signed note.
+          jq -j '.verification.inclusionProof.checkpoint' <<<"${rekor_entry}" > "${att_dir}/checkpoint-${i}.txt"
+          hashes_json="$(jq -r '.verification.inclusionProof.hashes[]' <<<"${rekor_entry}" | while read -r h; do echo "${h}" | xxd -r -p | base64 -w0; echo; done | jq -R . | jq -s .)"
+          jq -n \
+            --arg logIndex "$(jq -r '.logIndex' <<<"${rekor_entry}")" \
+            --arg logId "$(jq -r '.logID' <<<"${rekor_entry}" | xxd -r -p | base64 -w0)" \
+            --arg kind "$(echo "${rekor_body_b64}" | base64 -d | jq -r '.kind')" \
+            --arg version "$(echo "${rekor_body_b64}" | base64 -d | jq -r '.apiVersion')" \
+            --arg integratedTime "$(jq -r '.integratedTime' <<<"${rekor_entry}")" \
+            --arg sigEntryTs "$(jq -r '.verification.signedEntryTimestamp' <<<"${rekor_entry}")" \
+            --arg inclLogIndex "$(jq -r '.verification.inclusionProof.logIndex' <<<"${rekor_entry}")" \
+            --arg inclRootHash "$(jq -r '.verification.inclusionProof.rootHash' <<<"${rekor_entry}" | xxd -r -p | base64 -w0)" \
+            --arg inclTreeSize "$(jq -r '.verification.inclusionProof.treeSize' <<<"${rekor_entry}")" \
+            --argjson hashes "${hashes_json}" \
+            --rawfile checkpoint "${att_dir}/checkpoint-${i}.txt" \
+            --arg body "${rekor_body_b64}" \
+            '{logIndex: $logIndex, logId: {keyId: $logId}, kindVersion: {kind: $kind, version: $version},
+              integratedTime: $integratedTime, inclusionPromise: {signedEntryTimestamp: $sigEntryTs},
+              inclusionProof: {logIndex: $inclLogIndex, rootHash: $inclRootHash, treeSize: $inclTreeSize,
+                hashes: $hashes, checkpoint: {envelope: $checkpoint}},
+              canonicalizedBody: $body}' \
+            > "${att_dir}/tlog-${i}.json"
+
+          bundle_file="${att_dir}/bundle-${i}.json"
+          jq -n \
+            --rawfile cert "${att_dir}/cert-${i}.txt" \
+            --rawfile payload "${att_dir}/payload-${i}.txt" \
+            --rawfile payloadType "${att_dir}/ptype-${i}.txt" \
+            --rawfile sig "${att_dir}/sig-${i}.txt" \
+            --slurpfile tlogEntries "${att_dir}/tlog-${i}.json" \
+            '{mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
+              verificationMaterial: {certificate: {rawBytes: $cert}, tlogEntries: $tlogEntries},
+              dsseEnvelope: {payload: $payload, payloadType: $payloadType, signatures: [{sig: $sig}]}}' \
+            > "${bundle_file}"
+
+          cosign verify-blob-attestation \
+            --bundle "${bundle_file}" \
+            --digest "${digest#sha256:}" \
+            --digestAlg sha256 \
+            --insecure-ignore-tlog=false \
+            --insecure-ignore-sct=true \
+            --trusted-root "${workdir}/trusted-root.json" \
+            --certificate-identity-regexp "${identity_regexp}" \
+            --certificate-oidc-issuer-regexp "${issuer_regexp}" \
+            --type slsaprovenance
+
+          # Verified: keep the payload with the time Rekor integrated it.
+          echo "${payload_b64}" | base64 -d \
+            | jq --arg it "${integrated_time}" '{integratedTime: ($it | if . == "" then null else tonumber end), provenance: .}' \
+            > "${att_dir}/verified-${i}.json"
+          verified_files+=("${att_dir}/verified-${i}.json")
+          i=$((i + 1))
+        done < "${att_dir}/all-attestations.jsonl"
+
+        if [[ ${#verified_files[@]} -eq 0 ]]; then
+          fail "no check ride ran for ${image_ref}: the digest carries no verified SLSA provenance (no build or test provenance)."
+        fi
+        echo "verified ${#verified_files[@]} provenance attestation(s) on the digest"
+
+        # Every check-ride run-testworkflow entry across the verified provenances, newest
+        # first. `at` is when Rekor integrated the attestation (seconds since epoch); the
+        # provenance's own buildFinishedOn only if the Rekor entry had none.
+        rides="$(jq -s '[ .[]
+            | .integratedTime as $it
+            | (.provenance.predicate.metadata.buildFinishedOn // null) as $finished
+            | .provenance.predicate.buildConfig.tasks[]?
+            | select(.name == "run-testworkflow")
+            | (.results // [] | map({(.name): .value}) | add // {}) as $r
+            | select($r.role == "check-ride")
+            | { outcome: ($r.outcome // ""), failed: ($r["tests-failed"] // ""),
+                total: ($r["tests-total"] // ""), passed: ($r["tests-passed"] // ""),
+                skipped: ($r["tests-skipped"] // ""), source: ($r["workflow-source"] // ""),
+                execution: ($r["execution-id"] // ""), workflowDigest: ($r["workflow-digest"] // ""),
+                finishedOn: (.finishedOn // $finished // ""),
+                at: ($it // (try ($finished | fromdateiso8601) catch null)) }
+          ] | sort_by(.at // 0) | reverse' "${verified_files[@]}")"
+        ride_count="$(jq 'length' <<<"${rides}")"
+        echo "check-ride entries found: ${ride_count}"
+        jq -r '.[] | "  outcome=\(.outcome) tests=\(.total)/\(.passed)/\(.failed)/\(.skipped) (total/passed/failed/skipped) source=\(.source) execution=\(.execution) finished=\(.finishedOn)"' <<<"${rides}"
+
+        now="$(date -u +%s)"
+        verdict="$(jq -r --arg src "${expected_source}" --argjson now "${now}" --argjson max "${max_age_s}" '
+          def age: if .at == null then null else ($now - .at) end;
+          def fresh: (age != null and age <= $max);
+          def passed: (.outcome == "passed" and .failed == "0");
+          def shared: (.source == $src);
+          ([.[] | select(passed and shared and fresh)] | first) as $ok
+          | if $ok then
+              {result: "passed", ride: $ok, age: ($ok | age)}
+            elif length == 0 then
+              {result: "none"}
+            elif ([.[] | select(passed)] | length) == 0 then
+              {result: "failed", ride: .[0]}
+            elif ([.[] | select(passed and shared)] | length) == 0 then
+              {result: "unshared", ride: ([.[] | select(passed)] | first)}
+            else
+              {result: "stale", ride: ([.[] | select(passed and shared)] | first), age: ([.[] | select(passed and shared)] | first | age)}
+            end' <<<"${rides}")"
+
+        human_age() {
+          local s="$1"
+          if [[ -z "${s}" || "${s}" == "null" ]]; then echo "unknown age"; return; fi
+          if (( s < 3600 )); then echo "$((s / 60))m old"; elif (( s < 172800 )); then echo "$((s / 3600))h $(( (s % 3600) / 60 ))m old"; else echo "$((s / 86400))d $(( (s % 86400) / 3600 ))h old"; fi
+        }
+        result="$(jq -r '.result' <<<"${verdict}")"
+        ride_counts="$(jq -r '.ride // {} | "\(.total // "?") tests, \(.passed // "?") passed, \(.failed // "?") failed, \(.skipped // "?") skipped" | gsub("\\?"; "no count")' <<<"${verdict}")"
+        ride_exec="$(jq -r '.ride.execution // ""' <<<"${verdict}")"
+        ride_exec_text="${ride_exec:-none recorded}"
+        ride_source="$(jq -r '.ride.source // ""' <<<"${verdict}")"
+        ride_outcome="$(jq -r '.ride.outcome // ""' <<<"${verdict}")"
+        ride_finished="$(jq -r '.ride.finishedOn // ""' <<<"${verdict}")"
+        age_text="$(human_age "$(jq -r '.age // ""' <<<"${verdict}")")"
+
+        case "${result}" in
+          passed)
+            summary="Check ride passed for \`${image_ref}\`: ${ride_counts} (Testkube execution \`${ride_exec_text}\`, finished ${ride_finished}, ${age_text}, from \`${ride_source}\`; policy: outcome=passed, tests-failed=0, source=\`${expected_source}\`, max age ${MAX_AGE}). ${ride_count} check-ride run(s) attested on this digest."
+            printf '%s' "passed" > "$(results.outcome.path)"
+            printf '%s' "${summary}" > "$(results.findings-summary.path)"
+            echo "PASS: ${summary}"
+            ;;
+          none)
+            fail "no check ride ran for ${image_ref}: ${#verified_files[@]} verified provenance(s) on the digest, none with a run-testworkflow entry of role=check-ride. Run the test stage with a \`role: check-ride\` step against this image (the flow's test step runs <app>-${CHECK_RIDE_WORKFLOW}, synced by the ${CHECK_RIDES_APPLICATION} Argo CD Application), then \`/retest qa\`."
+            ;;
+          failed)
+            fail "the check ride for ${image_ref} failed: outcome=${ride_outcome:-none}, ${ride_counts} (Testkube execution ${ride_exec_text}, finished ${ride_finished:-unknown}); ${ride_count} check-ride run(s) attested, none passed with tests-failed=0. Fix the failures (or the missing JUnit report), re-run the test stage against this image, then \`/retest qa\`."
+            ;;
+          unshared)
+            fail "the passing check ride for ${image_ref} was not from the shared check-rides repository: workflow-source=${ride_source:-empty}, expected ${expected_source} (${ride_counts}, Testkube execution ${ride_exec_text}). A check ride must be <app>-${CHECK_RIDE_WORKFLOW} as synced by the ${CHECK_RIDES_APPLICATION} Argo CD Application, never a workflow from the app repo."
+            ;;
+          stale)
+            fail "the newest passing check ride for ${image_ref} is too old: ${age_text}, finished ${ride_finished:-unknown}, policy allows ${MAX_AGE} (${ride_counts}, Testkube execution ${ride_exec_text}, from ${ride_source}). Re-run the test stage against this image for a fresh ride, then \`/retest qa\`."
+            ;;
+          *)
+            fail "internal error: unexpected verdict '${result}' for ${image_ref}."
+            ;;
+        esac

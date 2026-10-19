@@ -73,12 +73,30 @@ build's. Its `predicate.buildConfig.tasks[]` entry named `run-testworkflow` carr
 result above.
 
 That is exactly the mechanism `verify-sast-attestation` uses to read `sast-scan`'s
-outcome out of the build's provenance, and the `qa` gate reads a check ride the same way:
-download the image's attestations, verify each against the platform's Fulcio identity
-and Rekor, keep the ones whose `run-testworkflow` entry has `role: check-ride`, apply the
-policy (`workflow-source` is the check-rides Application, `outcome: passed`,
-`tests-failed: 0`, age) and pass or fail with the counts in the comment. The gate is phase
-3 of the spec; today `qa` is still a stub.
+outcome out of the build's provenance, and the `qa` gate (phase 3, real since
+2026-10-19: `qa-gate.yaml`, run by `qa-check.yaml` on every gitops release PR) reads a
+check ride the same way: download the image's attestations, verify each against the
+platform's Fulcio identity and a real Rekor entry, keep the ones whose
+`run-testworkflow` entry has `role: check-ride`, and pass if one of them has
+`outcome: passed`, `tests-failed: 0` (an empty count, meaning no JUnit report, is not
+zero), `workflow-source: argocd:<qa.checkRidesApplication>` (catalog value, default
+`check-rides`) and is younger than `qa.maxAge` (catalog value, default `72h`), measured
+from the attestation's Rekor `integratedTime` - a time Rekor signed, not one the
+pipeline wrote - with the provenance's `buildFinishedOn` as the fallback. The PR comment
+carries the counts, the Testkube execution id, the source and the age on a pass. On a
+failure it names what was missing, judged on the newest ride: no check ride ran for this
+digest, it failed (with its outcome and counts), it was not from the shared repository,
+or it is too old. The gate reads the registry, so `/retest qa` after a fresh ride is
+enough; a new build is a new digest and needs its own ride. `qa` is a content gate
+([release-guardrails.md](release-guardrails.md)): on a rollback to an image that already
+ran healthy it reports without blocking, since the newest ride for that image may well be
+older than `qa.maxAge`.
+
+One thing the gate had to get right that the older attestation readers did not: a digest
+with test provenances on it carries several attestations, each signed under its own
+short-lived Fulcio certificate, and `cosign download attestation` does not list them in
+the `.att` manifest's layer order. The gate pairs each attestation with its layer (and so
+its certificate) by the DSSE envelope signature, never by position.
 
 Reading it by hand, from a pod that has the image's registry credentials and the
 cluster's trusted root (the gate Tasks show the exact flags):
@@ -152,7 +170,8 @@ breaks the drop-in image this lab uses; the cluster repo pins 2.13.1 with the re
 
 Done and live-verified on boarding-api: phase 0 (the stage passes context, fails on a
 missing workflow, timeout, pull secret), phase 1 (roles, the contract, provenance),
-phase 2 (the check-rides repository, sync, policy). Next: phase 3, the real `qa` gate reading the provenance; phase 4, Tower's
+phase 2 (the check-rides repository, sync, policy), phase 3 (the real `qa` gate reading
+the provenance, 2026-10-19). Next: phase 4, Tower's
 primary-test strip, readiness row and Tests view; later, a check ride against a Flight
 environment on *release healthy*, Testkube's CDEvents into the broker instead of
 polling, and waivers.

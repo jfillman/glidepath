@@ -130,7 +130,7 @@ spec:
           summary="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "findings-summary")][0].value // empty')"
           # governance-gate-stub/qa-gate (ADR-0003) emit outcome=stub - a stub always
           # succeeds, so STATUS alone can't tell "really passed" from "not a real check
-          # yet". Without this, a stubbed gate (currently itsm/qa/policy-validation)
+          # yet". Without this, a stubbed gate (currently itsm/policy-validation)
           # posts the same "passed" wording as a genuine result, which
           # reads as the gate having actually verified something it never checked.
           outcome="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "outcome")][0].value // empty')"
@@ -188,7 +188,10 @@ spec:
             sbom)
               recommendation="This usually indicates a transient generation/signing/push error, not a content problem."
               ;;
-            itsm|qa|policy-validation)
+            qa)
+              recommendation="This reads the check ride recorded on the promoted image's own test provenance (docs/admin/testing.md) - it never runs tests itself. The log above says what was missing: no check ride ran for this image, it failed, it was not the shared check-rides repository's \`<app>-check-ride\`, or it is older than the catalog's \`qa.maxAge\`. Run the flow's \`role: check-ride\` test step against this exact image (a new build gets a new digest and needs its own ride), then \`/retest qa\` - the gate re-reads the registry."
+              ;;
+            itsm|policy-validation)
               recommendation="This gate is a stub - it always no-ops and reports \`stub\`, never a real pass/fail judgment (see docs/admin/governance-stubs.md). A failure here means something broke in the platform scaffolding itself (e.g. the shared toolbox image or OTel collector), not a real ITSM/QA/policy rejection - check the log excerpt above and \`/retest ${GATE_NAME}\`."
               ;;
             *)

@@ -1,12 +1,16 @@
 # catalog/pipelines/qa-check.yaml
 #
-# The `qa` gate's own dedicated Pipeline - see qa-gate.yaml's own header for why this
-# gate gets one ahead of having real logic, rather than sharing governance-check.yaml
-# the way itsm/policy-validation still do. Same shape every other real (or
-# real-shaped) gate's Pipeline has: one check task, a finally: comment-pr block - see
-# sbom-check.yaml for the closest match (also a single-task gate with no
-# extract-promoted-image step of its own... though qa's future real logic will likely
-# need one, see qa-gate.yaml's own repo-url/revision params).
+# The `qa` gate's Pipeline - real since 2026-10-19 (docs/admin/testing.md, phase 3). It
+# had its own Pipeline while still a stub, scaffolded for exactly this graduation; the
+# shape is now sast-check.yaml's: extract-promoted-image resolves which image the PR
+# promotes (and whether it is an eligible rollback target), then qa-gate reads that
+# image's Chains-signed test provenance for a passing, recent check ride from the shared
+# check-rides repository. A finally: comment-pr block reports either way.
+#
+# ADR-0021 decision 8 / phase 4: `qa` is a content gate (it judges the image, not the
+# release's integrity), so on an eligible rollback the -advisory copy runs with
+# onError: continue and the run succeeds while the finding is recorded - a rollback is
+# precisely where the newest check ride may be older than qa.maxAge.
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
@@ -14,9 +18,8 @@ metadata:
   labels:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
-    hangar.io/stub: "true"
 spec:
-  description: Placeholder for real QA/test-completion verification - always succeeds today, dedicated Pipeline ready for real logic to land in qa-gate.yaml.
+  description: Resolves the promoted image from a gitops release PR, then verifies that a check ride from the shared check-rides repository ran against it and passed recently, from the image's own test provenance.
   params:
     - name: repo-url
       type: string
@@ -25,9 +28,24 @@ spec:
     - name: pr-number
       type: string
       default: ""
-      description: "PaC's raw pull_request.number webhook body field - only used to post the PR comment in this Pipeline's finally block."
+      description: "PaC's raw pull_request.number webhook body field - anchors the promoted-image lookup on the PR's base and addresses the finally-block PR comment."
   tasks:
-    - name: check
+    - name: extract-promoted-image
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: extract-promoted-image }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+
+    - name: verify-check-ride
+      when:
+        - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: notin, values: ["true"] }
+      runAfter: [extract-promoted-image]
       taskRef:
         resolver: cluster
         params:
@@ -35,8 +53,21 @@ spec:
           - { name: name, value: qa-gate }
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
-        - { name: repo-url, value: $(params.repo-url) }
-        - { name: revision, value: $(params.revision) }
+        - { name: image-ref, value: $(tasks.extract-promoted-image.results.image-ref) }
+
+    - name: verify-check-ride-advisory
+      onError: continue
+      when:
+        - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: in, values: ["true"] }
+      runAfter: [extract-promoted-image]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: qa-gate }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: image-ref, value: $(tasks.extract-promoted-image.results.image-ref) }
 
   finally:
     - name: comment-pr
