@@ -195,3 +195,20 @@ spec:
         - { name: flow-start-time, value: $(params.flow-start-time) }
         - { name: pr-created-at, value: $(tasks.resolve-release-tracking.results.pr-created-at) }
         - { name: finished-at, value: $(params.finished-at) }
+    {{- if eq (include "glidepath-catalog.itsmEnabled" .) "true" }}
+
+    # Change management (docs/admin/change-management.md): Succeeded closes the release's change request
+    # successful; Failed adds a work note and leaves it open (the release may recover, or be rolled back).
+    - name: itsm-close
+      onError: continue
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: itsm-change }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: action, value: close-outcome }
+        - { name: chain-id, value: $(params.chain-id) }
+        - { name: status, value: $(params.status) }
+    {{- end }}

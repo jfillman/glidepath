@@ -1,0 +1,72 @@
+# hack/lab/itsm-mock.yaml - a throwaway change tool for a lab cluster (docs/admin/change-management.md).
+#
+# Runs charts/glidepath-catalog/tests/itsm_mock_server.py in platform-system, unauthenticated, reachable from
+# every app's -cicd namespace at http://itsm-mock.platform-system.svc.cluster.local:8080 (the same port the
+# catalog's Tasks already reach the broker on). Point the catalog at it:
+#
+#   itsm: { provider: webhook, webhook: { url: http://itsm-mock.platform-system.svc.cluster.local:8080/webhook } }
+#
+# or, as a ServiceNow look-alike, provider servicenow with instanceUrl http://itsm-mock.platform-system.svc.cluster.local:8080.
+#
+#   kubectl -n platform-system create configmap itsm-mock --from-file=charts/glidepath-catalog/tests/itsm_mock_server.py
+#   kubectl apply -f hack/lab/itsm-mock.yaml
+#   kubectl -n platform-system exec deploy/itsm-mock -- wget -qO- localhost:8080/_mock/changes      # every change
+#   kubectl -n platform-system exec deploy/itsm-mock -- wget -qO- --post-data= localhost:8080/_mock/approve/<id>
+#
+# In memory only: a restart forgets every change. Never a production shape.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: itsm-mock
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/name: itsm-mock
+    hangar.io/component: lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: itsm-mock
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: itsm-mock
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: mock
+          image: python:3.12-alpine
+          command: ["python3", "-u", "/opt/mock/itsm_mock_server.py", "8080"]
+          ports:
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - name: mock
+              mountPath: /opt/mock
+              readOnly: true
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+      volumes:
+        - name: mock
+          configMap:
+            name: itsm-mock
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: itsm-mock
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/name: itsm-mock
+spec:
+  selector:
+    app.kubernetes.io/name: itsm-mock
+  ports:
+    - port: 8080
+      targetPort: 8080

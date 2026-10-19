@@ -34,7 +34,8 @@ architecture.md wherever relevant.
 **Release & operations**
 - [release.md](release.md) - the GitOps promotion flow, step by step
 - [release-state.md](release-state.md) - the release record and state machine: how a prod-side fact becomes a release event (ADR-0021)
-- [release-guardrails.md](release-guardrails.md) - adding/removing a release-PR gate
+- [release-guardrails.md](release-guardrails.md) - adding/removing a release-PR gate; required vs advisory
+- [change-management.md](change-management.md) - the `itsm` gate as a wrapper over the company's change tool (ServiceNow, or any tool behind a webhook)
 - [catalog-versioning.md](catalog-versioning.md) - promoting shared catalog changes
 - [pipelinerun-pruner.md](pipelinerun-pruner.md) - PipelineRun history cleanup
 - [stalled-pipeline-detector.md](stalled-pipeline-detector.md) - stuck-flow alerting

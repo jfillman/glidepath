@@ -207,7 +207,10 @@ spec:
             qa)
               recommendation="This reads the check ride recorded on the promoted image's own test provenance (docs/admin/testing.md) - it never runs tests itself. The log above says what was missing: no check ride ran for this image, it failed, it was not the shared check-rides repository's \`<app>-check-ride\`, or it is older than the catalog's \`qa.maxAge\`. Run the flow's \`role: check-ride\` test step against this exact image (a new build gets a new digest and needs its own ride), then \`/retest qa-\` - the gate re-reads the registry."
               ;;
-            itsm|policy-validation)
+            itsm)
+              recommendation="The release's change request is not approved or scheduled in the change tool, or no change is linked to this PR (the log above names which). Get the change approved (its link is in the PR description and the log), or, for a PR made by hand, add \`<!-- glidepath:change-request:<id> -->\` to the PR body, then \`/retest itsm-\`. See Glidepath docs/admin/change-management.md."
+              ;;
+            policy-validation)
               recommendation="This gate is a stub - it always no-ops and reports \`stub\`, never a real pass/fail judgment (see docs/admin/governance-stubs.md). A failure here means something broke in the platform scaffolding itself (e.g. the shared toolbox image or OTel collector), not a real ITSM/QA/policy rejection - check the log excerpt above and \`/retest ${GATE_NAME}-\`."
               ;;
             *)

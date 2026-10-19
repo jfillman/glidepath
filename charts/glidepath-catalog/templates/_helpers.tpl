@@ -77,7 +77,9 @@ aws_credentials() {
 glidepath-catalog.guardrails: the effective release-guardrail registry as a JSON list - .Values.releaseGuardrails
 with each entry's `required` resolved (default true; .Values.releaseGuardrailOverrides.<name>.required wins; a stub
 is always "required" because its check is always green and the field means nothing to it). sast and provenance
-refuse required: false here, so no cluster can render a catalog that advises on the image's integrity. Every
+refuse required: false here, so no cluster can render a catalog that advises on the image's integrity. The itsm
+entry's status follows .Values.itsm.provider (stub while none: the gate is then the loud stub whatever the registry
+says). Every
 consumer of the registry ranges over this (fromJsonArray), never over .Values.releaseGuardrails directly, so the
 override map and the refusal apply everywhere at once (docs/admin/release-guardrails.md).
 */ -}}
@@ -90,6 +92,7 @@ override map and the refusal apply everywhere at once (docs/admin/release-guardr
 {{- if hasKey $g "required" }}{{ $required = $g.required }}{{ end -}}
 {{- $o := index $overrides $g.name -}}
 {{- if and $o (kindIs "map" $o) (hasKey $o "required") }}{{ $required = index $o "required" }}{{ end -}}
+{{- if and (eq $g.name "itsm") (hasKey $.Values "itsm") }}{{ $_ := set $g "status" (ternary "stub" "real" (eq ($.Values.itsm.provider | default "none") "none")) }}{{ end -}}
 {{- if eq ($g.status | default "real") "stub" }}{{ $required = true }}{{ end -}}
 {{- if and (not $required) (has $g.name (list "sast" "provenance")) -}}
 {{- fail (printf "releaseGuardrails: %s cannot be required: false - it verifies the image's integrity and must enforce, not advise (docs/admin/release-guardrails.md)" $g.name) -}}
@@ -111,4 +114,46 @@ A gate missing from the registry is "true" (nothing has made it advisory).
 {{- if eq .name $.gate }}{{ $required = .required }}{{ end -}}
 {{- end -}}
 {{- ternary "true" "false" $required -}}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.itsmEnabled: "true" when a change-management provider is configured (.Values.itsm.provider is
+servicenow or webhook), else "false". The lifecycle tasks (open-release-pr's change creation, bypass-merge-check's
+itsm-implement, the outcome pipelines' itsm-close) and the real itsm gate render only when true.
+*/ -}}
+{{- define "glidepath-catalog.itsmEnabled" -}}
+{{- $p := .Values.itsm.provider | default "none" -}}
+{{- if or (eq $p "servicenow") (eq $p "webhook") }}true{{ else }}false{{ end -}}
+{{- end -}}
+
+{{- /* glidepath-catalog.itsmEnv: the env entries files/lib/itsm.sh reads, for a step's `env:` list. */ -}}
+{{- define "glidepath-catalog.itsmEnv" -}}
+- name: ITSM_PROVIDER
+  value: {{ .Values.itsm.provider | default "none" | quote }}
+- name: ITSM_SERVICENOW_URL
+  value: {{ .Values.itsm.servicenow.instanceUrl | default "" | quote }}
+- name: ITSM_SERVICENOW_APPROVED_STATES
+  value: {{ join "," (.Values.itsm.servicenow.approvedStates | default (list "-2" "-1")) | quote }}
+- name: ITSM_WEBHOOK_URL
+  value: {{ .Values.itsm.webhook.url | default "" | quote }}
+- name: ITSM_CREDENTIALS_DIR
+  value: /var/run/secrets/itsm
+{{- end -}}
+
+{{- /* glidepath-catalog.itsmVolume / itsmVolumeMount: the optional credentials Secret, for a Task's volumes and a step's volumeMounts. */ -}}
+{{- define "glidepath-catalog.itsmVolume" -}}
+- name: itsm-credentials
+  secret:
+    secretName: {{ .Values.itsm.credentialsSecret | default "itsm-credentials" }}
+    optional: true
+{{- end -}}
+{{- define "glidepath-catalog.itsmVolumeMount" -}}
+- name: itsm-credentials
+  mountPath: /var/run/secrets/itsm
+  readOnly: true
+{{- end -}}
+
+{{- /* glidepath-catalog.itsmLib: files/lib/itsm.sh, to splice into a step script after its `source` lines. */ -}}
+{{- define "glidepath-catalog.itsmLib" -}}
+{{ .Files.Get "files/lib/itsm.sh" }}
 {{- end -}}

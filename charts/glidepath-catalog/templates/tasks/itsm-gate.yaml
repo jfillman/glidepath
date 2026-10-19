@@ -1,0 +1,129 @@
+# catalog/tasks/itsm-gate.yaml
+#
+# The real `itsm` gate (docs/admin/change-management.md): the release PR's change request must exist in the
+# change tool and be approved or scheduled. The change was created by open-release-pr when the PR opened and its
+# id is on the release record (release-tracking-<chain-id>, changeRequestId) in this namespace; the PR body
+# carries the same id in a hidden marker, the fallback for a record that was swept or a PR made by hand with a
+# change someone linked. Fails naming the change and its state; comment-pr adds the recommendation. Rendered
+# into itsm-check.yaml only when a provider is configured (otherwise that Pipeline stays the loud stub).
+#
+# The gate never creates or moves a change: it reads. Approval is the change tool's own judgement
+# (files/lib/itsm.sh: ServiceNow approval == approved or state in itsm.servicenow.approvedStates; the webhook
+# adapter's `approved`).
+{{- if eq (include "glidepath-catalog.itsmEnabled" .) "true" }}
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: itsm-gate
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Verifies that the change request linked to a gitops release PR exists in the change tool and is approved or scheduled.
+  params:
+    - name: repo-url
+      type: string
+      description: The gitops repo's own URL - PaC's repo_url.
+    - name: pr-number
+      type: string
+      default: ""
+      description: PaC's body.pull_request.number; resolved from the revision when it arrives unsubstituted (a /retest).
+    - name: revision
+      type: string
+      default: ""
+      description: The PR's head commit - PaC's revision.
+  results:
+    - name: findings-summary
+      description: One line for the PR comment - the change, its state and its link.
+    - name: change-request-number
+      description: The change request's human id (CHG...), or empty.
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+    {{- include "glidepath-catalog.itsmVolume" . | nindent 4 }}
+  steps:
+    - name: verify
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+        {{- include "glidepath-catalog.itsmVolumeMount" . | nindent 8 }}
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: PR_NUMBER
+          value: $(params.pr-number)
+        - name: REVISION
+          value: $(params.revision)
+        - name: NAMESPACE
+          value: $(context.taskRun.namespace)
+        {{- include "glidepath-catalog.itsmEnv" . | nindent 8 }}
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        {{- include "glidepath-catalog.itsmLib" . | nindent 8 }}
+
+        owner="$(sed -E 's#https?://github\.com/([^/]+)/.*#\1#' <<<"${REPO_URL}")"
+        repo="$(sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#' <<<"${REPO_URL}")"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+
+        # A /retest fires an issue_comment webhook whose payload has no pull_request, so PaC leaves the
+        # template string in place - same fallback comment-pr-check-result.yaml uses.
+        if ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+          PR_NUMBER="$(curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/pulls" | jq -r '.[0].number // empty')"
+          [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] || { echo "error: could not resolve the PR number for ${REVISION}" >&2; exit 1; }
+        fi
+        pr_url="https://github.com/${owner}/${repo}/pull/${PR_NUMBER}"
+
+        # The release record first (open-release-pr wrote the change there), the PR body's marker second.
+        record="$(kubectl get configmap -n "${NAMESPACE}" -l hangar.io/subcomponent=release-tracking -o json 2>/dev/null \
+          | jq -r --arg u "${pr_url}" '[.items[] | select(.data.prUrl == $u)] | .[0].metadata.name // empty')"
+        change_id=""
+        if [[ -n "${record}" ]]; then
+          change_id="$(kubectl get configmap "${record}" -n "${NAMESPACE}" -o jsonpath='{.data.changeRequestId}')"
+        fi
+        if [[ -z "${change_id}" ]]; then
+          change_id="$(curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${owner}/${repo}/pulls/${PR_NUMBER}" \
+            | jq -r '.body // ""' | sed -nE 's/.*<!-- glidepath:change-request:([^ ]+) -->.*/\1/p' | head -1)"
+        fi
+        if [[ -z "${change_id}" ]]; then
+          echo "error: no change request is linked to ${pr_url}: the release record in ${NAMESPACE} has no changeRequestId and the PR body carries no glidepath:change-request marker. open-release-pr creates one when ${ITSM_PROVIDER} is configured; for a PR made by hand, add '<!-- glidepath:change-request:<id> -->' to its body and /retest itsm-." >&2
+          exit 1
+        fi
+
+        change="$(itsm_get "${change_id}")"
+        number="$(jq -r '.number' <<<"${change}")"
+        state="$(jq -r '.state' <<<"${change}")"
+        approval="$(jq -r '.approval' <<<"${change}")"
+        url="$(jq -r '.url' <<<"${change}")"
+        printf '%s' "${number}" > "$(results.change-request-number.path)"
+
+        if [[ -n "${record}" ]]; then
+          kubectl patch configmap "${record}" -n "${NAMESPACE}" --type merge \
+            -p "$(jq -n --arg s "${state}" --arg a "${approval}" '{data: {changeRequestState: $s, changeRequestApproval: $a}}')" >/dev/null 2>&1 || true
+        fi
+
+        if itsm_approved "${change}"; then
+          summary="Change ${number} is approved (state ${state}, approval ${approval}): ${url}"
+          echo "${summary}"
+          printf '%s' "${summary}" > "$(results.findings-summary.path)"
+          exit 0
+        fi
+        printf '%s' "Change ${number} is not approved (state ${state}, approval ${approval}): ${url}" > "$(results.findings-summary.path)"
+        echo "error: change ${number} for ${pr_url} is in state '${state}' with approval '${approval}' - not approved or scheduled. Get it approved in ${ITSM_PROVIDER} (${url}), then comment /retest itsm- on the PR." >&2
+        exit 1
+{{- end }}

@@ -34,6 +34,12 @@ spec:
       description: The release PR's URL, or empty if not found.
     - name: pr-created-at
       description: When the release PR was created, or empty if not found.
+    - name: change-request-id
+      description: The release's change request in the change tool (provider id), or empty (docs/admin/change-management.md).
+    - name: change-request-number
+      description: The change request's human id (CHG...), or empty.
+    - name: change-request-url
+      description: A link to the change request, or empty.
   steps:
     - name: resolve
       image: {{ .Values.toolboxImage }}
@@ -52,12 +58,16 @@ spec:
 
         pr_url=""
         pr_created_at=""
+        change_id=""; change_number=""; change_url=""
 
         if [[ -n "${CHAIN_ID}" ]]; then
           cm_name="release-tracking-${CHAIN_ID}"
           if kubectl get configmap "${cm_name}" -n "${NAMESPACE}" >/dev/null 2>&1; then
             pr_url="$(kubectl get configmap "${cm_name}" -n "${NAMESPACE}" -o jsonpath='{.data.prUrl}' 2>/dev/null || true)"
             pr_created_at="$(kubectl get configmap "${cm_name}" -n "${NAMESPACE}" -o jsonpath='{.data.prCreatedAt}' 2>/dev/null || true)"
+            change_id="$(kubectl get configmap "${cm_name}" -n "${NAMESPACE}" -o jsonpath='{.data.changeRequestId}' 2>/dev/null || true)"
+            change_number="$(kubectl get configmap "${cm_name}" -n "${NAMESPACE}" -o jsonpath='{.data.changeRequestNumber}' 2>/dev/null || true)"
+            change_url="$(kubectl get configmap "${cm_name}" -n "${NAMESPACE}" -o jsonpath='{.data.changeRequestUrl}' 2>/dev/null || true)"
           else
             echo "no release-tracking ConfigMap for chain-id '${CHAIN_ID}' (already consumed, TTL-swept, or this release predates the mechanism) - pr-url/pr-created-at will be empty." >&2
           fi
@@ -69,3 +79,7 @@ spec:
         echo "pr-url=${pr_url}"
         printf '%s' "${pr_created_at}" > "$(results.pr-created-at.path)"
         echo "pr-created-at=${pr_created_at}"
+        printf '%s' "${change_id}" > "$(results.change-request-id.path)"
+        printf '%s' "${change_number}" > "$(results.change-request-number.path)"
+        printf '%s' "${change_url}" > "$(results.change-request-url.path)"
+        echo "change-request=${change_number:-none}"

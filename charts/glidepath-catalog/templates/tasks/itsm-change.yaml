@@ -1,0 +1,140 @@
+# catalog/tasks/itsm-change.yaml
+#
+# Moves a release's change request through its lifecycle after the PR opened (docs/admin/change-management.md).
+# One Task, three actions, each finding the release record first (release-tracking-<chain-id>, where
+# open-release-pr wrote changeRequestId) and doing nothing, successfully, when there is no record or no change:
+#
+#   implement         the gitops PR merged (bypass-merge-check, after mark-release-merged): state Implement.
+#   close-outcome     the relay reported the release's outcome (release-outcome-notify): Succeeded closes the
+#                     change successful; Failed adds a work note and leaves it open, since a degraded release can
+#                     still recover to healthy (then the success closes it) or be rolled back (then close-rolled-back).
+#   close-rolled-back the relay reported service.rolledback for the rollback release named by chain-id
+#                     (release-rollback-notify): the change of the release it replaced (rollbackOf) is closed
+#                     unsuccessful, with the rollback's own emergency change linked as the related change.
+#
+# Each writes what it did to the record (changeRequestState), so Tower's Release Record can show it. Called
+# with onError: continue by every Pipeline: a change tool that is down must not break the bypass check or the
+# outcome notifications, and the failed TaskRun still shows. Rendered only when a provider is configured.
+{{- if eq (include "glidepath-catalog.itsmEnabled" .) "true" }}
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: itsm-change
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Moves a release's change request to implementing or closes it, from the release record.
+  params:
+    - name: action
+      type: string
+      description: implement | close-outcome | close-rolled-back
+    - name: repo-url
+      type: string
+      default: ""
+      description: implement - the gitops repo's URL, with pr-number, to find the record by its PR.
+    - name: pr-number
+      type: string
+      default: ""
+    - name: chain-id
+      type: string
+      default: ""
+      description: close-* - the release's chain-id (close-rolled-back - the ROLLBACK release's).
+    - name: status
+      type: string
+      default: ""
+      description: close-outcome - Succeeded or Failed, from the outcome event.
+  results:
+    - name: change-request-number
+      description: The change request acted on (CHG...), or empty.
+  volumes:
+    {{- include "glidepath-catalog.itsmVolume" . | nindent 4 }}
+  steps:
+    - name: change
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      volumeMounts:
+        {{- include "glidepath-catalog.itsmVolumeMount" . | nindent 8 }}
+      env:
+        - name: ACTION
+          value: $(params.action)
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: PR_NUMBER
+          value: $(params.pr-number)
+        - name: CHAIN_ID
+          value: $(params.chain-id)
+        - name: STATUS
+          value: $(params.status)
+        - name: NAMESPACE
+          value: $(context.taskRun.namespace)
+        {{- include "glidepath-catalog.itsmEnv" . | nindent 8 }}
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        {{- include "glidepath-catalog.itsmLib" . | nindent 8 }}
+
+        printf '' > "$(results.change-request-number.path)"
+
+        # record_by_pr <repo-url> <pr-number> / record_by_chain <chain-id> -> the ConfigMap name, or empty
+        record_by_pr() {
+          local slug; slug="$(sed -E 's#^https?://github\.com/([^/]+/[^/.]+)(\.git)?/?$#\1#' <<<"$1")"
+          kubectl get configmap -n "${NAMESPACE}" -l hangar.io/subcomponent=release-tracking -o json \
+            | jq -r --arg u "https://github.com/${slug}/pull/$2" '[.items[] | select(.data.prUrl == $u)] | .[0].metadata.name // empty'
+        }
+        record_by_chain() {
+          kubectl get configmap "release-tracking-$1" -n "${NAMESPACE}" -o name 2>/dev/null | sed 's#^configmap/##'
+        }
+        field() { kubectl get configmap "$1" -n "${NAMESPACE}" -o jsonpath="{.data.$2}" 2>/dev/null || true; }
+        note_record() { # <record> <changeRequestState> [extra json object]
+          local extra="${3:-}"; [[ -n "${extra}" ]] || extra='{}'
+          kubectl patch configmap "$1" -n "${NAMESPACE}" --type merge \
+            -p "$(jq -n --arg s "$2" --argjson extra "${extra}" '{data: ({changeRequestState: $s} + $extra)}')" >/dev/null
+        }
+
+        case "${ACTION}" in
+          implement)
+            record="$(record_by_pr "${REPO_URL}" "${PR_NUMBER}")"
+            [[ -n "${record}" ]] || { echo "no release record for ${REPO_URL} PR ${PR_NUMBER} in ${NAMESPACE} - nothing to implement."; exit 0; }
+            change_id="$(field "${record}" changeRequestId)"
+            [[ -n "${change_id}" ]] || { echo "${record} has no change request (created before change management, or the change tool was unreachable) - nothing to implement."; exit 0; }
+            change="$(itsm_implement "${change_id}" "Release PR merged: $(field "${record}" prUrl). Deploying $(field "${record}" image) to $(field "${record}" cluster)/$(field "${record}" env).")"
+            note_record "${record}" implementing
+            echo "${record}: change $(jq -r .number <<<"${change}") -> implementing"
+            jq -r .number <<<"${change}" | tr -d '\n' > "$(results.change-request-number.path)"
+            ;;
+          close-outcome)
+            record="$(record_by_chain "${CHAIN_ID}")"
+            [[ -n "${record}" ]] || { echo "no release record for chain-id '${CHAIN_ID}' in ${NAMESPACE} - nothing to close."; exit 0; }
+            change_id="$(field "${record}" changeRequestId)"
+            [[ -n "${change_id}" ]] || { echo "${record} has no change request - nothing to close."; exit 0; }
+            where="$(field "${record}" image) on $(field "${record}" cluster)/$(field "${record}" env)"
+            if [[ "${STATUS}" == "Succeeded" ]]; then
+              change="$(itsm_close "${change_id}" successful "Release healthy: ${where}.")"
+              note_record "${record}" closed-successful
+              echo "${record}: change $(jq -r .number <<<"${change}") closed successful"
+            else
+              change="$(itsm_note "${change_id}" "Deployment reported ${STATUS}: ${where}. The change stays open until the release recovers or is rolled back.")"
+              note_record "${record}" implementing-failed
+              echo "${record}: change $(jq -r .number <<<"${change}") noted ${STATUS}, left open"
+            fi
+            jq -r .number <<<"${change}" | tr -d '\n' > "$(results.change-request-number.path)"
+            ;;
+          close-rolled-back)
+            rollback="$(record_by_chain "${CHAIN_ID}")"
+            [[ -n "${rollback}" ]] || { echo "no release record for rollback chain-id '${CHAIN_ID}' in ${NAMESPACE} - nothing to close."; exit 0; }
+            rollback_of="$(field "${rollback}" rollbackOf)"   # <chain-id>:<cluster>/<env>
+            [[ -n "${rollback_of}" ]] || { echo "${rollback} names no rollbackOf - nothing to close."; exit 0; }
+            original="$(record_by_chain "${rollback_of%%:*}")"
+            [[ -n "${original}" ]] || { echo "no release record for the rolled-back release ${rollback_of} - nothing to close."; exit 0; }
+            change_id="$(field "${original}" changeRequestId)"
+            [[ -n "${change_id}" ]] || { echo "${original} has no change request - nothing to close."; exit 0; }
+            rollback_change="$(field "${rollback}" changeRequestNumber)"
+            change="$(itsm_close "${change_id}" unsuccessful "Rolled back: $(field "${rollback}" image) restored on $(field "${rollback}" cluster)/$(field "${rollback}" env)${rollback_change:+ by emergency change ${rollback_change}}. Reason: $(field "${rollback}" rollbackReason)" "${rollback_change}")"
+            note_record "${original}" closed-unsuccessful "$(jq -n --arg r "${rollback_change}" '{rolledBackByChange: $r}')"
+            echo "${original}: change $(jq -r .number <<<"${change}") closed unsuccessful (rolled back by ${rollback_change:-a release without a change})"
+            jq -r .number <<<"${change}" | tr -d '\n' > "$(results.change-request-number.path)"
+            ;;
+          *) echo "error: action must be implement, close-outcome or close-rolled-back, got '${ACTION}'" >&2; exit 1 ;;
+        esac
+{{- end }}

@@ -1,10 +1,9 @@
-# STUB - see docs/admin/governance-stubs.md and docs/admin/release-guardrails.md.
-# References the shared governance-check Pipeline (gate-name: itsm), which calls
-# governance-gate-stub - loud "no real check implemented yet" logging + a stub span,
-# never a silent pass (ADR-0003). Intended real behavior: open (and likely wait on
-# approval of) a ServiceNow Change Request for this release. Swap for a dedicated
-# Pipeline once that integration is built - see governance-stubs.md's "Landing a real
-# implementation" section; nothing else about this file's shape needs to change.
+# The real `itsm` gate - see docs/admin/change-management.md and docs/admin/release-guardrails.md.
+# References the itsm-check Pipeline: with a change tool configured in the catalog
+# (itsm.provider servicenow or webhook) it verifies the release's change request is
+# approved or scheduled; with none it is governance-gate-stub, the loud "no real check
+# implemented yet" stub (ADR-0003), never a silent pass. Until 2026-10-19 this file
+# pointed at the shared governance-check Pipeline with gate-name itsm.
 #
 # No <APP_NAMESPACE> substitution or workspace needed (an <APP_NAME> substitution now exists, for the hangar.io/app label below) - same reasons as
 # pull-request-sast.yaml. pr-number feeds the finally-block PR comment.
@@ -24,10 +23,9 @@ spec:
     resolver: cluster
     params:
       - { name: kind, value: pipeline }
-      - { name: name, value: governance-check }
+      - { name: name, value: itsm-check }
       - { name: namespace, value: platform-catalog }
   params:
-    - { name: gate-name, value: itsm }
     - { name: repo-url, value: "{{ repo_url }}" }
     - { name: revision, value: "{{ revision }}" }
     - { name: pr-number, value: "{{ body.pull_request.number }}" }

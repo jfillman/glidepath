@@ -4,11 +4,12 @@
 [features.md](../user/features.md#governance-gates---real-not-stubs) for what each one
 actually verifies (Semgrep, Trivy, gitsign commit-signature verification, cosign SBOM
 attestation), and so is `qa` since 2026-10-19 (a check ride read from the promoted
-image's test provenance, [testing.md](testing.md)). `itsm` and `policy-validation` are the remaining stub
-gates, not yet real (`image-promotion` was one until ADR-0025 retired it, 2026-10-09, and
-`qa` was one until it graduated) - see [release-guardrails.md](release-guardrails.md) for what each
-is intended to verify and the registry (`.Values.releaseGuardrails`) that drives the
-full current gate list. This doc covers the mechanism that got the first four there,
+image's test provenance, [testing.md](testing.md)). `itsm` is real once the catalog names a change tool
+([change-management.md](change-management.md), 2026-10-19) and this stub until then;
+`policy-validation` is the remaining stub gate, not yet real (`image-promotion` was one until
+ADR-0025 retired it, 2026-10-09, and `qa` was one until it graduated) - see
+[release-guardrails.md](release-guardrails.md) for what each is intended to verify and the
+registry (`.Values.releaseGuardrails`) that drives the full current gate list. This doc covers the mechanism that got the first four there,
 and that any future gate should reuse: **a stub is never reported with the same
 confidence as a real check** - see ADR-0003 for why that matters enough to be a
 standing design rule, not just a one-time migration detail.

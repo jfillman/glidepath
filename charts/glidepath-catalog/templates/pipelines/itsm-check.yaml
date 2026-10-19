@@ -1,0 +1,80 @@
+# catalog/pipelines/itsm-check.yaml
+#
+# The `itsm` gate's Pipeline (docs/admin/change-management.md). Referenced from the gitops repo's
+# .tekton/pull-request-itsm.yaml onboarding template. Two renderings, decided by the catalog's itsm.provider:
+#
+#   none (default)         one task, governance-gate-stub with gate-name itsm: the loud stub (ADR-0003), never a
+#                          silent pass. A repo onboarded before this Pipeline existed still points at
+#                          governance-check, which is the same stub.
+#   servicenow | webhook   itsm-gate verifies the release's change request is approved or scheduled. The
+#                          registry's `required` for itsm (docs/admin/release-guardrails.md) picks the hard task
+#                          or the -advisory copy (onError: continue, advisory-reason not-required). The gate has
+#                          no rollback case: a rollback's own emergency change must be approved like any other.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: itsm-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+    {{- if ne (include "glidepath-catalog.itsmEnabled" .) "true" }}
+    hangar.io/stub: "true"
+    {{- end }}
+spec:
+  description: Verifies that the release PR's change request is approved or scheduled in the configured change tool; the loud stub while none is configured.
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+      default: ""
+    - name: pr-number
+      type: string
+      default: ""
+      description: "PaC's raw pull_request.number webhook body field - finds the release record and addresses the finally-block PR comment."
+  tasks:
+    {{- if ne (include "glidepath-catalog.itsmEnabled" .) "true" }}
+    - name: check
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: governance-gate-stub }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: gate-name, value: itsm }
+    {{- else }}
+    {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "itsm")) "true" }}
+    - name: {{ ternary "verify-change" "verify-change-advisory" $required }}
+      {{- if not $required }}
+      onError: continue
+      {{- end }}
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: itsm-gate }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+    {{- end }}
+  finally:
+    - name: comment-pr
+      when:
+        - { input: $(params.pr-number), operator: notin, values: [""] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: comment-pr-check-result }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: gate-name, value: itsm }
+        - { name: advisory-reason, value: "not-required" }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: status, value: $(tasks.status) }

@@ -57,3 +57,19 @@ spec:
         - { name: image-ref, value: $(params.image-ref) }
         - { name: env, value: $(params.env) }
         - { name: chain-id, value: $(params.chain-id) }
+    {{- if eq (include "glidepath-catalog.itsmEnabled" .) "true" }}
+
+    # Change management (docs/admin/change-management.md): the change of the release this rollback replaced is
+    # closed unsuccessful, with the rollback's emergency change as the related change.
+    - name: itsm-close-rolled-back
+      onError: continue
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: itsm-change }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: action, value: close-rolled-back }
+        - { name: chain-id, value: $(params.chain-id) }
+    {{- end }}

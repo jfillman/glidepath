@@ -29,6 +29,7 @@ nav:
       - Release & operations:
           - Release flow: admin/release.md
           - Release guardrails: admin/release-guardrails.md
+          - Change management: admin/change-management.md
           - Catalog versioning: admin/catalog-versioning.md
           - PipelineRun pruner: admin/pipelinerun-pruner.md
           - Stalled pipeline detector: admin/stalled-pipeline-detector.md

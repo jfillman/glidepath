@@ -42,7 +42,10 @@ GitHub setting - see "Branch protection" below.
 
 **A. Independent stub or real check (the common case)** - most gates (sast, image-scan,
 provenance, sbom, itsm, qa, policy-validation) run in parallel off the same PR
-webhook, with no dependency on each other's outcome:
+webhook, with no dependency on each other's outcome. (`itsm`, since 2026-10-19, is a third shape:
+its Pipeline `itsm-check` renders as the stub while the catalog names no change tool and as the real
+gate once `itsm.provider` is set, so the onboarding template never changes, see
+[change-management.md](change-management.md).)
 
 - **Stub, fully generic (least effort)**: add one onboarding template file,
   `charts/glidepath-app/files/onboarding-templates/gitops-repo/pull-request-<name>.yaml`,
@@ -148,7 +151,8 @@ gate advisory for one release. On GitHub Free a failed check still cannot block 
 (GATE-03), so `required: true` makes a bypass detectable (GATE-04), not impossible; re-run the
 ruleset script after changing it so the required status checks match.
 
-Today `qa` is the one advisory gate: report-only while every app gets its check ride
+`itsm` is required by default once a change tool is configured; a cluster that wants to ease into
+change management sets it advisory the same way. Today `qa` is the one advisory gate: report-only while every app gets its check ride
 ([testing.md](testing.md)); flip it once every app with a Flight environment has
 `apps/<app>/check-ride.yaml` in the check-rides repository and a `role: check-ride` test step.
 
@@ -161,7 +165,7 @@ Today `qa` is the one advisory gate: report-only while every app gets its check 
 | `provenance` | Commit signature (gitsign) + SLSA provenance (Conforma) | real | yes (locked) |
 | `sbom` | Software bill of materials | real | yes |
 | `values` | Values-file validation by the validator image (Airframe's by default); check `Pipelines as Code CI / values-` | real | yes |
-| `itsm` | ServiceNow Change Request | stub | (ignored) |
+| `itsm` | An approved or scheduled change request for the release in the change tool ([change-management.md](change-management.md)) | stub until `itsm.provider` is set, then real | yes once real |
 | `qa` | A passing, recent check ride from the shared check-rides repository, attested on the promoted image ([testing.md](testing.md)) | real | no (advisory) |
 | `policy-validation` | Gatekeeper/Kyverno admission-policy validation of the rendered manifest | stub | (ignored) |
 
