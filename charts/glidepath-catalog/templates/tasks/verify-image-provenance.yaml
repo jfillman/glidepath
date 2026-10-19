@@ -21,6 +21,15 @@
 # release-guardrails.md's "known open issue"): cosign uses the Rekor entry's own
 # integrated timestamp to prove the signing cert was valid AT SIGNING TIME, instead of
 # checking cert validity against current (release-PR) time.
+#
+# Live incident 2026-10-19: this Task took the signing cert from `.layers[0]` of the
+# image's `.att` manifest for EVERY attestation line. boarding-api 2.0.0-926d566 carried
+# five layers (build provenance, four test provenances from the test framework's check
+# rides, an SBOM bundle), each under its own 10-minute Fulcio cert, and `cosign download
+# attestation` does not emit them in layer order - so cosign failed with "transparency
+# log certificate does not match" on every line but one and `provenance` went red on
+# gitops-boarding-api#70. Fixed by pairing each line to its layer by envelope signature,
+# the block qa-gate.yaml already used (see the comment at that block below).
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -220,6 +229,7 @@ spec:
 
         att_token=""
         i=0
+        layer_count=0
         provenance_files=()
         while IFS= read -r line; do
           is_bundle="$(jq -r 'has("dsseEnvelope")' <<<"${line}")"
@@ -237,15 +247,48 @@ spec:
             cert_der_b64="$(jq -r '.verificationMaterial.certificate.rawBytes' <<<"${line}")"
             sig_b64="$(jq -r '.dsseEnvelope.signatures[0].sig' <<<"${line}")"
           else
+            # The .att manifest has one layer per attestation, each signed under its own
+            # short-lived Fulcio cert. Take THIS line's layer's cert, not layer 0's: a
+            # digest with test provenances on it (every image a check ride ran against -
+            # the normal case since the test framework's phase 1) has several. Confirmed
+            # live 2026-10-19 on boarding-api 2.0.0-926d566: five layers, five certs, and
+            # the layer-0 shortcut failed cosign with "transparency log certificate does
+            # not match" on every layer but the first (gitops-boarding-api#70). `cosign
+            # download attestation` does not emit the layers in manifest order (checked
+            # with cosign 3.1.3: the SBOM bundle first, then the legacy layers shuffled),
+            # and a layer's signature annotation is empty for an attestation (the
+            # signature lives in the DSSE envelope), so the pairing is by the envelope
+            # signature: each layer blob is read once and indexed by its signature, and a
+            # line whose signature matches no layer is a hard failure, never a fallback
+            # to another layer's cert. Same block as qa-gate.yaml's - duplicated, not
+            # shared, per this file's header.
             if [[ -z "${att_token}" ]]; then
               att_token="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 ${registry_auth:+-u "${registry_auth}"} "https://${registry}/token?service=${registry}&scope=repository:${repo}:pull" | jq -r '.token')"
+              att_manifest="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 -H "Authorization: Bearer ${att_token}" \
+                -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+                "https://${registry}/v2/${repo}/manifests/sha256-${digest#sha256:}.att")"
+              layer_count="$(jq '.layers | length' <<<"${att_manifest}")"
+              for ((n = 0; n < layer_count; n++)); do
+                layer_digest="$(jq -r --argjson n "${n}" '.layers[$n].digest' <<<"${att_manifest}")"
+                curl -fsSL -L --retry 3 --retry-connrefused --max-time 15 -H "Authorization: Bearer ${att_token}" \
+                  "https://${registry}/v2/${repo}/blobs/${layer_digest}" \
+                  | jq -r '.signatures[0].sig // empty' > "${att_dir}/layer-sig-${n}.txt"
+              done
             fi
-            att_manifest="$(curl -fsSL --retry 3 --retry-connrefused --max-time 15 -H "Authorization: Bearer ${att_token}" \
-              -H "Accept: application/vnd.oci.image.manifest.v1+json" \
-              "https://${registry}/v2/${repo}/manifests/sha256-${digest#sha256:}.att")"
-            cert_pem="$(jq -r '.layers[0].annotations["dev.sigstore.cosign/certificate"]' <<<"${att_manifest}")"
-            cert_der_b64="$(echo "${cert_pem}" | openssl x509 -outform DER | base64 | tr -d '\n')"
             sig_b64="$(jq -r '.signatures[0].sig' <<<"${line}")"
+            layer_index=""
+            for ((n = 0; n < layer_count; n++)); do
+              if [[ -n "${sig_b64}" && "$(cat "${att_dir}/layer-sig-${n}.txt")" == "${sig_b64}" ]]; then
+                layer_index="${n}"
+                break
+              fi
+            done
+            if [[ -z "${layer_index}" ]]; then
+              echo "FAIL: an attestation on ${image_ref} matches none of the ${layer_count} layers of its .att manifest by envelope signature - cannot pair it with its signing certificate." >&2
+              exit 1
+            fi
+            cert_pem="$(jq -r --argjson n "${layer_index}" '.layers[$n].annotations["dev.sigstore.cosign/certificate"]' <<<"${att_manifest}")"
+            cert_der_b64="$(echo "${cert_pem}" | openssl x509 -outform DER | base64 | tr -d '\n')"
           fi
           payload_type="$(jq -r 'if has("dsseEnvelope") then .dsseEnvelope.payloadType else .payloadType end' <<<"${line}")"
 

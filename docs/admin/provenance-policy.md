@@ -545,6 +545,14 @@ cert, a real Rekor entry (`logIndex: 1`, this cluster's first), fetched back
 independently from `rekor-server`'s own API, and `cosign verify-blob
 --insecure-ignore-tlog=false` returning `Verified OK` against it.
 
+**Several attestations per digest (2026-10-19).** A digest carries one `.att` layer per attestation (build
+provenance, one test provenance per check ride, the SBOM bundle), each signed under its own Fulcio cert, and
+`cosign download attestation` does not emit them in layer order. `verify-image-provenance`,
+`verify-sast-attestation` and `qa-gate` therefore pair every downloaded attestation to its layer by the DSSE
+envelope signature (`.signatures[0].sig`, indexed from each layer blob once) and take that layer's certificate;
+an attestation matching no layer fails the gate. Taking `.layers[0]`'s cert for every line was the bug behind
+`sast`/`provenance` failing with "transparency log certificate does not match" on boarding-api 2.0.0-926d566.
+
 ## A real, unrelated incident hit mid-testing: the cluster's disk filled to 100%
 
 While re-verifying the two gap-closure fixes, a `deploy` PipelineRun died mid-run with
