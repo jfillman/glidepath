@@ -126,9 +126,21 @@ sigstoreIssuers:
 # depends on. A `role: check-ride` test step runs <app>-<workflowName> from the shared
 # check-rides repository, synced into Testkube's namespace by Argo CD (the cluster
 # repo's 50-glidepath/check-rides), never a file from the app repo. Its passing run is
-# attested onto the image through Tekton Chains and read by the qa gate.
+# attested onto the image through Tekton Chains and read by the qa gate (below).
 checkRide:
   workflowName: check-ride
+
+# The qa gate (docs/admin/testing.md, phase 3): what counts as a passing check ride in the
+# promoted image's test provenance. qa-gate.yaml reads these as its param defaults.
+qa:
+  # The Argo CD Application that syncs the check-rides repository into Testkube's namespace
+  # (the cluster repo's 50-glidepath/check-rides). A ride counts only when run-testworkflow
+  # recorded workflow-source "argocd:<this name>" - the fence: never a workflow from the app repo.
+  checkRidesApplication: check-rides
+  # How old the newest passing check ride may be, from the attestation's Rekor integration
+  # time (the provenance's buildFinishedOn only if the entry has none) to the gate's run.
+  # Ns, Nm, Nh or Nd. A rollback to an eligible target is advisory and not held to this.
+  maxAge: 72h
 
 releaseGuardrails:
   - name: sast
@@ -159,9 +171,9 @@ releaseGuardrails:
     status: stub
     class: process
   - name: qa
-    description: Test-completion verification
-    status: stub
-    class: process
+    description: A passing, recent check ride from the shared check-rides repository, attested on the promoted image
+    status: real
+    class: content
   - name: policy-validation
     description: Gatekeeper/Kyverno admission-policy validation of the rendered manifest
     status: stub

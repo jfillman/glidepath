@@ -17,7 +17,7 @@ deploy (dev) succeeds
      open-release-pr.yaml) - this is where the automated part of the flow ends; the
      flow-root trace closes here (see docs/tracing.md)
   -> the release-guardrail GitHub Checks run on that PR, one per gate in
-     .Values.releaseGuardrails (sast/image-scan/provenance/sbom/values real, itsm/qa/
+     .Values.releaseGuardrails (sast/image-scan/provenance/sbom/values/qa real, itsm/
      policy-validation still stubs - see
      [release-guardrails.md](release-guardrails.md)/[governance-stubs.md](governance-stubs.md)),
      each individually re-triggerable and independent of the others (the
@@ -277,7 +277,8 @@ Phase 3 item 8.6, and [release-guardrails.md](release-guardrails.md) for the mec
 and current gate list). `sast`/`image-scan`/`provenance`/`sbom` are real as of Phase 3
 items 8.4/8.5/item 2/item 8.7 (see that item's own "cosign `--ca-roots` deprecation"
 fallout note in [provenance-policy.md](provenance-policy.md) for a still-unresolved edge
-case, not a stub); `itsm`/`qa`/`policy-validation` are still stubs. All run
+case, not a stub), and so is `qa` since 2026-10-19 (a check ride read from the promoted
+image's test provenance, [testing.md](testing.md)); `itsm`/`policy-validation` are still stubs. All run
 independently of each other (`image-promotion`, which waited on the rest, was retired
 2026-10-09 - see that doc's "Two shapes" section and ADR-0025).
 

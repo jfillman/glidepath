@@ -1,16 +1,12 @@
-# STUB, but with its own dedicated Pipeline (unlike itsm/policy-validation, which still
-# share governance-check) - see docs/admin/governance-stubs.md and
-# docs/admin/release-guardrails.md. References the qa-check Pipeline, which calls
-# qa-gate.yaml, which itself still calls governance-gate-stub's shared machinery under
-# the hood - loud "no real check implemented yet" logging + a stub span, never a silent
-# pass (ADR-0003). Intended real behavior: verify the required TestWorkflow actually ran
-# and passed for the commit being promoted (mechanism TBD - likely reading the test
-# stage's own recorded outcome rather than re-running tests here). Landing that is now a
-# one-file change to qa-gate.yaml's own step - see that Task's own header for why it's
-# already shaped to receive it; nothing about this onboarding template needs to change.
+# BOILERPLATE - real (not stub) since 2026-10-19. See pull-request-sast.yaml for the full
+# pattern explanation. References the dedicated qa-check Pipeline, which resolves the
+# promoted image and verifies, from that image's own Chains-signed test provenance, that
+# a check ride from the shared check-rides repository ran against it and passed recently
+# (docs/admin/testing.md, phase 3; policy in the catalog's qa.* values).
 #
 # No <APP_NAMESPACE> substitution or workspace needed (an <APP_NAME> substitution now exists, for the hangar.io/app label below) - same reasons as
-# pull-request-sast.yaml. pr-number feeds the finally-block PR comment.
+# pull-request-sast.yaml. pr-number anchors the promoted-image lookup and feeds the
+# finally-block PR comment.
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:

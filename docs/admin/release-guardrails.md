@@ -44,14 +44,12 @@ webhook, with no dependency on each other's outcome:
   real shape isn't known yet.
 - **Stub, dedicated (scaffolded for graduation)**: if you already know roughly what the
   gate will eventually need to check, give it its own Pipeline+Task *now*, still calling
-  `governance-stub` under the hood - see `qa-check.yaml`/`qa-gate.yaml` for the pattern.
-  Same honest stub behavior and `status: stub` as the fully-generic case (this is NOT the
-  "Real" case below - no stub marking gets removed), but graduating later is then a
-  single-file swap of the Task's own step body, instead of writing a new Pipeline+Task
-  and repointing the onboarding template all at once. Worth the extra two files when you
-  already know the gate's real params (e.g. `qa-gate.yaml` already threads through
-  `repo-url`/`revision`, unused by the stub step, ready for whatever real check ends up
-  needing them).
+  `governance-stub` under the hood. `qa` was built this way and graduated on 2026-10-19:
+  `qa-check.yaml`/`qa-gate.yaml` now show the real shape, and git history (before that
+  date) the scaffold. Same honest stub behavior and `status: stub` as the fully-generic
+  case (this is NOT the "Real" case below - no stub marking gets removed), but graduating
+  later is then a swap of the Task's own step body, instead of writing a new
+  Pipeline+Task and repointing the onboarding template all at once.
 - **Real**: once real logic exists, give the gate its own dedicated Pipeline if it
   doesn't already have one (see `sbom-check.yaml` for the shape: one or more real Tasks,
   a `finally: comment-pr` block identical to every other gate's), and repoint that
@@ -116,10 +114,23 @@ larger numbers until ADR-0025 retired it.
 | `sbom` | Software bill of materials | real |
 | `values` | Values-file validation by the validator image (Airframe's by default); check `Pipelines as Code CI / values-` | real |
 | `itsm` | ServiceNow Change Request | stub |
-| `qa` | Test-completion verification | stub |
+| `qa` | A passing, recent check ride from the shared check-rides repository, attested on the promoted image ([testing.md](testing.md)) | real |
 | `policy-validation` | Gatekeeper/Kyverno admission-policy validation of the rendered manifest | stub |
 
-**How the image gates find the image (2026-10-09).** `sast`, `image-scan`, `sbom` and the provenance half of
+**How `qa` judges a release (2026-10-19, phase 3 of [testing.md](testing.md)).** The gate never runs tests. It
+resolves the promoted image like the other image gates, downloads the digest's attestations, verifies each SLSA
+provenance against the platform's Fulcio identity and a real Rekor entry (the same cosign flags as
+`verify-sast-attestation`), and keeps the `run-testworkflow` entries whose `role` is `check-ride`. Tekton Chains
+attests every completed test PipelineRun, failed ones included, so presence is not a pass: one entry must have
+`outcome: passed`, `tests-failed: 0`, `workflow-source: argocd:<qa.checkRidesApplication>` (default `check-rides`,
+the fence) and be younger than `qa.maxAge` (default `72h`), measured from the attestation's Rekor `integratedTime`
+(the provenance's `buildFinishedOn` only if the entry has none). The PR comment carries the counts and the Testkube
+execution id on a pass; on a failure it says which of the four was missing: no check ride ran for this digest, it
+failed, it was not from the shared repository, or it is too old. A new build is a new digest and needs its own
+ride; `/retest qa` re-reads the registry. `qa` is a content gate: on an eligible rollback it reports without
+blocking (ADR-0021 decision 8), which is where an older ride would otherwise trip it.
+
+**How the image gates find the image (2026-10-09).** `sast`, `image-scan`, `sbom`, `qa` and the provenance half of
 `provenance` share the `resolve-promoted-image` StepAction: two GitHub API reads against the PR (its base, the
 files changed between that base and the head commit, then the one manifest's content) - no clone of the gitops
 repo. The manifest is the first changed `*/release.yaml`, else `*/values.yaml`, else `glidepath/releases/*.yaml`;
