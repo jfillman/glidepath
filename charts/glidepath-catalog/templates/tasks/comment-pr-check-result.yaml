@@ -48,6 +48,10 @@ spec:
     - name: pipeline-run-name
       type: string
       description: $(context.pipelineRun.name) from the calling Pipeline - used to find which of its own child TaskRuns failed.
+    - name: advisory-reason
+      type: string
+      default: "rollback"
+      description: "Why an -advisory task ran instead of the hard one, for the comment's wording: rollback (ADR-0021 decision 8, the default every content gate uses) or not-required (the qa gate with the catalog's qa.required false - report-only while apps get their check rides)."
     - name: status
       type: string
       description: $(tasks.status) from the calling Pipeline's finally block.
@@ -82,6 +86,8 @@ spec:
           value: $(params.pipeline-run-name)
         - name: STATUS
           value: $(params.status)
+        - name: ADVISORY_REASON
+          value: $(params.advisory-reason)
         - name: NAMESPACE
           # $(context.pipelineRun.namespace) does NOT resolve here - that variable is only
           # valid inside a Pipeline's own spec, never inside a Task's field values
@@ -151,8 +157,13 @@ spec:
             if [[ -n "${pod_name}" ]]; then
               excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=20 2>/dev/null | tail -c 1200 || true)"
             fi
-            body="$(printf '### ⚠️ `%s` found a problem, advisory on this rollback\n\nThis check would fail on a normal release. It did not block because this PR rolls back to an image that already ran healthy here: %s (glidepath ADR-0021 decision 8). The finding is recorded here and on the check run.\n\n**What it found:**\n```\n%s\n```' \
-              "${GATE_NAME}" "${rollback_note:-an eligible rollback target}" "${excerpt}")"
+            if [[ "${ADVISORY_REASON}" == "not-required" ]]; then
+              body="$(printf '### ⚠️ `%s` found a problem, advisory until the gate is required\n\nThis check would fail once the `%s` gate is required on this cluster (the catalog'"'"'s `qa.required: true`). It did not block because the gate runs report-only while every app gets its check ride. The finding is recorded here and on the check run.\n\n**What it found:**\n```\n%s\n```' \
+                "${GATE_NAME}" "${GATE_NAME}" "${excerpt}")"
+            else
+              body="$(printf '### ⚠️ `%s` found a problem, advisory on this rollback\n\nThis check would fail on a normal release. It did not block because this PR rolls back to an image that already ran healthy here: %s (glidepath ADR-0021 decision 8). The finding is recorded here and on the check run.\n\n**What it found:**\n```\n%s\n```' \
+                "${GATE_NAME}" "${rollback_note:-an eligible rollback target}" "${excerpt}")"
+            fi
           elif [[ "${outcome}" == "stub" ]]; then
             body="### ⚠️ \`${GATE_NAME}\` — stub, not a real check yet"$'\n\n'"This gate always succeeds today; it hasn't verified anything real. See docs/admin/governance-stubs.md."
           else
