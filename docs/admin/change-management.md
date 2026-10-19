@@ -23,6 +23,12 @@ check is a detected bypass (GATE-04).
 | The relay reports `environment.deployed` failure | same | A work note; the change stays open. A degraded release can still recover (the success then closes it) or be rolled back (below). | `changeRequestState: implementing-failed` |
 | The relay reports `service.rolledback` | `itsm-change close-rolled-back` (Pipeline `release-rollback-notify`) | The change of the release that was **rolled back** is closed `unsuccessful`, naming the reason and the rollback's emergency change as the related change. The rollback release's own change closes successful through the row above when it turns healthy. | on the rolled-back release's record: `changeRequestState: closed-unsuccessful`, `rolledBackByChange` |
 
+A release that was healthy (its change closed successful) and is rolled back later gets its change **re-closed
+unsuccessful** by the rollback: the close is a `PATCH` on an already-closed change. A ServiceNow instance whose
+rules forbid updating a closed change fails that step visibly (`onError: continue`, the TaskRun is red); the
+rollback's emergency change still names the original as its `parent`, so the relationship is recorded either
+way.
+
 A change tool that is down fails `open-release-pr` before a PR exists (a release without its change is what
 change management exists to prevent), fails the gate (loudly, with the HTTP status), and is tolerated by the
 later hooks (`onError: continue`: the failed TaskRun shows, the bypass check and the outcome notifications
@@ -103,8 +109,10 @@ adapter and a ServiceNow look-alike in one file, and the lab's throwaway endpoin
   copy, and a mock that wants a bearer token refuses an unauthenticated call loudly.
 - Live, in a lab: run the mock in the cluster (a Deployment of `python:3-alpine` with the file in a ConfigMap),
   point `itsm.webhook.url` at its Service, release, approve with `POST /_mock/approve/<id>`, `/retest itsm-`,
-  merge, and read `changeRequestState` on the record as the relay moves it. The 2026-10-19 run is recorded on
-  the PR that landed this page.
+  merge, and read `changeRequestState` on the record as the relay moves it. The 2026-10-19 run (promote,
+  gate red then green, implementing, closed successful; rollback with an emergency change, original re-closed
+  unsuccessful) is recorded in the comments on
+  [glidepath#140](https://github.com/jfillman/glidepath/pull/140).
 
 ## What a change request does not do
 
