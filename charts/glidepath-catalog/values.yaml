@@ -42,7 +42,7 @@ rbac:
 # 2026-09-27: bumped again for deploy.releaseFile (D9/AF-5's cicd.schema.json field,
 # schema-only so far - no Task reads it yet). Multi-arch (arm64+amd64), built via
 # `container build -a arm64 -a amd64` per the toolbox Dockerfile's own comment.
-toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-13-chain-slug-256
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-19-test-roles
 # The shared Trivy server image-scan.yaml scans against (glidepath-control-plane's trivyServer). Empty, or a
 # server that does not answer /healthz, means each scan downloads the DB itself (the pre-2026-10-09 behaviour).
 trivyServerUrl: http://trivy-server.platform-system.svc.cluster.local:4954
@@ -122,6 +122,14 @@ sigstoreIssuers:
 # protects, which decides how it treats a rollback to an eligible target (integrity blocks, content
 # records without blocking, process unchanged). `targets` lists the deploy.target values the gate
 # applies to (absent = every target); it decides which gates a cloud target's release pin PR gets.
+# The check ride (docs/admin/testing.md): the one TestWorkflow per app that a release
+# depends on. A `role: check-ride` test step runs <app>-<workflowName> from the shared
+# check-rides repository, synced into Testkube's namespace by Argo CD (the cluster
+# repo's 50-glidepath/check-rides), never a file from the app repo. Its passing run is
+# attested onto the image through Tekton Chains and read by the qa gate.
+checkRide:
+  workflowName: check-ride
+
 releaseGuardrails:
   - name: sast
     description: Static analysis (Semgrep) of the promoted commit's source

@@ -1,72 +1,70 @@
 # catalog/tasks/run-testworkflow.yaml
 #
 # Deliberately not "run-integration-tests" (its original name through 2026-08-24) - a
-# TestWorkflow isn't necessarily a test. It's whatever the app repo's own
-# glidepath/<name>.yaml declares: an integration test, a smoke check, or an ops action
-# with no assertions at all (clearing a cache before release, warming something up,
-# etc). This Task's job is "run the named TestWorkflow and report pass/fail," not
-# "test the code" specifically.
+# TestWorkflow isn't necessarily a test. It's whatever the step says it is (its `role`,
+# docs/admin/testing.md): the team's own test, an ops action with no assertions at all
+# (clearing a cache before release, warming something up), or the app's check ride, the
+# one workflow a release depends on. This Task's job is "run the named TestWorkflow,
+# record what happened, report pass/fail," not "test the code" specifically.
 #
-# Two ways a named TestWorkflow can run, tried in this order:
+# Where the workflow comes from, by role:
 #
-# 1. Testkube (real integration, 2026-08-24): if the app repo has glidepath/<name>.yaml,
-#    it's applied as a TestWorkflow into Testkube CE's single shared `testkube`
-#    namespace (see gitops-cluster-dev/50-platform-cicd/testkube/application.yaml's own
-#    header for why it's one shared namespace, not one per tenant - executionNamespaces
-#    is a Testkube Pro/Enterprise-only feature, confirmed live + in source, so CE
-#    genuinely cannot run this inside the app's own -cicd namespace). Application
-#    secrets reach the workflow by a different route than namespace colocation: this
-#    step re-materializes this namespace's own app-secrets into a pre-seeded,
-#    per-Application placeholder Secret in the testkube namespace (rendered by this
-#    Application's own onboarding chart - see glidepath-app's templates/testkube/
-#    rbac-and-secret.yaml), which the TestWorkflow spec references via a standard
-#    env[].valueFrom.secretKeyRef naming the literal placeholder
-#    "__APP_SECRETS_NAME__" - this step substitutes that for the real per-Application
-#    secret name before applying, so the workflow file itself never needs to know or
-#    hardcode this Application's own name.
+# - test / execute: the app repo's own glidepath/<name>.yaml, applied into Testkube CE's
+#   single shared `testkube` namespace (see gitops-cluster-dev/50-platform-cicd/testkube/
+#   application.yaml's own header for why it's one shared namespace, not one per tenant -
+#   executionNamespaces is a Testkube Pro/Enterprise-only feature, confirmed live + in
+#   source, so CE genuinely cannot run this inside the app's own -cicd namespace).
+#   metadata.name is ALWAYS overwritten to "<app-name>-<test-name>" before applying,
+#   regardless of what's in the file - Testkube's shared namespace means TestWorkflow
+#   names must be unique across every onboarded Application, and app-name here comes
+#   from the PipelineRun's own trusted platformIdentity-derived param, not anything a
+#   developer's commit controls, so this can't be spoofed by editing the workflow file.
+#   With no such file, ./integration-test.sh (the phase 1 fallback, run in the app's own
+#   agent image) still works; with neither, the step FAILS (2026-10-19 - it used to
+#   report `skipped` and succeed, which made a typo in test.name indistinguishable from
+#   a passed test). `skipped` now only ever means cicd.yaml's `test.enabled: false`.
 #
-#    metadata.name in glidepath/<name>.yaml is ALWAYS overwritten to
-#    "<app-name>-<test-name>" before applying, regardless of what's in the file -
-#    Testkube's shared namespace means TestWorkflow names must be unique across every
-#    onboarded Application, and app-name here comes from the PipelineRun's own trusted
-#    platformIdentity-derived param, not anything a developer's commit controls, so
-#    this can't be spoofed by editing the workflow file itself.
+# - check-ride: the TestWorkflow <app-name>-<check-ride-name> that Argo CD synced into
+#   the testkube namespace from the shared check-rides repository (apps/<app>/
+#   check-ride.yaml, reviewed by the team and an SDET; the template it uses, by SDETs and
+#   product owners). Nothing is applied from this repo: what runs is what both owners
+#   reviewed, and this Task refuses a workflow that was not synced (no Argo CD tracking
+#   annotation) or that carries another app's hangar.io/app label. A missing check ride
+#   is a failure that names the file to add.
 #
-#    The platform's context reaches the workflow two ways (2026-10-19, test framework
-#    spec phase 0 - docs/user/cicd-yaml-reference.md "The test: block"):
-#    - as `config` values, for every key the workflow declares under spec.config out of
-#      app, env, image, url, revision, gitUrl, chain. Undeclared keys are not passed, so
-#      a workflow that declares none is run exactly as before. `url` is the in-cluster
-#      address of the step's environment Service
-#      (http://<app>.<type>-<app>-<env>.svc.cluster.local:<port>), the port read from
-#      the Service when this identity may, else 8080.
-#    - as execution tags (app, env, image, revision, chain, test), always, so a run can
-#      be found later by what it tested (Testkube's tagSelector).
-#    Every applied workflow also gets registry-credentials in spec.pod.imagePullSecrets
-#    (deduplicated), so a workflow may run inside the private app image under test. The
-#    Secret is the same ClusterExternalSecret every app namespace gets; the testkube
-#    namespace opts in with the hangar.io/managed-secrets label on its Argo CD
-#    Application. A missing Secret is harmless for a public image.
+# Application secrets reach a workflow by re-materializing this namespace's own
+# app-secrets into a pre-seeded, per-Application placeholder Secret in the testkube
+# namespace (rendered by this Application's own onboarding chart - glidepath-app's
+# templates/testkube/rbac-and-secret.yaml) immediately before the run and blanking it
+# after; the workflow references it via the literal placeholder "__APP_SECRETS_NAME__",
+# substituted for the real name before applying (ADR-0007; a Kyverno policy makes any
+# other Secret name unadmittable, ADR-0008, extended 2026-10-19 for the sync identity).
 #
-# 2. Phase 1 fallback (original mechanism, kept for Applications not yet migrated): if
-#    there's no glidepath/<name>.yaml but ./integration-test.sh exists, run that
-#    against the freshly built image, in the Application's own agent-image (unlike the
-#    Testkube step above, which runs in the shared toolboxImage since it only needs
-#    kubectl/yq/testkube CLI, never the app's own runtime).
+# The platform's context reaches the workflow two ways (docs/user/cicd-yaml-reference.md,
+# "The test: block"):
+# - as `config`, for every key the workflow declares under spec.config out of app, env,
+#   image, url, revision, gitUrl, chain. Undeclared keys are not passed. `url` is the
+#   in-cluster address of the step's environment Service.
+# - as execution tags (app, env, test, role, image, revision, chain), always, so a run
+#   can be found later by what it tested (Testkube's tagSelector).
+# Every applied workflow also gets registry-credentials in spec.pod.imagePullSecrets, so
+# a workflow may run inside the private app image under test.
 #
-# Neither present: the stage FAILS (2026-10-19). It used to report `skipped` and
-# succeed, which made a typo in test.name, or a workflow file that was never written,
-# indistinguishable from a passed test - exactly the hole the SDLC review and the test
-# framework spec (F2) called out. `skipped` is now reserved for cicd.yaml's
-# `test.enabled: false`, the one deliberate way to run the stage without a test.
+# What it records (the contract, docs/admin/testing.md): outcome, step-summary,
+# execution-id, role, workflow-source, workflow-digest, tests-total/passed/failed/
+# skipped (from the JUnit report the workflow left under data/artifacts/ - Testkube CE
+# stores the artifact but does not parse it, checked live on 2.13.1), report-path, and
+# the tested image's repo + digest. The last two double as Tekton Chains type hints
+# (IMAGE_URL/IMAGE_DIGEST, and test.yaml's Pipeline-level pair): Chains signs this
+# PipelineRun's provenance and attaches it to the image, carrying every result above in
+# buildConfig.tasks[] - the evidence the qa gate verifies, the same way the sast gate
+# reads sast-scan's outcome from the build's provenance. The image digest is resolved
+# with oras through the same registry-credentials build-image pushes with.
 #
 # Triggering/polling uses the official `testkube` CLI (added to the toolbox image
 # 2026-09-05), not a hand-crafted TestWorkflowExecution CR + raw REST polling - see the
 # execute-testworkflow step's own comment for why that switch alone didn't fix the
 # false-"aborted" bug it was hoped to, and what actually works around it.
-#
-# This Task's contract (take image-ref, produce pass/fail) hasn't changed since Phase 1 -
-# only what happens inside it has.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -107,13 +105,58 @@ spec:
       type: string
       default: "10m"
       description: "How long to wait for the TestWorkflowExecution to reach a terminal status, as Ns, Nm or Nh. Polled every 10s. Past it the outcome is `timeout` and the Task fails; the execution itself is left running (Testkube's own job timeout, if the workflow sets one, still applies)."
+    - name: role
+      type: string
+      default: "test"
+      description: "test, execute or check-ride - cicd.yaml steps[].role, see the header."
+    - name: required
+      type: string
+      default: "true"
+      description: "\"false\": a failed run is recorded (outcome failed) but this Task exits 0, so the flow continues. Ignored for check-ride (always required)."
+    - name: check-ride-name
+      type: string
+      default: "check-ride"
+      description: "The check ride's name suffix: the synced TestWorkflow is <app-name>-<check-ride-name>. From the catalog's checkRide.workflowName."
   results:
     - name: outcome
       description: "'passed'/'failed'/'timeout'/'skipped' - from the Testkube TestWorkflowExecution's own result.status (aborted-but-really-passed already corrected below), or the fallback script's exit code translated the same way. 'skipped' only ever means cicd.yaml's test.enabled is false; a missing workflow is 'failed'. Same outcome/findings-summary shape as catalog/tasks/sast-scan.yaml and image-scan.yaml, not a new convention."
     - name: step-summary
-      description: "One line per Testkube step: '<step-name>: <status>' - empty for the fallback-script path (integration-test.sh has no per-step breakdown of its own) and for 'skipped'."
+      description: "One line per Testkube step: '<step-name>: <status>' - empty for the fallback-script path and for 'skipped'."
     - name: execution-id
-      description: "The TestWorkflowExecution id (Testkube's own), so the run's record - tags, step tree, logs, artifacts and parsed JUnit reports - can be found again from Tower or the CLI (`testkube get twe <id>`). Empty for the fallback path and for 'skipped'."
+      description: "The TestWorkflowExecution id (Testkube's own), so the run's record - tags, step tree, logs, artifacts - can be found again from Tower or the CLI (`testkube get twe <id>`). Empty for the fallback path and for 'skipped'."
+    - name: role
+      description: "The step's role, echoed so the provenance carries it: test, execute or check-ride."
+    - name: workflow-source
+      description: "Where the workflow came from: 'argocd:<application>' for a synced check ride (the Argo CD tracking-id's application name), 'repo:<git-url>@<revision>' for a file from this repo, 'script' for integration-test.sh."
+    - name: workflow-digest
+      description: "sha256 of the canonical JSON of the TestWorkflow spec that ran (after name/secret substitution), so the evidence names exactly which workflow it is evidence of."
+    - name: tests-total
+      description: "Test cases in the JUnit report the workflow left at data/artifacts/junit.xml (or the first *.xml artifact with a <testsuite). Empty when there is no report."
+    - name: tests-passed
+    - name: tests-failed
+      description: "Failures plus errors."
+    - name: tests-skipped
+    - name: report-path
+      description: "The artifact path of the JUnit report that was parsed, empty when none."
+    - name: image-repo
+      description: "The tested image's repository, no tag (test.yaml's Pipeline-level IMAGE_URL result, Tekton Chains' type hint). Empty for a flow with no image."
+    - name: image-digest
+      description: "The tested image's digest, sha256:... (test.yaml's IMAGE_DIGEST). Resolved with oras; empty when the image could not be resolved."
+    - name: IMAGE_URL
+      description: "Same as image-repo, under Chains'/Conforma's exact-cased Task-level type-hint name - see build-image.yaml's identical pair."
+    - name: IMAGE_DIGEST
+      description: "Same as image-digest, under the exact-cased Task-level type-hint name."
+  # Registry read credentials for oras (digest resolution): the same
+  # kubernetes.io/dockerconfigjson Secret build-image pushes with, consumed via
+  # DOCKER_CONFIG the same way build-artifact.yaml does.
+  volumes:
+    - name: registry-credentials
+      secret:
+        secretName: registry-credentials
+        optional: true
+        items:
+          - key: .dockerconfigjson
+            path: config.json
   steps:
     - name: resolve-enabled
       image: {{ .Values.toolboxImage }}
@@ -171,6 +214,18 @@ spec:
           value: $(params.chain-id)
         - name: TIMEOUT
           value: $(params.timeout)
+        - name: ROLE
+          value: $(params.role)
+        - name: REQUIRED
+          value: $(params.required)
+        - name: CHECK_RIDE_NAME
+          value: $(params.check-ride-name)
+        - name: DOCKER_CONFIG
+          value: /tekton/creds-registry
+      volumeMounts:
+        - name: registry-credentials
+          mountPath: /tekton/creds-registry
+          readOnly: true
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -178,11 +233,13 @@ spec:
         # Every result is written up front with its failure value, so an early exit (a
         # CLI error under set -e, a kubectl refusal) still leaves a complete, honest
         # result set rather than an unset `outcome` - same reasoning as sast-scan.yaml's
-        # own onError: continue. The paths below are shared with the next step, which
+        # own onError: continue. The paths are shared with the next step, which
         # overwrites `outcome` when the fallback script runs instead.
-        echo -n "failed" > "$(results.outcome.path)"
-        echo -n "" > "$(results.step-summary.path)"
-        echo -n "" > "$(results.execution-id.path)"
+        R="$(results.outcome.path)"; echo -n "failed" > "${R}"
+        for r in step-summary execution-id workflow-source workflow-digest tests-total tests-passed tests-failed tests-skipped report-path image-repo image-digest IMAGE_URL IMAGE_DIGEST; do
+          echo -n "" > "/tekton/results/${r}"
+        done
+        echo -n "${ROLE}" > "$(results.role.path)"
         echo -n "false" > "$(step.results.fallback-needed.path)"
 
         if [[ "${TEST_ENABLED}" != "true" ]]; then
@@ -191,20 +248,74 @@ spec:
           exit 0
         fi
 
-        WORKFLOW_FILE="glidepath/${TEST_NAME}.yaml"
-        if [[ ! -f "${WORKFLOW_FILE}" ]]; then
-          if [[ -f ./integration-test.sh ]]; then
-            echo "no ${WORKFLOW_FILE} - falling back to ./integration-test.sh"
-            echo -n "true" | tee "$(step.results.fallback-needed.path)"
-            exit 0
+        case "${ROLE}" in
+          test|execute|check-ride) ;;
+          *) echo "error: role '${ROLE}' is not test, execute or check-ride" >&2; exit 1 ;;
+        esac
+        if [[ "${ROLE}" == "check-ride" ]]; then REQUIRED="true"; fi
+
+        # The tested image's repo and digest, for Chains' type hints (see the header). A
+        # git-rooted test-only flow has no image; a digest that can't be resolved is left
+        # empty and said so, never guessed.
+        IMAGE_REPO=""; IMAGE_DIGEST=""
+        if [[ -n "${IMAGE_REF}" ]]; then
+          IMAGE_REPO="${IMAGE_REF%%@*}"; IMAGE_REPO="$(sed -E 's#:[^/:]+$##' <<< "${IMAGE_REPO}")"
+          if [[ "${IMAGE_REF}" == *@sha256:* ]]; then
+            IMAGE_DIGEST="sha256:${IMAGE_REF##*@sha256:}"
+          # oras, not crane: crane is not in the toolbox (open-release-pin-pr.yaml does the
+          # same). For a multi-arch image this is the index digest, the one build-image pins.
+          elif ! IMAGE_DIGEST="$(oras resolve "${IMAGE_REF}" 2>/dev/null | tr -d '\n')" || [[ "${IMAGE_DIGEST}" != sha256:* ]]; then
+            echo "warn: could not resolve the digest of ${IMAGE_REF} (oras resolve gave '${IMAGE_DIGEST:-nothing}') - the provenance will carry no image digest" >&2
+            IMAGE_DIGEST=""
           fi
-          echo "error: test '${TEST_NAME}' names no workflow: ${WORKFLOW_FILE} does not exist in this commit and there is no ./integration-test.sh." >&2
-          echo "error: write ${WORKFLOW_FILE} (a Testkube TestWorkflow, see docs/user/cicd-yaml-reference.md), fix test.name / the step's testName, or set test.enabled: false to run the stage without a test." >&2
-          exit 1
+          echo -n "${IMAGE_REPO}" > "$(results.image-repo.path)"; echo -n "${IMAGE_REPO}" > "$(results.IMAGE_URL.path)"
+          echo -n "${IMAGE_DIGEST}" > "$(results.image-digest.path)"; echo -n "${IMAGE_DIGEST}" > "$(results.IMAGE_DIGEST.path)"
+          echo "image ${IMAGE_REF} -> ${IMAGE_REPO} ${IMAGE_DIGEST:-(no digest)}"
         fi
 
-        WORKFLOW_NAME="${APP_NAME}-${TEST_NAME}"
         SECRET_NAME="${APP_NAME}-app-secrets"
+        WORKFLOW_SPEC_JSON=""   # the spec that runs, for workflow-digest
+        DECLARED=""             # spec.config keys the workflow declares
+
+        if [[ "${ROLE}" == "check-ride" ]]; then
+          WORKFLOW_NAME="${APP_NAME}-${CHECK_RIDE_NAME}"
+          if ! TW_JSON="$(kubectl -n testkube get testworkflow "${WORKFLOW_NAME}" -o json 2>/dev/null)"; then
+            echo "error: no check ride for ${APP_NAME}: TestWorkflow testkube/${WORKFLOW_NAME} does not exist." >&2
+            echo "error: add apps/${APP_NAME}/check-ride.yaml (metadata.name ${WORKFLOW_NAME}) to the check-rides repository; Argo CD syncs it here. See docs/admin/testing.md." >&2
+            exit 1
+          fi
+          TRACKING="$(jq -r '.metadata.annotations["argocd.argoproj.io/tracking-id"] // ""' <<< "${TW_JSON}")"
+          LABEL_APP="$(jq -r '.metadata.labels["hangar.io/app"] // ""' <<< "${TW_JSON}")"
+          if [[ -z "${TRACKING}" ]]; then
+            echo "error: testkube/${WORKFLOW_NAME} was not synced by Argo CD (no argocd.argoproj.io/tracking-id) - a check ride must come from the check-rides repository, not be applied by hand." >&2
+            exit 1
+          fi
+          if [[ "${LABEL_APP}" != "${APP_NAME}" ]]; then
+            echo "error: testkube/${WORKFLOW_NAME} carries hangar.io/app=${LABEL_APP:-(none)}, not ${APP_NAME} - refusing to run another app's workflow as this app's check ride." >&2
+            exit 1
+          fi
+          WORKFLOW_SOURCE="argocd:${TRACKING%%:*}"
+          WORKFLOW_SPEC_JSON="$(jq -cS '.spec' <<< "${TW_JSON}")"
+          DECLARED="$(jq -r '.spec.config // {} | keys | .[]' <<< "${TW_JSON}")"
+          echo "check ride: ${WORKFLOW_NAME} (synced, ${WORKFLOW_SOURCE})"
+        else
+          WORKFLOW_FILE="glidepath/${TEST_NAME}.yaml"
+          if [[ ! -f "${WORKFLOW_FILE}" ]]; then
+            if [[ -f ./integration-test.sh ]]; then
+              echo "no ${WORKFLOW_FILE} - falling back to ./integration-test.sh"
+              echo -n "script" > "$(results.workflow-source.path)"
+              echo -n "true" | tee "$(step.results.fallback-needed.path)"
+              exit 0
+            fi
+            echo "error: test '${TEST_NAME}' names no workflow: ${WORKFLOW_FILE} does not exist in this commit and there is no ./integration-test.sh." >&2
+            echo "error: write ${WORKFLOW_FILE} (a Testkube TestWorkflow, see docs/user/cicd-yaml-reference.md), fix test.name / the step's testName, or set test.enabled: false to run the stage without a test." >&2
+            exit 1
+          fi
+          WORKFLOW_NAME="${APP_NAME}-${TEST_NAME}"
+          WORKFLOW_SOURCE="repo:${GIT_URL}@${GIT_REVISION}"
+          DECLARED="$(yq eval '.spec.config // {} | keys | .[]' "${WORKFLOW_FILE}" 2>/dev/null || true)"
+        fi
+        echo -n "${WORKFLOW_SOURCE}" > "$(results.workflow-source.path)"
 
         echo "materializing this namespace's app-secrets into testkube/${SECRET_NAME}"
         if kubectl get secret app-secrets >/dev/null 2>&1; then
@@ -213,6 +324,18 @@ spec:
         else
           echo "no app-secrets in this namespace - leaving ${SECRET_NAME} empty"
         fi
+
+        if [[ "${ROLE}" != "check-ride" ]]; then
+          echo "applying ${WORKFLOW_FILE} as TestWorkflow/${WORKFLOW_NAME} in testkube namespace"
+          APPLIED="$(yq eval ".metadata.name = \"${WORKFLOW_NAME}\"
+            | .spec.pod.imagePullSecrets = ((.spec.pod.imagePullSecrets // []) + [{\"name\": \"registry-credentials\"}] | unique_by(.name))" "${WORKFLOW_FILE}" \
+            | sed "s/__APP_SECRETS_NAME__/${SECRET_NAME}/g")"
+          kubectl -n testkube apply -f - <<< "${APPLIED}"
+          WORKFLOW_SPEC_JSON="$(yq eval -o=json '.spec' <<< "${APPLIED}" | jq -cS '.')"
+        fi
+        WORKFLOW_DIGEST="sha256:$(printf '%s' "${WORKFLOW_SPEC_JSON}" | sha256sum | cut -d' ' -f1)"
+        echo -n "${WORKFLOW_DIGEST}" > "$(results.workflow-digest.path)"
+        echo "workflow-digest=${WORKFLOW_DIGEST}"
 
         # The platform's context for the workflow. `url` is only derivable for a
         # Kubernetes environment: <type>-<app>-cicd -> <type>-<app>-<env>, Service named
@@ -230,7 +353,6 @@ spec:
         # Pass a config value only when the workflow declares the key (spec.config), so a
         # workflow written before this existed, or one that wants none of it, is run as
         # before. The declared set is the contract; docs/user/cicd-yaml-reference.md lists it.
-        DECLARED="$(yq eval '.spec.config // {} | keys | .[]' "${WORKFLOW_FILE}" 2>/dev/null || true)"
         CONFIG_ARGS=()
         add_config() {
           local key="$1" value="$2"
@@ -253,22 +375,18 @@ spec:
         add_tag app "${APP_NAME}"
         add_tag env "${TEST_ENV}"
         add_tag test "${TEST_NAME}"
+        add_tag role "${ROLE}"
         add_tag image "${IMAGE_REF}"
         add_tag revision "${GIT_REVISION}"
         add_tag chain "${CHAIN_ID}"
-
-        echo "applying ${WORKFLOW_FILE} as TestWorkflow/${WORKFLOW_NAME} in testkube namespace"
-        yq eval ".metadata.name = \"${WORKFLOW_NAME}\"
-          | .spec.pod.imagePullSecrets = ((.spec.pod.imagePullSecrets // []) + [{\"name\": \"registry-credentials\"}] | unique_by(.name))" "${WORKFLOW_FILE}" \
-          | sed "s/__APP_SECRETS_NAME__/${SECRET_NAME}/g" \
-          | kubectl -n testkube apply -f -
 
         # --client direct talks straight to the in-cluster Service over plain HTTP, no
         # RBAC or auth needed in standalone/CE mode (confirmed live 2026-09-05) - the
         # alternative "cluster" client mode proxies through the k8s API server's
         # services/proxy subresource instead, which this Task's ServiceAccount was
         # never granted and doesn't need.
-        TK="testkube --client direct --api-uri http://testkube-api-server.testkube.svc.cluster.local:8088 --namespace testkube"
+        API="http://testkube-api-server.testkube.svc.cluster.local:8088"
+        TK="testkube --client direct --api-uri ${API} --namespace testkube"
 
         echo "triggering execution via testkube CLI"
         # NOT `${TK} run tw ... -f` (follow/watch) - live-verified 2026-09-05 that -f's
@@ -342,17 +460,47 @@ spec:
         esac
         echo "TestWorkflowExecution ${EXECUTION_ID} finished with status: ${STATUS}"
 
-        # Real per-step breakdown for the Release Record - written unconditionally,
-        # before the exit below, so a real test failure still reports what actually
-        # happened rather than leaving this Task's own `outcome` result unset the way
-        # a `set -e` early-exit would (same reasoning as sast-scan.yaml's own
-        # onError: continue).
-        STEP_SUMMARY="$(jq -r '.result.steps // {} | to_entries | map("\(.key): \(.value.status)") | join("\n")' <<< "${RESULT_JSON}" 2>/dev/null || echo "")"
-        echo -n "${STATUS}" | tee "$(results.outcome.path)"
+        # Per-step breakdown, named by the signature (result.steps is keyed by ref).
+        STEP_SUMMARY="$(jq -r '[.signature // [] | .. | objects | select(has("ref")) | {ref, name}] as $sig
+          | (.result.steps // {}) | to_entries
+          | map((.key) as $ref | "\(($sig[] | select(.ref == $ref) | .name) // $ref): \(.value.status)")
+          | join("\n")' <<< "${RESULT_JSON}" 2>/dev/null || echo "")"
+        echo -n "${STATUS}" | tee "$(results.outcome.path)"; echo
         echo "${STEP_SUMMARY}" | tee "$(results.step-summary.path)"
+
+        # The JUnit report, from the artifacts the workflow left: Testkube CE stores them
+        # and does not parse them (execution `reports` is null on 2.13.1, checked live),
+        # so the counts are read here. data/artifacts/junit.xml by convention
+        # (check-ride templates require it), else the first *.xml that looks like JUnit.
+        REPORT_PATH=""
+        ARTIFACTS="$(curl -fsS "${API}/v1/test-workflow-executions/${EXECUTION_ID}/artifacts" 2>/dev/null || echo '[]')"
+        REPORT_PATH="$(jq -r '[.[] | .name] | (map(select(. == "data/artifacts/junit.xml")) + map(select(endswith(".xml")))) | .[0] // ""' <<< "${ARTIFACTS}")"
+        if [[ -n "${REPORT_PATH}" ]]; then
+          ENCODED="$(jq -rn --arg p "${REPORT_PATH}" '$p | @uri')"
+          if curl -fsS -o /tmp/junit.xml "${API}/v1/test-workflow-executions/${EXECUTION_ID}/artifacts/${ENCODED}" 2>/dev/null && grep -q '<testsuite' /tmp/junit.xml; then
+            TOTAL="$(grep -o '<testcase' /tmp/junit.xml | wc -l | tr -d ' ')"
+            FAILED="$(grep -o '<failure' /tmp/junit.xml | wc -l | tr -d ' ')"
+            ERRORS="$(grep -o '<error' /tmp/junit.xml | wc -l | tr -d ' ')"
+            SKIPPED="$(grep -o '<skipped' /tmp/junit.xml | wc -l | tr -d ' ')"
+            FAILED=$(( FAILED + ERRORS ))
+            PASSED=$(( TOTAL - FAILED - SKIPPED )); [[ ${PASSED} -lt 0 ]] && PASSED=0
+            echo -n "${TOTAL}" > "$(results.tests-total.path)"; echo -n "${PASSED}" > "$(results.tests-passed.path)"
+            echo -n "${FAILED}" > "$(results.tests-failed.path)"; echo -n "${SKIPPED}" > "$(results.tests-skipped.path)"
+            echo -n "${REPORT_PATH}" > "$(results.report-path.path)"
+            echo "junit ${REPORT_PATH}: total=${TOTAL} passed=${PASSED} failed=${FAILED} skipped=${SKIPPED}"
+          else
+            echo "warn: artifact ${REPORT_PATH} could not be read as a JUnit report" >&2
+          fi
+        else
+          echo "no JUnit report among the artifacts (data/artifacts/junit.xml or any *.xml) - no test counts recorded"
+        fi
 
         if [[ "${STATUS}" != "passed" ]]; then
           echo "${RESULT_JSON}" >&2
+          if [[ "${REQUIRED}" == "false" ]]; then
+            echo "run '${WORKFLOW_NAME}' ${STATUS}, but this step is required: false - recorded as ${STATUS}, the flow continues"
+            exit 0
+          fi
           exit 1
         fi
 
@@ -368,6 +516,8 @@ spec:
           value: $(params.env)
         - name: TEST_NAME
           value: $(params.test-name)
+        - name: REQUIRED
+          value: $(params.required)
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -388,5 +538,9 @@ spec:
           echo -n "passed" | tee "$(results.outcome.path)"
         else
           echo -n "failed" | tee "$(results.outcome.path)"
+          if [[ "${REQUIRED}" == "false" ]]; then
+            echo "integration-test.sh failed, but this step is required: false - recorded as failed, the flow continues"
+            exit 0
+          fi
         fi
         exit "${FALLBACK_EXIT_CODE}"

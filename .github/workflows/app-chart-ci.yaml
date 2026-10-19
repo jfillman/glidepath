@@ -43,6 +43,8 @@ jobs:
       - run: python3 charts/glidepath-app/tests/envs_model_test.py
       # Every docs/user/examples file validates against the schema and renders through this chart.
       - run: python3 charts/glidepath-app/tests/examples_test.py
+      # Test-step roles (execute/test/check-ride, required, timeout): refused shapes and what the trigger carries.
+      - run: python3 charts/glidepath-app/tests/test_roles_test.py
 
   fixture-matrix:
     runs-on: ubuntu-latest

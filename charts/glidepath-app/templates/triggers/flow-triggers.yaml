@@ -114,6 +114,12 @@ stage can now chain from any other. */ -}}
 {{- /* Only meaningful for test; falls back to top-level test.name. Threaded through
 unconditionally like cluster/name - Tekton tolerates the unused param on other stages. */ -}}
 {{- $effectiveTestName := $step.testName | default ($.Values.test.name | default "") -}}
+{{- /* Test-step role/required/timeout (docs/admin/testing.md). `default` would swallow a
+literal false, so required is read with hasKey. Bound only for the test stage below. */ -}}
+{{- $effectiveRole := $step.role | default "test" -}}
+{{- $effectiveRequired := "true" -}}
+{{- if and (hasKey $step "required") (not $step.required) -}}{{- $effectiveRequired = "false" -}}{{- end -}}
+{{- $effectiveTimeout := $step.timeout | default "10m" | toString -}}
 ---
 apiVersion: triggers.tekton.dev/v1beta1
 kind: TriggerBinding
@@ -150,6 +156,9 @@ spec:
     - { name: pipeline-run-name, value: {{ printf "%s-%d-%s-$(body.customData.platform.chain_slug)-$(body.context.id)" $flowName $index $stageName | quote }} }
     - { name: env, value: {{ $step.env | default "dev" | quote }} }
     - { name: test-name, value: {{ $effectiveTestName | quote }} }
+    - { name: test-role, value: {{ $effectiveRole | quote }} }
+    - { name: test-required, value: {{ $effectiveRequired | quote }} }
+    - { name: test-timeout, value: {{ $effectiveTimeout | quote }} }
     {{/* $step.cluster if set, else resolved from deploy.environments - see _helpers.tpl's
     resolveStepCluster. */}}
     - { name: cluster, value: {{ include "glidepath-app.resolveStepCluster" (list $ $step) | quote }} }
@@ -196,6 +205,9 @@ spec:
     - name: pipeline-run-name
     - name: env
     - name: test-name
+    - name: test-role
+    - name: test-required
+    - name: test-timeout
     - name: cluster
     - name: name
     - name: is-flow-root
@@ -260,6 +272,13 @@ spec:
         {{- if eq $stageName "gitops-image-bump" }}
           - { name: gitops-repo, value: $(tt.params.gitops-repo) }
           - { name: manifest-path, value: $(tt.params.manifest-path) }
+        {{- end }}
+        {{- /* Only the test Pipeline declares these three (role/required/timeout of the
+        step, docs/admin/testing.md); Tekton rejects a param a Pipeline does not declare. */ -}}
+        {{- if eq $stageName "test" }}
+          - { name: test-role, value: $(tt.params.test-role) }
+          - { name: test-required, value: $(tt.params.test-required) }
+          - { name: test-timeout, value: $(tt.params.test-timeout) }
         {{- end }}
         {{- /* Only test needs the source workspace (real checkout for integration-test).
         deploy/release use resolve-notify-config instead and need no workspace; omitting

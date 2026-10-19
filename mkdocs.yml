@@ -37,6 +37,7 @@ nav:
           - Tracing: admin/tracing.md
           - DORA metrics: admin/dora-metrics.md
           - Tekton Results: admin/tekton-results.md
+          - Testing and the check ride: admin/testing.md
       - Notifications & secrets:
           - Notifications: admin/notifications.md
           - Secrets management: admin/secrets-management.md

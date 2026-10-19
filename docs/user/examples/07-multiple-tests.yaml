@@ -36,6 +36,11 @@ pipelines:
       - stage: build
       - stage: test
         env: dev
+        testName: flush-cache # an action, not a test: a best-effort cache flush before
+        role: execute         # the deploy (glidepath/flush-cache.yaml). required: false
+        required: false       # records a failure without stopping the flow.
+      - stage: test
+        env: dev
         testName: smoke # overrides the top-level test.name for this step -
         # platform/smoke.yaml is what actually runs
       - stage: test
@@ -43,3 +48,8 @@ pipelines:
         testName: integration # a second, independent test step - platform/integration.yaml
       - stage: deploy
         env: dev
+      - stage: test
+        env: dev
+        role: check-ride # the standard the release depends on: <app>-check-ride from the
+        timeout: 20m     # shared check-rides repository, never a file in this repo. No
+                         # testName. Its passing run is the evidence the qa gate reads.
