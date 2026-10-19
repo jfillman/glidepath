@@ -291,3 +291,15 @@ aws: {}
 # normalized without forwarding, for trying the path out beside another reporter.
 outcomeRelay:
   factsMode: emit
+
+# Change management (glidepath docs/admin/change-management.md): the change tool's credentials, fanned out to
+# every managed namespace as the Secret glidepath-catalog's itsm.credentialsSecret names (itsm-credentials-
+# cluster-external-secret.yaml). The values live in the platform's Infisical project under itsm-<key>; this chart
+# never holds one. Off until a change tool is configured in the catalog.
+itsm:
+  credentials:
+    enabled: false
+    secretName: itsm-credentials
+    # token (a bearer), or username and password (basic). Keep only the keys the tool uses: a key missing from
+    # Infisical fails the whole ExternalSecret.
+    keys: [token]

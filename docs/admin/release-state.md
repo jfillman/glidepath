@@ -40,6 +40,8 @@ One ConfigMap per release, `release-tracking-<chain-id>`, in the Application's o
 | `supersededBy` | relay | The release that replaced this one. |
 | `healthyAt` | relay | When the release first reached `healthy`. Kept through `superseded` and `rolled-back`: "this image ran healthy here" is what rollback eligibility reads. |
 | `rolledBackBy` | relay | The rollback release that replaced this one. |
+| `changeRequestId`, `changeRequestNumber`, `changeRequestUrl` | `open-release-pr` | The release's change request in the change tool ([change-management.md](change-management.md)); empty without a provider. |
+| `changeRequestState`, `changeRequestApproval`, `rolledBackByChange` | `itsm-gate`, `itsm-change` | The change as last seen by the gate, then `implementing`, `implementing-failed`, `closed-successful` or `closed-unsuccessful` (with the rollback's emergency change). |
 | label `hangar.io/stall-alerted` | sweeper | The state a `ReleaseStalled` Event was already raised for. |
 
 The record is **not deleted when its outcome is read** (it used to be). The state machine needs

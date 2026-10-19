@@ -142,6 +142,32 @@ qa:
   # Ns, Nm, Nh or Nd. A rollback to an eligible target is advisory and not held to this.
   maxAge: 72h
 
+# Change management (docs/admin/change-management.md): the `itsm` gate as a wrapper over whatever change tool a
+# company runs. `none` (the default) keeps the gate a loud stub and every lifecycle hook a no-op. `servicenow`
+# talks to the Table API on change_request; `webhook` POSTs one JSON body per call to an adapter endpoint that
+# fronts any other tool (the contract is in files/lib/itsm.sh). With a provider set, open-release-pr creates a
+# change request per release (an emergency change for a rollback, linked to the change it rolls back), the itsm
+# gate verifies it is approved or scheduled, mark-release-merged moves it to implementing, and the relay's
+# healthy / rolled-back outcomes close it successful / unsuccessful. The change's id, number and URL are on the
+# release record (release-tracking-<chain-id>: changeRequestId/Number/Url/State) and resolve-release-tracking's
+# results. Whether the gate blocks is the registry: releaseGuardrails[itsm].required (true by default).
+itsm:
+  provider: none
+  # The Kubernetes Secret, in each app's -cicd namespace, holding the change tool's credentials: `token` (sent as a
+  # bearer) or `username` + `password` (basic). The control plane fans it out from the platform's Infisical project
+  # (glidepath-control-plane itsm.credentials, a ClusterExternalSecret) - never a value here. Missing: unauthenticated,
+  # with a warning in the log (a lab's throwaway endpoint).
+  credentialsSecret: itsm-credentials
+  servicenow:
+    # https://<instance>.service-now.com, no trailing slash.
+    instanceUrl: ""
+    # change_request.state values that count as approved or scheduled for the gate (approval == "approved" always
+    # counts): -2 Scheduled, -1 Implement by ServiceNow's default change model.
+    approvedStates: ["-2", "-1"]
+  webhook:
+    # The adapter endpoint. The lab runs tests/itsm_mock_server.py behind it.
+    url: ""
+
 # Each entry: name (= the PipelineRun generateName prefix, so the check is "Pipelines as Code CI / <name>-"),
 # description, status (real | stub), class (content | process | integrity | approval), optional targets, and
 # `required` (default true). required: false makes a real gate ADVISORY on every release PR: its Pipeline renders
@@ -181,10 +207,14 @@ releaseGuardrails:
     class: integrity
     required: true
     targets: [k8s-rollout]
+  # `status` follows itsm.provider (stub while none, real otherwise - glidepath-catalog.guardrails); `required`
+  # applies once a provider is set: false makes an unapproved change advisory (the comment says so) instead of a
+  # failed check.
   - name: itsm
-    description: ServiceNow Change Request
+    description: An approved or scheduled change request for this release in the change tool (ServiceNow, or any tool behind the webhook adapter)
     status: stub
     class: process
+    required: true
   - name: qa
     description: A passing, recent check ride from the shared check-rides repository, attested on the promoted image
     status: real
