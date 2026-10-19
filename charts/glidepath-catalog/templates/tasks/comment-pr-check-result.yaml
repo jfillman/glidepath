@@ -123,10 +123,19 @@ spec:
           PR_NUMBER="${resolved}"
         fi
 
-        if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" ]]; then
-          # Best-effort: surface a Task result if one exists (only image-scan produces
-          # findings-summary today) - never required, a plain pass is a complete comment too.
-          taskrun_results="$(kubectl get taskrun -n "${NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json 2>/dev/null)"
+        taskrun_results="$(kubectl get taskrun -n "${NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json 2>/dev/null)"
+        # ADR-0021 phase 4: on an eligible rollback the content gates run their check as
+        # <task>-advisory with onError: continue. The PipelineRun then succeeds, but
+        # $(tasks.status) still reads "Failed" (Tekton 1.x counts an ignored failure as a
+        # failure there - seen live 2026-10-19 on the qa gate's first advisory run, whose
+        # comment said "failed" over a green check run), so STATUS alone cannot pick the
+        # advisory wording. Decide from the TaskRuns: a failed TaskRun that is not an
+        # -advisory one is a real failure; only -advisory failures means advisory.
+        advisory_failed="$(echo "${taskrun_results}" | jq -r '[.items[] | select((.metadata.labels["tekton.dev/pipelineTask"] // "") | endswith("-advisory")) | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
+        hard_failed="$(echo "${taskrun_results}" | jq -r '[.items[] | select((.metadata.labels["tekton.dev/pipelineTask"] // "") | endswith("-advisory") | not) | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
+        if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" || ( -n "${advisory_failed}" && -z "${hard_failed}" ) ]]; then
+          # Best-effort: surface a Task result if one exists (image-scan and qa-gate produce
+          # findings-summary) - never required, a plain pass is a complete comment too.
           summary="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "findings-summary")][0].value // empty')"
           # governance-gate-stub/qa-gate (ADR-0003) emit outcome=stub - a stub always
           # succeeds, so STATUS alone can't tell "really passed" from "not a real check
@@ -134,10 +143,7 @@ spec:
           # posts the same "passed" wording as a genuine result, which
           # reads as the gate having actually verified something it never checked.
           outcome="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "outcome")][0].value // empty')"
-          # ADR-0021 phase 4: on an eligible rollback the content gates run their check as
-          # <task>-advisory with onError: continue, so the run succeeds while that TaskRun failed.
-          # Say what it found and why it did not block, instead of a plain "passed".
-          advisory_failed="$(echo "${taskrun_results}" | jq -r '[.items[] | select((.metadata.labels["tekton.dev/pipelineTask"] // "") | endswith("-advisory")) | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
+          # Say what the advisory check found and why it did not block, instead of a plain "passed".
           rollback_note="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "rollback-note")][0].value // empty')"
           if [[ -n "${advisory_failed}" ]]; then
             pod_name="$(kubectl get taskrun "${advisory_failed}" -n "${NAMESPACE}" -o jsonpath='{.status.podName}' 2>/dev/null || true)"
@@ -161,8 +167,7 @@ spec:
         else
           # Same failed-TaskRun + log-excerpt lookup notify-slack.yaml uses - best-effort,
           # naturally empty if no False-conditioned child exists yet.
-          failed_taskrun="$(kubectl get taskrun -n "${NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json 2>/dev/null \
-            | jq -r '[.items[] | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
+          failed_taskrun="${hard_failed}"
           log_excerpt=""
           if [[ -n "${failed_taskrun}" ]]; then
             pod_name="$(kubectl get taskrun "${failed_taskrun}" -n "${NAMESPACE}" -o jsonpath='{.status.podName}' 2>/dev/null || true)"
