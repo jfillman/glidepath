@@ -91,10 +91,17 @@ cosign download attestation ghcr.io/<owner>/<app>@sha256:<digest> \
         | .results | map({(.name): .value}) | add'
 ```
 
-A failed test PipelineRun produces no provenance (Chains signs completed, successful
-runs), so a failed check ride leaves nothing for the gate to find, which is the intended
-answer. A `required: false` run that failed does produce provenance with
-`outcome: failed`, and the gate reads the outcome, not the mere presence.
+Chains attests every completed test PipelineRun, failed ones included (seen live on
+2026-10-19: the first boarding-api run failed in the Task after writing its results, and
+its provenance is on the digest). So the gate never treats the presence of a check-ride
+entry as a pass: it reads `outcome`, `tests-failed` and `workflow-source` out of the
+entry, and a digest can carry several test provenances (re-runs, the team's own tests),
+of which the gate picks the check-ride ones.
+
+Live on hangar-dev, 2026-10-19, boarding-api `2.0.0-926d566`: five attestations on the
+digest - the SBOM, the build's provenance, and three test provenances, among them the
+check ride's with `outcome=passed`, `role=check-ride`, `tests-total=8`,
+`tests-failed=0`, `workflow-source=argocd:check-rides`.
 
 A test-only, git-rooted flow has no image, so its provenance has nothing to attach to;
 the Task results and the CDEvent still carry the result.
@@ -143,9 +150,9 @@ breaks the drop-in image this lab uses; the cluster repo pins 2.13.1 with the re
 
 ## Roadmap, as of 2026-10-19
 
-Done: phase 0 (the stage passes context, fails on a missing workflow, timeout, pull
-secret), phase 1 (roles, the contract, provenance), phase 2 (the check-rides repository,
-sync, policy). Next: phase 3, the real `qa` gate reading the provenance; phase 4, Tower's
+Done and live-verified on boarding-api: phase 0 (the stage passes context, fails on a
+missing workflow, timeout, pull secret), phase 1 (roles, the contract, provenance),
+phase 2 (the check-rides repository, sync, policy). Next: phase 3, the real `qa` gate reading the provenance; phase 4, Tower's
 primary-test strip, readiness row and Tests view; later, a check ride against a Flight
 environment on *release healthy*, Testkube's CDEvents into the broker instead of
 polling, and waivers.
