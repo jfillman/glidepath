@@ -141,6 +141,13 @@ cluster admins). It is not in `cicd.yaml` and not a Tower setting: no app team o
 off for one release. On GitHub Free a failed check still cannot block a merge (GATE-03), so `true` makes a bypass
 detectable (GATE-04), not impossible.
 
+**`provenance` on an image with check rides (2026-10-19).** Every check-ride test PipelineRun's SLSA provenance is
+attached to the tested digest too ([testing.md](testing.md)), so the Conforma half of `provenance` keeps only the
+build provenance (`tekton.dev/pipeline=build` label or a `build-image` task) before `ec validate input`; the test
+provenances belong to `qa`. Its commit-signature half resolves the PR number from the revision commit on a
+`/retest provenance-` run, where PaC hands over the raw `body.pull_request.number` template string, the way the
+other gates' resolve step and PR comment already did ([provenance-policy.md](provenance-policy.md)).
+
 **How the image gates find the image (2026-10-09).** `sast`, `image-scan`, `sbom`, `qa` and the provenance half of
 `provenance` share the `resolve-promoted-image` StepAction: two GitHub API reads against the PR (its base, the
 files changed between that base and the head commit, then the one manifest's content) - no clone of the gitops

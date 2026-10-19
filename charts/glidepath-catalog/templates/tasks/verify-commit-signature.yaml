@@ -30,6 +30,16 @@
 # have been found by an unbounded walk had this PR carried no trailers at all. With no
 # PR number (a manual run) the walk falls back to the 50 commits reachable from
 # REVISION, the old `git log` view.
+#
+# Live incident 2026-10-19 (gitops-boarding-api#70, PipelineRun provenance-zcbw6): on a
+# `/retest provenance-` run PaC hands this Task the literal string
+# `{{ "{{" }} body.pull_request.number {{ "}}" }}` as pr-number - the template var only resolves for a
+# genuine pull_request webhook, and a retest is an issue_comment webhook. `[[ -n ]]` took it
+# as a real number and curl refused the URL ("nested brace in URL position 66"), so the
+# commit-signature half failed on every retest. Same fallback glidepath#134 gave
+# resolve-promoted-image.yaml / comment-pr-check-result.yaml: resolve the PR from the
+# revision commit, else fall back to the no-PR walk. Duplicated, not shared (no helper lib
+# convention for these blocks).
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -48,7 +58,7 @@ spec:
     - name: pr-number
       type: string
       default: ""
-      description: PaC's `body.pull_request.number` - bounds the trailer search to this PR's own commits. Empty means "the commits reachable from revision".
+      description: PaC's `body.pull_request.number` - bounds the trailer search to this PR's own commits. Empty means "the commits reachable from revision"; an unsubstituted template string (a `/retest` run) is resolved from the revision commit, see the script.
     - name: app-namespace
       type: string
     - name: app-name
@@ -97,6 +107,25 @@ spec:
         gitops_repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
         gitops_token="$(github_app_installation_token "${gitops_owner}" "${gitops_repo}")"
         gitops_api="https://api.github.com/repos/${gitops_owner}/${gitops_repo}"
+
+        # PaC's {{ "{{" }} body.pull_request.number {{ "}}" }} only resolves for a genuine pull_request
+        # webhook: a `/retest <gate>-` comment is an issue_comment event, and PaC hands over the
+        # raw template string instead (the same quirk comment-pr-check-result.yaml works
+        # around). Seen live 2026-10-19 on gitops-boarding-api#70: curl refused the URL
+        # ("nested brace in URL"), so this gate failed on retest. Resolve the PR from
+        # the commit instead, and fall back to the revision walk if there is none.
+        if [[ -n "${PR_NUMBER}" && ! "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+          resolved="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
+            -H "Authorization: Bearer ${gitops_token}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${gitops_api}/commits/${REVISION}/pulls" | jq -r '.[0].number // empty')"
+          if [[ "${resolved}" =~ ^[0-9]+$ ]]; then
+            echo "note: pr-number arrived unsubstituted ('${PR_NUMBER}'); resolved PR #${resolved} from commit ${REVISION:0:12}"
+            PR_NUMBER="${resolved}"
+          else
+            echo "note: pr-number arrived unsubstituted ('${PR_NUMBER}') and no open PR carries commit ${REVISION:0:12}; walking the commits reachable from it"
+            PR_NUMBER=""
+          fi
+        fi
 
         # The trailers open-release-pr.yaml embeds - see that file's own comment on why
         # these exist instead of a second PaC Repository CR on the app repo. Newest

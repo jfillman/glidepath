@@ -30,6 +30,16 @@
 # log certificate does not match" on every line but one and `provenance` went red on
 # gitops-boarding-api#70. Fixed by pairing each line to its layer by envelope signature,
 # the block qa-gate.yaml already used (see the comment at that block below).
+#
+# Second half of that incident, same PR (PipelineRun provenance-zcbw6): once cosign passed
+# on all five, EVERY verified provenance was wrapped into the one `ec validate input` call,
+# and the release policy failed on the four test provenances - tasks.required_tasks_found
+# (no build-image/run-tests in a `test` PipelineRun), tasks.successful_pipeline_tasks
+# (Chains attests a failed check ride too, so run-testworkflow read "Failed"),
+# slsa_source_correlated / slsa_source_version_controlled (a test run carries no source
+# materials). Conforma now gets only the build provenance (selected below by the
+# PipelineRun's tekton.dev/pipeline label, or a build-image task entry); the test
+# provenances are qa-gate.yaml's business. The policy itself is unchanged.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -397,6 +407,34 @@ spec:
           exit 1
         fi
 
+        # Only the BUILD provenance goes to Conforma. Since the test framework's phase 1
+        # (docs/admin/testing.md) Chains attaches every check-ride test PipelineRun's
+        # provenance to the tested digest too, and the release policy is written for a
+        # build: a `test` run has no build-image/run-tests tasks, no source materials, and
+        # Chains attests failed rides as well (tasks.successful_pipeline_tasks) - all seen
+        # live 2026-10-19 (header). A build provenance is one whose PipelineRun carried the
+        # tekton.dev/pipeline=build label (Chains copies the run's labels into
+        # invocation.environment.labels; the catalog Pipeline is literally named `build`,
+        # the same object the required-tasks list is read from below), or - should that
+        # label ever go missing the way per-task labels already did (see the clone-repo
+        # comment below) - whose buildConfig.tasks[] has a `build-image` entry. The test
+        # provenances are judged by qa-gate.yaml, not here. Several build provenances (a
+        # rebuild of the same digest) all go through, as before.
+        build_provenance_files=()
+        for f in "${provenance_files[@]}"; do
+          if jq -e '(.predicate.invocation.environment.labels["tekton.dev/pipeline"] // "") == "build"
+                    or any(.predicate.buildConfig.tasks[]?; .name == "build-image")' "${f}" >/dev/null; then
+            build_provenance_files+=("${f}")
+          else
+            echo "skipping non-build provenance (pipeline '$(jq -r '.predicate.invocation.environment.labels["tekton.dev/pipeline"] // "unknown"' "${f}")', tasks $(jq -c '[.predicate.buildConfig.tasks[]?.name]' "${f}")) - test provenances are the qa gate's business"
+          fi
+        done
+        if [[ ${#build_provenance_files[@]} -eq 0 ]]; then
+          echo "FAIL: ${#provenance_files[@]} verified slsaprovenance attestation(s) on ${image_ref}, none from the build pipeline (tekton.dev/pipeline=build label or a build-image task) - was this image built by the catalog's build Pipeline?" >&2
+          exit 1
+        fi
+        echo "build provenance(s) for Conforma: ${#build_provenance_files[@]} of ${#provenance_files[@]} verified"
+
         # Wrap as {"attestations": [{"statement": <payload>}]} before handing to `ec` -
         # required, not cosmetic. Conforma's lib.pipelinerun_attestations (used by nearly
         # every slsa3-collection rule) reads input.attestations[].statement, not a bare
@@ -404,7 +442,7 @@ spec:
         # rule built on it reports a vacuous "Pass". `ec validate image` does this wrapping
         # internally; `ec validate input` doesn't, so it's done here.
         wrapped_provenance_file="${workdir}/wrapped-provenance.json"
-        jq -s '{attestations: map({statement: .})}' "${provenance_files[@]}" > "${wrapped_provenance_file}"
+        jq -s '{attestations: map({statement: .})}' "${build_provenance_files[@]}" > "${wrapped_provenance_file}"
 
         # input.image.source is read by a separate policy rule (_expected_sources) to check
         # the attestation against the real source ref. Pulled directly from the clone task's
