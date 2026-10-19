@@ -480,10 +480,14 @@ spec:
         if [[ -n "${REPORT_PATH}" ]]; then
           ENCODED="$(jq -rn --arg p "${REPORT_PATH}" '$p | @uri')"
           if curl -fsS -o /tmp/junit.xml "${API}/v1/test-workflow-executions/${EXECUTION_ID}/artifacts/${ENCODED}" 2>/dev/null && grep -q '<testsuite' /tmp/junit.xml; then
-            TOTAL="$(grep -o '<testcase' /tmp/junit.xml | wc -l | tr -d ' ')"
-            FAILED="$(grep -o '<failure' /tmp/junit.xml | wc -l | tr -d ' ')"
-            ERRORS="$(grep -o '<error' /tmp/junit.xml | wc -l | tr -d ' ')"
-            SKIPPED="$(grep -o '<skipped' /tmp/junit.xml | wc -l | tr -d ' ')"
+            # `|| true` inside each pipeline: grep -o exits 1 on zero matches, and under
+            # pipefail that turned a report with no failures into a silent exit 1 of the
+            # whole step (the first live run, 2026-10-19: every test passed, Task failed).
+            count() { { grep -o "$1" /tmp/junit.xml || true; } | wc -l | tr -d ' '; }
+            TOTAL="$(count '<testcase')"
+            FAILED="$(count '<failure')"
+            ERRORS="$(count '<error')"
+            SKIPPED="$(count '<skipped')"
             FAILED=$(( FAILED + ERRORS ))
             PASSED=$(( TOTAL - FAILED - SKIPPED )); [[ ${PASSED} -lt 0 ]] && PASSED=0
             echo -n "${TOTAL}" > "$(results.tests-total.path)"; echo -n "${PASSED}" > "$(results.tests-passed.path)"
