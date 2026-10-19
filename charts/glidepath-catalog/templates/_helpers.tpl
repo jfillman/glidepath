@@ -130,12 +130,14 @@ itsm-implement, the outcome pipelines' itsm-close) and the real itsm gate render
 {{- define "glidepath-catalog.itsmEnv" -}}
 - name: ITSM_PROVIDER
   value: {{ .Values.itsm.provider | default "none" | quote }}
+{{- /* toString before quote: Argo CD's valuesObject can hand the chart a nil for an unset string, and quote of a
+nil renders no value at all (seen live 2026-10-19: the env entry had no `value` key). */}}
 - name: ITSM_SERVICENOW_URL
-  value: {{ .Values.itsm.servicenow.instanceUrl | default "" | quote }}
+  value: {{ .Values.itsm.servicenow.instanceUrl | default "" | toString | quote }}
 - name: ITSM_SERVICENOW_APPROVED_STATES
   value: {{ join "," (.Values.itsm.servicenow.approvedStates | default (list "-2" "-1")) | quote }}
 - name: ITSM_WEBHOOK_URL
-  value: {{ .Values.itsm.webhook.url | default "" | quote }}
+  value: {{ .Values.itsm.webhook.url | default "" | toString | quote }}
 - name: ITSM_CREDENTIALS_DIR
   value: /var/run/secrets/itsm
 {{- end -}}

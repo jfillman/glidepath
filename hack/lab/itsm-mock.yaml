@@ -10,8 +10,8 @@
 #
 #   kubectl -n platform-system create configmap itsm-mock --from-file=charts/glidepath-catalog/tests/itsm_mock_server.py
 #   kubectl apply -f hack/lab/itsm-mock.yaml
-#   kubectl -n platform-system exec deploy/itsm-mock -- wget -qO- localhost:8080/_mock/changes      # every change
-#   kubectl -n platform-system exec deploy/itsm-mock -- wget -qO- --post-data= localhost:8080/_mock/approve/<id>
+#   kubectl -n platform-system exec deploy/itsm-mock -- wget -qO- http://127.0.0.1:8080/_mock/changes   # every change (127.0.0.1: alpine's localhost is ::1 first)
+#   kubectl -n platform-system exec deploy/itsm-mock -- wget -qO- --post-data= http://127.0.0.1:8080/_mock/approve/<id>
 #
 # In memory only: a restart forgets every change. Never a production shape.
 apiVersion: apps/v1
