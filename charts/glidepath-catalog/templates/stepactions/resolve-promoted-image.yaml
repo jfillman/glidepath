@@ -79,6 +79,23 @@ spec:
     }
     base="https://api.github.com/repos/${owner}/${repo}"
 
+    # PaC's {{ "{{" }} body.pull_request.number {{ "}}" }} only resolves for a genuine pull_request
+    # webhook: a `/retest <gate>-` comment is an issue_comment event, and PaC hands over the
+    # raw template string instead (the same quirk comment-pr-check-result.yaml works
+    # around). Seen live 2026-10-19 on gitops-boarding-api#70: curl refused the URL
+    # ("nested brace in URL"), so every image gate failed on retest. Resolve the PR from
+    # the commit instead, and fall back to the single-commit view if there is none.
+    if [[ -n "${PR_NUMBER}" && ! "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+      resolved="$(api -H "Accept: application/vnd.github+json" "${base}/commits/${REVISION}/pulls" | jq -r '.[0].number // empty')"
+      if [[ "${resolved}" =~ ^[0-9]+$ ]]; then
+        echo "note: pr-number arrived unsubstituted ('${PR_NUMBER}'); resolved PR #${resolved} from commit ${REVISION:0:12}"
+        PR_NUMBER="${resolved}"
+      else
+        echo "note: pr-number arrived unsubstituted ('${PR_NUMBER}') and no open PR carries commit ${REVISION:0:12}; checking the commit alone"
+        PR_NUMBER=""
+      fi
+    fi
+
     if [[ -n "${PR_NUMBER}" ]]; then
       pr_json="$(api -H "Accept: application/vnd.github+json" "${base}/pulls/${PR_NUMBER}")"
       base_sha="$(jq -r '.base.sha' <<<"${pr_json}")"

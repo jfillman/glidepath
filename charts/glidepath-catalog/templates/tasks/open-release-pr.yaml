@@ -403,7 +403,7 @@ spec:
         # broke the surrounding Task's own YAML by terminating the block scalar early
         # (see docs/admin/multi-cluster.md's "Live end-to-end verification" section for
         # the real, live-confirmed bug this technique was adopted to avoid).
-        governance_text="$(printf '\n\n## Governance checks\n\n| Check | What it verifies | Status |\n|---|---|---|\n{{ range .Values.releaseGuardrails }}| `{{ .name }}` | {{ .description | replace "'" "'\"'\"'" }} | {{ if eq .status "real" }}real{{ else }}not yet real - see Glidepath docs/admin/governance-stubs.md{{ end }} |\n{{ end }}\n**If a check fails**: comment `/retest <check-name>` on this PR to re-run just that one (e.g. `/retest sast`), or `/retest` alone to re-run all of them. Fix the underlying issue first if the failure is real - re-running does not bypass a check, it only re-evaluates it.')"
+        governance_text="$(printf '\n\n## Governance checks\n\n| Check | What it verifies | Status |\n|---|---|---|\n{{ range .Values.releaseGuardrails }}| `{{ .name }}` | {{ .description | replace "'" "'\"'\"'" }} | {{ if eq .status "real" }}real{{ else }}not yet real - see Glidepath docs/admin/governance-stubs.md{{ end }} |\n{{ end }}\n**If a check fails**: comment `/retest <check-name>-` (the check name with its dash) on this PR to re-run just that one (e.g. `/retest sast`), or `/retest` alone to re-run all of them. Fix the underlying issue first if the failure is real - re-running does not bypass a check, it only re-evaluates it.')"
         requested=""
         if [[ "${RELEASE_KIND}" == "rollback" ]]; then
           [[ -n "${INITIATOR}" ]] && requested="$(printf '\n**Requested by**: %s (via Tower Roll back)' "${INITIATOR}")"

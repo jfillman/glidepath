@@ -375,16 +375,16 @@ spec:
             echo "PASS: ${summary}"
             ;;
           none)
-            fail "no check ride ran for ${image_ref}: ${#verified_files[@]} verified provenance(s) on the digest, none with a run-testworkflow entry of role=check-ride. Run the test stage with a \`role: check-ride\` step against this image (the flow's test step runs <app>-${CHECK_RIDE_WORKFLOW}, synced by the ${CHECK_RIDES_APPLICATION} Argo CD Application), then \`/retest qa\`."
+            fail "no check ride ran for ${image_ref}: ${#verified_files[@]} verified provenance(s) on the digest, none with a run-testworkflow entry of role=check-ride. Run the test stage with a \`role: check-ride\` step against this image (the flow's test step runs <app>-${CHECK_RIDE_WORKFLOW}, synced by the ${CHECK_RIDES_APPLICATION} Argo CD Application), then \`/retest qa-\`."
             ;;
           failed)
-            fail "the check ride for ${image_ref} failed: outcome=${ride_outcome:-none}, ${ride_counts} (Testkube execution ${ride_exec_text}, finished ${ride_finished:-unknown}); ${ride_count} check-ride run(s) attested, none passed with tests-failed=0. Fix the failures (or the missing JUnit report), re-run the test stage against this image, then \`/retest qa\`."
+            fail "the check ride for ${image_ref} failed: outcome=${ride_outcome:-none}, ${ride_counts} (Testkube execution ${ride_exec_text}, finished ${ride_finished:-unknown}); ${ride_count} check-ride run(s) attested, none passed with tests-failed=0. Fix the failures (or the missing JUnit report), re-run the test stage against this image, then \`/retest qa-\`."
             ;;
           unshared)
             fail "the passing check ride for ${image_ref} was not from the shared check-rides repository: workflow-source=${ride_source:-empty}, expected ${expected_source} (${ride_counts}, Testkube execution ${ride_exec_text}). A check ride must be <app>-${CHECK_RIDE_WORKFLOW} as synced by the ${CHECK_RIDES_APPLICATION} Argo CD Application, never a workflow from the app repo."
             ;;
           stale)
-            fail "the newest passing check ride for ${image_ref} is too old: ${age_text}, finished ${ride_finished:-unknown}, policy allows ${MAX_AGE} (${ride_counts}, Testkube execution ${ride_exec_text}, from ${ride_source}). Re-run the test stage against this image for a fresh ride, then \`/retest qa\`."
+            fail "the newest passing check ride for ${image_ref} is too old: ${age_text}, finished ${ride_finished:-unknown}, policy allows ${MAX_AGE} (${ride_counts}, Testkube execution ${ride_exec_text}, from ${ride_source}). Re-run the test stage against this image for a fresh ride, then \`/retest qa-\`."
             ;;
           *)
             fail "internal error: unexpected verdict '${result}' for ${image_ref}."
