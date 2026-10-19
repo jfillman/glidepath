@@ -44,7 +44,7 @@ spec:
       description: "The gitops PR's head commit - PaC's `revision`. Fallback source for the real PR number when pr-number arrives unsubstituted (see script header on PaC's pull_request.number webhook var only resolving for genuine pull_request webhooks)."
     - name: gate-name
       type: string
-      description: Any name from .Values.releaseGuardrails (docs/admin/release-guardrails.md) - must match the real `/retest <name>` PaC expects (docs/admin/release.md).
+      description: Any name from .Values.releaseGuardrails (docs/admin/release-guardrails.md) - must match the real `/retest <name>-` PaC expects (docs/admin/release.md).
     - name: pipeline-run-name
       type: string
       description: $(context.pipelineRun.name) from the calling Pipeline - used to find which of its own child TaskRuns failed.
@@ -194,17 +194,17 @@ spec:
               recommendation="This usually indicates a transient generation/signing/push error, not a content problem."
               ;;
             qa)
-              recommendation="This reads the check ride recorded on the promoted image's own test provenance (docs/admin/testing.md) - it never runs tests itself. The log above says what was missing: no check ride ran for this image, it failed, it was not the shared check-rides repository's \`<app>-check-ride\`, or it is older than the catalog's \`qa.maxAge\`. Run the flow's \`role: check-ride\` test step against this exact image (a new build gets a new digest and needs its own ride), then \`/retest qa\` - the gate re-reads the registry."
+              recommendation="This reads the check ride recorded on the promoted image's own test provenance (docs/admin/testing.md) - it never runs tests itself. The log above says what was missing: no check ride ran for this image, it failed, it was not the shared check-rides repository's \`<app>-check-ride\`, or it is older than the catalog's \`qa.maxAge\`. Run the flow's \`role: check-ride\` test step against this exact image (a new build gets a new digest and needs its own ride), then \`/retest qa-\` - the gate re-reads the registry."
               ;;
             itsm|policy-validation)
-              recommendation="This gate is a stub - it always no-ops and reports \`stub\`, never a real pass/fail judgment (see docs/admin/governance-stubs.md). A failure here means something broke in the platform scaffolding itself (e.g. the shared toolbox image or OTel collector), not a real ITSM/QA/policy rejection - check the log excerpt above and \`/retest ${GATE_NAME}\`."
+              recommendation="This gate is a stub - it always no-ops and reports \`stub\`, never a real pass/fail judgment (see docs/admin/governance-stubs.md). A failure here means something broke in the platform scaffolding itself (e.g. the shared toolbox image or OTel collector), not a real ITSM/QA/policy rejection - check the log excerpt above and \`/retest ${GATE_NAME}-\`."
               ;;
             *)
               recommendation="See the log excerpt above for detail."
               ;;
           esac
 
-          body="$(printf '### ❌ `%s` failed\n\n**What happened:**\n```\n%s\n```\n\n**Recommendation:** %s\n\n**To retry:** comment `/retest %s` on this PR once the underlying issue is fixed.' \
+          body="$(printf '### ❌ `%s` failed\n\n**What happened:**\n```\n%s\n```\n\n**Recommendation:** %s\n\n**To retry:** comment `/retest %s-` on this PR once the underlying issue is fixed (the check name with its dash: PaC matches the PipelineRun generateName).' \
             "${GATE_NAME}" "${log_excerpt}" "${recommendation}" "${GATE_NAME}")"
         fi
 

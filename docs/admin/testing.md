@@ -86,7 +86,7 @@ pipeline wrote - with the provenance's `buildFinishedOn` as the fallback. The PR
 carries the counts, the Testkube execution id, the source and the age on a pass. On a
 failure it names what was missing, judged on the newest ride: no check ride ran for this
 digest, it failed (with its outcome and counts), it was not from the shared repository,
-or it is too old. The gate reads the registry, so `/retest qa` after a fresh ride is
+or it is too old. The gate reads the registry, so `/retest qa-` after a fresh ride is
 enough; a new build is a new digest and needs its own ride. `qa` is a content gate
 ([release-guardrails.md](release-guardrails.md)): on a rollback to an image that already
 ran healthy it reports without blocking, since the newest ride for that image may well be

@@ -127,7 +127,7 @@ the fence) and be younger than `qa.maxAge` (default `72h`), measured from the at
 (the provenance's `buildFinishedOn` only if the entry has none). The PR comment carries the counts and the Testkube
 execution id on a pass; on a failure it says which of the four was missing: no check ride ran for this digest, it
 failed, it was not from the shared repository, or it is too old. A new build is a new digest and needs its own
-ride; `/retest qa` re-reads the registry. `qa` is a content gate: on an eligible rollback it reports without
+ride; `/retest qa-` re-reads the registry. `qa` is a content gate: on an eligible rollback it reports without
 blocking (ADR-0021 decision 8), which is where an older ride would otherwise trip it.
 
 **How the image gates find the image (2026-10-09).** `sast`, `image-scan`, `sbom`, `qa` and the provenance half of

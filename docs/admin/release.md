@@ -282,8 +282,10 @@ image's test provenance, [testing.md](testing.md)); `itsm`/`policy-validation` a
 independently of each other (`image-promotion`, which waited on the rest, was retired
 2026-10-09 - see that doc's "Two shapes" section and ADR-0025).
 
-**Re-running a failed check**: comment `/retest <check-name>` on the PR (e.g. `/retest
-sast`) to re-run just that one, or `/retest` alone to re-run every gate in
+**Re-running a failed check**: comment `/retest <check-name>-` on the PR (e.g. `/retest
+sast-`; the dash is part of the name - PaC matches the PipelineRun's `generateName`, and
+`/retest sast` answers "cannot find the targeted pipelinerun", confirmed live 2026-10-19)
+to re-run just that one, or `/retest` alone to re-run every gate in
 `.Values.releaseGuardrails` - PaC's own native comment mechanism, no platform code
 involved. Fix the underlying issue first if the failure is real; re-running only
 re-evaluates the check, it does not bypass it.
@@ -365,7 +367,7 @@ failing required check, and how it's made visible.
 - Push to the app repo, let it flow through build->test->deploy->release for real.
 - A PR should appear on `gitops-<app-name>` with the correct image reference, and every
   governance check in `.Values.releaseGuardrails` should show up in the PR's checks list
-  (each individually re-runnable, e.g. via `/retest sast` PR comment) - all independent
+  (each individually re-runnable, e.g. via `/retest sast-` PR comment) - all independent
   of each other.
 - Security check: confirm `/github-installation-token` genuinely rejects a request for
   a repo the caller's Application doesn't own (test from `platform-cicd-demo`'s SA
