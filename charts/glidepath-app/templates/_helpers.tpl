@@ -367,6 +367,11 @@ renderer can treat both forms uniformly.
     {{- if hasKey $entry "testName" -}}
       {{- $_ := set $step "testName" $entry.testName -}}
     {{- end -}}
+    {{- range $k := list "role" "required" "timeout" -}}
+      {{- if hasKey $entry $k -}}
+        {{- $_ := set $step $k (get $entry $k) -}}
+      {{- end -}}
+    {{- end -}}
     {{- if hasKey $entry "cluster" -}}
       {{- $_ := set $step "cluster" $entry.cluster -}}
     {{- end -}}
@@ -462,6 +467,11 @@ renderer can treat both forms uniformly.
       {{- if hasKey $entry "testName" -}}
         {{- $_ := set $step "testName" $entry.testName -}}
       {{- end -}}
+      {{- range $k := list "role" "required" "timeout" -}}
+        {{- if hasKey $entry $k -}}
+          {{- $_ := set $step $k (get $entry $k) -}}
+        {{- end -}}
+      {{- end -}}
       {{- if hasKey $entry "cluster" -}}
         {{- $_ := set $step "cluster" $entry.cluster -}}
       {{- end -}}
@@ -553,6 +563,7 @@ Fails fast with a descriptive message if violated.
       {{- end -}}
     {{- end -}}
 
+    {{- $checkRides := 0 -}}
     {{- range $index, $step := $steps -}}
       {{- $stageName := $step.stage | default "" -}}
 
@@ -568,8 +579,35 @@ Fails fast with a descriptive message if violated.
       {{- end -}}
 
       {{- if eq $stageName "test" -}}
-        {{- if and (not $step.testName) (not $defaultTestName) -}}
+        {{- /* role (docs/admin/testing.md): test (default) and execute run the team's own
+        glidepath/<testName>.yaml; check-ride runs <app>-check-ride from the shared
+        check-rides repository and so has no testName of its own. */ -}}
+        {{- $role := $step.role | default "test" -}}
+        {{- if not (has $role (list "execute" "test" "check-ride")) -}}
+          {{- fail (printf "Flow '%s' step %d: test step role '%s' is not one of execute, test, check-ride." $flowName (add $index 1) $role) -}}
+        {{- end -}}
+        {{- if eq $role "check-ride" -}}
+          {{- if $step.testName -}}
+            {{- fail (printf "Flow '%s' step %d: a check-ride step takes no testName - it always runs this app's own check ride from the check-rides repository (apps/<app>/check-ride.yaml)." $flowName (add $index 1)) -}}
+          {{- end -}}
+          {{- if and (hasKey $step "required") (not $step.required) -}}
+            {{- fail (printf "Flow '%s' step %d: a check-ride step is always required - drop `required: false`, or use role: test for a best-effort run." $flowName (add $index 1)) -}}
+          {{- end -}}
+          {{- $checkRides = add $checkRides 1 -}}
+          {{- if gt (int $checkRides) 1 -}}
+            {{- fail (printf "Flow '%s' step %d: a flow has at most one check-ride step." $flowName (add $index 1)) -}}
+          {{- end -}}
+        {{- else if and (not $step.testName) (not $defaultTestName) -}}
           {{- fail (printf "Flow '%s' step %d: test stage needs a test name - set this step's own `testName`, or a top-level `test.name` shared by all test steps." $flowName (add $index 1)) -}}
+        {{- end -}}
+        {{- if and $step.timeout (not (regexMatch "^[0-9]+[smh]$" (toString $step.timeout))) -}}
+          {{- fail (printf "Flow '%s' step %d: timeout '%s' must be a number followed by s, m or h (e.g. 15m)." $flowName (add $index 1) (toString $step.timeout)) -}}
+        {{- end -}}
+      {{- else -}}
+        {{- range $k := list "role" "required" "timeout" -}}
+          {{- if hasKey $step $k -}}
+            {{- fail (printf "Flow '%s' step %d: `%s` is only valid on a test step, not %s." $flowName (add $index 1) $k $stageName) -}}
+          {{- end -}}
         {{- end -}}
       {{- end -}}
 

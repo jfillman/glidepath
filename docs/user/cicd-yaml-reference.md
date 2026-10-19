@@ -261,8 +261,22 @@ pipelines:
         env: dev                  # Required for test/deploy/release steps; not
                                    # valid on build. Which environment this step
                                    # targets/exercises.
-        testName: integration      # Only meaningful on a test step - see the test:
-                                   # block above. Not called `name` - see below.
+        testName: integration      # Only meaningful on a test step with role test or
+                                   # execute - see the test: block above. Not called
+                                   # `name` - see below. Not valid with role check-ride.
+        role: test                 # Only on a test step. test (default): your own
+                                   # glidepath/<testName>.yaml. execute: an action, not
+                                   # a test (a cache flush), same file, no test evidence
+                                   # expected. check-ride: the standard the release
+                                   # depends on - runs <app>-check-ride from the shared
+                                   # check-rides repository, takes no testName, at most
+                                   # one per flow. See ../admin/testing.md.
+        required: true             # Only on a test step, default true. false: a failed
+                                   # run is recorded but the flow continues. Not valid
+                                   # with role check-ride.
+        timeout: 10m               # Only on a test step, default 10m (Ns/Nm/Nh): how long
+                                   # the stage waits for the run; past it the outcome is
+                                   # `timeout` and the step fails.
         cluster: prod-cluster     # Only valid on a release step. Optional - only set
                                    # this if you want an explicit consistency check
                                    # against deploy.environments' own cluster for
@@ -490,6 +504,20 @@ test:
 every flow that doesn't set its own `testName`. `enabled: false` skips the stage's actual
 test run but the stage still runs (span, CDEvent, Slack notification) - it just reports
 success without having tested anything.
+
+A test step also has a **role** (`steps[].role`, see the `pipelines:` reference above
+and [../admin/testing.md](../admin/testing.md)): `test` (the default) and `execute`
+both run the workflow named here, and differ only in intent (an `execute` step is an
+action, not a test, and `required: false` makes it best-effort); `check-ride` runs
+`<your-app-name>-check-ride` from the shared **check-rides** repository instead - the
+workflow a release depends on, written by your team with an SDET against a template
+product owners and SDETs own, synced into Testkube by Argo CD and never applied from
+this repo. The rest of this section is about the `test`/`execute` workflow in this repo.
+
+Every run, whatever its role, records the same result set (outcome, Testkube execution
+id, workflow digest, test counts from your JUnit report) as Task results, and Tekton
+Chains attaches that stage's provenance to the tested image, so the release carries
+the evidence - [../admin/testing.md](../admin/testing.md) has the full contract.
 
 Whatever name is in effect resolves to one of two things, checked in this order:
 

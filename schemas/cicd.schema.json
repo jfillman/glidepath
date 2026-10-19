@@ -362,7 +362,24 @@
                     "env": { "type": "string" },
                     "testName": {
                       "type": "string",
-                      "description": "Only meaningful on a test step. Overrides the top-level test.name for this specific step - needed when a flow has more than one test step (they'd otherwise be indistinguishable). Falls back to test.name when omitted; one of the two must resolve to a value, since a TestWorkflow run always needs a name. Not called `name` - that field below is the deploy/release target name, a different concept."
+                      "description": "Only meaningful on a test step with role test or execute. Overrides the top-level test.name for this specific step - needed when a flow has more than one test step (they'd otherwise be indistinguishable). Falls back to test.name when omitted; one of the two must resolve to a value, since a TestWorkflow run always needs a name. Not valid with role check-ride (that workflow's name is the platform's). Not called `name` - that field below is the deploy/release target name, a different concept."
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": ["execute", "test", "check-ride"],
+                      "default": "test",
+                      "description": "Only meaningful on a test step. What kind of thing the step is (docs/admin/testing.md). test (default): the team's own TestWorkflow from glidepath/<testName>.yaml - results recorded and shown, the next stage chains on them. execute: an action, not a test (clear a cache, seed a fixture) - same workflow source and chaining, no test evidence expected. check-ride: the standard the release depends on - runs <app>-check-ride from the shared check-rides repository (synced into Testkube by Argo CD, never applied from this repo), takes no testName, at most one per flow; its passing run is the evidence the qa release gate reads."
+                    },
+                    "required": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Only meaningful on a test step. false: a failed run is recorded as failed but does not stop the flow - the next stage still runs. For best-effort execute steps. A check-ride step is always required."
+                    },
+                    "timeout": {
+                      "type": "string",
+                      "pattern": "^[0-9]+[smh]$",
+                      "default": "10m",
+                      "description": "Only meaningful on a test step. How long the stage waits for the TestWorkflow execution to reach a terminal status (Ns, Nm or Nh). Past it the outcome is `timeout` and the step fails; Testkube's own step timeouts inside the workflow still apply."
                     },
                     "cluster": { "type": "string" },
                     "name": { "type": "string" },
@@ -393,6 +410,9 @@
                 "filePathPattern": { "type": "array", "items": { "type": "string" } },
                 "env": { "type": "string" },
                 "testName": { "type": "string" },
+                "role": { "type": "string", "enum": ["execute", "test", "check-ride"] },
+                "required": { "type": "boolean" },
+                "timeout": { "type": "string", "pattern": "^[0-9]+[smh]$" },
                 "cluster": { "type": "string" },
                 "name": { "type": "string" },
                 "triggerEnv": { "type": "string" },

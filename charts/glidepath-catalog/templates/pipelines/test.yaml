@@ -44,10 +44,18 @@ spec:
     - name: test-name
       type: string
       description: "TestWorkflow name - the step's own `testName`, or cicd.yaml's top-level test.name. validateFlows requires one of the two to resolve."
+    - name: test-role
+      type: string
+      default: "test"
+      description: "The step's role (cicd.yaml steps[].role, docs/admin/testing.md): test, execute or check-ride. check-ride runs <app>-<checkRide.workflowName> from the check-rides repository instead of a file in this repo."
+    - name: test-required
+      type: string
+      default: "true"
+      description: "cicd.yaml steps[].required as a string. false: a failed run still lets the flow continue (run-testworkflow exits 0 with outcome failed)."
     - name: test-timeout
       type: string
       default: "10m"
-      description: "How long run-testworkflow waits for the TestWorkflowExecution to reach a terminal status (Ns/Nm/Nh). Not yet settable from cicd.yaml: the step-level field is phase 1 of the test framework spec."
+      description: "cicd.yaml steps[].timeout: how long run-testworkflow waits for the TestWorkflowExecution to reach a terminal status (Ns/Nm/Nh)."
     - name: app-namespace
       type: string
     - name: app-name
@@ -66,6 +74,18 @@ spec:
       description: "Inherited from upstream stage (event-chained) or minted by preflight (git-rooted)"
   workspaces:
     - name: source
+  # Tekton Chains type hints, the same pair build.yaml carries: with these, Chains signs
+  # this PipelineRun's SLSA provenance and attaches it to the tested image in the
+  # registry. That provenance's buildConfig.tasks[] carries run-testworkflow's results
+  # (outcome, role, workflow-digest, tests-*), which is the evidence the qa release gate
+  # verifies for a check ride, exactly as the sast gate reads sast-scan's outcome out of
+  # the build's provenance. See docs/admin/testing.md. Empty for a git-rooted test-only
+  # flow with no image, and Chains then has nothing to attach it to.
+  results:
+    - name: IMAGE_URL
+      value: $(tasks.run-testworkflow.results.image-repo)
+    - name: IMAGE_DIGEST
+      value: $(tasks.run-testworkflow.results.image-digest)
   tasks:
     # Everything that precedes the stage's real work, in one pod: flow/stage trace ids,
     # pipelinerun.started, the clone (when the workspace is bound) and cicd.yaml
@@ -112,6 +132,9 @@ spec:
         - { name: git-revision, value: $(params.git-revision) }
         - { name: chain-id, value: $(tasks.preflight.results.chain-id) }
         - { name: timeout, value: $(params.test-timeout) }
+        - { name: role, value: $(params.test-role) }
+        - { name: required, value: $(params.test-required) }
+        - { name: check-ride-name, value: {{ .Values.checkRide.workflowName | quote }} }
 
   # One finally Task, one pod (2026-10-08) - replaces the six separate finally tasks this
   # Pipeline used to carry (end-test-stage-span, end-flow, notify, notify-backstage,
@@ -153,5 +176,5 @@ spec:
         # (docs/admin/chaining.md).
         - name: domain-subject-content-json
           value: >-
-            {"outcome": "$(tasks.status)", "image": "$(params.image-ref)", "revision": "$(params.git-revision)", "git-url": "$(params.git-url)", "env": "$(params.env)", "test-name": "$(params.test-name)"}
+            {"outcome": "$(tasks.status)", "image": "$(params.image-ref)", "revision": "$(params.git-revision)", "git-url": "$(params.git-url)", "env": "$(params.env)", "test-name": "$(params.test-name)", "role": "$(params.test-role)"}
         - { name: domain-event-on-success-only, value: "false" }
