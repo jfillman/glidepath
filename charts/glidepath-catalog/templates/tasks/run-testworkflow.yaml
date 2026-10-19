@@ -220,11 +220,13 @@ spec:
           value: $(params.required)
         - name: CHECK_RIDE_NAME
           value: $(params.check-ride-name)
+        # Not under /tekton/: Tekton's validation webhook refuses any volumeMount there
+        # (found live 2026-10-19, the catalog sync failed on it).
         - name: DOCKER_CONFIG
-          value: /tekton/creds-registry
+          value: /var/run/registry-credentials
       volumeMounts:
         - name: registry-credentials
-          mountPath: /tekton/creds-registry
+          mountPath: /var/run/registry-credentials
           readOnly: true
       script: |
         #!/usr/bin/env bash
