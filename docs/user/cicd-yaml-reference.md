@@ -520,9 +520,38 @@ Whatever name is in effect resolves to one of two things, checked in this order:
      Kyverno policy in the `testkube` namespace enforces that `secretKeyRef.name` here
      can only ever resolve to your own Application's secret, not another tenant's - see
      `../admin/adr/0008-kyverno-testkube-secret-policy.md`.
-   - See the TestWorkflow CRD docs (docs.testkube.io) for the rest of `spec:` - image,
-     command, assertions, etc. are all standard Testkube, nothing platform-specific
-     beyond the two rules above.
+   - **The platform's context reaches the workflow as `config` (2026-10-19).** Declare
+     any of these keys under `spec.config` and the test stage passes the value on every
+     run (`{{ config.<key> }}` in the spec); keys you don't declare are not passed, so a
+     workflow that declares none runs exactly as before:
+
+     | key | value |
+     |---|---|
+     | `app` | this Application's name |
+     | `env` | the test step's `env` |
+     | `image` | the image reference just built and deployed (`<repo>:<version>-<sha>`) |
+     | `url` | the in-cluster address of that environment's Service, `http://<app>.<type>-<app>-<env>.svc.cluster.local:<port>` (port 8080 unless the pipeline identity may read the Service) |
+     | `revision` | the commit under test |
+     | `gitUrl` | this repo's clone URL |
+     | `chain` | the flow's chain id, the same one every PipelineRun of this flow carries |
+
+     The same values (minus `url`/`gitUrl`) are set as execution **tags** on every run,
+     so a run can be found again by what it tested (`testkube get twe --tag image=...`,
+     or Testkube's `tagSelector`). A good workflow hardcodes no environment: it reads
+     `config.url`, and if its tests ship inside the image (a `test/` folder the
+     Containerfile copies in) it runs them with `container.image: "{{ config.image }}"`,
+     which pins the suite to the build it checks and needs no clone of a private repo.
+     Every applied workflow gets `registry-credentials` added to
+     `spec.pod.imagePullSecrets`, so that private image pulls.
+   - The environment's own NetworkPolicy (airframe-application) admits same-namespace
+     pods only. For a workflow to reach the Service, the app's `glidepath/base.yaml`
+     needs `networkPolicy: {allowIngressFrom: [{namespace: testkube}]}` - a per-app
+     opt-in today, not a platform default.
+   - Write JUnit to a path your workflow lists under a step's `artifacts.paths`;
+     Testkube parses it into the execution record (per-test pass/fail), which is what
+     Tower will read. See the TestWorkflow CRD docs (docs.testkube.io) for the rest of
+     `spec:` - image, steps, services, retries, etc. are all standard Testkube, nothing
+     platform-specific beyond the rules above.
 2. **`./integration-test.sh` (fallback)** - if there's no `glidepath/<name>.yaml`, this
    runs instead, in your own `build.agent` image. Whatever name is in effect, plus the
    step's `env` and the image reference under test, reach it as
@@ -530,8 +559,14 @@ Whatever name is in effect resolves to one of two things, checked in this order:
    pre-Testkube mechanism - kept working for Applications that haven't added a
    `glidepath/<name>.yaml` yet, not the recommended path for a new Application.
 
-Neither present: the stage still runs (span, CDEvent, notification) but reports success
-without having tested anything, same as `enabled: false`.
+Neither present: the stage **fails** (since 2026-10-19; it used to report success, which
+made a typo in `test.name` look like a passed test). `enabled: false` is the one way to
+run the stage without a test; it then reports `skipped` and succeeds.
+
+The stage waits up to 10 minutes for the run to finish (`test-timeout` on the pipeline;
+a per-step field in this file is planned). Past that the outcome is `timeout` and the
+stage fails; the Testkube execution itself keeps running until the workflow's own
+timeouts end it.
 
 ## The `deploy:` block
 
