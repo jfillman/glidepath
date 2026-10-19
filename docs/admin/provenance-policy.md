@@ -563,6 +563,13 @@ failed ride too, so feeding every verified provenance to one `ec validate input`
 `buildConfig.tasks[]` has a `build-image` entry, logs each skipped one, and fails if none is left. Test provenances
 are the `qa` gate's business ([testing.md](testing.md)). The policy itself is unchanged.
 
+**`image.source` comes from the `preflight` task (2026-10-19).** The clone moved from the `clone-repo` pipeline task
+into `preflight` on 2026-10-09 (stage-preflight.yaml, same `url`/`commit` results); the lookup that feeds
+`input.image.source` to `slsa_source_correlated` kept matching `clone-repo`, found nothing, and silently skipped,
+so every build failed `source_code_reference_provided` from then on (PipelineRun provenance-dlw5x, once the two
+fixes above were in). It now matches either task name and fails the gate outright when neither carries the two
+results.
+
 ## A real, unrelated incident hit mid-testing: the cluster's disk filled to 100%
 
 While re-verifying the two gap-closure fixes, a `deploy` PipelineRun died mid-run with

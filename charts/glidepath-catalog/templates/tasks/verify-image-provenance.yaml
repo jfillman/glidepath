@@ -40,6 +40,13 @@
 # materials). Conforma now gets only the build provenance (selected below by the
 # PipelineRun's tekton.dev/pipeline label, or a build-image task entry); the test
 # provenances are qa-gate.yaml's business. The policy itself is unchanged.
+#
+# Third failure on the same PR, once the first two were fixed (PipelineRun provenance-dlw5x):
+# slsa_source_correlated.source_code_reference_provided. The image.source lookup below
+# matched the pipeline task `clone-repo`, which stage-preflight.yaml replaced on 2026-10-09
+# (the clone now runs inside `preflight`, same `url`/`commit` results), so image.source had
+# been silently empty on every build since. Now matches either name and FAILS loudly when
+# neither carries url+commit, instead of handing Conforma an input it can only reject.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -461,18 +468,26 @@ spec:
         # broke once before, 2026-08-23, when the CRD backing this same pipeline task was
         # renamed) - a strictly better anchor than the CRD name for a lookup we don't need
         # Conforma's rule shape for.
+        #
+        # ...and the pipeline-task name moved too: since 2026-10-09 build.yaml clones inside
+        # `preflight` (stage-preflight.yaml, same `url`/`commit` results), not `clone-repo`.
+        # Both names are accepted. An empty lookup is a FAIL here, not a silent skip: the
+        # silent skip is exactly how this stayed broken for ten days (header, 2026-10-19).
         source_git_url="$(jq -r '[.attestations[].statement.predicate.buildConfig.tasks[]
-          | select(.name == "clone-repo")
+          | select(.name == "preflight" or .name == "clone-repo")
           | .results[] | select(.name == "url") | .value][0] // empty' "${wrapped_provenance_file}")"
         source_git_commit="$(jq -r '[.attestations[].statement.predicate.buildConfig.tasks[]
-          | select(.name == "clone-repo")
+          | select(.name == "preflight" or .name == "clone-repo")
           | .results[] | select(.name == "commit") | .value][0] // empty' "${wrapped_provenance_file}")"
-        if [[ -n "${source_git_url}" && -n "${source_git_commit}" ]]; then
-          jq --arg url "${source_git_url}" --arg rev "${source_git_commit}" \
-            '. + {image: {source: {git: {url: $url, revision: $rev}}}}' \
-            "${wrapped_provenance_file}" > "${wrapped_provenance_file}.tmp"
-          mv "${wrapped_provenance_file}.tmp" "${wrapped_provenance_file}"
+        if [[ -z "${source_git_url}" || -z "${source_git_commit}" ]]; then
+          echo "FAIL: no preflight/clone-repo task with url+commit results in the build provenance (tasks: $(jq -c '[.attestations[].statement.predicate.buildConfig.tasks[].name]' "${wrapped_provenance_file}")) - cannot set image.source for Conforma's slsa_source_correlated rule" >&2
+          exit 1
         fi
+        echo "image.source: ${source_git_url}@${source_git_commit:0:12}"
+        jq --arg url "${source_git_url}" --arg rev "${source_git_commit}" \
+          '. + {image: {source: {git: {url: $url, revision: $rev}}}}' \
+          "${wrapped_provenance_file}" > "${wrapped_provenance_file}.tmp"
+        mv "${wrapped_provenance_file}.tmp" "${wrapped_provenance_file}"
 
         # Same tenant policy-config ConfigMap verify-commit-signature.yaml reads; exposed
         # to Conforma as ruleData for future rules (no current base-policy rule checks it).
