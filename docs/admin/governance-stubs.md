@@ -27,6 +27,11 @@ Before a gate has real logic behind it, its Task
 3. Sets its Task result to the literal string `"stub"` - never `"passed"` or
    `"failed"`, which would imply a real judgment was made.
 
+A stub ignores the registry's `required` field ([release-guardrails.md](release-guardrails.md),
+"Required and advisory gates"): advisory means "a real check that reports without blocking",
+and a stub has nothing to report. It stays in every required set, so a stub check that never
+ran is still noticed by `detect-bypass-merge`.
+
 `charts/glidepath-control-plane/files/dashboards/pipeline-detail.json`'s
 "Governance gates in this run" panel renders any `governance.stub=true` row with a
 distinct grey background and the label "STUB - not a real check", so a stub can never

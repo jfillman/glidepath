@@ -90,11 +90,12 @@ spec:
         repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
         token="$(github_app_installation_token "${owner}" "${repo}")"
 
-        # Every gate in the registry except the caller. Rendered at chart-template time
-        # from .Values.releaseGuardrails (docs/admin/release-guardrails.md), the same
-        # single source of truth detect-bypass-merge.yaml/open-release-pr.yaml render off.
+        # Every required gate in the registry except the caller (an advisory gate, required:
+        # false, cannot hold anything back). Rendered at chart-template time from the effective
+        # registry (docs/admin/release-guardrails.md), the same single source of truth
+        # detect-bypass-merge.yaml/open-release-pr.yaml render off.
         sibling_gates=()
-        for g in {{ range .Values.releaseGuardrails }}"{{ .name }}" {{ end }}; do
+        for g in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if .required }}"{{ .name }}" {{ end }}{{ end }}; do
           [[ "${g}" == "${SELF_GATE}" ]] || sibling_gates+=("${g}")
         done
 

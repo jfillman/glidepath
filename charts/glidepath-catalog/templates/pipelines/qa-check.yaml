@@ -42,11 +42,13 @@ spec:
         - { name: revision, value: $(params.revision) }
         - { name: pr-number, value: $(params.pr-number) }
 
-    {{- /* qa.required (values.yaml): true runs the hard task on a normal release and the
-    advisory copy on an eligible rollback; false runs only the advisory copy, always, so
-    the gate reports without failing while apps get their check rides. comment-pr is told
-    which reason applies (advisory-reason) so the comment says why it did not block. */}}
-    {{- if .Values.qa.required }}
+    {{- /* The registry's `required` for this gate (values.yaml releaseGuardrails, merged with
+    releaseGuardrailOverrides): true runs the hard task on a normal release and the advisory
+    copy on an eligible rollback; false runs only the advisory copy, always, so the gate
+    reports without failing while apps get their check rides. comment-pr is told which
+    reason applies (advisory-reason) so the comment says why it did not block. */}}
+    {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "qa")) "true" }}
+    {{- if $required }}
     - name: verify-check-ride
       when:
         - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: notin, values: ["true"] }
@@ -63,7 +65,7 @@ spec:
     {{- end }}
     - name: verify-check-ride-advisory
       onError: continue
-      {{- if .Values.qa.required }}
+      {{- if $required }}
       when:
         - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: in, values: ["true"] }
       {{- end }}
@@ -92,6 +94,6 @@ spec:
         - { name: revision, value: $(params.revision) }
         - { name: pr-number, value: $(params.pr-number) }
         - { name: gate-name, value: qa }
-        - { name: advisory-reason, value: {{ ternary "rollback" "not-required" .Values.qa.required | quote }} }
+        - { name: advisory-reason, value: {{ ternary "rollback" "not-required" $required | quote }} }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
         - { name: status, value: $(tasks.status) }

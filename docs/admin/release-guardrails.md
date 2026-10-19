@@ -12,13 +12,24 @@ decision, not a new one.
 ## The single source of truth
 
 `charts/glidepath-catalog/values.yaml`'s `releaseGuardrails` list is the canonical
-registry of every gate enforced on a release PR - `name`, a human `description`, and
-`status` (`real` or `stub`, cosmetic only - see below). Two places render off it instead
-of hardcoding the gate list:
+registry of every gate enforced on a release PR - `name`, a human `description`,
+`status` (`real` or `stub`, cosmetic only - see below), `class` (`content`, `process`,
+`integrity`, `approval`), optional `targets`, and `required` (default `true`; see
+"Required and advisory gates" below). The chart resolves the list once
+(`_helpers.tpl`, `glidepath-catalog.guardrails`: `required` defaulted, a cluster's
+`releaseGuardrailOverrides` applied) and every consumer renders off that instead of
+hardcoding the gate list:
 
+- the gate Pipelines (`sast-check`, `image-scan-check`, `sbom-check`, `qa-check`,
+  `values-check`) - whether the hard task renders at all;
 - `catalog/tasks/detect-bypass-merge.yaml` - the break-glass Slack alert's "did every
-  required check actually pass" loop.
-- `catalog/tasks/open-release-pr.yaml` - the release PR body's governance-checks table.
+  required check actually pass" loop;
+- `catalog/tasks/release-log-emit.yaml` - every gate's conclusion in the release log,
+  `bypass` from the required ones;
+- `catalog/tasks/wait-for-release-guardrails.yaml` - the sibling set a shape-B gate waits on;
+- `catalog/tasks/open-release-pr.yaml` - the release PR body's governance-checks table;
+- `hack/apply-guardrail-ruleset.sh` - the GitHub ruleset's required status checks (offline,
+  with `-f` for a cluster's values).
 
 Everything else about a gate - which Pipeline it runs, what it actually checks, whether
 it posts a PR comment - is standard Tekton/PaC config, not driven by this list. Adding a
@@ -104,18 +115,55 @@ why Trivy scans got more), size `tasks` to what the check actually needs and kee
 out-wait the slowest sibling's PipelineRun timeout. `image-promotion` carried those
 larger numbers until ADR-0025 retired it.
 
+## Required and advisory gates (`required`, 2026-10-19)
+
+Every registry entry carries `required` (default `true`). A real gate with `required: false` is
+**advisory**: its Pipeline renders only the `-advisory` copy of its check (`onError: continue`,
+the same copy every content gate already runs on an eligible rollback, ADR-0021 decision 8), so
+the check run is green whatever the check finds, and `comment-pr-check-result` posts what it
+found with the "advisory until the gate is required" wording (`advisory-reason: not-required`).
+Everything downstream agrees: `detect-bypass-merge` and `release-log-emit` do not count a merge
+past it as a bypass, `wait-for-release-guardrails` does not wait on it, the release PR body's
+table says "real, advisory", and `hack/apply-guardrail-ruleset.sh` leaves it out of the required
+status checks. The gate still runs and still reports on every release PR: advisory is not off.
+
+Two gates refuse it. `sast` and `provenance` are the image's integrity, and advising on them is
+the "advises rather than enforces" weakness the SDLC review named; `required: false` on either
+fails the chart render with a message naming the gate, so no cluster can ship such a catalog. A
+stub ignores the field (its check is always green; it stays in every required set so a missing
+check run is still noticed).
+
+**Who sets it.** The default is the registry entry in this chart (a glidepath PR, platform
+maintainers, CI runs `gate_required_test.sh`). One cluster changes it in its catalog Application
+values through the `releaseGuardrailOverrides` map, never by restating `releaseGuardrails` (a
+list is replaced whole on override, so a gate added upstream would silently vanish there):
+
+```yaml
+releaseGuardrailOverrides:
+  qa: { required: true }
+```
+
+It is not in `cicd.yaml` and not a Tower setting: no app team or release approver can turn a
+gate advisory for one release. On GitHub Free a failed check still cannot block a merge
+(GATE-03), so `required: true` makes a bypass detectable (GATE-04), not impossible; re-run the
+ruleset script after changing it so the required status checks match.
+
+Today `qa` is the one advisory gate: report-only while every app gets its check ride
+([testing.md](testing.md)); flip it once every app with a Flight environment has
+`apps/<app>/check-ride.yaml` in the check-rides repository and a `role: check-ride` test step.
+
 ## Current gates
 
-| Gate | What it verifies | Status |
-|---|---|---|
-| `sast` | Static analysis (Semgrep) of the promoted commit's source | real |
-| `image-scan` | Vulnerability scan (Trivy) of the promoted image | real |
-| `provenance` | Commit signature (gitsign) + SLSA provenance (Conforma) | real |
-| `sbom` | Software bill of materials | real |
-| `values` | Values-file validation by the validator image (Airframe's by default); check `Pipelines as Code CI / values-` | real |
-| `itsm` | ServiceNow Change Request | stub |
-| `qa` | A passing, recent check ride from the shared check-rides repository, attested on the promoted image ([testing.md](testing.md)) | real |
-| `policy-validation` | Gatekeeper/Kyverno admission-policy validation of the rendered manifest | stub |
+| Gate | What it verifies | Status | Required |
+|---|---|---|---|
+| `sast` | Static analysis (Semgrep) of the promoted commit's source | real | yes (locked) |
+| `image-scan` | Vulnerability scan (Trivy) of the promoted image | real | yes |
+| `provenance` | Commit signature (gitsign) + SLSA provenance (Conforma) | real | yes (locked) |
+| `sbom` | Software bill of materials | real | yes |
+| `values` | Values-file validation by the validator image (Airframe's by default); check `Pipelines as Code CI / values-` | real | yes |
+| `itsm` | ServiceNow Change Request | stub | (ignored) |
+| `qa` | A passing, recent check ride from the shared check-rides repository, attested on the promoted image ([testing.md](testing.md)) | real | no (advisory) |
+| `policy-validation` | Gatekeeper/Kyverno admission-policy validation of the rendered manifest | stub | (ignored) |
 
 **How `qa` judges a release (2026-10-19, phase 3 of [testing.md](testing.md)).** The gate never runs tests. It
 resolves the promoted image like the other image gates, downloads the digest's attestations, verifies each SLSA
@@ -130,16 +178,10 @@ failed, it was not from the shared repository, or it is too old. A new build is 
 ride; `/retest qa-` re-reads the registry. `qa` is a content gate: on an eligible rollback it reports without
 blocking (ADR-0021 decision 8), which is where an older ride would otherwise trip it.
 
-**`qa.required` (catalog values, default `false`).** While it is false the gate runs on every release PR and posts
-what it found, but never fails the check: report-only, so an app that has no check ride yet is not blocked while
-every app gets one (the comment reads "advisory until the gate is required" and names what was missing). Set it to
-`true` once every app with a Flight environment has `apps/<app>/check-ride.yaml` in the check-rides repository and
-a `role: check-ride` test step; from then on a release PR without a passing, recent ride fails `qa`. Who can change
-it: it is a chart value of `glidepath-catalog`, so the default is a glidepath PR (platform maintainers, CI), and a
-single cluster overrides it in its catalog Application's values (the cluster repo's `50-glidepath/glidepath-catalog`,
-cluster admins). It is not in `cicd.yaml` and not a Tower setting: no app team or release approver can turn the gate
-off for one release. On GitHub Free a failed check still cannot block a merge (GATE-03), so `true` makes a bypass
-detectable (GATE-04), not impossible.
+**`qa` is advisory** (its registry entry has `required: false`, see "Required and advisory gates" above; this
+replaced the one-off `qa.required` value on 2026-10-19). While it is, the gate runs on every release PR and posts
+what it found, but never fails the check, so an app that has no check ride yet is not blocked while every app
+gets one.
 
 **`provenance` on an image with check rides (2026-10-19).** Every check-ride test PipelineRun's SLSA provenance is
 attached to the tested digest too ([testing.md](testing.md)), so the Conforma half of `provenance` keeps only the
@@ -187,7 +229,9 @@ check as required on every merge, so:
 1. Publish the validator image and make its package public.
 2. Let the onboarding-resync PR (which adds `.tekton/pull-request-values.yaml`) merge in every gitops repo.
 3. Only then add `values` to `releaseGuardrails` (status `real`; the name must match the PipelineRun's `generateName` prefix, `values-`, because `detect-bypass-merge` looks up the check `Pipelines as Code CI / values-`). From then on a merge
-   with that check red is reported as a bypass. It does **not** make the check required on other PRs
+   with that check red is reported as a bypass. (Since 2026-10-19 the registry entry can also be added early
+   with `required: false`: the gate then reports without blocking, the `validate-advisory` task in place of
+   `validate`, and flipping it to `true` later is a one-line change.) It does **not** make the check required on other PRs
    (a human's or an agent's hand edit to a `values.yaml`): that is the GitHub ruleset's required-status-checks list,
    a separate setting kept in sync by hand (see "Branch protection" below). Add `Pipelines as Code CI / values-` there.
 Before step 3 the check runs and reports but does not block.

@@ -141,40 +141,45 @@ qa:
   # time (the provenance's buildFinishedOn only if the entry has none) to the gate's run.
   # Ns, Nm, Nh or Nd. A rollback to an eligible target is advisory and not held to this.
   maxAge: 72h
-  # false (the default): the gate runs on every release PR and reports what it found, but
-  # does not fail the check - report-only, so an app that has no check ride yet is not
-  # blocked while every app gets one. true: a release PR without a passing, recent check
-  # ride fails the qa check (an eligible rollback stays advisory either way). This is a
-  # platform knob, not an app setting: the chart default lives here (a glidepath PR) and a
-  # cluster overrides it through its catalog Application's values (the cluster repo's
-  # 50-glidepath/glidepath-catalog) - platform maintainers only, never cicd.yaml or Tower.
-  # Flip it once every app with a Flight environment has apps/<app>/check-ride.yaml in the
-  # check-rides repository and a role: check-ride step.
-  required: false
 
+# Each entry: name (= the PipelineRun generateName prefix, so the check is "Pipelines as Code CI / <name>-"),
+# description, status (real | stub), class (content | process | integrity | approval), optional targets, and
+# `required` (default true). required: false makes a real gate ADVISORY on every release PR: its Pipeline renders
+# only the -advisory copy of its check (onError: continue, docs/admin/release-guardrails.md), so the check run is
+# green and the PR comment says what it found and that it did not block; detect-bypass-merge, release-log-emit
+# and hack/apply-guardrail-ruleset.sh leave it out of the required set (a merge past it is not a bypass). A stub
+# ignores the field. sast and provenance refuse required: false (the chart fails to render): they are the image's
+# integrity, and advising on them is exactly the "advises rather than enforces" weakness the SDLC review named.
+# Platform knob, not an app setting: the default is this file (a glidepath PR); one cluster overrides it through
+# releaseGuardrailOverrides below (the cluster repo's 50-glidepath/glidepath-catalog) - never cicd.yaml or Tower.
 releaseGuardrails:
   - name: sast
     description: Static analysis (Semgrep) of the promoted commit's source
     status: real
     class: content
+    required: true
   - name: image-scan
     description: Vulnerability scan (Trivy) of the promoted image
     status: real
     class: content
+    required: true
   - name: provenance
     description: Commit signature (gitsign) + SLSA provenance (Conforma)
     status: real
     class: integrity
+    required: true
   - name: sbom
     description: Software bill of materials
     status: real
     class: content
+    required: true
   # name must equal the PipelineRun generateName prefix (values-): wait-for-release-guardrails looks up the check
   # "Pipelines as Code CI / <name>-".
   - name: values
     description: Values-file validation (strict keys, component XRD specs, helm template) by the validator image
     status: real
     class: integrity
+    required: true
     targets: [k8s-rollout]
   - name: itsm
     description: ServiceNow Change Request
@@ -184,8 +189,20 @@ releaseGuardrails:
     description: A passing, recent check ride from the shared check-rides repository, attested on the promoted image
     status: real
     class: content
+    # Advisory until every app with a Flight environment has apps/<app>/check-ride.yaml in the check-rides
+    # repository and a role: check-ride test step (docs/admin/testing.md); flip to true then.
+    required: false
   - name: policy-validation
     description: Gatekeeper/Kyverno admission-policy validation of the rendered manifest
     status: stub
     class: process
     targets: [k8s-rollout]
+
+# Per-cluster overrides of `required`, keyed by gate name, for a cluster's catalog Application values:
+#   releaseGuardrailOverrides:
+#     qa: { required: true }
+# A map merges with the chart default; overriding releaseGuardrails itself would replace the whole list, so a
+# gate added upstream would silently vanish on that cluster. Only `required` is read here. Every consumer of the
+# registry (the gate Pipelines, detect-bypass-merge, release-log-emit, open-release-pr) renders from the merged
+# result (_helpers.tpl, glidepath-catalog.guardrails); hack/apply-guardrail-ruleset.sh takes the same file with -f.
+releaseGuardrailOverrides: {}

@@ -39,6 +39,10 @@ spec:
     # ADR-0021 decision 8 / phase 4: on an eligible rollback (extract-promoted-image works that out
     # from the release records) this content gate reports without blocking: the -advisory copy
     # below runs instead, with onError: continue, and comment-pr says what it found.
+    # The registry's `required` (values.yaml releaseGuardrails) widens that: required: false
+    # renders only the -advisory copy, on every release PR, with advisory-reason not-required.
+    {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "image-scan")) "true" }}
+    {{- if $required }}
     - name: image-scan
       when:
         - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: notin, values: ["true"] }
@@ -52,10 +56,13 @@ spec:
       params:
         - { name: image-ref, value: $(tasks.extract-promoted-image.results.image-ref) }
 
+    {{- end }}
     - name: image-scan-advisory
       onError: continue
+      {{- if $required }}
       when:
         - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: in, values: ["true"] }
+      {{- end }}
       runAfter: [extract-promoted-image]
       taskRef:
         resolver: cluster
@@ -81,5 +88,6 @@ spec:
         - { name: revision, value: $(params.revision) }
         - { name: pr-number, value: $(params.pr-number) }
         - { name: gate-name, value: image-scan }
+        - { name: advisory-reason, value: {{ ternary "rollback" "not-required" $required | quote }} }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
         - { name: status, value: $(tasks.status) }

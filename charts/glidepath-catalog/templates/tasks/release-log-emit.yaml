@@ -154,7 +154,10 @@ spec:
         # column per gate.
         gates_json="{}"
         bypass="false"
-        for gate in {{ range .Values.releaseGuardrails }}{{ .name }} {{ end }}; do
+        # Every gate's conclusion is recorded; only a required one (registry `required`, default
+        # true - an advisory gate's check is green by construction) can mark the merge a bypass.
+        required_gates=" {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if .required }}{{ .name }} {{ end }}{{ end }}"
+        for gate in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ .name }} {{ end }}; do
           # Trailing "-": see wait-for-release-guardrails.yaml's identical match for why -
           # the real check-run name includes generateName's own trailing dash. Without
           # this every gate reads back "missing" and bypass="true" fires on every merge -
@@ -164,7 +167,7 @@ spec:
           gate_key="gate_$(echo "${gate}" | tr '-' '_')"
           gates_json="$(jq -nc --argjson gates "${gates_json}" --arg k "${gate_key}" --arg v "${conclusion}" \
             '$gates + {($k): $v}')"
-          if [[ "${conclusion}" != "success" && "${merged}" == "true" ]]; then
+          if [[ "${conclusion}" != "success" && "${merged}" == "true" && "${required_gates}" == *" ${gate} "* ]]; then
             bypass="true"
           fi
         done
