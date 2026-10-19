@@ -69,4 +69,10 @@ hack/apply-guardrail-ruleset.sh --approvals 2 --bypass-app-id <crossplane-app-id
 
 Re-run it whenever `releaseGuardrails` changes: it updates the ruleset by name. Adding a gate to the registry without
 re-running it leaves the gate reporting but not required; removing one without re-running leaves every release PR
-unmergeable.
+unmergeable. A gate whose entry has `required: false` (advisory, [release-guardrails.md](release-guardrails.md)) is
+left out of the required status checks, and `-f <cluster values>` applies that cluster's `releaseGuardrailOverrides`
+first, so the ruleset matches what the cluster's catalog renders:
+
+```bash
+hack/apply-guardrail-ruleset.sh --dry-run -f cluster-catalog-values.yaml <owner>/gitops-<app>   # the values the cluster's catalog Application passes
+```

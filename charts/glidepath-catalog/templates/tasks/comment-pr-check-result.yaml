@@ -51,7 +51,7 @@ spec:
     - name: advisory-reason
       type: string
       default: "rollback"
-      description: "Why an -advisory task ran instead of the hard one, for the comment's wording: rollback (ADR-0021 decision 8, the default every content gate uses) or not-required (the qa gate with the catalog's qa.required false - report-only while apps get their check rides)."
+      description: "Why an -advisory task ran instead of the hard one, for the comment's wording: rollback (ADR-0021 decision 8, the default every content gate uses) or not-required (the gate's releaseGuardrails entry has required: false - report-only, docs/admin/release-guardrails.md)."
     - name: status
       type: string
       description: $(tasks.status) from the calling Pipeline's finally block.
@@ -158,7 +158,7 @@ spec:
               excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=20 2>/dev/null | tail -c 1200 || true)"
             fi
             if [[ "${ADVISORY_REASON}" == "not-required" ]]; then
-              body="$(printf '### ⚠️ `%s` found a problem, advisory until the gate is required\n\nThis check would fail once the `%s` gate is required on this cluster (the catalog'"'"'s `qa.required: true`). It did not block because the gate runs report-only while every app gets its check ride. The finding is recorded here and on the check run.\n\n**What it found:**\n```\n%s\n```' \
+              body="$(printf '### ⚠️ `%s` found a problem, advisory until the gate is required\n\nThis check would fail once the `%s` gate is required on this cluster (`required: true` on its `releaseGuardrails` entry in the Glidepath catalog, docs/admin/release-guardrails.md). It did not block because the gate runs report-only here. The finding is recorded here and on the check run.\n\n**What it found:**\n```\n%s\n```' \
                 "${GATE_NAME}" "${GATE_NAME}" "${excerpt}")"
             else
               body="$(printf '### ⚠️ `%s` found a problem, advisory on this rollback\n\nThis check would fail on a normal release. It did not block because this PR rolls back to an image that already ran healthy here: %s (glidepath ADR-0021 decision 8). The finding is recorded here and on the check run.\n\n**What it found:**\n```\n%s\n```' \

@@ -3,8 +3,9 @@
 # The values-validation gate (decision D10, "enforce now"): runs a validator image against the values files a
 # gitops-repo PR changes. Referenced from the gitops repo's .tekton/pull-request-values.yaml (an onboarding
 # template). Like the other gates it is its own PaC PipelineRun, so it is its own GitHub Check. It only becomes
-# REQUIRED once `values-validation` is in `releaseGuardrails` (see docs/admin/release-guardrails.md); register it
-# only after every gitops repo has the .tekton file, or detect-bypass-merge reports it "missing" on every merge.
+# REQUIRED once `values` is in `releaseGuardrails` with required: true (see docs/admin/release-guardrails.md);
+# register it only after every gitops repo has the .tekton file, or detect-bypass-merge reports it "missing" on
+# every merge. required: false keeps it reporting without blocking.
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
@@ -27,7 +28,14 @@ spec:
       default: ""
       description: "PaC's pull_request.number - only used to post the PR comment in the finally block."
   tasks:
-    - name: validate
+    {{- /* The registry's `required` for this gate (values.yaml releaseGuardrails): false renders the
+    -advisory copy alone (onError: continue), so the check stays green and comment-pr reports what the
+    validator found with advisory-reason not-required. The values gate has no rollback case. */}}
+    {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "values")) "true" }}
+    - name: {{ ternary "validate" "validate-advisory" $required }}
+      {{- if not $required }}
+      onError: continue
+      {{- end }}
       taskRef:
         resolver: cluster
         params:
@@ -53,6 +61,7 @@ spec:
         - { name: repo-url, value: $(params.repo-url) }
         - { name: revision, value: $(params.revision) }
         - { name: pr-number, value: $(params.pr-number) }
-        - { name: gate-name, value: values-validation }
+        - { name: gate-name, value: values }
+        - { name: advisory-reason, value: {{ ternary "rollback" "not-required" $required | quote }} }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
         - { name: status, value: $(tasks.status) }

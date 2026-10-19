@@ -72,3 +72,43 @@ aws_credentials() {
   echo "credentials: assuming ${AWS_ROLE_ARN} (web identity, no stored key)"
 }
 {{- end -}}
+
+{{- /*
+glidepath-catalog.guardrails: the effective release-guardrail registry as a JSON list - .Values.releaseGuardrails
+with each entry's `required` resolved (default true; .Values.releaseGuardrailOverrides.<name>.required wins; a stub
+is always "required" because its check is always green and the field means nothing to it). sast and provenance
+refuse required: false here, so no cluster can render a catalog that advises on the image's integrity. Every
+consumer of the registry ranges over this (fromJsonArray), never over .Values.releaseGuardrails directly, so the
+override map and the refusal apply everywhere at once (docs/admin/release-guardrails.md).
+*/ -}}
+{{- define "glidepath-catalog.guardrails" -}}
+{{- $out := list -}}
+{{- $overrides := .Values.releaseGuardrailOverrides | default dict -}}
+{{- range .Values.releaseGuardrails -}}
+{{- $g := deepCopy . -}}
+{{- $required := true -}}
+{{- if hasKey $g "required" }}{{ $required = $g.required }}{{ end -}}
+{{- $o := index $overrides $g.name -}}
+{{- if and $o (kindIs "map" $o) (hasKey $o "required") }}{{ $required = index $o "required" }}{{ end -}}
+{{- if eq ($g.status | default "real") "stub" }}{{ $required = true }}{{ end -}}
+{{- if and (not $required) (has $g.name (list "sast" "provenance")) -}}
+{{- fail (printf "releaseGuardrails: %s cannot be required: false - it verifies the image's integrity and must enforce, not advise (docs/admin/release-guardrails.md)" $g.name) -}}
+{{- end -}}
+{{- $_ := set $g "required" $required -}}
+{{- $out = append $out $g -}}
+{{- end -}}
+{{- $out | toJson -}}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.gateRequired: "true" or "false" for one gate, from the effective registry above.
+Usage: {{ $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "qa")) "true" }}
+A gate missing from the registry is "true" (nothing has made it advisory).
+*/ -}}
+{{- define "glidepath-catalog.gateRequired" -}}
+{{- $required := true -}}
+{{- range (include "glidepath-catalog.guardrails" .root | fromJsonArray) -}}
+{{- if eq .name $.gate }}{{ $required = .required }}{{ end -}}
+{{- end -}}
+{{- ternary "true" "false" $required -}}
+{{- end -}}

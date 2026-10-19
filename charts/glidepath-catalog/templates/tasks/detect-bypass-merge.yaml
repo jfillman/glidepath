@@ -10,10 +10,12 @@
 # branch-protection bypass - a normal merge requires all required checks green. Quiet
 # otherwise, by design.
 #
-# The gate list itself is Helm-rendered from .Values.releaseGuardrails
-# (charts/glidepath-catalog/values.yaml, docs/admin/release-guardrails.md) - the
-# single source of truth for every gate enforced on a release PR, so adding/removing a
-# gate there is reflected here automatically without touching this file's own logic.
+# The gate list itself is Helm-rendered from the effective registry (.Values.releaseGuardrails
+# merged with releaseGuardrailOverrides, _helpers.tpl glidepath-catalog.guardrails;
+# docs/admin/release-guardrails.md) - the single source of truth for every gate enforced
+# on a release PR, so adding/removing a gate there is reflected here automatically without
+# touching this file's own logic. A gate with required: false is advisory: its check is
+# green by construction and a merge past its finding is not a bypass, so it is left out.
 #
 # Always alerts, ignoring notifications.slack.enabled - a security bypass shouldn't be
 # silenceable via a routine preference. Uses the same app-secrets webhook and
@@ -98,7 +100,7 @@ spec:
         # Checked by name (not "were all check-runs green") so an unrelated future
         # Check some other tool adds can't cause a false positive/negative.
         failed_checks=""
-        for gate in {{ range .Values.releaseGuardrails }}{{ .name }} {{ end }}; do
+        for gate in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if .required }}{{ .name }} {{ end }}{{ end }}; do
           # Trailing "-": see wait-for-release-guardrails.yaml's identical match for why
           # - the real check-run name includes generateName's own trailing dash. Without
           # this every gate reads back "missing" here, which would report BYPASS DETECTED
