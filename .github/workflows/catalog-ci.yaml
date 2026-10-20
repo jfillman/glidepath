@@ -22,6 +22,7 @@ on:
       - "hack/ci/chain_slug_test.sh"
       - "hack/ci/build-exemption-cel/**"
       - "hack/apply-guardrail-ruleset.sh"
+      - "catalog/toolbox/github-web-flow.asc"
   push:
     branches: [main]
     paths:
@@ -32,6 +33,7 @@ on:
       - "hack/ci/chain_slug_test.sh"
       - "hack/ci/build-exemption-cel/**"
       - "hack/apply-guardrail-ruleset.sh"
+      - "catalog/toolbox/github-web-flow.asc"
 
 jobs:
   # validate-cicd-config must hand every Task a config-json whose environment fields agree, whichever
@@ -76,6 +78,17 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: pip install pyyaml
       - run: charts/glidepath-catalog/tests/gate_required_test.sh
+
+  # The provenance gate's commit check (docs/admin/commit-signing.md): both acceptance paths against recorded
+  # real commits (fixtures/commits), real gpgv and GitHub's real web-flow keyring; GitHub API, kubectl, git fetch
+  # and gitsign stubbed.
+  commit-signature:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: pip install pyyaml
+      - run: charts/glidepath-catalog/tests/verify_commit_signature_test.sh
 
   # Change management (docs/admin/change-management.md): the provider client and the rendered itsm-gate /
   # itsm-change scripts through the whole lifecycle against tests/itsm_mock_server.py, both providers.

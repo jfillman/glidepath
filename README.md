@@ -43,6 +43,11 @@ historical pipeline list, a per-stage drill-down, and DORA metrics.
 Governance gates (SAST, image scanning, policy checks, SBOM) are real, enforcing
 checks, built as explicit extension points that are never reported with more
 confidence than they've earned - see [docs/admin/governance-stubs.md](docs/admin/governance-stubs.md).
+The `provenance` gate proves who is behind every released commit: a gitsign signature by
+an allowed signer, or, where a platform admin enables it per app, a GitHub PR merge by an
+allowed login, checked against GitHub's pinned key and its merge record. The signing
+policy is admin-owned, never the gated team's `cicd.yaml` - see
+[docs/admin/commit-signing.md](docs/admin/commit-signing.md).
 
 `release` never touches a target cluster directly - it opens a PR against a
 dedicated `gitops-<app>` repo, gated by governance checks and human review; ArgoCD's

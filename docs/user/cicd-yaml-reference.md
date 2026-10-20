@@ -161,9 +161,21 @@ governance:
                                  # are enforced, not app-configurable).
   sbom: false                    # Optional, default false. Real cosign SBOM
                                  # attestation.
-  allowedCommitSigners: []       # Optional, default []. Plain email addresses (not
-                                 # regex) - always consulted by the release-gate check;
-                                 # leaving this empty fails that check on every release.
+  githubMerge:                   # Optional. TIGHTEN-ONLY knobs for the provenance
+                                 # gate's GitHub-merge path. Whether a GitHub PR merge
+                                 # counts for this app, who may merge, and who may sign
+                                 # are the admin-owned release-signing policy, not this
+                                 # file (docs/admin/commit-signing.md).
+    mode: ""                     # Optional, default "". "strict" also requires every
+                                 # commit in the merged PR to be gitsign-signed by an
+                                 # allowed signer; "" or "merger" = the admin's mode.
+    requiredApprovals: 0         # Optional, default 0, max 10. Approvals of the PR's
+                                 # final head by allowed mergers other than the merger;
+                                 # the higher of this and the admin's number applies.
+  allowedCommitSigners: []       # DEPRECATED, IGNORED since 2026-10-20. Signers are the
+                                 # admin-owned release-signing policy now (a team could
+                                 # add itself here to the list that gated it). Still
+                                 # accepted so existing files validate; remove it.
 
 # --- notifications: optional block. ---
 notifications:

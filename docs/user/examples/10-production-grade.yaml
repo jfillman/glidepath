@@ -37,11 +37,15 @@ deploy:
 governance:
   sast: true
   imageScan: true
-  policyCheck: true # requires signed commits - see below
+  policyCheck: true # the release gate always verifies the promoted commit's signature
   sbom: true
-  allowedCommitSigners:
-    - alice@example.com
-    - bob@example.com
+  # Who may sign and merge is the platform admins' release-signing policy
+  # (docs/admin/commit-signing.md), not this file. This app can only tighten the
+  # GitHub-merge path, if the admins turn it on for it: every PR commit gitsign-signed,
+  # and one approval of the final head by another allowed merger.
+  githubMerge:
+    mode: strict
+    requiredApprovals: 1
 notifications:
   slack:
     enabled: true

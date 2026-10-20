@@ -134,10 +134,19 @@ governance:
   # Renders a software-bill-of-materials generation+attestation gate on the promoted
   # image.
   sbom: false
-  # GPG/Sigstore identities allowed to sign commits that reach a release PR -
-  # enforced by detect-bypass-merge.yaml's break-glass check. Empty means no
-  # commit-signer allowlist is enforced for this Application.
+  # IGNORED since 2026-10-20. Who may sign (and who may merge) the commit a release
+  # promotes is the admin-owned release-signing policy in the glidepath-catalog chart
+  # (releaseSigning, set per cluster - docs/admin/commit-signing.md); a team could add
+  # itself here to the list that gates it. Still accepted so existing cicd.yaml files
+  # validate.
   allowedCommitSigners: []
+  # The provenance gate's GitHub-merge path, TIGHTEN-ONLY: the admin policy decides
+  # whether a GitHub merge counts and who may merge. mode: strict also requires every
+  # commit in the merged PR to be gitsign-signed; requiredApprovals raises the number of
+  # approvals of the PR's final head. Empty / 0 = the admin policy's values.
+  githubMerge:
+    mode: ""
+    requiredApprovals: 0
 
 notifications:
   slack:
@@ -268,7 +277,7 @@ idpServiceCatalog:
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
 # public, working) - override if you've built and published your own copy.
-toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-19-test-roles
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-20-web-flow
 
 # The single shared namespace Testkube CE installs into on this cluster - see
 # templates/testkube/rbac-and-secret.yaml's own header for why this Application

@@ -51,8 +51,11 @@ gate, not a placeholder that always passes:
 
 - **`sast`** - real Semgrep scan.
 - **`imageScan`** - real Trivy scan.
-- **`policyCheck`** - real gitsign commit-signature verification against
-  `governance.allowedCommitSigners`. See [../admin/commit-signing.md](../admin/commit-signing.md).
+- **`policyCheck`** - real commit verification on every release: a gitsign signature by
+  an allowed signer, or (where a platform admin turns it on for the app) a GitHub PR
+  merge by an allowed login. Signers and mergers are the admin-owned release-signing
+  policy, not `cicd.yaml`; `governance.githubMerge` can only make it stricter. See
+  [../admin/commit-signing.md](../admin/commit-signing.md).
 - **`sbom`** - real cosign SBOM attestation.
 
 On a `release`, these four run as independent, individually-required GitHub status

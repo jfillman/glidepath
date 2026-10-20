@@ -29,13 +29,14 @@ deploy (dev) succeeds
      also emits a structured release-log record (approvers, per-gate results, bypass) -
      see [release-log.md](release-log.md).
 
-     `provenance` verifies a `gitsign` signature on the actual APP-repo commit that
-     triggered this release (see docs/commit-signing.md) - not this gitops PR's own
-     commits, which are machine-generated and never signed. **This means the app-repo
-     commit that ends up promoted must itself be gitsign-signed, which a GitHub PR
-     merge-button click always breaks** (merge/squash/rebase all produce a new,
-     unsigned commit object) - see docs/commit-signing.md's "Merge strategy matters"
-     section before assuming "review the app PR, click Merge" will work end to end.
+     `provenance` verifies the actual APP-repo commit that triggered this release (see
+     docs/admin/commit-signing.md) - not this gitops PR's own commits, which are
+     machine-generated and never signed. The promoted commit passes if it is
+     gitsign-signed by an allowed signer, or - only for an app whose admin-owned
+     release-signing policy turns the GitHub-merge path on (off by default) - if GitHub
+     signed it as the merge of a PR into the default branch that an allowed login merged.
+     Otherwise a GitHub merge-button click fails the gate (merge/squash/rebase all make a
+     new commit nobody gitsign-signed) - see commit-signing.md's "Merge strategy" section.
   -> once merged, ArgoCD (syncPolicy.automated: prune+selfHeal) syncs the new manifest
      into <type>-<app-name>-staging - the release Pipeline never touches the cluster directly
 ```

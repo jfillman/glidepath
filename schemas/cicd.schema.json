@@ -246,13 +246,23 @@
       "properties": {
         "sast": { "type": "boolean", "default": false },
         "imageScan": { "type": "boolean", "default": false },
-        "policyCheck": { "type": "boolean", "default": false, "description": "Controls only the build-time shift-left copy of this scan, if one exists. The release-gate commit-signature check (catalog/tasks/verify-commit-signature.yaml) runs unconditionally on every release PR regardless of this flag - release gates are enforced, not app-configurable. Populate allowedCommitSigners below either way." },
+        "policyCheck": { "type": "boolean", "default": false, "description": "Controls only the build-time shift-left copy of this scan, if one exists. The release-gate commit-signature check (catalog/tasks/verify-commit-signature.yaml) runs unconditionally on every release PR regardless of this flag - release gates are enforced, not app-configurable." },
         "sbom": { "type": "boolean", "default": false },
         "allowedCommitSigners": {
           "type": "array",
-          "description": "Plain email addresses gitsign's --certificate-identity-regexp is built from at verify time (see catalog/tasks/verify-commit-signature.yaml). Always consulted by the release-gate commit-signature check regardless of policyCheck's value - an app that leaves this empty fails that check on every release. One entry per allowed human signer; no regex syntax needed here.",
-          "items": { "type": "string", "format": "email" },
+          "deprecated": true,
+          "description": "IGNORED since 2026-10-20. Who may sign the commit a release promotes is the admin-owned release-signing policy (glidepath-catalog releaseSigning, set per cluster by platform admins - docs/admin/commit-signing.md), so a team cannot add itself to the list that gates it. Still accepted so existing files validate; remove it.",
+          "items": { "type": "string" },
           "default": []
+        },
+        "githubMerge": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Tighten-only knobs for the provenance gate's GitHub-merge path (a commit GitHub made by merging a PR, accepted on GitHub's web-flow signature plus who merged it). Whether that path is on for this app, and who may merge, is the admin-owned release-signing policy (docs/admin/commit-signing.md) - not settable here. These can only make it stricter than the admin policy.",
+          "properties": {
+            "mode": { "type": "string", "enum": ["", "merger", "strict"], "default": "", "description": "strict: also require every commit in the merged PR to be gitsign-signed by an allowed signer. merger or empty: the admin policy's mode." },
+            "requiredApprovals": { "type": "integer", "minimum": 0, "maximum": 10, "default": 0, "description": "APPROVED reviews of the PR's final head, by allowed mergers other than the merger. The higher of this and the admin policy's value applies." }
+          }
         }
       }
     },

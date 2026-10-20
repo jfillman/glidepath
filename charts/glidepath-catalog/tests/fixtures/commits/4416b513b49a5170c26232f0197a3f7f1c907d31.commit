@@ -1,0 +1,33 @@
+tree 34ab02ef69af10a55f4bb73ffd21441724798d7b
+parent 0e663786039681e6c3cc04d913485841b9d725ba
+author James Fillman <crossfader@gmail.com> 1792462486 -0700
+committer GitHub <noreply@github.com> 1792462486 -0700
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ wsFcBAABCAAQBQJq1s6WCRC1aQ7uu5UhlAAAU28QAKG8KsJi8GVHMvw52R35XOBu
+ pxwF+C9B0GV1tBV1bmWM3yyLrksMRBJnZNuOCnlSFTON0GddYj9mA4UbEYEv1u9Z
+ 4A3mTBuBYS79ejz/lvW4nSf7q5MpT39nmNyn7MtCo3jj0zpOJrpq72KxL7641p2S
+ BM0WSaxRo7dIkHYP8wlUu46zfdJ47XNZOxAtZhyZO9YQkMfOIv73Z0sBc35Zmdvg
+ DatfW6L+fZyOCM5mEZn2CbTUPTonBnGEiSkN0TxZZRBqoa6VJA3Q7kXPbPma6PE1
+ MOeXoJ3efNTZdPAw91R27kSu6N04kRODqq+Jp2Egf8VmIWvLYZzLD8mLWGOcnwSD
+ BnnkV4iHkoNRpHCssdTJnsTLCqAfGYVL9dBugowM7g1sUhOape3uhZY2m5N6nhc3
+ vYUveqCLqC3PBwqhvzFYAQkNFWLaBXkHmnedIUUkU8QhzzyXu7z+jbdwHrWKffbM
+ 5GZGvJN7BxHPnhUgR8LDNji41XpLCMe2LqJlDjmlbdNXEq1w6btbltsfT/63yN1B
+ hDGYiVE6KEGt7HHUdMV3ti4i2TcoF7svjXHKXm5l4WPlkq3OALlzLow6h0W0qTWS
+ Uw1alWLadumzMG8/ZyWibniV5Zrdsp7qgZMuuBhVbpbAhVZdSAD16oAKripq12hR
+ RXs1aHECYFZphZ/14w+x
+ =lYzv
+ -----END PGP SIGNATURE-----
+ 
+
+itsm env: leave an unset URL out of the step env, so the Tasks stop drifting in Argo CD (#143)
+
+An env entry with value "" is stored by the API server without its value
+(omitempty), so Argo CD diffed itsm-gate, itsm-change and open-release-pr
+against the chart forever: every sync succeeded and the Tasks stayed
+OutOfSync (hangar-dev, webhook provider, ITSM_SERVICENOW_URL). The helper
+now emits ITSM_SERVICENOW_URL / ITSM_WEBHOOK_URL only when set, and
+itsm.sh defaults both to empty under set -u. Rendered for none, webhook
+and servicenow; itsm_test.sh and gate_required_test.sh pass.
+
+Co-authored-by: Claude Fable 5.1 <noreply@anthropic.com>

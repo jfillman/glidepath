@@ -33,6 +33,7 @@ distilled from.
 | [0024](0024-cluster-taxonomy-zone-roles-tier.md) | Cluster taxonomy: zone (lower/upper) and roles per cluster, tier and `production` per environment; production runs on an upper cluster |
 | [0025](0025-retire-image-promotion-stub-check.md) | Retire the `image-promotion` stub check; a real promotion's place (pre- or post-merge) follows registry topology, with event fan-in instead of polling |
 | [0026](0026-buildkit-image-builds.md) | Rootless BuildKit replaces kaniko for image builds; Pod Security `baseline`, not `restricted` |
+| [0027](0027-github-merge-signatures-admin-owned-signing-policy.md) | The provenance gate accepts a GitHub PR merge by an allowed login (off by default, per app); the release-signing policy moves from `cicd.yaml` to admin-owned catalog values |
 
 New decisions get a new numbered file here, not a paragraph buried in an unrelated doc.
 
