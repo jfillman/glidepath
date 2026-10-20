@@ -272,7 +272,7 @@ spec:
           gitsign_verify "${app_sha}"
           summary="provenance: ${app_slug}@${app_sha:0:12} verified via gitsign (an allowed signer's Sigstore certificate)"
           printf '%s' "gitsign" > "$(results.signature-path.path)"
-          jq -cn --arg repo "${app_slug}" --arg commit "${app_sha}" '{path: "gitsign", repo: $repo, commit: $commit}' > "$(results.signature-detail.path)"
+          jq -cjn --arg repo "${app_slug}" --arg commit "${app_sha}" '{path: "gitsign", repo: $repo, commit: $commit}' > "$(results.signature-detail.path)"
           printf '%s' "${summary}" > "$(results.findings-summary.path)"
           echo "${summary}"
           exit 0
@@ -417,7 +417,7 @@ spec:
         (( gm_approvals > 0 )) && summary+=", approved by $(jq -r 'join(", ")' <<<"${approvers}")"
         summary+=")"
         printf '%s' "${path}" > "$(results.signature-path.path)"
-        jq -cn --arg path "${path}" --arg repo "${app_slug}" --arg commit "${app_sha}" --argjson pr "${pr_number}" \
+        jq -cjn --arg path "${path}" --arg repo "${app_slug}" --arg commit "${app_sha}" --argjson pr "${pr_number}" \
           --arg mergedBy "${merged_by}" --argjson approvers "${approvers}" --arg key "${key_id}" \
           '{path: $path, repo: $repo, commit: $commit, pr: $pr, mergedBy: $mergedBy, approvers: $approvers, key: $key}' \
           > "$(results.signature-detail.path)"
