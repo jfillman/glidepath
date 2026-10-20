@@ -210,6 +210,41 @@ enforces them. They cannot carry this alone:
 Use both: the ruleset prevents where it is enforced; the gate proves it happened, on every
 plan.
 
+## Evidence: how a release's commit was proven (2026-10-20, phase 3)
+
+Every passing run says which path proved the commit, in three places:
+
+- the Task results `signature-path` and `signature-detail` (pruned with the PipelineRun);
+- the PR comment's visible line, e.g. `provenance: verified via GitHub merge of jfillman/backstage#173 by jfillman
+  (merge commit, web-flow key B5690EEEBB952194)`;
+- one hidden, machine-readable line at the end of that comment, which Tower reads and seals into the Release Record:
+
+```
+<!-- glidepath:signature {"v":1,"path":"github-merge","repo":"jfillman/backstage","commit":"61634fb4…","pr":173,"mergedBy":"jfillman","approvers":[],"key":"B5690EEEBB952194","mode":"merger","requiredApprovals":0} -->
+```
+
+| Field | Paths | Meaning |
+|---|---|---|
+| `v` | all | contract version, 1; a reader treats any other as "unknown" |
+| `path` | all | `gitsign`, `github-merge` or `github-merge-strict` |
+| `repo`, `commit` | all | the app commit that was verified (full SHA) |
+| `signer` | gitsign | the email in the verified Sigstore certificate (read after `gitsign verify` passes) |
+| `pr`, `mergedBy`, `key` | merge paths | the PR whose merge it is, its `merged_by`, the web-flow key id (last 16 hex) |
+| `approvers` | merge paths | qualifying approvers' logins, empty when none were required |
+| `mode`, `requiredApprovals` | merge paths | the policy applied, after `cicd.yaml` tightening |
+| `strictCommits` | strict | how many PR commits were gitsign-verified |
+
+`comment-pr-check-result.yaml` copies the line from the verify TaskRun's `signature-detail` result, only on a pass and
+only for a v1 object without `--` in it. No line means "not recorded": a failed gate, a release before phase 3, or a
+cloud pin PR (no commit check, ADR-0020). The comment is edited in place, so `/retest provenance-` refreshes it.
+Tower's backend accepts the line only from a comment the platform's GitHub App posted (its `glidepath.gateCommentApps`
+config); a person pasting it into a comment fakes nothing. Tests: `tests/verify_commit_signature_test.sh` (the fields)
+and `tests/comment_signature_marker_test.sh` (when the line is written).
+
+In Tower, the Release Record shows a Commit signature line from it (gitsign signer, or the PR, merger and key, green
+either way with a hint on a merge), the confidence score's Commit proof line weighs the paths (gitsign 6, strict
+merge 4, merge 2, not recorded 0), and the Release matrix and the Releases tab show the path per release.
+
 ## Who sets the policy
 
 Platform admins. The policy decides whose signature and whose merge release a team's

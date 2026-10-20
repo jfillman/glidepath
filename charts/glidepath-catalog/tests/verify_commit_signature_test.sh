@@ -115,6 +115,8 @@ API_COMPARE='{"status":"ahead"}'; API_PR_COMMITS="[{\"sha\":\"${H}\"}]"; API_REV
 # --- the gitsign path, unchanged -------------------------------------------------------------
 POLICY="$(policy false merger '[]' 0)"; GITSIGN_OK="${G}"
 check "a gitsign-signed commit passes on the gitsign path" "$(run "${G}")" "0|gitsign|"
+check "the gitsign detail names the verified signer" "$(jq -r '"\(.v) \(.path) \(.signer)"' "${tmp}/out/detail")" "1 gitsign 7268337+jfillman@users.noreply.github.com"
+check "and the summary does too" "$(cat "${tmp}/out/summary")" "*Sigstore certificate: 7268337+jfillman@users.noreply.github.com)"
 check "gitsign gets the escaped signer regexp" "$(cat "${tmp}/gitsign-calls")" "*crossfader@gmail\\\\.com|7268337\\\\+jfillman@users\\\\.noreply\\\\.github\\\\.com*"
 GITSIGN_OK=''
 check "a gitsign signature from a signer not on the list fails (gitsign's own verdict is final)" "$(run "${G}")" "1||"
@@ -130,6 +132,7 @@ POLICY="$(policy true merger '["JFillman"]' 0)"
 check "backstage#171's merge passes in merger mode (login case-insensitive)" "$(run "${M}")" "0|github-merge|"
 check "the summary names the PR, merger and key" "$(cat "${tmp}/out/summary")" "provenance: verified via GitHub merge of jfillman/app#171 by jfillman (merge commit, web-flow key B5690EEEBB952194)"
 check "the detail is compact JSON" "$(jq -r '"\(.pr) \(.mergedBy) \(.key) \(.approvers | length)"' "${tmp}/out/detail")" "171 jfillman B5690EEEBB952194 0"
+check "and carries contract v1 with the policy applied" "$(jq -r '"\(.v) \(.mode) \(.requiredApprovals) \(has("strictCommits"))"' "${tmp}/out/detail")" "1 merger 0 false"
 check "the detail ends at its closing brace (no trailing newline in the result)" "$(tail -c1 "${tmp}/out/detail" | od -An -tx1 | tr -d ' \n')" "7d"
 check "gitsign is never called in merger mode" "$(cat "${tmp}/gitsign-calls" 2>/dev/null)" ""
 POLICY="$(policy true merger '[]' 0)"
@@ -177,6 +180,7 @@ POLICY="$(policy true strict '["jfillman"]' 0)"
 check "strict fails on PR #171's unsigned commit" "$(run "${M}")" "1||FAIL: strict mode: jfillman/app#171 commit 4922bf52856b is not gitsign-signed by an allowed signer"
 GITSIGN_OK="${H}"
 check "strict passes when every PR commit is gitsign-signed" "$(run "${M}")" "0|github-merge-strict|"
+check "and records how many commits it verified" "$(jq -r '"\(.mode) \(.strictCommits)"' "${tmp}/out/detail")" "strict 1"
 GITSIGN_OK=''
 POLICY="$(policy true merger '["jfillman"]' 0)"; APP_CONFIG='{"data":{"github-merge-mode":"strict","github-merge-required-approvals":"0"}}'
 check "cicd.yaml can tighten merger to strict" "$(run "${M}")" "1||FAIL: strict mode: *"
