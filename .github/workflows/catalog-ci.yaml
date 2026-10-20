@@ -132,7 +132,8 @@ jobs:
           docs = [d for d in yaml.safe_load_all(open("/tmp/rendered.yaml")) if d]
           if not docs:
               print("ERROR: rendered output is empty"); sys.exit(1)
-          expected_kinds = {"Task", "Pipeline", "StepAction", "Role", "RoleBinding"}
+          # ConfigMap: release-signing-policy only (ADR-0027) - data, never secrets.
+          expected_kinds = {"Task", "Pipeline", "StepAction", "Role", "RoleBinding", "ConfigMap"}
           bad = [d for d in docs if d.get("kind") not in expected_kinds]
           if bad:
               print(f"ERROR: unexpected kind(s) in catalog chart output: {[d.get('kind') for d in bad]}")

@@ -29,8 +29,13 @@ jobs:
       - name: GitHub's published web-flow keys match the pinned set
         run: |
           set -euo pipefail
+          # A throwaway home, and one gpg at a time: two at once raced to create ~/.gnupg on the first run.
+          export GNUPGHOME="$(mktemp -d)"
           fprs() { gpg --show-keys --with-colons "$1" | awk -F: '/^pub/{p=1;next} p&&/^fpr/{print $10;p=0}' | sort; }
-          curl -fsSL https://github.com/web-flow.gpg -o /tmp/published.asc
-          diff <(fprs catalog/toolbox/github-web-flow.asc) <(fprs /tmp/published.asc) \
+          curl -fsSL https://github.com/web-flow.gpg -o "${RUNNER_TEMP}/published.asc"
+          fprs catalog/toolbox/github-web-flow.asc > "${RUNNER_TEMP}/pinned.txt"
+          fprs "${RUNNER_TEMP}/published.asc" > "${RUNNER_TEMP}/published.txt"
+          [ -s "${RUNNER_TEMP}/pinned.txt" ] || { echo "::error::no fingerprints read from the pinned file"; exit 1; }
+          diff "${RUNNER_TEMP}/pinned.txt" "${RUNNER_TEMP}/published.txt" \
             || { echo "::error::GitHub's published web-flow keys differ from catalog/toolbox/github-web-flow.asc (lines with > are new)"; exit 1; }
-          echo "pinned: $(fprs catalog/toolbox/github-web-flow.asc | paste -sd' ' -)"
+          echo "pinned: $(paste -sd' ' - < "${RUNNER_TEMP}/pinned.txt")"
