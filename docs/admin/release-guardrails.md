@@ -211,7 +211,9 @@ tighten it. What changes in the trust:
 | Who wrote the code | the signer | the PR's authors; gitsign-verified in strict mode |
 
 A stolen GitHub session can merge, so the GitHub-merge path is weaker on non-repudiation; the gate's results
-(`signature-path`, `signature-detail`) and its PR comment say which path verified each release.
+(`signature-path`, `signature-detail`) and its PR comment say which path verified each release. Since phase 3 the
+comment also carries a machine-readable `<!-- glidepath:signature {...} -->` line that Tower seals into the Release
+Record and scores ([commit-signing.md: Evidence](commit-signing.md#evidence-how-a-releases-commit-was-proven-2026-10-20-phase-3)).
 
 **How the image gates find the image (2026-10-09).** `sast`, `image-scan`, `sbom`, `qa` and the provenance half of
 `provenance` share the `resolve-promoted-image` StepAction: two GitHub API reads against the PR (its base, the

@@ -89,6 +89,7 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: pip install pyyaml
       - run: charts/glidepath-catalog/tests/verify_commit_signature_test.sh
+      - run: charts/glidepath-catalog/tests/comment_signature_marker_test.sh
 
   # Change management (docs/admin/change-management.md): the provider client and the rendered itsm-gate /
   # itsm-change scripts through the whole lifecycle against tests/itsm_mock_server.py, both providers.

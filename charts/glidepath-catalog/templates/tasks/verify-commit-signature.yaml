@@ -81,7 +81,7 @@ spec:
     - name: signature-path
       description: "Which path verified the app commit: gitsign | github-merge | github-merge-strict."
     - name: signature-detail
-      description: "Compact JSON: path, repo, commit, and for a GitHub merge pr, mergedBy, approvers and key (the web-flow key id)."
+      description: "Compact JSON, contract v1 (docs/admin/commit-signing.md, Evidence): v, path, repo, commit; gitsign adds signer; a GitHub merge adds pr, mergedBy, approvers, key (the web-flow key id), mode, requiredApprovals, and strictCommits in strict mode."
     - name: findings-summary
       description: One line for the PR comment (comment-pr-check-result.yaml) saying how the commit was verified.
   # Audience-bound projected ServiceAccount token for the shared broker's GitHub
@@ -270,9 +270,20 @@ spec:
         # names what is wrong with an unknown kind. Pass or fail is final.
         if [[ "${sig_armor}" != *"PGP SIGNATURE"* ]]; then
           gitsign_verify "${app_sha}"
-          summary="provenance: ${app_slug}@${app_sha:0:12} verified via gitsign (an allowed signer's Sigstore certificate)"
+          # Who signed, for the record (provenance phase 3): the email SAN of the certificate in
+          # the signature gitsign just verified - read after verification, so it is the verified
+          # identity. -text, not -ext: the latter is OpenSSL 3 only, and the unit test also runs
+          # on LibreSSL. Empty (never fatal) if the signature carries no readable certificate.
+          signer="$(sed '/^$/q' <<<"${commit_headers}" \
+            | awk '/^gpgsig /{s=1; sub(/^gpgsig /,""); print; next} s&&/^ /{sub(/^ /,""); print; next} {s=0}' \
+            | sed 's/SIGNED MESSAGE/PKCS7/' | openssl pkcs7 -print_certs 2>/dev/null \
+            | openssl x509 -noout -text 2>/dev/null | grep -A1 'Subject Alternative Name' \
+            | grep -oE 'email:[^, ]+' | head -1 | sed 's/^email://' || true)"
+          summary="provenance: ${app_slug}@${app_sha:0:12} verified via gitsign (an allowed signer's Sigstore certificate${signer:+: ${signer}})"
           printf '%s' "gitsign" > "$(results.signature-path.path)"
-          jq -cjn --arg repo "${app_slug}" --arg commit "${app_sha}" '{path: "gitsign", repo: $repo, commit: $commit}' > "$(results.signature-detail.path)"
+          jq -cjn --arg repo "${app_slug}" --arg commit "${app_sha}" --arg signer "${signer}" \
+            '{v: 1, path: "gitsign", repo: $repo, commit: $commit} + (if $signer == "" then {} else {signer: $signer} end)' \
+            > "$(results.signature-detail.path)"
           printf '%s' "${summary}" > "$(results.findings-summary.path)"
           echo "${summary}"
           exit 0
@@ -374,6 +385,7 @@ spec:
         #    commits fetchable. GitHub lists at most 250 commits per PR, so a longer PR
         #    fails closed rather than verifying part of it.
         path="github-merge"
+        strict_commits=0
         if [[ "${gm_mode}" == "strict" ]]; then
           path="github-merge-strict"
           pr_commits_total="$(jq -r '.commits // 0' <<<"${pr}")"
@@ -390,6 +402,7 @@ spec:
             git fetch --quiet --depth 1 "${app_clone_url}" "${c}"
             echo "strict: verifying ${app_slug}#${pr_number} commit ${c:0:12}"
             gitsign_verify "${c}" || fail "strict mode: ${app_slug}#${pr_number} commit ${c:0:12} is not gitsign-signed by an allowed signer"
+            strict_commits=$(( strict_commits + 1 ))
           done <<<"${pr_commits}"
         fi
 
@@ -417,9 +430,14 @@ spec:
         (( gm_approvals > 0 )) && summary+=", approved by $(jq -r 'join(", ")' <<<"${approvers}")"
         summary+=")"
         printf '%s' "${path}" > "$(results.signature-path.path)"
+        # v1 of the signature contract (provenance phase 3): comment-pr-check-result.yaml copies
+        # this into the PR comment's <!-- glidepath:signature --> line, which Tower reads and seals.
         jq -cjn --arg path "${path}" --arg repo "${app_slug}" --arg commit "${app_sha}" --argjson pr "${pr_number}" \
           --arg mergedBy "${merged_by}" --argjson approvers "${approvers}" --arg key "${key_id}" \
-          '{path: $path, repo: $repo, commit: $commit, pr: $pr, mergedBy: $mergedBy, approvers: $approvers, key: $key}' \
+          --arg mode "${gm_mode}" --argjson requiredApprovals "${gm_approvals}" --argjson strictCommits "${strict_commits}" \
+          '{v: 1, path: $path, repo: $repo, commit: $commit, pr: $pr, mergedBy: $mergedBy, approvers: $approvers, key: $key,
+            mode: $mode, requiredApprovals: $requiredApprovals}
+           + (if $path == "github-merge-strict" then {strictCommits: $strictCommits} else {} end)' \
           > "$(results.signature-detail.path)"
         printf '%s' "${summary}" > "$(results.findings-summary.path)"
         echo "${summary}"
