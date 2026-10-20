@@ -126,18 +126,24 @@ itsm-implement, the outcome pipelines' itsm-close) and the real itsm gate render
 {{- if or (eq $p "servicenow") (eq $p "webhook") }}true{{ else }}false{{ end -}}
 {{- end -}}
 
-{{- /* glidepath-catalog.itsmEnv: the env entries files/lib/itsm.sh reads, for a step's `env:` list. */ -}}
+{{- /* glidepath-catalog.itsmEnv: the env entries files/lib/itsm.sh reads, for a step's `env:` list.
+The two URLs are emitted only when set: an env entry with `value: ""` is stored by the API server without its
+value (omitempty), so Argo CD diffs it against the chart forever and the Task never leaves OutOfSync (seen live
+2026-10-20 on hangar-dev: itsm-gate, itsm-change and open-release-pr, ITSM_SERVICENOW_URL under the webhook
+provider). itsm.sh defaults an absent URL to empty, so the scripts read the same thing either way. */ -}}
 {{- define "glidepath-catalog.itsmEnv" -}}
 - name: ITSM_PROVIDER
   value: {{ .Values.itsm.provider | default "none" | quote }}
-{{- /* toString before quote: Argo CD's valuesObject can hand the chart a nil for an unset string, and quote of a
-nil renders no value at all (seen live 2026-10-19: the env entry had no `value` key). */}}
+{{- with (.Values.itsm.servicenow.instanceUrl | default "" | toString) }}
 - name: ITSM_SERVICENOW_URL
-  value: {{ .Values.itsm.servicenow.instanceUrl | default "" | toString | quote }}
+  value: {{ . | quote }}
+{{- end }}
 - name: ITSM_SERVICENOW_APPROVED_STATES
   value: {{ join "," (.Values.itsm.servicenow.approvedStates | default (list "-2" "-1")) | quote }}
+{{- with (.Values.itsm.webhook.url | default "" | toString) }}
 - name: ITSM_WEBHOOK_URL
-  value: {{ .Values.itsm.webhook.url | default "" | toString | quote }}
+  value: {{ . | quote }}
+{{- end }}
 - name: ITSM_CREDENTIALS_DIR
   value: /var/run/secrets/itsm
 {{- end -}}

@@ -30,6 +30,10 @@
 # above (its own judgement of `approved`). The same Authorization header as ServiceNow.
 
 : "${ITSM_PROVIDER:=none}"
+# The chart leaves an unset URL out of the step's env (an empty value does not survive the API server); under
+# `set -u` they must still be defined.
+: "${ITSM_SERVICENOW_URL:=}"
+: "${ITSM_WEBHOOK_URL:=}"
 : "${ITSM_CREDENTIALS_DIR:=/var/run/secrets/itsm}"
 : "${ITSM_SERVICENOW_APPROVED_STATES:=-2,-1}"
 _ITSM_AUTH_WARNED=""
