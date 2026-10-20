@@ -70,7 +70,7 @@ spec:
       type: string
     - name: app-name
       type: string
-      description: Used to find <app-name>-policy-config in this Application's own namespace.
+      description: Selects this app's entry in the release-signing-policy ConfigMap (catalog namespace) for Conforma's rule data.
   # Audience-bound projected ServiceAccount token for the shared broker's GitHub
   # token-minting endpoint - same pattern as clone-repo-authenticated.yaml/
   # verify-commit-signature.yaml. Mounted by the resolve step (the StepAction names it
@@ -489,14 +489,17 @@ spec:
           "${wrapped_provenance_file}" > "${wrapped_provenance_file}.tmp"
         mv "${wrapped_provenance_file}.tmp" "${wrapped_provenance_file}"
 
-        # Same tenant policy-config ConfigMap verify-commit-signature.yaml reads; exposed
-        # to Conforma as ruleData for future rules (no current base-policy rule checks it).
-        # Same grep -v/pipefail/set -e gotcha as that file: grep -v matching nothing when no
-        # signers are configured aborts the script under set -e without `|| true`.
-        allowed_emails_json="$(kubectl get configmap "${APP_NAME}-policy-config" -n "${APP_NAMESPACE}" \
-          -o jsonpath='{.data.allowed-commit-signers}' 2>/dev/null \
-          | { grep -vE '^\s*(#.*)?$' || true; } | sed -E 's/^\s+|\s+$//g' \
-          | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+        # The same admin-owned release-signing policy verify-commit-signature.yaml reads
+        # (ConfigMap release-signing-policy in the catalog namespace, apps.<app> merged over
+        # defaults); its allowedCommitSigners is exposed to Conforma as ruleData for future
+        # rules (no current base-policy rule checks it). Until 2026-10-20 this read the
+        # app's own <app>-policy-config, which cicd.yaml filled. Missing policy = empty list:
+        # this half of the gate does not judge signers.
+        allowed_emails_json="$(kubectl get configmap release-signing-policy -n {{ .Release.Namespace }} \
+          -o jsonpath='{.data.policy\.json}' 2>/dev/null \
+          | jq -c --arg app "${APP_NAME}" '((.defaults // {}) * (.apps[$app] // {})).allowedCommitSigners // [] | map(strings | select(length > 0))' 2>/dev/null \
+          || echo '[]')"
+        [[ -n "${allowed_emails_json}" ]] || allowed_emails_json='[]'
 
         # Platform-wide required-tasks list (same for every app, unlike allowed-commit-signers
         # - this describes build.yaml itself). Names must be the underlying Task CRD name

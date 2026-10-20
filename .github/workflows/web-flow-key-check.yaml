@@ -1,0 +1,41 @@
+name: web-flow-key-check
+
+# Early warning for a GitHub web-flow key rotation (docs/admin/commit-signing.md, Rotation).
+# The provenance gate trusts only the keys checked in at catalog/toolbox/github-web-flow.asc
+# (baked into the toolbox image, pinned in verify-commit-signature.yaml) and never fetches one at
+# verify time. When GitHub publishes a new key, every GitHub-merged release starts failing with
+# "signed by unknown GitHub key <fpr>". This job diffs GitHub's published key set against the
+# checked-in one weekly and fails - GitHub mails the failure - before that happens.
+# A failure here is a prompt to review, not to copy blindly: confirm the new key from GitHub's
+# own announcement, then update the .asc, the Dockerfile's assert and the Task's pinned list.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - "catalog/toolbox/github-web-flow.asc"
+      - ".github/workflows/web-flow-key-check.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: GitHub's published web-flow keys match the pinned set
+        run: |
+          set -euo pipefail
+          # A throwaway home, and one gpg at a time: two at once raced to create ~/.gnupg on the first run.
+          export GNUPGHOME="$(mktemp -d)"
+          fprs() { gpg --show-keys --with-colons "$1" | awk -F: '/^pub/{p=1;next} p&&/^fpr/{print $10;p=0}' | sort; }
+          curl -fsSL https://github.com/web-flow.gpg -o "${RUNNER_TEMP}/published.asc"
+          fprs catalog/toolbox/github-web-flow.asc > "${RUNNER_TEMP}/pinned.txt"
+          fprs "${RUNNER_TEMP}/published.asc" > "${RUNNER_TEMP}/published.txt"
+          [ -s "${RUNNER_TEMP}/pinned.txt" ] || { echo "::error::no fingerprints read from the pinned file"; exit 1; }
+          diff "${RUNNER_TEMP}/pinned.txt" "${RUNNER_TEMP}/published.txt" \
+            || { echo "::error::GitHub's published web-flow keys differ from catalog/toolbox/github-web-flow.asc (lines with > are new)"; exit 1; }
+          echo "pinned: $(paste -sd' ' - < "${RUNNER_TEMP}/pinned.txt")"

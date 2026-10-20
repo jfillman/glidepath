@@ -18,11 +18,12 @@ left as accurate historical record rather than rewritten.
 `ec validate image` is fundamentally an OCI-image-and-attestation validator - it has no
 mechanism to check a *git commit's* signature, that's gitsign's job and already works
 (sub-item 1). Rather than building plumbing to bridge gitsign's result into something
-Conforma could re-check, the Application's existing `allowed-commit-signers` ConfigMap
-continues to drive gitsign's check unchanged, and this sub-item adds a genuinely new gate:
+Conforma could re-check, the commit-signature check stays its own Task (since 2026-10-20
+driven by the admin-owned release-signing policy, ConfigMap `release-signing-policy` in the
+catalog namespace - see commit-signing.md), and this sub-item adds a genuinely new gate:
 does the promoted **image** have a valid signature and SLSA provenance attestation,
 conforming to policy. `provenance` ends up with two independent, real gates, neither
-`runAfter`s the other, both required. The same ConfigMap is exposed to Conforma as
+`runAfter`s the other, both required. The policy's merged `allowedCommitSigners` is exposed to Conforma as
 `ruleData` too - structurally "concatenated" per the original request - even though no
 current base-policy rule reads it, ready for a future rule to consume.
 

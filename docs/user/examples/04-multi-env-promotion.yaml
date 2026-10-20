@@ -43,9 +43,9 @@ governance:
   policyCheck: false # only controls a build-time shift-left copy of this check, if
   # one exists - the release-gate commit-signature check itself
   # always runs regardless of this flag (release gates are
-  # enforced, not app-configurable), so allowedCommitSigners
-  # still needs real entries or every release fails that gate -
-  # see 10-production-grade.yaml
+  # enforced, not app-configurable). Its signer list is the
+  # platform admins' release-signing policy, not this file -
+  # see docs/admin/commit-signing.md
 notifications:
   slack:
     enabled: true

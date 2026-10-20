@@ -114,7 +114,7 @@ jobs:
             '      source: event' \
             '      event: artifact.published' \
             'deploy: { environments: [{ name: dev, tier: ground }, { name: qa, tier: ground }, { name: prod, tier: flight }] }' \
-            'governance: { policyCheck: true, allowedCommitSigners: [dev@example.com] }' \
+            'governance: { policyCheck: true, githubMerge: { mode: strict, requiredApprovals: 1 } }' \
             'ephemeralEnvironments: { pullRequest: { enabled: true } }' \
             'build: { cache: { enabled: true, size: large } }' \
             > /tmp/fixtures/full-pipeline.yaml

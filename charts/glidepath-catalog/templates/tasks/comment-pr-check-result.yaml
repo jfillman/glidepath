@@ -199,7 +199,7 @@ spec:
               recommendation="This is a live Trivy re-scan of the actual image about to be promoted. Update the vulnerable dependencies and push a new commit to trigger a fresh build+release - re-running this check alone re-scans the same unchanged image."
               ;;
             provenance)
-              recommendation="If the error above mentions an empty allowlist: this app has no \`governance.allowedCommitSigners\` configured yet - a platform admin needs to populate it before any commit can pass. If it instead mentions certificate/attestation verification: this is a known platform-level issue (see docs/provenance-policy.md), not something fixable from this PR - contact platform admins."
+              recommendation="The \`FAIL:\` line above names the check that failed. Signers, the GitHub-merge path and its allowed mergers are the admin-owned release-signing policy (\`releaseSigning\` in the cluster's glidepath-catalog values, docs/admin/commit-signing.md) - a platform admin changes it there, never in cicd.yaml. A commit GitHub's merge button made passes only when that path is on for the app and an allowed person merged it; otherwise land a gitsign-signed commit and release that. If the error instead mentions certificate/attestation verification of the image, see docs/admin/provenance-policy.md and contact platform admins."
               ;;
             sbom)
               recommendation="This usually indicates a transient generation/signing/push error, not a content problem."

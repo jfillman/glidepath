@@ -162,7 +162,7 @@ change management sets it advisory the same way. Today `qa` is the one advisory 
 |---|---|---|---|
 | `sast` | Static analysis (Semgrep) of the promoted commit's source | real | yes (locked) |
 | `image-scan` | Vulnerability scan (Trivy) of the promoted image | real | yes |
-| `provenance` | Commit signature (gitsign) + SLSA provenance (Conforma) | real | yes (locked) |
+| `provenance` | Commit signature (gitsign, or a GitHub PR merge by an allowed login) + SLSA provenance (Conforma) | real | yes (locked) |
 | `sbom` | Software bill of materials | real | yes |
 | `values` | Values-file validation by the validator image (Airframe's by default); check `Pipelines as Code CI / values-` | real | yes |
 | `itsm` | An approved or scheduled change request for the release in the change tool ([change-management.md](change-management.md)) | stub until `itsm.provider` is set, then real | yes once real |
@@ -193,6 +193,25 @@ build provenance (`tekton.dev/pipeline=build` label or a `build-image` task) bef
 provenances belong to `qa`. Its commit-signature half resolves the PR number from the revision commit on a
 `/retest provenance-` run, where PaC hands over the raw `body.pull_request.number` template string, the way the
 other gates' resolve step and PR comment already did ([provenance-policy.md](provenance-policy.md)).
+
+**`provenance` accepts a GitHub PR merge (2026-10-20).** The commit-signature half has two paths
+([commit-signing.md](commit-signing.md)): gitsign, always on and final for any gitsign signature; and, only for an app
+whose admin-owned release-signing policy enables it (off by default), a commit GitHub's web-flow key signed as the
+merge of a PR into the default branch, merged by a login in `allowedMergers`, with optional strict mode (every PR
+commit gitsign-signed) and required approvals. Before this, 10 of the last 12 releases failed the gate because GitHub's
+merge button replaces the signature, and two were merged past it. The policy, signers included, moved out of the app's
+`cicd.yaml` into the catalog's `releaseSigning` values (ConfigMap `release-signing-policy`); `cicd.yaml` can only
+tighten it. What changes in the trust:
+
+| Claim | gitsign | GitHub merge |
+|---|---|---|
+| Commit unmodified since signing | yes (Sigstore cert, Rekor) | yes (GitHub's pinned web-flow key) |
+| Who signed | an allowed person | GitHub's servers |
+| Who caused it | the signer | the PR's `merged_by`, an allowed login |
+| Who wrote the code | the signer | the PR's authors; gitsign-verified in strict mode |
+
+A stolen GitHub session can merge, so the GitHub-merge path is weaker on non-repudiation; the gate's results
+(`signature-path`, `signature-detail`) and its PR comment say which path verified each release.
 
 **How the image gates find the image (2026-10-09).** `sast`, `image-scan`, `sbom`, `qa` and the provenance half of
 `provenance` share the `resolve-promoted-image` StepAction: two GitHub API reads against the PR (its base, the

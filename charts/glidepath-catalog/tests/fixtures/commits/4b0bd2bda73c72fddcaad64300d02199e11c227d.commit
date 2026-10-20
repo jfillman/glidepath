@@ -1,0 +1,23 @@
+tree b3801fd6052ba957a68c4cdd31fed11cad8df923
+parent d1103c58a75d7ef1c0431e88a0777e8308bb0911
+author James Fillman <crossfader@gmail.com> 1792321642 -0700
+committer GitHub <noreply@github.com> 1792321642 -0700
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ wsFcBAABCAAQBQJq1KhrCRC1aQ7uu5UhlAAAvEQQAJJvkTLIkQnBxaw9NKJqBx12
+ 2pDofS155Q3Hhh44LOS4rWuLBdINFLeKpda2btliEny98H1FsgZS0euXS5KNfxuf
+ AhjUh1eNJKEkOZSehnPdMmJJ/wu+00+ntcEC6KrFV6R8xLSWzHKvcWWztkXNInSU
+ 7rbJKavjZ5Zm4hZBx3oZ059Rn2WkobNoBEoTbIrbv+R8HAqSBoP4vxGh4wn00dAY
+ BCLBzrJ7FirpEEjCxC3ynS5XEEBkIqyYhCmj3NUbNhVPdJSsgTNq9EVi8r1f6gCW
+ lmm/xevvNmtO3sa0mU3ELoFE/lwuRqEUyK6L/lqFfUpGnZYxOHG3Wd/Op0ICz2M1
+ 2FVyXNgz/lzrWdATTmnx6HaqbVzRWdmbk93nSU25iks6MECcppSl57/zXuDVcZNC
+ +dYMmNapX51aL5ctuWc6PFjOy5oXx76JAGjWZ+0kAqJuHW4nh7TQTp4WrTV34Htu
+ OB9G2MMolTHEQ7fmdVqbSe1WeoXQ6uh7mPPBVmyzaTbPXnOLUwFuQT4Iu7B6LeHp
+ EeKX32TLWp5z3USSiY42Z+IZWGGMwxY0gdTKT7Omo2LZmMgPYWLC481rxbm7LcbI
+ ca3STUAoPa8NN4qF7ZYeERyqOmLzhyzcJT4l7mHoscsXh0T/+eA8i5yjuu0sI6Dq
+ /uQQ7NSal9DeaS6yi1Bn
+ =mSbe
+ -----END PGP SIGNATURE-----
+ 
+
+Add clusterType to values.yaml

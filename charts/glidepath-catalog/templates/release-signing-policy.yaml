@@ -1,0 +1,48 @@
+# templates/release-signing-policy.yaml (docs/admin/commit-signing.md, "Who sets the policy")
+#
+# The admin-owned release-signing policy, as one JSON document: {defaults, apps}. The provenance
+# gate (verify-commit-signature.yaml) merges apps.<app> over defaults with jq at verify time, and
+# verify-image-provenance.yaml hands the merged allowedCommitSigners to Conforma as rule data.
+# Merged in the Task rather than here because Sprig's merge drops a `false` that should override a
+# default `true`. No render-time validation of an app's entry: one bad entry failing the whole
+# catalog render would stop every app's gates; the Task fails that one app closed instead.
+#
+# Readable by every ServiceAccount (rbac.readOnlyGroup, the same group catalog-read-only.yaml
+# binds) because each app's pipeline-runner runs the gate in its own namespace. It holds commit
+# emails and GitHub logins, which are on every commit and PR anyway; nothing in it is secret.
+# Nothing binds write here: the only writer is Argo CD syncing this chart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-signing-policy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+data:
+  policy.json: {{ dict "defaults" (.Values.releaseSigning.defaults | default dict) "apps" (.Values.releaseSigning.apps | default dict) | toJson | quote }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-signing-policy-read
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["release-signing-policy"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-signing-policy-read
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: release-signing-policy-read }
+subjects:
+  - kind: Group
+    name: {{ .Values.rbac.readOnlyGroup }}
+    apiGroup: rbac.authorization.k8s.io

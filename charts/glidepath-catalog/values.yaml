@@ -42,7 +42,7 @@ rbac:
 # 2026-09-27: bumped again for deploy.releaseFile (D9/AF-5's cicd.schema.json field,
 # schema-only so far - no Task reads it yet). Multi-arch (arm64+amd64), built via
 # `container build -a arm64 -a amd64` per the toolbox Dockerfile's own comment.
-toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-19-test-roles
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-20-web-flow
 # The shared Trivy server image-scan.yaml scans against (glidepath-control-plane's trivyServer). Empty, or a
 # server that does not answer /healthz, means each scan downloads the DB itself (the pre-2026-10-09 behaviour).
 trivyServerUrl: http://trivy-server.platform-system.svc.cluster.local:4954
@@ -142,6 +142,41 @@ qa:
   # Ns, Nm, Nh or Nd. A rollback to an eligible target is advisory and not held to this.
   maxAge: 72h
 
+# Release-signing policy (docs/admin/commit-signing.md): who may sign, and who may merge, the app commit a
+# release promotes - read by the provenance gate (verify-commit-signature.yaml) and passed to Conforma as rule
+# data (verify-image-provenance.yaml). Admin-owned on purpose: it used to be each app's cicd.yaml
+# (governance.allowedCommitSigners), so the team being gated could add itself to the list that gates it. The
+# default is this file (a glidepath PR); a cluster sets its own in the cluster repo's 50-glidepath/glidepath-catalog
+# values - never cicd.yaml or Tower. A product owner asks for a change there; a platform admin merges it.
+# Rendered into ConfigMap release-signing-policy in this namespace (templates/release-signing-policy.yaml).
+# apps.<name> merges over defaults (jq `*`): objects merge key by key, a list or a scalar replaces, so an app's own
+# allowedCommitSigners replaces the default list, and `enabled: false` turns a default off for one app.
+# An app's cicd.yaml can only TIGHTEN githubMerge (governance.githubMerge.mode: strict, a higher
+# requiredApprovals); it cannot enable the path or name mergers.
+releaseSigning:
+  defaults:
+    # Emails allowed to gitsign the promoted commit (and, in strict mode, every commit of the merged PR). Plain
+    # addresses, no regex. Empty fails every gitsign verification closed ("refusing an empty allowlist").
+    allowedCommitSigners: []
+    # Accept a commit GitHub made by merging a pull request (merge commit, squash or rebase, signed with GitHub's
+    # web-flow key), when GitHub's record proves which allowed person merged it. Off by default: a web-flow
+    # signature fails exactly as before.
+    githubMerge:
+      enabled: false
+      # merger: the merge itself is the evidence (GitHub's key + merged_by in allowedMergers).
+      # strict: also every commit in the PR is gitsign-signed by an allowedCommitSigners address.
+      mode: merger
+      # GitHub logins (case-insensitive) whose merge counts. Empty with enabled: true fails closed. List people,
+      # not bots, so a person still presses merge.
+      allowedMergers: []
+      # APPROVED reviews required on the PR's final head, by allowedMergers logins other than the merger. 0 = none.
+      # The gate's version of a ruleset's required reviews: it holds on GitHub Free and records who approved.
+      requiredApprovals: 0
+  # Per-app entries, keyed by app name, e.g.:
+  #   backstage:
+  #     githubMerge: { enabled: true, allowedMergers: [jfillman] }
+  apps: {}
+
 # Change management (docs/admin/change-management.md): the `itsm` gate as a wrapper over whatever change tool a
 # company runs. `none` (the default) keeps the gate a loud stub and every lifecycle hook a no-op. `servicenow`
 # talks to the Table API on change_request; `webhook` POSTs one JSON body per call to an adapter endpoint that
@@ -190,7 +225,7 @@ releaseGuardrails:
     class: content
     required: true
   - name: provenance
-    description: Commit signature (gitsign) + SLSA provenance (Conforma)
+    description: Commit signature (gitsign, or a GitHub PR merge by an allowed login) + SLSA provenance (Conforma)
     status: real
     class: integrity
     required: true

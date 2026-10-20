@@ -40,6 +40,19 @@
 # resolve-promoted-image.yaml / comment-pr-check-result.yaml: resolve the PR from the
 # revision commit, else fall back to the no-PR walk. Duplicated, not shared (no helper lib
 # convention for these blocks).
+#
+# 2026-10-20: two acceptance paths (docs/admin/commit-signing.md). gitsign stays first and
+# final for any non-OpenPGP signature. A commit GitHub made by merging a PR (signed with
+# GitHub's web-flow key) passes only when the app's release-signing policy enables the
+# GitHub-merge path and every check holds: pinned web-flow key, committer GitHub, the
+# merge_commit_sha of a PR merged into the default branch, on that branch, merged by an
+# allowed login, plus strict mode (every PR commit gitsign-signed) and required approvals
+# when set. Measured that day: 10 of 12 recent releases failed here because GitHub's merge
+# button replaces the signature, and people merged past the red gate. The policy (signers
+# included) moved from the app's cicd.yaml to the admin-owned catalog values
+# (releaseSigning -> ConfigMap release-signing-policy); cicd.yaml can only tighten the
+# GitHub-merge path. Results say which path verified the commit. Tests:
+# charts/glidepath-catalog/tests/verify_commit_signature_test.sh (real recorded commits).
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -63,7 +76,14 @@ spec:
       type: string
     - name: app-name
       type: string
-      description: Used to find <app-name>-policy-config in this Application's own namespace (charts/glidepath-app/templates/governance/policy-config.yaml).
+      description: Selects this app's entry in the release-signing-policy ConfigMap (catalog namespace), and finds <app-name>-policy-config in the Application's own namespace (charts/glidepath-app/templates/governance/policy-config.yaml) for cicd.yaml's tighten-only knobs.
+  results:
+    - name: signature-path
+      description: "Which path verified the app commit: gitsign | github-merge | github-merge-strict."
+    - name: signature-detail
+      description: "Compact JSON: path, repo, commit, and for a GitHub merge pr, mergedBy, approvers and key (the web-flow key id)."
+    - name: findings-summary
+      description: One line for the PR comment (comment-pr-check-result.yaml) saying how the commit was verified.
   # Audience-bound projected ServiceAccount token for the shared broker's GitHub
   # token-minting endpoint - same pattern as clone-repo-authenticated.yaml/
   # comment-pr-check-result.yaml. Both the gitops repo (read over the API) and the app
@@ -97,6 +117,8 @@ spec:
           value: $(params.app-namespace)
         - name: APP_NAME
           value: $(params.app-name)
+        - name: CATALOG_NAMESPACE
+          value: {{ .Release.Namespace }}
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -166,35 +188,57 @@ spec:
         git init --quiet
         git fetch --quiet --depth 1 "${app_clone_url}" "${app_commit}"
 
-        # Application's allowed-signers list - plain emails, one per line, comments/blanks
-        # ignored - turned into the --certificate-identity-regexp gitsign needs right
-        # here, not hand-built into the ConfigMap as pre-made regex (see
-        # charts/glidepath-app/templates/governance/policy-config.yaml). "." and "+"
-        # are escaped in each email
-        # since both are regex metachars - "+" matters in practice, not just in theory:
-        # GitHub's own private/noreply address format is "<id>+<username>@users.noreply.
-        # github.com", so an unescaped "+" there would silently turn into a quantifier
-        # and fail to match its own literal string - a real bug this hit live, not a
-        # hypothetical.
-        # grep -v legitimately matches nothing when an app has no real signers
-        # configured (the common, default case) - under set -o pipefail, grep's own
-        # "no lines matched" exit 1 then becomes the WHOLE pipeline's exit status,
-        # which set -e treats as a hard script abort right here, silently, before ever
-        # reaching the deliberate "FAIL: ... empty allowlist" message below. Confirmed
-        # live: the real symptom was a bare "exited with code 1: Error" with zero
-        # output on the PR check, not the intended graceful failure message. `|| true`
-        # neutralizes grep's own exit code without masking a genuine kubectl failure -
-        # pipefail still reports kubectl's non-zero status if THAT fails for real.
-        allowed_emails="$(kubectl get configmap "${APP_NAME}-policy-config" -n "${APP_NAMESPACE}" \
-          -o jsonpath='{.data.allowed-commit-signers}' \
-          | { grep -vE '^\s*(#.*)?$' || true; } | sed -E 's/^\s+|\s+$//g')"
+        app_sha="$(git rev-parse FETCH_HEAD)"
+        app_slug="${app_owner}/${app_repo_name}"
+        app_api="https://api.github.com/repos/${app_slug}"
 
-        if [[ -z "${allowed_emails}" ]]; then
-          echo "FAIL: ${APP_NAME}-policy-config in ${APP_NAMESPACE} has no allowed-commit-signers entries - refusing to verify against an empty allowlist" >&2
-          exit 1
+        fail() { echo "FAIL: $*" >&2; exit 1; }
+        app_get() {
+          curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
+            -H "Authorization: Bearer ${app_token}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${app_api}$1"
+        }
+
+        # The release-signing policy is admin-owned (docs/admin/commit-signing.md, "Who
+        # sets the policy"): the catalog chart's releaseSigning values, set per cluster in
+        # the cluster repo's 50-glidepath/glidepath-catalog, rendered into one ConfigMap in
+        # the catalog namespace. It used to be the app's own cicd.yaml
+        # (governance.allowedCommitSigners), which let the team being gated add itself to
+        # the list that gates it. apps.<name> merges over defaults with jq's `*`: objects
+        # merge key by key, a list or a scalar replaces (so an app's own signer list
+        # replaces the default list, and `enabled: false` really turns a default off).
+        policy_doc="$(kubectl get configmap release-signing-policy -n "${CATALOG_NAMESPACE}" -o jsonpath='{.data.policy\.json}')"
+        [[ -n "${policy_doc}" ]] || fail "release-signing-policy in ${CATALOG_NAMESPACE} has no policy.json - the catalog chart renders it; refusing to verify without a policy"
+        policy="$(jq -c --arg app "${APP_NAME}" '(.defaults // {}) * (.apps[$app] // {})' <<<"${policy_doc}")"
+
+        # Plain emails, turned into gitsign's --certificate-identity-regexp below. "." and "+"
+        # are escaped since both are regex metachars - "+" matters in practice: GitHub's
+        # noreply format is "<id>+<username>@users.noreply.github.com", and an unescaped
+        # "+" silently became a quantifier and failed to match its own address (a real bug
+        # this hit live).
+        allowed_emails="$(jq -r '(.allowedCommitSigners // [])[] | strings' <<<"${policy}" | sed -E 's/^\s+|\s+$//g' | { grep -v '^$' || true; })"
+        gm_enabled="$(jq -r '.githubMerge.enabled // false' <<<"${policy}")"
+        gm_mode="$(jq -r '.githubMerge.mode // "merger"' <<<"${policy}")"
+        gm_approvals="$(jq -r '.githubMerge.requiredApprovals // 0' <<<"${policy}")"
+        gm_mergers="$(jq -r '(.githubMerge.allowedMergers // [])[] | strings | ascii_downcase' <<<"${policy}" | sed -E 's/^\s+|\s+$//g' | { grep -v '^$' || true; })"
+
+        # The app's own cicd.yaml can only TIGHTEN the GitHub-merge path
+        # (governance.githubMerge.mode / requiredApprovals, rendered into
+        # <app>-policy-config by glidepath-app): strict wins over merger, the higher
+        # approval count wins. It can never turn the path on or name who may merge.
+        app_config="$(kubectl get configmap "${APP_NAME}-policy-config" -n "${APP_NAMESPACE}" -o json 2>/dev/null || echo '{}')"
+        dev_mode="$(jq -r '.data["github-merge-mode"] // ""' <<<"${app_config}")"
+        dev_approvals="$(jq -r '.data["github-merge-required-approvals"] // "0"' <<<"${app_config}")"
+        [[ "${dev_mode}" == "strict" ]] && gm_mode="strict"
+        [[ "${dev_approvals}" =~ ^[0-9]+$ ]] || dev_approvals=0
+        [[ "${gm_approvals}" =~ ^[0-9]+$ ]] || fail "release-signing policy for ${APP_NAME}: githubMerge.requiredApprovals '${gm_approvals}' is not a whole number"
+        (( dev_approvals > gm_approvals )) && gm_approvals="${dev_approvals}"
+        [[ "${gm_mode}" == "merger" || "${gm_mode}" == "strict" ]] || fail "release-signing policy for ${APP_NAME}: githubMerge.mode '${gm_mode}' is not merger or strict"
+
+        identity_regexp=""
+        if [[ -n "${allowed_emails}" ]]; then
+          identity_regexp="^($(echo "${allowed_emails}" | sed -E 's/[.+]/\\&/g' | paste -sd '|' -))$"
         fi
-
-        identity_regexp="^($(echo "${allowed_emails}" | sed -E 's/[.+]/\\&/g' | paste -sd '|' -))$"
 
         # Issuer confirmed against a real signed commit's cert, not gitsign's default
         # config output - those disagree, and the cert is authoritative. gitsign's
@@ -203,8 +247,179 @@ spec:
         # IdP (GitHub, in our case), and it's the upstream connector's own issuer URL
         # that ends up in the cert's issuer claim - "https://github.com/login/oauth".
         # Verifying against the broker URL fails against every real cert. See
-        # docs/commit-signing.md.
-        gitsign verify \
-          --certificate-identity-regexp "${identity_regexp}" \
-          --certificate-oidc-issuer "https://github.com/login/oauth" \
-          FETCH_HEAD
+        # docs/admin/commit-signing.md.
+        gitsign_verify() {
+          [[ -n "${identity_regexp}" ]] || fail "the release-signing policy for ${APP_NAME} has no allowedCommitSigners entries - refusing to verify against an empty allowlist (releaseSigning in the cluster's glidepath-catalog values; docs/admin/commit-signing.md)"
+          gitsign verify \
+            --certificate-identity-regexp "${identity_regexp}" \
+            --certificate-oidc-issuer "https://github.com/login/oauth" \
+            "$1"
+        }
+
+        # Header lines only (up to the first blank line), so text in the commit message
+        # can never pass for a header.
+        commit_headers="$(git cat-file commit "${app_sha}" | sed '/^$/q')"
+        sig_armor="$(awk '/^gpgsig /{print $2, $3, $4, $5; exit}' <<<"${commit_headers}")"
+
+        if [[ -z "${sig_armor}" ]]; then
+          fail "${app_slug}@${app_sha:0:12} is not signed at all"
+        fi
+
+        # Path 1 - gitsign (the stronger path, and the only one before 2026-10-20). Any
+        # signature that is not OpenPGP goes here, exactly as before: gitsign's own error
+        # names what is wrong with an unknown kind. Pass or fail is final.
+        if [[ "${sig_armor}" != *"PGP SIGNATURE"* ]]; then
+          gitsign_verify "${app_sha}"
+          summary="provenance: ${app_slug}@${app_sha:0:12} verified via gitsign (an allowed signer's Sigstore certificate)"
+          printf '%s' "gitsign" > "$(results.signature-path.path)"
+          jq -cn --arg repo "${app_slug}" --arg commit "${app_sha}" '{path: "gitsign", repo: $repo, commit: $commit}' > "$(results.signature-detail.path)"
+          printf '%s' "${summary}" > "$(results.findings-summary.path)"
+          echo "${summary}"
+          exit 0
+        fi
+
+        # Path 2 - a commit GitHub made by merging a pull request (merge commit, squash or
+        # rebase), signed with GitHub's web-flow OpenPGP key. The web editor, the contents
+        # API and GitHub Apps make web-flow-signed commits too; every check below exists to
+        # tell the PR's own merge apart from those. docs/admin/commit-signing.md has the
+        # trust model: GitHub's key plus GitHub's record of who pressed merge, not a
+        # person's key.
+        if [[ "${gm_enabled}" != "true" ]]; then
+          fail "${app_slug}@${app_sha:0:12} is signed with an OpenPGP key (GitHub's web-flow key signs every commit its merge button, web editor and API make), not by gitsign - and the GitHub-merge path is off for ${APP_NAME} (releaseSigning.githubMerge.enabled in the cluster's glidepath-catalog values; docs/admin/commit-signing.md)"
+        fi
+        [[ -n "${gm_mergers}" ]] || fail "the release-signing policy for ${APP_NAME} enables the GitHub-merge path but has no githubMerge.allowedMergers entries - refusing to verify against an empty allowlist"
+
+        # 1. Signature. git splits the commit into signature + signed payload exactly as it
+        #    signs it (a hand-rolled split got the trailing newline wrong on GitHub's
+        #    newline-less messages - BADSIG on every real one); gpgv checks it against a
+        #    keyring that holds only GitHub's web-flow keys, baked into the toolbox image
+        #    with a fingerprint assert, never fetched at verify time. git's own exit code
+        #    is not used: it reads an expired key's valid signature (EXPKEYSIG) as bad.
+        keyring="${WEB_FLOW_KEYRING:-/etc/glidepath/github-web-flow.gpg}"
+        [[ -s "${keyring}" ]] || fail "the GitHub web-flow keyring ${keyring} is missing from the toolbox image"
+        gpg_wrapper="$(mktemp)"
+        cat > "${gpg_wrapper}" <<'WRAP'
+        #!/usr/bin/env bash
+        # git calls: <program> --keyid-format=long --status-fd=1 --verify <sigfile> -
+        sig=""; prev=""
+        for a in "$@"; do [[ "${prev}" == "--verify" ]] && sig="${a}"; prev="${a}"; done
+        exec gpgv --status-fd 1 --keyring "${WEB_FLOW_KEYRING_PATH}" "${sig}" -
+        WRAP
+        chmod +x "${gpg_wrapper}"
+        gpg_status="$(WEB_FLOW_KEYRING_PATH="${keyring}" git -c gpg.program="${gpg_wrapper}" verify-commit --raw "${app_sha}" 2>&1 || true)"
+        status_lines="$(grep -E '^\[GNUPG:\] ' <<<"${gpg_status}" || true)"
+        if grep -qE '^\[GNUPG:\] (BADSIG|ERRSIG|NO_PUBKEY|REVKEYSIG) ' <<<"${status_lines}"; then
+          fail "${app_slug}@${app_sha:0:12}: the OpenPGP signature does not verify against GitHub's web-flow keys ($(grep -oE '^\[GNUPG:\] (BADSIG|ERRSIG|NO_PUBKEY|REVKEYSIG) [0-9A-F]+' <<<"${status_lines}" | head -1 | cut -d' ' -f2-)) - signed by an unknown key, or altered after signing"
+        fi
+        [[ "$(grep -cE '^\[GNUPG:\] VALIDSIG ' <<<"${status_lines}")" == "1" ]] \
+          || fail "${app_slug}@${app_sha:0:12}: gpgv reported no single valid signature: ${status_lines:-(no status output)}"
+        # VALIDSIG <signing fpr> <date> <sig timestamp> <expiry> <ver> <reserved> <pk algo> <hash algo> <class> <primary fpr>
+        read -r _ _ _ _ sig_ts _ _ _ _ _ _ primary_fpr <<<"$(grep -E '^\[GNUPG:\] VALIDSIG ' <<<"${status_lines}")"
+        # Pinned web-flow keys: the primary fingerprint, and the last signature time it is
+        # accepted for (0 = no limit). The 2017 key expired when GitHub rotated on
+        # 2024-01-16T20:00:00Z (its own expiry, 1705435200). A new key fails closed with its
+        # fingerprint in the message: add it here AND to the toolbox keyring
+        # (catalog/toolbox/github-web-flow.asc + the Dockerfile's assert), then rebuild.
+        case "${primary_fpr}" in
+          968479A1AFF927E37D1A566BB5690EEEBB952194) key_not_after=0 ;;
+          5DE3E0509C47EA3CF04A42D34AEE18F83AFDEB23) key_not_after=1705435200 ;;
+          *) fail "${app_slug}@${app_sha:0:12}: signed by unknown GitHub key ${primary_fpr} - GitHub may have rotated its web-flow key; see docs/admin/commit-signing.md (Rotation)" ;;
+        esac
+        if (( key_not_after > 0 && sig_ts >= key_not_after )); then
+          fail "${app_slug}@${app_sha:0:12}: signed by GitHub's retired web-flow key ${primary_fpr} after it expired (signature time ${sig_ts})"
+        fi
+        key_id="${primary_fpr: -16}"
+
+        # 2. Committer. GitHub's merge button commits as GitHub itself.
+        grep -qE '^committer GitHub <noreply@github\.com> ' <<<"${commit_headers}" \
+          || fail "${app_slug}@${app_sha:0:12}: web-flow-signed but the committer is $(grep -m1 '^committer ' <<<"${commit_headers}" | sed -E 's/^committer (.*) [0-9]+ [-+][0-9]{4}$/\1/'), not GitHub <noreply@github.com>"
+
+        # 3. It is a PR's own merge: a merged PR into this repo's default branch whose
+        #    merge_commit_sha is this commit. Nothing else has a merge_commit_sha pointing
+        #    at a web-editor, contents-API or App-made commit.
+        default_branch="$(app_get "" | jq -r '.default_branch // empty')"
+        [[ -n "${default_branch}" ]] || fail "could not read ${app_slug}'s default branch from the GitHub API"
+        pr_number="$(app_get "/commits/${app_sha}/pulls" | jq -r --arg sha "${app_sha}" --arg slug "${app_slug}" --arg base "${default_branch}" \
+          '[.[] | select(.merge_commit_sha == $sha and .merged_at != null and ((.base.repo.full_name // "") | ascii_downcase) == ($slug | ascii_downcase) and .base.ref == $base)][0].number // empty')"
+        [[ -n "${pr_number}" ]] || fail "${app_slug}@${app_sha:0:12}: GitHub-signed but not the merge commit of any pull request merged into ${default_branch} (a web-editor, API or update-branch commit, or a PR into another branch)"
+        pr="$(app_get "/pulls/${pr_number}")"
+        [[ "$(jq -r '.merged' <<<"${pr}")" == "true" && "$(jq -r '.merge_commit_sha' <<<"${pr}")" == "${app_sha}" ]] \
+          || fail "${app_slug}#${pr_number} does not record ${app_sha:0:12} as its merge"
+        merged_by="$(jq -r '.merged_by.login // empty' <<<"${pr}")"
+        head_sha="$(jq -r '.head.sha // empty' <<<"${pr}")"
+
+        # 4. Lineage. The commit is on the default branch (compare: the branch is ahead of
+        #    it or identical to it). A merge commit's second parent is the PR's head; a
+        #    squash or rebase has one parent, and being on the branch is the whole check.
+        compare_status="$(app_get "/compare/${app_sha}...$(jq -rn --arg b "${default_branch}" '$b | @uri')" | jq -r '.status // empty')"
+        [[ "${compare_status}" == "ahead" || "${compare_status}" == "identical" ]] \
+          || fail "${app_slug}@${app_sha:0:12} is not on ${default_branch} (compare status '${compare_status:-none}')"
+        read -r -a parents <<<"$(awk '/^parent /{print $2}' <<<"${commit_headers}" | paste -sd' ' -)"
+        case "${#parents[@]}" in
+          1) merge_shape="squash or rebase" ;;
+          2) [[ "${parents[1]}" == "${head_sha}" ]] \
+               || fail "${app_slug}@${app_sha:0:12}: merge commit's second parent ${parents[1]:0:12} is not ${app_slug}#${pr_number}'s head ${head_sha:0:12}"
+             merge_shape="merge commit" ;;
+          *) fail "${app_slug}@${app_sha:0:12} has ${#parents[@]} parents - not a pull request merge GitHub makes" ;;
+        esac
+
+        # 5. Merger. GitHub logins, case-insensitive: the API gives logins, and a login
+        #    cannot be mapped back to an email reliably.
+        [[ -n "${merged_by}" ]] || fail "${app_slug}#${pr_number} has no merged_by"
+        grep -qixF -- "${merged_by}" <<<"${gm_mergers}" \
+          || fail "${app_slug}#${pr_number} was merged by ${merged_by}, not in allowed-github-mergers for ${APP_NAME}"
+
+        # 6. Strict mode: every commit the PR carried is gitsign-signed by an allowed
+        #    signer. Each is fetched by SHA; GitHub keeps a squashed or rebased PR's own
+        #    commits fetchable. GitHub lists at most 250 commits per PR, so a longer PR
+        #    fails closed rather than verifying part of it.
+        path="github-merge"
+        if [[ "${gm_mode}" == "strict" ]]; then
+          path="github-merge-strict"
+          pr_commits_total="$(jq -r '.commits // 0' <<<"${pr}")"
+          (( pr_commits_total <= 250 )) || fail "${app_slug}#${pr_number} has ${pr_commits_total} commits; GitHub lists only 250, so strict mode cannot check them all"
+          pr_commits=""
+          for page in 1 2 3; do
+            batch="$(app_get "/pulls/${pr_number}/commits?per_page=100&page=${page}" | jq -r '.[].sha')"
+            [[ -z "${batch}" ]] && break
+            pr_commits+="${batch}"$'\n'
+          done
+          pr_commits="$(grep -v '^$' <<<"${pr_commits}" || true)"
+          [[ -n "${pr_commits}" ]] || fail "${app_slug}#${pr_number}: no commits listed - strict mode cannot verify an empty PR"
+          while read -r c; do
+            git fetch --quiet --depth 1 "${app_clone_url}" "${c}"
+            echo "strict: verifying ${app_slug}#${pr_number} commit ${c:0:12}"
+            gitsign_verify "${c}" || fail "strict mode: ${app_slug}#${pr_number} commit ${c:0:12} is not gitsign-signed by an allowed signer"
+          done <<<"${pr_commits}"
+        fi
+
+        # 7. Approvals (requiredApprovals > 0): each reviewer's latest decisive review
+        #    (COMMENTED doesn't change a decision) must be APPROVED on the PR's final head
+        #    - an approval of an earlier push doesn't count, the same effect as GitHub's
+        #    stale-review dismissal. Reviewers must be in allowed-github-mergers, and the
+        #    merger's own review never counts.
+        approvers="[]"
+        if (( gm_approvals > 0 )); then
+          approvers="$(app_get "/pulls/${pr_number}/reviews?per_page=100" | jq -c \
+            --arg head "${head_sha}" --arg merger "$(tr '[:upper:]' '[:lower:]' <<<"${merged_by}")" \
+            --argjson allowed "$(jq -R -s -c 'split("\n") | map(select(length > 0))' <<<"${gm_mergers}")" '
+              [ .[] | select(.state != "COMMENTED" and .state != "PENDING") ]
+              | group_by(.user.login | ascii_downcase)
+              | map(sort_by(.submitted_at) | last)
+              | map(select(.state == "APPROVED" and .commit_id == $head) | .user.login | ascii_downcase)
+              | map(select(. != $merger and (. as $l | $allowed | index($l))))')"
+          (( $(jq 'length' <<<"${approvers}") >= gm_approvals )) \
+            || fail "${app_slug}#${pr_number} has $(jq 'length' <<<"${approvers}") qualifying approval(s) of its final head ${head_sha:0:12} ($(jq -r 'join(", ")' <<<"${approvers}")); ${APP_NAME} requires ${gm_approvals}, by allowed mergers other than ${merged_by}"
+        fi
+
+        summary="provenance: verified via GitHub merge of ${app_slug}#${pr_number} by ${merged_by} (${merge_shape}, web-flow key ${key_id}"
+        [[ "${path}" == "github-merge-strict" ]] && summary+=", strict: every PR commit gitsign-signed"
+        (( gm_approvals > 0 )) && summary+=", approved by $(jq -r 'join(", ")' <<<"${approvers}")"
+        summary+=")"
+        printf '%s' "${path}" > "$(results.signature-path.path)"
+        jq -cn --arg path "${path}" --arg repo "${app_slug}" --arg commit "${app_sha}" --argjson pr "${pr_number}" \
+          --arg mergedBy "${merged_by}" --argjson approvers "${approvers}" --arg key "${key_id}" \
+          '{path: $path, repo: $repo, commit: $commit, pr: $pr, mergedBy: $mergedBy, approvers: $approvers, key: $key}' \
+          > "$(results.signature-detail.path)"
+        printf '%s' "${summary}" > "$(results.findings-summary.path)"
+        echo "${summary}"

@@ -51,10 +51,33 @@ which case your cluster is in before treating it as a security reference; see
   [ADR-0006](adr/0006-cluster-agnostic-bootstrap.md).
 - **Provenance/attestation**: SLSA-shaped provenance is generated and verified before
   promotion - see [provenance-policy.md](provenance-policy.md).
-- **Commit signing**: the `provenance` governance gate verifies a `gitsign` signature
-  on the actual app-repo commit being promoted (not the machine-generated gitops PR
-  commit) - see [commit-signing.md](commit-signing.md), including the merge-strategy
-  gotcha that can silently break this.
+- **Commit signing**: the `provenance` governance gate verifies the actual app-repo
+  commit being promoted (not the machine-generated gitops PR commit) - see
+  [commit-signing.md](commit-signing.md). Two paths:
+  - **gitsign** (always on): an allowed person's short-lived Sigstore signature on that
+    exact commit.
+  - **GitHub merge** (2026-10-20, off unless an admin turns it on per app): GitHub's
+    web-flow key signed the commit as the merge of a PR into the default branch, and an
+    allowed login pressed merge. Optional strict mode adds a gitsign signature on every
+    PR commit; optional required approvals add a second person.
+
+  | Claim | gitsign | GitHub merge |
+  |---|---|---|
+  | Commit unmodified since signing | yes (Sigstore cert, Rekor) | yes (GitHub's pinned key) |
+  | Who signed | an allowed person | GitHub's servers |
+  | Who caused it | the signer | the PR's `merged_by`, an allowed login |
+  | Who wrote the code | the signer | the PR's authors; gitsign-verified in strict mode |
+
+  The GitHub-merge path trusts GitHub's key plus GitHub's record of who merged - the same
+  GitHub the platform already trusts for hosting, review and webhooks - and **weakens
+  non-repudiation: a stolen GitHub session can merge**. Strict mode and approvals narrow
+  that; nothing removes it. Web-editor, API, App and update-branch commits carry the same
+  key and are refused, because no PR records them as its merge.
+- **The release-signing policy is admin-owned**: who may sign, whether a GitHub merge
+  counts and who may merge live in the catalog chart's `releaseSigning` values (per
+  cluster, in the cluster repo), never in the app's `cicd.yaml`, which the gated team
+  controls. `cicd.yaml` can only tighten (strict mode, more approvals). Before 2026-10-20
+  the signer list was in `cicd.yaml`, so a team could add itself to the list that gated it.
 - **Governance gates are real, not theater**: `sast` (Semgrep), `imageScan` (Trivy),
   `policyCheck` (gitsign), `sbom` (cosign attestation) all do genuine enforcement
   today, and any gate still awaiting a real backend is structurally marked as a stub -
@@ -168,6 +191,10 @@ namespaces) are not covered by this label. See [rootless-builds.md](rootless-bui
   protection is not available (checked 2026-10-10: the API answers "Upgrade to GitHub Pro"), so a release PR can be
   merged with failing checks by anyone with write access. Such a merge is a break-glass bypass: the PR keeps its
   failed checks visible. "Human review plus branch protection" above holds only where the plan provides it.
+- **A GitHub-merged release rests on a GitHub session.** With the GitHub-merge path on,
+  whoever holds an allowed merger's GitHub session can release a PR's code (in `merger`
+  mode, code nobody gitsign-signed). Accepted per app by the admin who turns it on;
+  strict mode and required approvals narrow it ([commit-signing.md](commit-signing.md)).
 - **Governance gates that haven't landed yet** are visible as structurally-marked
   stubs, not hidden - see [governance-stubs.md](governance-stubs.md) for current
   status of each.

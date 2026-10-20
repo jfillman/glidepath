@@ -1,0 +1,2 @@
+# Raw commit objects: byte-exact, or they no longer hash to their names.
+*.commit -text -diff

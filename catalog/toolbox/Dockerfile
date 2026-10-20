@@ -22,6 +22,13 @@
 #     distribution needed (which ec's own built-in verification would require).
 #   - libxml2-utils (xmllint): pulls a Maven app's <version> from pom.xml for untagged
 #     builds (package.json's version needs only jq, already present).
+#   - gpgv + /etc/glidepath/github-web-flow.gpg: the provenance gate's GitHub-merge path
+#     (docs/admin/commit-signing.md) verifies a commit GitHub's merge button signed
+#     against GitHub's web-flow OpenPGP keys only. The key is checked in
+#     (catalog/toolbox/github-web-flow.asc, from https://github.com/web-flow.gpg) and its
+#     fingerprints are asserted below, so a changed file fails the build; the gate never
+#     fetches a key at verify time. GitHub rotating its key means: update the .asc, the
+#     assert here and the pinned list in verify-commit-signature.yaml, then rebuild.
 #   - oras: pushes build.artifacts' non-container outputs (python-wheel/go-binary) as
 #     real OCI artifacts to the same registry/credentials the image itself uses - see
 #     build-artifact.yaml. Respects DOCKER_CONFIG the same way crane does.
@@ -37,6 +44,18 @@ FROM golang:1.22-alpine AS yajsv-build
 ARG YAJSV_VERSION=1.4.1
 RUN CGO_ENABLED=0 go install "github.com/neilpa/yajsv@v${YAJSV_VERSION}"
 
+# GitHub's web-flow keys, dearmored into a gpgv keyring in a throwaway stage (full gnupg is
+# needed only here; the final image gets just gpgv). The assert lists every primary
+# fingerprint the keyring may hold, so an extra or swapped key fails the build too.
+FROM alpine:3.20 AS web-flow-keyring
+RUN apk add --no-cache gnupg
+COPY catalog/toolbox/github-web-flow.asc /tmp/github-web-flow.asc
+RUN set -eu; \
+    gpg --dearmor < /tmp/github-web-flow.asc > /github-web-flow.gpg; \
+    got="$(gpg --show-keys --with-colons /tmp/github-web-flow.asc | awk -F: '/^pub/{p=1;next} p&&/^fpr/{print $10;p=0}' | sort | paste -sd' ' -)"; \
+    want="5DE3E0509C47EA3CF04A42D34AEE18F83AFDEB23 968479A1AFF927E37D1A566BB5690EEEBB952194"; \
+    if [ "${got}" != "${want}" ]; then echo "web-flow key fingerprints '${got}' != pinned '${want}'" >&2; exit 1; fi
+
 FROM alpine:3.20
 
 ARG OTEL_CLI_VERSION=0.4.5
@@ -49,7 +68,7 @@ ARG TRIVY_VERSION=0.73.0
 ARG TESTKUBE_VERSION=2.13.1
 ARG ORAS_VERSION=1.2.0
 
-RUN apk add --no-cache bash curl jq git openssl ca-certificates util-linux coreutils libxml2-utils
+RUN apk add --no-cache bash curl jq git openssl ca-certificates util-linux coreutils libxml2-utils gpgv
 
 RUN set -euo pipefail; \
     case "$(uname -m)" in \
@@ -105,6 +124,7 @@ COPY catalog/lib/github-app.sh /opt/platform/lib/github-app.sh
 COPY catalog/lib/retry.sh /opt/platform/lib/retry.sh
 COPY catalog/lib/build-agents.env /opt/platform/lib/build-agents.env
 COPY schemas/cicd.schema.json /opt/platform/schemas/cicd.schema.json
+COPY --from=web-flow-keyring /github-web-flow.gpg /etc/glidepath/github-web-flow.gpg
 
 # Onboarding boilerplate (catalog/tasks/deliver-onboarding-files.yaml,
 # docs/admin/onboarding-mechanics.md) used to be baked in here too - moved to a
