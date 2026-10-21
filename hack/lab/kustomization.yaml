@@ -1,0 +1,17 @@
+# hack/lab/kustomization.yaml - the lab's throwaway change tool as one kustomization, so a cluster repo can point an
+# Argo CD Application at this directory (hangar-dev: 50-glidepath/itsm-mock) and a cluster rebuild restores it.
+# The ConfigMap carries itsm_mock_server.py, the same file the catalog's tests run; a fixed name (no hash suffix) so
+# the Deployment's volume keeps resolving, and Argo CD rolls the pod when the script changes.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: platform-system
+resources:
+  - itsm-mock.yaml
+configMapGenerator:
+  - name: itsm-mock
+    files:
+      - itsm_mock_server.py
+    options:
+      disableNameSuffixHash: true
+      labels:
+        app.kubernetes.io/name: itsm-mock
