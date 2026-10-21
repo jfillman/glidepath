@@ -59,7 +59,9 @@ spec:
         {{- include "glidepath-app.lowerEnvSources" (dict "ctx" . "chart" $appChart) | nindent 8 }}
       destination:
         server: https://kubernetes.default.svc
-        namespace: "app-{{ $app }}-{{ "{{" }}.envName{{ "}}" }}"
+        # <type>-<app>-<env> (glidepath-app.envNamespace): an InfraService's environments are infra-<name>-<env>, like its
+        # infra-<name>-cicd. This was a hard-coded app- until 2026-10-21 (skyport-broker/skyport-auth ran in app-*-dev).
+        namespace: "{{ .Values.platformIdentity.type | default "app" }}-{{ $app }}-{{ "{{" }}.envName{{ "}}" }}"
       syncPolicy:
         automated:
           # prune (2026-10-10): a resource the chart stops rendering is deleted, so git is the whole truth. Without it,

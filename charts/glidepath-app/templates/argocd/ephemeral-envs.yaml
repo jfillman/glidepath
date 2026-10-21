@@ -200,7 +200,7 @@ spec:
               prNumber: "{{ "{{" }}.number{{ "}}" }}"
               githubOwner: {{ .Values.platformIdentity.githubOwner }}
               appRepoName: {{ .Values.platformIdentity.appName }}
-              namespace: "app-{{ .Values.platformIdentity.appName }}-pr-{{ "{{" }}.number{{ "}}" }}"
+              namespace: "{{ .Values.platformIdentity.type | default "app" }}-{{ .Values.platformIdentity.appName }}-pr-{{ "{{" }}.number{{ "}}" }}"
               argocdAppName: "{{ .Values.platformIdentity.appName }}-pr-{{ "{{" }}.number{{ "}}" }}"
               serviceName: {{ .Values.platformIdentity.appName }}
               ingressBaseDomain: {{ .Values.platformIdentity.previewIngressBaseDomain | default "" | quote }}
@@ -208,7 +208,7 @@ spec:
               toolboxImage: {{ .Values.toolboxImage }}
       destination:
         server: https://kubernetes.default.svc
-        namespace: "app-{{ .Values.platformIdentity.appName }}-pr-{{ "{{" }}.number{{ "}}" }}"
+        namespace: "{{ .Values.platformIdentity.type | default "app" }}-{{ .Values.platformIdentity.appName }}-pr-{{ "{{" }}.number{{ "}}" }}"
       syncPolicy:
         automated:
           prune: true

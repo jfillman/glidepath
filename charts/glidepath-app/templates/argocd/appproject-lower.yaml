@@ -25,7 +25,8 @@ spec:
     {{- end }}
   destinations:
     - server: https://kubernetes.default.svc
-      namespace: "app-{{ $app }}-*"
+      # <type>-<app>-*, the same prefix lower-envs.yaml deploys into (infra- for an InfraService).
+      namespace: "{{ .Values.platformIdentity.type | default "app" }}-{{ $app }}-*"
   clusterResourceWhitelist:
     - group: ""
       kind: Namespace
