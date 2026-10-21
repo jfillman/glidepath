@@ -95,7 +95,7 @@ mandatory fields, an approval that must be requested first) is adapted here, in 
 of the instance.
 
 **Webhook adapter**: one endpoint, one JSON body per call as in the table, the same `Authorization` header
-(bearer or basic from the Secret), answering the object above. `tests/itsm_mock_server.py` is a reference
+(bearer or basic from the Secret), answering the object above. `hack/lab/itsm_mock_server.py` is a reference
 adapter and a ServiceNow look-alike in one file, and the lab's throwaway endpoint.
 
 ## Verifying it
@@ -107,8 +107,9 @@ adapter and a ServiceNow look-alike in one file, and the lab's throwaway endpoin
   original unsuccessful with the emergency change related. It also checks the renderings: `none` is the stub
   with no lifecycle tasks, `servicenow` renders the gate and the hooks, `required: false` renders the advisory
   copy, and a mock that wants a bearer token refuses an unauthenticated call loudly.
-- Live, in a lab: run the mock in the cluster (a Deployment of `python:3-alpine` with the file in a ConfigMap),
-  point `itsm.webhook.url` at its Service, release, approve with `POST /_mock/approve/<id>`, `/retest itsm-`,
+- Live, in a lab: run the mock in the cluster. `hack/lab` is a kustomization (the Deployment, its Service, and
+  a ConfigMap generated from the script), so a cluster repo points an Argo CD Application at it and a cluster
+  rebuild brings the mock back (hangar-dev: `50-glidepath/itsm-mock`); point `itsm.webhook.url` at its Service, release, approve with `POST /_mock/approve/<id>`, `/retest itsm-`,
   merge, and read `changeRequestState` on the record as the relay moves it. The 2026-10-19 run (promote,
   gate red then green, implementing, closed successful; rollback with an emergency change, original re-closed
   unsuccessful) is recorded in the comments on

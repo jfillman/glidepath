@@ -6,7 +6,7 @@
 # company runs). `none` means no change tool: every function is a no-op that prints nothing, and the itsm gate is
 # the loud stub. Embedded into each Task that talks to the change tool (open-release-pr, itsm-gate, itsm-change)
 # by the chart (Files.Get: a Pod cannot mount a ConfigMap from the catalog's namespace, see the toolbox
-# Dockerfile) and sourced directly by tests/itsm_test.sh against tests/itsm_mock_server.py.
+# Dockerfile) and sourced directly by tests/itsm_test.sh against hack/lab/itsm_mock_server.py.
 #
 # Environment (rendered from .Values.itsm by the chart, or set by a test):
 #   ITSM_PROVIDER                    none | servicenow | webhook

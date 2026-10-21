@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Change management (docs/admin/change-management.md) against tests/itsm_mock_server.py: the provider client
+# Change management (docs/admin/change-management.md) against hack/lab/itsm_mock_server.py: the provider client
 # (files/lib/itsm.sh) for both providers, then the rendered itsm-gate and itsm-change Task scripts with a stub
 # kubectl standing in for the release records, through the whole lifecycle: create -> gate fails naming the
 # change and its state -> approve -> gate passes -> implement -> close successful; and a rollback: emergency
@@ -17,7 +17,7 @@ contains() { [[ "$2" == *"$3"* ]] || { echo "FAIL $1: '$3' not in:"; echo "  $2"
 
 # ---- the mock
 port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1])')"
-python3 charts/glidepath-catalog/tests/itsm_mock_server.py "${port}" 2>"${tmp}/mock.log" &
+python3 hack/lab/itsm_mock_server.py "${port}" 2>"${tmp}/mock.log" &
 mock_pid=$!
 trap 'kill ${mock_pid} 2>/dev/null; rm -rf "${tmp}"' EXIT
 for i in $(seq 1 50); do curl -fs "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1 && break; sleep 0.1; done
@@ -74,7 +74,7 @@ expect "none is a no-op" "$(itsm_create promote a b c d e)" ""
 itsm_enabled && { echo "FAIL: none must not be enabled"; fail=1; }
 
 # ---- credentials: a bearer token from the mounted Secret, and a loud failure without one
-MOCK_TOKEN=s3cret python3 charts/glidepath-catalog/tests/itsm_mock_server.py "$((port+1))" 2>/dev/null &
+MOCK_TOKEN=s3cret python3 hack/lab/itsm_mock_server.py "$((port+1))" 2>/dev/null &
 mock2=$!; trap 'kill ${mock_pid} ${mock2} 2>/dev/null; rm -rf "${tmp}"' EXIT
 for i in $(seq 1 50); do curl -fs "http://127.0.0.1:$((port+1))/healthz" >/dev/null 2>&1 && break; sleep 0.1; done
 export ITSM_PROVIDER=servicenow ITSM_SERVICENOW_URL="http://127.0.0.1:$((port+1))"

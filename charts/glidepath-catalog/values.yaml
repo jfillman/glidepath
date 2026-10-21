@@ -200,7 +200,7 @@ itsm:
     # counts): -2 Scheduled, -1 Implement by ServiceNow's default change model.
     approvedStates: ["-2", "-1"]
   webhook:
-    # The adapter endpoint. The lab runs tests/itsm_mock_server.py behind it.
+    # The adapter endpoint. The lab runs hack/lab/itsm_mock_server.py behind it (an Argo CD Application over hack/lab).
     url: ""
 
 # Each entry: name (= the PipelineRun generateName prefix, so the check is "Pipelines as Code CI / <name>-"),

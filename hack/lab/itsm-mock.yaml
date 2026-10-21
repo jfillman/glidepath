@@ -1,6 +1,6 @@
 # hack/lab/itsm-mock.yaml - a throwaway change tool for a lab cluster (docs/admin/change-management.md).
 #
-# Runs charts/glidepath-catalog/tests/itsm_mock_server.py in platform-system, unauthenticated, reachable from
+# Runs itsm_mock_server.py (this directory; the catalog's tests run the same file) in platform-system, unauthenticated, reachable from
 # every app's -cicd namespace at http://itsm-mock.platform-system.svc.cluster.local:8080 (the same port the
 # catalog's Tasks already reach the broker on). Point the catalog at it:
 #
@@ -8,8 +8,8 @@
 #
 # or, as a ServiceNow look-alike, provider servicenow with instanceUrl http://itsm-mock.platform-system.svc.cluster.local:8080.
 #
-#   kubectl -n platform-system create configmap itsm-mock --from-file=charts/glidepath-catalog/tests/itsm_mock_server.py
-#   kubectl apply -f hack/lab/itsm-mock.yaml
+# GitOps (the durable way, a cluster rebuild restores it): an Argo CD Application with source path hack/lab of this
+# repository at main (kustomization.yaml generates the ConfigMap from the script). By hand: kubectl apply -k hack/lab.
 #   kubectl -n platform-system exec deploy/itsm-mock -- wget -qO- http://127.0.0.1:8080/_mock/changes   # every change (127.0.0.1: alpine's localhost is ::1 first)
 #   kubectl -n platform-system exec deploy/itsm-mock -- wget -qO- --post-data= http://127.0.0.1:8080/_mock/approve/<id>
 #
