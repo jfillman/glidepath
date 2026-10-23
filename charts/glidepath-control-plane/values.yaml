@@ -121,6 +121,10 @@ backstageHostAliasIP: ""
 # glidepath-app; empty leaves glidepath-app's own fallback (ADR-0023 slice 1).
 defaultChart: {}
 
+# The cluster's observability facts ({namespace, instrumentation}), from cluster-defaults.yaml like defaultChart.
+# Forwarded to every app's glidepath-app; empty forwards nothing.
+observability: {}
+
 # See templates/argocd/tenant-onboarding-applicationset.yaml's own header comment for
 # the real name collision this guards against and why it's a value, not an in-place
 # rename.

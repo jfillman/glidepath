@@ -670,6 +670,27 @@ targetRevision: {{ $d.targetRevision | default .Values.idpServiceCatalog.chartVe
 {{- end }}
 
 {{/*
+glidepath-app.observabilityValues - airframe-application's platform-owned `observability` block for an environment
+that renders `chart`: the cluster's observability facts (.Values.observability, forwarded by the control plane from
+cluster-defaults.yaml) plus the app's runtime (platformIdentity.runtime, written by Airframe's TektonCICD). "" when
+the cluster sets none, or when `chart` is not the cluster default: an older chart pinned through deploy.chart has a
+strict schema without this key, and the render would fail.
+Usage: {{ include "glidepath-app.observabilityValues" (dict "ctx" $ "chart" $c) }}
+*/}}
+{{- define "glidepath-app.observabilityValues" -}}
+{{- $ctx := .ctx -}}
+{{- $o := $ctx.Values.observability | default dict -}}
+{{- $d := include "glidepath-app.defaultChart" $ctx | fromYaml -}}
+{{- $c := .chart -}}
+{{- if and (or $o.namespace $o.instrumentation) (eq (toString $c.repoURL) (toString $d.repoURL)) (eq (toString $c.path) (toString $d.path)) (eq (toString $c.targetRevision) (toString $d.targetRevision)) -}}
+observability:
+  namespace: {{ $o.namespace | default "" | quote }}
+  instrumentation: {{ $o.instrumentation | default "" | quote }}
+  runtime: {{ $ctx.Values.platformIdentity.runtime | default "" | quote }}
+{{- end -}}
+{{- end }}
+
+{{/*
 glidepath-app.resolveChart - one level of ADR-0023's chart precedence: `over` (deploy.chart, or an environment's
 chart) on top of `base` (the cluster default, or deploy.chart). A different repoURL is a different source and
 inherits nothing; otherwise only the fields `over` sets change, and path and chart replace each other.
@@ -713,6 +734,9 @@ ApplicationSet template.
       namespace:
         labels:
           hangar.io/managed-secrets: "true"
+      {{- with include "glidepath-app.observabilityValues" (dict "ctx" $ctx "chart" $c) }}
+      {{- . | nindent 6 }}
+      {{- end }}
     ignoreMissingValueFiles: true
     valueFiles:
       - $appsrc/glidepath/base.yaml

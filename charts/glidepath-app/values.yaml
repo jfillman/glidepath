@@ -224,6 +224,12 @@ devClusterName: ""
 # cluster-defaults.yaml (ADR-0023 slice 1). Unset: idpServiceCatalog below.
 defaultChart: {}
 
+# The cluster's observability facts, passed in by the control plane from the cluster repo's cluster-defaults.yaml:
+# {namespace: <where Prometheus runs>, instrumentation: <namespace>/<name> of the OTel Operator Instrumentation}.
+# Forwarded with platformIdentity.runtime as airframe-application's `observability` values to every environment that
+# renders the cluster's default chart. Unset: nothing is passed.
+observability: {}
+
 # The cluster taxonomy (ADR-0024), passed in by the control plane: {self: <control-plane cluster>, zones: {<cluster>:
 # lower|upper}}. Used only by the deploy.environments checks (a named cluster must be registered; a production
 # environment must run on an upper cluster). Unset: those checks are skipped.

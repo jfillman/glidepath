@@ -118,6 +118,10 @@ spec:
               defaultChart:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
+              {{- with .Values.observability }}
+              observability:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
               {{- with (.Values.aws | default dict).accountId }}
               # The fleet's AWS account (clusters.yaml aws:): glidepath-app's cloud deploy identity.
               cloudIdentity:

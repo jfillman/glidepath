@@ -163,6 +163,9 @@ spec:
                   # this namespace so the private ghcr.io/<owner>/<app>-pr image can
                   # actually be pulled.
                   hangar.io/managed-secrets: "true"
+              {{- with include "glidepath-app.observabilityValues" (dict "ctx" $ "chart" $chart) }}
+              {{- . | nindent 14 }}
+              {{- end }}
             valueFiles:
               # Not glidepath/envs/pr.yaml - lower-envs-applicationset.yaml's own git
               # generator already watches glidepath/envs/*.yaml on every onboarded app's
