@@ -79,6 +79,12 @@ test:
                                  # of this or a step's own `testName` MUST resolve to a
                                  # value - checked by preflight.
 
+# --- api: optional block. See "The api: block" below. ---
+api:
+  spec: openapi.yaml             # Optional, default openapi.yaml at the repo root. The
+                                 # build signs this file onto the image; no file = no API.
+  type: openapi                  # Optional, default openapi. openapi | asyncapi.
+
 # --- deploy: optional block. See "The deploy: block" below. ---
 # Deploying to AWS ECS or Lambda instead of Kubernetes? Start from examples/11-aws-ecs.yaml
 # or examples/12-aws-lambda.yaml: complete files with every cloud field explained.
@@ -607,6 +613,28 @@ The stage waits up to 10 minutes for the run to finish (`test-timeout` on the pi
 a per-step field in this file is planned). Past that the outcome is `timeout` and the
 stage fails; the Testkube execution itself keeps running until the workflow's own
 timeouts end it.
+
+## The `api:` block
+
+```yaml
+api:
+  spec: openapi.yaml   # default: openapi.yaml at the repo root
+  type: openapi        # default: openapi (or asyncapi)
+```
+
+Every build reads `api.spec` from the checkout and attaches it to the pushed image as a signed attestation
+(predicate type `https://hangar.io/attestations/api-spec/v1`, keyless like the SBOM). Each version you deploy then
+carries the exact spec it was built with: Tower shows the spec per environment by the image digest that environment
+runs, and the `api-compat` release check compares a release's spec with the one already running where it is going.
+
+The block and the file are both optional. With no file at `spec` the build logs that the app publishes no API and
+carries on; a file that is not YAML/JSON, or lacks the top-level `openapi:`/`asyncapi:` field `type` names, is
+reported as `invalid`, and a signing failure as `failed`. None of these fail the build. The attestation holds the
+spec as JSON (YAML is converted), its `sha256`, `info.title` and `info.version`; rebuilding the same digest never
+attaches a second copy.
+
+Keep the file in step with the code: nothing yet checks the spec against the routes the app really serves, so a
+stale spec produces wrong diffs.
 
 ## The `deploy:` block
 

@@ -94,6 +94,21 @@
       }
     },
 
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The API this app serves, published with every build: the build reads the spec file from the checkout and attaches it to the image as a signed attestation, so each deployed version carries the spec it was built with (Tower shows it per environment; the api-compat release check diffs it). Optional: with no file at `spec`, the app publishes no API and nothing fails.",
+      "properties": {
+        "spec": {
+          "type": "string",
+          "default": "openapi.yaml",
+          "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).+\\.(ya?ml|json)$",
+          "description": "Path to the spec file, relative to the repo root. YAML or JSON."
+        },
+        "type": { "type": "string", "enum": ["openapi", "asyncapi"], "default": "openapi", "description": "The spec's format." }
+      }
+    },
+
     "deploy": {
       "type": "object",
       "additionalProperties": false,
