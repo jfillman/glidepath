@@ -42,6 +42,7 @@ the required ones fails with a message naming the value.
 | `glidepath-control-plane` | `clusterName` | yes | the cluster's registry name (= kubectl context), from `clusters.yaml` |
 | `glidepath-control-plane` | `clusters`, `aws` | no | `clusters.yaml` as a value file |
 | `glidepath-control-plane` | `defaultChart` | yes, for apps | `cluster-defaults.yaml` as a value file |
+| `glidepath-control-plane` | `observability` (`namespace`, `instrumentation`) | no | `cluster-defaults.yaml` as a value file |
 | `glidepath-control-plane` | `backstageBaseUrl`, `backstageHostAliasIP` | no | only for a Backstage hostname a pod cannot resolve |
 | `glidepath-catalog` | `defaultChart.repoURL`, `defaultChart.targetRevision` | yes | `cluster-defaults.yaml` as a value file |
 | `glidepath-catalog` | `valuesValidatorRepository` (or `valuesValidatorImage`) | yes | where the fleet's Airframe publishes `airframe-validate` |
@@ -50,7 +51,9 @@ the required ones fails with a message naming the value.
 The control plane forwards `platformCicdRepoUrl`, `defaultChart`, the Backstage alias and
 `clusterTaxonomy` (whose `self` is `clusterName`: the dev cluster) to every app's
 `glidepath-app`; an app's Ground environments and previews render with that cluster name
-and `clusterType: dev`.
+and `clusterType: dev`. With `observability` set, each environment that renders the cluster's default chart also
+gets airframe-application's `observability` values: Prometheus is admitted through the app's NetworkPolicy, and
+the OpenTelemetry Operator instruments the app for its runtime (`platformIdentity.runtime`, written by Airframe).
 
 This keeps `platform-cicd` installable standalone on any cluster - it carries zero
 cluster-specific secrets or identity in its own repo. For local/`kind` development,

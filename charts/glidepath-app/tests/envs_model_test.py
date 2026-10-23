@@ -282,8 +282,8 @@ class DeployChart(unittest.TestCase):
                     jsonschema.validate(cicd(BUILD_DEPLOY, {"chart": bad}), SCHEMA)
 
 
-def lower_envs(config):
-    rc, out, err = render(config)
+def lower_envs(config, identity=IDENTITY):
+    rc, out, err = render(config, identity)
     assert rc == 0, err[:400]
     sets = [d for d in yaml.safe_load_all(out) if d and d.get("kind") == "ApplicationSet" and d["metadata"]["name"].endswith("-lower-envs")]
     return sets[0] if sets else None
@@ -329,6 +329,19 @@ class LowerEnvsChart(unittest.TestCase):
         a = lower_envs(cicd(BUILD_DEPLOY, {"chart": {"targetRevision": "v9.9.9"}, "environments": [{"name": "dev", "tier": "ground"}]}))
         src = self.chart_of(a)
         self.assertEqual((src["targetRevision"], src["path"]), ("v9.9.9", "charts/airframe-application"))
+
+    def test_observability_reaches_the_default_chart_only(self):
+        ident = dict(IDENTITY, observability={"namespace": "observability", "instrumentation": "observability/hangar"},
+                     platformIdentity=dict(IDENTITY["platformIdentity"], runtime="python"))
+        env = [{"name": "dev", "tier": "ground"}]
+        a = lower_envs(cicd(BUILD_DEPLOY, {"environments": env}), ident)
+        self.assertEqual(self.chart_of(a)["helm"]["valuesObject"]["observability"],
+                         {"namespace": "observability", "instrumentation": "observability/hangar", "runtime": "python"})
+        # A pinned older chart has a strict schema without the key: nothing is passed.
+        pinned = lower_envs(cicd(BUILD_DEPLOY, {"chart": {"targetRevision": "v9.9.9"}, "environments": env}), ident)
+        self.assertNotIn("observability", self.chart_of(pinned)["helm"]["valuesObject"])
+        # Unset on the cluster: nothing is passed.
+        self.assertNotIn("observability", self.chart_of(lower_envs(cicd(BUILD_DEPLOY, {"environments": env})))["helm"]["valuesObject"])
 
     def test_a_registry_chart_replaces_path(self):
         own = {"repoURL": "oci://ghcr.io/o/charts", "chart": "web", "targetRevision": "1.2.3"}
