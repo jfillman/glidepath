@@ -136,6 +136,10 @@ spec:
       description: "'true'/'false' - build.artifacts includes python-wheel."
     - name: artifacts-go-binary
       description: "'true'/'false' - build.artifacts includes go-binary."
+    - name: api-spec
+      description: "api.spec - the API spec's path in the checkout (schema default openapi.yaml). Empty when no cicd.yaml was validated (an event-chained stage)."
+    - name: api-type
+      description: "api.type - openapi or asyncapi."
   volumes:
     # Audience-bound projected ServiceAccount tokens - the same two the folded-away Tasks
     # mounted: the GitHub App token broker for the clone, the CDEvents broker for announce.
@@ -389,6 +393,8 @@ spec:
         printf '%s' "$(flag .governance.sbom)" > "$(results.sbom.path)"
         printf '%s' "$(jq -r '(.build.artifacts // []) | index("python-wheel") != null' /tmp/cicd-defaulted.json)" > "$(results.artifacts-python-wheel.path)"
         printf '%s' "$(jq -r '(.build.artifacts // []) | index("go-binary") != null' /tmp/cicd-defaulted.json)" > "$(results.artifacts-go-binary.path)"
+        printf '%s' "$(jq -r '.api.spec // ""' /tmp/cicd-defaulted.json)" > "$(results.api-spec.path)"
+        printf '%s' "$(jq -r '.api.type // "openapi"' /tmp/cicd-defaulted.json)" > "$(results.api-type.path)"
 
         # build.agent -> image via build-agents.env (formerly resolve-build-agent-image's
         # own step). Only an error when a cicd.yaml was actually validated above - an

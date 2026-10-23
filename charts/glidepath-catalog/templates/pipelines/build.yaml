@@ -256,6 +256,28 @@ spec:
         - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
         - { name: stage-span-id, value: $(tasks.preflight.results.span-id) }
 
+    # The app's API spec (cicd.yaml api.spec, default openapi.yaml), signed onto the pushed image so every deployed
+    # version carries the spec it was built with. Optional and never fails the build: no file means no API
+    # (attest-api-spec.yaml's header). Skipped when no cicd.yaml was validated (api-spec empty).
+    - name: attest-api-spec
+      runAfter: [build-image]
+      when:
+        - { input: $(tasks.preflight.results.api-spec), operator: notin, values: [""] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: attest-api-spec }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      workspaces:
+        - { name: source, workspace: source }
+      params:
+        - { name: image-ref, value: $(tasks.build-image.results.image-ref) }
+        - { name: spec-path, value: $(tasks.preflight.results.api-spec) }
+        - { name: api-type, value: $(tasks.preflight.results.api-type) }
+        - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
+        - { name: stage-span-id, value: $(tasks.preflight.results.span-id) }
+
   # One finally Task, one pod (2026-10-08) - replaces the six separate finally tasks this
   # Pipeline used to carry (end-build-stage-span, end-flow, notify, notify-backstage,
   # send-cdevent, pipelinerun-finished). Same side effects in the same order; see
