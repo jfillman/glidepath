@@ -102,7 +102,7 @@
         "spec": {
           "type": "string",
           "default": "openapi.yaml",
-          "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).+\\.(ya?ml|json)$",
+          "pattern": "^([A-Za-z0-9_][A-Za-z0-9._-]*/)*[A-Za-z0-9_][A-Za-z0-9._-]*\\.(ya?ml|json)$",
           "description": "Path to the spec file, relative to the repo root. YAML or JSON."
         },
         "type": { "type": "string", "enum": ["openapi", "asyncapi"], "default": "openapi", "description": "The spec's format." }

@@ -49,6 +49,18 @@ jobs:
       - run: python3 charts/glidepath-catalog/tests/validate_config_envs_test.py
       - run: python3 charts/glidepath-catalog/tests/resolve_deploy_target_env_test.py
 
+  # The schema through the validator the toolbox actually runs (yajsv, Go RE2 regexes): a pattern Python's jsonschema
+  # accepts can still fail to compile there, and then every build's preflight fails (2026-10-23, a lookahead in
+  # api.spec's pattern). Every docs/user/examples file must pass.
+  schema-yajsv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: go run github.com/neilpa/yajsv@v1.4.1 -s schemas/cicd.schema.json docs/user/examples/*.yaml
+
   # The config-only build exemption every push flow carries, evaluated with cel-go (what Pipelines-as-Code uses)
   # against 15 push payloads: cicd.yaml/glidepath//.tekton/ changes never build, the first onboarding merge does.
   build-exemption-cel:
