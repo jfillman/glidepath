@@ -1,0 +1,357 @@
+# catalog/tasks/api-compat-gate.yaml
+#
+# The api-compat release check (docs/admin/api-compat.md). Compares the API spec signed onto the promoted image
+# (attest-api-spec.yaml, predicate https://hangar.io/attestations/api-spec/v1) with the spec signed onto the image
+# the target environment runs now (the same manifest at the PR's base commit), with oasdiff. Both attestations are
+# verified before use: a sigstore bundle signed by THIS app's own pipeline-runner (app-<app>-cicd or
+# infra-<app>-cicd) under the platform's Fulcio, with a Rekor entry. An attestation that fails verification is
+# ignored and said so, never read.
+#
+# Verdicts (the `outcome` result):
+#   pass         no breaking change (oasdiff levels error/warning; info changes are counted, not listed)
+#   warn         breaking changes, reported only
+#   block        breaking changes, at least one to an operation observed in use, no owner override, and both
+#                apiCompat.blockWhenInUse and the gate's `required` (enforce=true) - the only verdict that fails
+#   overridden   breaking changes accepted by an app owner's `/api-break-ok <reason>` comment
+#   no-spec      the promoted image carries no (verified) spec - a spec is optional
+#   no-baseline  nothing to compare with: first release to this environment, or its image has no spec
+#   unsupported  an AsyncAPI spec: diffing is not supported yet
+#
+# "In use" comes from the target cluster's span metrics (the OTel collector's spanmetrics connector,
+# traces_span_metrics_calls_total, server spans of service `<app>-<env>`) over apiCompat.usageWindow, through the
+# endpoint apiCompat.usage.<cluster>.url. No endpoint, or a failed query, is usage "unknown", and unknown never
+# blocks. Span names carry the route only where the agent knows it ("GET /api/flights/{flightNumber}"); a bare
+# method or a wildcard route makes that operation's usage unknown rather than false.
+#
+# The override: the newest `/api-break-ok <reason>` PR comment written after the promoted commit, by a GitHub user
+# whose role on the app's source repo (github.com/<owner>/<app>) is admin or maintain, checked live on every run.
+# Anyone else's command is ignored and listed. `/retest api-compat-` re-runs the check after commenting.
+#
+# The full report (markdown plus one hidden `<!-- glidepath:api-compat {json} -->` line Tower parses) is too big for
+# a Task result (4096 bytes), so it goes to a ConfigMap owned by the PipelineRun, labelled
+# glidepath.io/gate-report=api-compat; comment-pr-check-result posts it.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: api-compat-gate
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Diffs the promoted image's signed API spec against the target environment's, with usage and an owner override. Fails only on a `block` verdict.
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+    - name: pr-number
+      type: string
+      default: ""
+    - name: image-ref
+      type: string
+      description: The promoted image (extract-promoted-image).
+    - name: manifest-path
+      type: string
+      description: The manifest the promoted image was read from (extract-promoted-image); the baseline is the same file at the PR's base.
+    - name: enforce
+      type: string
+      default: "false"
+      description: "'true' only for the required gate's hard copy: a `block` verdict is possible only then."
+    - name: pipeline-run-name
+      type: string
+      description: Owner of the report ConfigMap.
+  results:
+    - name: outcome
+      description: The verdict - see the header.
+    - name: findings-summary
+      description: One line for the PR comment when the report ConfigMap cannot be read.
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+    - name: registry-credentials
+      secret:
+        secretName: registry-credentials
+        items:
+          - key: .dockerconfigjson
+            path: config.json
+  steps:
+    - name: check
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      computeResources:
+        requests: { cpu: 100m, memory: 128Mi }
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+        - name: registry-credentials
+          mountPath: /var/run/secrets/registry
+          readOnly: true
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: DOCKER_CONFIG
+          value: /var/run/secrets/registry
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: REVISION
+          value: $(params.revision)
+        - name: PR_NUMBER
+          value: $(params.pr-number)
+        - name: IMAGE_REF
+          value: $(params.image-ref)
+        - name: MANIFEST
+          value: $(params.manifest-path)
+        - name: ENFORCE
+          value: $(params.enforce)
+        - name: PIPELINE_RUN
+          value: $(params.pipeline-run-name)
+        - name: NAMESPACE
+          value: $(context.taskRun.namespace)
+        - name: BLOCK_WHEN_IN_USE
+          value: {{ .Values.apiCompat.blockWhenInUse | toString | quote }}
+        - name: USAGE_WINDOW
+          value: {{ .Values.apiCompat.usageWindow | quote }}
+        - name: USAGE_CONFIG
+          value: {{ .Values.apiCompat.usage | toJson | quote }}
+        - name: ISSUER_REGEXP
+          value: '^({{ range $i, $iss := .Values.sigstoreIssuers }}{{ if $i }}|{{ end }}{{ regexQuoteMeta $iss }}{{ end }})$'
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        set +e
+        GH_API="${GITHUB_API_URL:-https://api.github.com}"
+        PRED="https://hangar.io/attestations/api-spec/v1"
+        work="$(mktemp -d)"
+        notes='[]'
+        note() { echo "note: $1"; notes="$(jq -c --arg n "$1" '. + [$n]' <<<"${notes}")"; }
+        die() { echo "api-compat: $1" >&2; printf '%s' "error" > "$(results.outcome.path)"; exit 1; }
+
+        owner="$(sed -E 's#https?://github\.com/([^/]+)/.*#\1#' <<<"${REPO_URL}")"
+        repo="$(sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#' <<<"${REPO_URL}")"
+        app="${repo#gitops-}"
+        cluster=""; env=""
+        if [[ "${MANIFEST}" =~ ^([^/]+)/([^/]+)/(release|values)\.yaml$ ]]; then
+          cluster="${BASH_REMATCH[1]}"; env="${BASH_REMATCH[2]}"
+        fi
+        service="${app}-${env}"
+
+        token="$(github_app_installation_token "${owner}" "${repo}")" || die "no GitHub token for ${owner}/${repo}"
+        gh() { curl -fsS --retry 3 --retry-connrefused --max-time 20 -H "Authorization: Bearer ${token}" -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
+        base="${GH_API}/repos/${owner}/${repo}"
+
+        if [[ -n "${PR_NUMBER}" && ! "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+          PR_NUMBER="$(gh -H "Accept: application/vnd.github+json" "${base}/commits/${REVISION}/pulls" | jq -r '.[0].number // empty')"
+        fi
+        [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] || die "no PR for ${REVISION:0:12}: the check compares a release PR with its base"
+        pr_json="$(gh -H "Accept: application/vnd.github+json" "${base}/pulls/${PR_NUMBER}")" || die "could not read PR #${PR_NUMBER}"
+        base_sha="$(jq -r '.base.sha' <<<"${pr_json}")"
+        head_date="$(gh -H "Accept: application/vnd.github+json" "${base}/commits/${REVISION}" | jq -r '.commit.committer.date // empty')"
+        # An override counts only when written after the commit it accepts; without that date, after the PR opened.
+        [[ -n "${head_date}" ]] || head_date="$(jq -r '.created_at' <<<"${pr_json}")"
+
+        # Baseline: what the environment runs now, i.e. the same manifest on the PR's base.
+        baseline_ref=""
+        if gh -H "Accept: application/vnd.github.raw+json" "${base}/contents/${MANIFEST}?ref=${base_sha}" > "${work}/base-manifest.yaml" 2>/dev/null; then
+          b_repo="$(yq -r '.release.image.repository // .rollout.image.repository // ""' "${work}/base-manifest.yaml")"
+          b_tag="$(yq -r '.release.image.tag // .rollout.image.tag // ""' "${work}/base-manifest.yaml")"
+          [[ -n "${b_repo}" && -n "${b_tag}" ]] && baseline_ref="${b_repo}:${b_tag}"
+        fi
+        echo "candidate ${IMAGE_REF}, baseline ${baseline_ref:-<none>} (${MANIFEST} @ ${base_sha:0:12}), service ${service}"
+
+        # Trusted root for the platform's Fulcio/Rekor, built once.
+        kubectl get configmap fulcio-root-ca -n platform-catalog -o jsonpath='{.data.cert\.pem}' > "${work}/fulcio-root.pem"
+        curl -fsSL --max-time 10 http://rekor-server.rekor-system.svc/api/v1/log/publicKey > "${work}/rekor.pub"
+        cosign trusted-root create \
+          --fulcio="url=http://fulcio-server.fulcio-system.svc,certificate-chain=${work}/fulcio-root.pem" \
+          --rekor="url=http://rekor-server.rekor-system.svc,public-key=${work}/rekor.pub,start-time=2020-01-01T00:00:00Z" \
+          --no-default-ctfe --no-default-tsa --out "${work}/trusted-root.json" >/dev/null 2>&1 || die "could not build the trusted root"
+        identity_regexp="^https://kubernetes\.io/namespaces/(app|infra)-${app}-cicd/serviceaccounts/pipeline-runner$"
+
+        # spec_for <image-ref> <label>: writes ${work}/<label>.json (the verified predicate) and ${work}/<label>.digest.
+        spec_for() {
+          local ref="$1" label="$2" registry rest repo_path tag auth rtoken digest n=0 ok=0
+          registry="${ref%%/*}"; rest="${ref#*/}"; repo_path="${rest%:*}"; tag="${rest##*:}"
+          auth="$(jq -r --arg r "${registry}" '.auths[$r].auth // empty' "${DOCKER_CONFIG}/config.json" 2>/dev/null | base64 -d 2>/dev/null)"
+          rtoken="$(curl -fsSL --retry 3 --max-time 15 ${auth:+-u "${auth}"} "https://${registry}/token?service=${registry}&scope=repository:${repo_path}:pull" | jq -r '.token // empty')"
+          digest="$(curl -fsSL -D - -o /dev/null --retry 3 --max-time 15 -H "Authorization: Bearer ${rtoken}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json" \
+            "https://${registry}/v2/${repo_path}/manifests/${tag}" | grep -i '^docker-content-digest:' | tr -d '\r' | awk '{print $2}')"
+          if [[ -z "${digest}" ]]; then note "${label}: could not resolve ${ref} to a digest"; return 1; fi
+          printf '%s' "${digest}" > "${work}/${label}.digest"
+          cosign download attestation --predicate-type "${PRED}" "${registry}/${repo_path}@${digest}" > "${work}/${label}.jsonl" 2>/dev/null
+          while IFS= read -r line; do
+            [[ -z "${line}" ]] && continue
+            n=$((n + 1))
+            if [[ "$(jq -r 'has("dsseEnvelope")' <<<"${line}")" != "true" ]]; then
+              note "${label}: an api-spec attestation that is not a sigstore bundle was ignored"; continue
+            fi
+            printf '%s' "${line}" > "${work}/${label}-bundle-${n}.json"
+            if cosign verify-blob-attestation --bundle "${work}/${label}-bundle-${n}.json" \
+                --digest "${digest#sha256:}" --digestAlg sha256 \
+                --trusted-root "${work}/trusted-root.json" \
+                --certificate-identity-regexp "${identity_regexp}" \
+                --certificate-oidc-issuer-regexp "${ISSUER_REGEXP}" \
+                --insecure-ignore-sct=true --type "${PRED}" >"${work}/${label}-verify-${n}.log" 2>&1; then
+              jq -r '.dsseEnvelope.payload' <<<"${line}" | base64 -d | jq '.predicate' > "${work}/${label}.json" && ok=1
+            else
+              note "${label}: an api-spec attestation on ${digest:0:19} failed verification and was ignored ($(tail -1 "${work}/${label}-verify-${n}.log" | head -c 160))"
+            fi
+          done < "${work}/${label}.jsonl"
+          [[ "${ok}" == 1 ]]
+        }
+
+        ref_json() { # <label> <image-ref>
+          if [[ -f "${work}/$1.json" ]]; then
+            jq -c --arg image "$2" --arg digest "$(cat "${work}/$1.digest")" \
+              '{image: $image, digest: $digest, specSha256: .sha256, title: .title, version: .version}' "${work}/$1.json"
+          else echo null; fi
+        }
+
+        verdict=""
+        breaking='[]'; nonbreaking=0
+        if ! spec_for "${IMAGE_REF}" candidate; then
+          verdict="no-spec"
+        elif [[ "$(jq -r '.apiType' "${work}/candidate.json")" != "openapi" ]]; then
+          verdict="unsupported"; note "$(jq -r '.apiType' "${work}/candidate.json") specs are not diffed yet"
+        elif [[ -z "${baseline_ref}" ]] || ! spec_for "${baseline_ref}" baseline; then
+          verdict="no-baseline"
+        elif [[ "$(jq -r '.apiType' "${work}/baseline.json")" != "openapi" ]]; then
+          verdict="no-baseline"; note "the baseline's spec is not OpenAPI"
+        fi
+
+        usage_source="unknown"; callers='[]'
+        if [[ -z "${verdict}" ]]; then
+          jq '.spec' "${work}/baseline.json" > "${work}/base-spec.json"
+          jq '.spec' "${work}/candidate.json" > "${work}/cand-spec.json"
+          if ! oasdiff changelog "${work}/base-spec.json" "${work}/cand-spec.json" -f json > "${work}/changelog.json" 2>"${work}/oasdiff.err"; then
+            die "oasdiff failed: $(head -c 300 "${work}/oasdiff.err")"
+          fi
+          nonbreaking="$(jq '[.[] | select(.level < 2)] | length' "${work}/changelog.json")"
+          breaking="$(jq -c '[.[] | select(.level >= 2) | {id, level: (if .level >= 3 then "error" else "warning" end), text,
+            operation: (if .operation then {method: .operation, path: .path} else null end), inUse: null, rate: null}]' "${work}/changelog.json")"
+
+          # Usage, only worth asking about when something breaks.
+          url="$(jq -r --arg c "${cluster}" '.[$c].url // empty' <<<"${USAGE_CONFIG}")"
+          if [[ "$(jq length <<<"${breaking}")" -gt 0 && -n "${url}" && -n "${env}" ]]; then
+            prom() { curl -fsS --max-time 15 -G "${url%/}/api/v1/query" --data-urlencode "query=$1"; }
+            if ops="$(prom "sum by (span_name) (rate(traces_span_metrics_calls_total{service_name=\"${service}\",span_kind=\"SPAN_KIND_SERVER\"}[${USAGE_WINDOW}])) * 60")" \
+                && [[ "$(jq -r '.status' <<<"${ops}")" == "success" ]]; then
+              usage_source="prometheus"
+              rates="$(jq -c '[.data.result[] | {name: .metric.span_name, rate: (.value[1] | tonumber)}]' <<<"${ops}")"
+              breaking="$(jq -c --argjson rates "${rates}" '
+                def norm: gsub("\\{[^}]*\\}"; "{}") | gsub(":[A-Za-z0-9_]+"; "{}");
+                ($rates | map(. + {method: (.name | split(" ")[0]), route: ((.name | split(" ")[1:] | join(" ")) | norm)})) as $r
+                | map(if .operation == null then . else
+                    (.operation.method) as $m | (.operation.path | norm) as $p
+                    | ([$r[] | select(.method == $m and .route == $p)]) as $hit
+                    | if ($hit | length) > 0 then .inUse = (($hit | map(.rate) | add) > 0) | .rate = (($hit | map(.rate) | add) * 1000 | round / 1000)
+                      elif ([$r[] | select(.method == $m and (.route == "" or (.route | test("\\*"))))] | length) > 0 then .inUse = null
+                      else .inUse = false | .rate = 0 end end)' <<<"${breaking}")"
+              if cl="$(prom "sum by (client) (increase(traces_service_graph_request_total{server=\"${service}\"}[${USAGE_WINDOW}]))")"; then
+                callers="$(jq -c '[.data.result[] | select((.value[1] | tonumber) > 0) | .metric.client] | sort' <<<"${cl}" 2>/dev/null || echo '[]')"
+              fi
+            else
+              note "usage query to ${cluster} failed: usage unknown"
+            fi
+          elif [[ -z "${url}" && "$(jq length <<<"${breaking}")" -gt 0 ]]; then
+            note "no apiCompat.usage endpoint for cluster ${cluster:-<none>}: usage unknown"
+          fi
+        fi
+
+        # Owner override: newest `/api-break-ok <reason>` after the promoted commit, by an admin/maintain on the app repo.
+        override=null
+        if [[ "$(jq length <<<"${breaking}")" -gt 0 ]]; then
+          gh -H "Accept: application/vnd.github+json" "${base}/issues/${PR_NUMBER}/comments?per_page=100" > "${work}/comments.json" 2>/dev/null || echo '[]' > "${work}/comments.json"
+          app_token="$(github_app_installation_token "${owner}" "${app}" 2>/dev/null)"
+          while IFS= read -r c; do
+            [[ -z "${c}" ]] && continue
+            login="$(jq -r '.user.login' <<<"${c}")"
+            role="$(curl -fsS --retry 2 --max-time 15 -H "Authorization: Bearer ${app_token}" -H "X-GitHub-Api-Version: 2022-11-28" \
+              "${GH_API}/repos/${owner}/${app}/collaborators/${login}/permission" 2>/dev/null | jq -r '.role_name // "none"')"
+            if [[ "${role}" == "admin" || "${role}" == "maintain" ]]; then
+              override="$(jq -c '{by: .user.login, at: .created_at, reason: (.body | split("\n")[0] | sub("^/api-break-ok\\s*"; ""))}' <<<"${c}")"
+              break
+            fi
+            note "ignored /api-break-ok from ${login}: role on ${owner}/${app} is ${role:-none}, an override needs admin or maintain"
+          done < <(jq -c --arg since "${head_date}" '[.[] | select((.body | test("^/api-break-ok(\\s|$)")) and (.created_at > $since))] | sort_by(.created_at) | reverse | .[]' "${work}/comments.json")
+        fi
+
+        if [[ -z "${verdict}" ]]; then
+          if [[ "$(jq length <<<"${breaking}")" -eq 0 ]]; then verdict="pass"
+          elif [[ "${override}" != "null" ]]; then verdict="overridden"
+          elif [[ "${ENFORCE}" == "true" && "${BLOCK_WHEN_IN_USE}" == "true" && "$(jq '[.[] | select(.inUse == true)] | length' <<<"${breaking}")" -gt 0 ]]; then verdict="block"
+          else verdict="warn"; fi
+        fi
+
+        # The report: Tower's contract line, then markdown. Breaking entries are cut to keep the comment under GitHub's
+        # 65536 characters; "--" never appears inside the HTML comment (it would close it early).
+        total="$(jq length <<<"${breaking}")"
+        report_json() { # <max breaking entries>
+          jq -nc --arg verdict "${verdict}" --arg env "${env}" --argjson cand "$(ref_json candidate "${IMAGE_REF}")" \
+            --argjson base "$( [[ -n "${baseline_ref}" ]] && ref_json baseline "${baseline_ref}" || echo null)" \
+            --argjson breaking "${breaking}" --argjson max "$1" --argjson nb "${nonbreaking}" \
+            --arg source "${usage_source}" --arg window "${USAGE_WINDOW}" --argjson callers "${callers}" \
+            --argjson override "${override}" --argjson notes "${notes}" \
+            '{version: 1, verdict: $verdict, env: $env, candidate: $cand, baseline: $base,
+              breaking: $breaking[0:$max], breakingTotal: ($breaking | length), nonBreakingCount: $nb,
+              usage: {source: $source, window: $window, callers: $callers}, override: $override, notes: $notes}' \
+            | sed 's/--/-\\u002d/g'
+        }
+        max="${total}"
+        json="$(report_json "${max}")"
+        while [[ "${#json}" -gt 40000 && "${max}" -gt 0 ]]; do max=$((max / 2)); json="$(report_json "${max}")"; done
+
+        case "${verdict}" in
+          pass) title="### ✅ \`api-compat\`: no breaking API change" ;;
+          warn) title="### ⚠️ \`api-compat\`: ${total} breaking API change(s), reported only" ;;
+          block) title="### ❌ \`api-compat\`: ${total} breaking API change(s) to operations in use" ;;
+          overridden) title="### ✅ \`api-compat\`: ${total} breaking API change(s) accepted by $(jq -r '.by' <<<"${override}")" ;;
+          no-spec) title="### ➖ \`api-compat\`: this image publishes no API spec" ;;
+          no-baseline) title="### ➖ \`api-compat\`: nothing to compare with (first spec for ${env:-this environment})" ;;
+          unsupported) title="### ➖ \`api-compat\`: $(jq -r '.apiType' "${work}/candidate.json" 2>/dev/null) specs are not diffed yet" ;;
+        esac
+        {
+          echo "${title}"
+          echo
+          echo "Candidate \`${IMAGE_REF}\` against \`${baseline_ref:-none}\` on ${cluster:-?}/${env:-?}. Usage: ${usage_source} over ${USAGE_WINDOW}$( [[ "$(jq length <<<"${callers}")" -gt 0 ]] && echo ", callers $(jq -r 'join(", ")' <<<"${callers}")")."
+          if [[ "${total}" -gt 0 ]]; then
+            echo
+            echo "| Operation | Change | Level | In use |"
+            echo "|---|---|---|---|"
+            jq -r '.[0:50][] | "| \(if .operation then "`\(.operation.method) \(.operation.path)`" else "(spec)" end) | \(.text | gsub("\\|"; "\\\\|")) | \(.level) | \(if .inUse == true then "yes, \(.rate)/min" elif .inUse == false then "no" else "unknown" end) |"' <<<"${breaking}"
+            [[ "${total}" -gt 50 ]] && echo "| … | $((total - 50)) more | | |"
+          fi
+          echo
+          echo "${nonbreaking} non-breaking change(s)."
+          if [[ "${override}" != "null" ]]; then echo; echo "Override by **$(jq -r .by <<<"${override}")** at $(jq -r .at <<<"${override}"): $(jq -r .reason <<<"${override}")"; fi
+          if [[ "${verdict}" == "warn" || "${verdict}" == "block" ]]; then
+            echo
+            echo "An admin or maintainer of \`${owner}/${app}\` can accept this with a PR comment \`/api-break-ok <reason>\`, then \`/retest api-compat-\`."
+          fi
+          jq -r '.[] | "- \(.)"' <<<"${notes}"
+          echo
+          echo "<!-- glidepath:api-compat ${json} -->"
+        } > "${work}/report.md"
+        cat "${work}/report.md"
+
+        # The report ConfigMap, owned by the PipelineRun so it goes when the run is pruned.
+        uid="$(kubectl get pipelinerun "${PIPELINE_RUN}" -n "${NAMESPACE}" -o jsonpath='{.metadata.uid}' 2>/dev/null)"
+        kubectl create configmap "gate-report-${PIPELINE_RUN}" -n "${NAMESPACE}" \
+          --from-file=body="${work}/report.md" --from-literal=title="${title}" --dry-run=client -o json \
+          | jq --arg run "${PIPELINE_RUN}" --arg uid "${uid}" \
+              '.metadata.labels = {"glidepath.io/gate-report": "api-compat", "tekton.dev/pipelineRun": $run}
+               | if $uid != "" then .metadata.ownerReferences = [{apiVersion: "tekton.dev/v1", kind: "PipelineRun", name: $run, uid: $uid}] else . end' \
+          | kubectl apply -f - >/dev/null || echo "warning: could not write the report ConfigMap; the PR comment falls back to the summary" >&2
+
+        printf '%s' "${verdict}" > "$(results.outcome.path)"
+        printf '%s' "${title#\#\#\# } (${total} breaking, ${nonbreaking} other)" | head -c 900 > "$(results.findings-summary.path)"
+        echo "verdict=${verdict}"
+        [[ "${verdict}" == "block" ]] && exit 1
+        exit 0

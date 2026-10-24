@@ -220,6 +220,9 @@ spec:
             qa)
               recommendation="This reads the check ride recorded on the promoted image's own test provenance (docs/admin/testing.md) - it never runs tests itself. The log above says what was missing: no check ride ran for this image, it failed, it was not the shared check-rides repository's \`<app>-check-ride\`, or it is older than the catalog's \`qa.maxAge\`. Run the flow's \`role: check-ride\` test step against this exact image (a new build gets a new digest and needs its own ride), then \`/retest qa-\` - the gate re-reads the registry."
               ;;
+            api-compat)
+              recommendation="A breaking change in the promoted image's API spec touches an operation observed in use in the target environment (the report below lists them). Either keep the change compatible (keep the operation or field, or ship it alongside the old one) and release a new build, or have an admin or maintainer of the app's repository accept it with a PR comment \`/api-break-ok <reason>\`, then \`/retest api-compat-\`. See Glidepath docs/admin/api-compat.md."
+              ;;
             itsm)
               recommendation="The release's change request is not approved or scheduled in the change tool, or no change is linked to this PR (the log above names which). Get the change approved (its link is in the PR description and the log), or, for a PR made by hand, add \`<!-- glidepath:change-request:<id> -->\` to the PR body, then \`/retest itsm-\`. See Glidepath docs/admin/change-management.md."
               ;;
@@ -233,6 +236,19 @@ spec:
 
           body="$(printf '### ❌ `%s` failed\n\n**What happened:**\n```\n%s\n```\n\n**Recommendation:** %s\n\n**To retry:** comment `/retest %s-` on this PR once the underlying issue is fixed (the check name with its dash: PaC matches the PipelineRun generateName).' \
             "${GATE_NAME}" "${log_excerpt}" "${recommendation}" "${GATE_NAME}")"
+        fi
+
+        # A gate whose full report does not fit a Task result (4096 bytes) leaves it in a ConfigMap owned by its
+        # PipelineRun, labelled glidepath.io/gate-report=<gate> (api-compat-gate.yaml). It replaces the plain
+        # headline, or follows the failure text, so the comment carries the whole finding.
+        report="$(kubectl get configmap -n "${NAMESPACE}" -l "glidepath.io/gate-report=${GATE_NAME},tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json 2>/dev/null \
+          | jq -r '.items[0].data.body // empty')"
+        if [[ -n "${report}" ]]; then
+          if [[ "${body}" == "### ❌"* ]]; then
+            body="${body}"$'\n\n'"${report}"
+          else
+            body="${report}"
+          fi
         fi
 
         # Hidden marker (HTML comment, invisible in rendered markdown) identifying which

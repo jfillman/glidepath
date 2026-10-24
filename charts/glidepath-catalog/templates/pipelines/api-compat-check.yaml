@@ -1,0 +1,99 @@
+# catalog/pipelines/api-compat-check.yaml
+#
+# The api-compat release check (docs/admin/api-compat.md): resolves the promoted image like every image gate, then
+# api-compat-gate diffs its signed API spec against the one the target environment runs. Same advisory/required
+# rendering as qa-check.yaml: required runs the hard copy (which can block, see the Task's `block` verdict) and the
+# advisory copy on an eligible rollback; not required runs only the advisory copy, which never fails.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: api-compat-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Resolves the promoted image from a gitops release PR and diffs its signed API spec against the spec of the image the target environment runs.
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+    - name: pr-number
+      type: string
+      default: ""
+      description: "PaC's raw pull_request.number webhook body field - anchors the lookups on the PR's base and addresses the finally-block PR comment."
+  tasks:
+    - name: extract-promoted-image
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: extract-promoted-image }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+
+    {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "api-compat")) "true" }}
+    {{- if $required }}
+    - name: compare-api
+      when:
+        - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: notin, values: ["true"] }
+      runAfter: [extract-promoted-image]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: api-compat-gate }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: image-ref, value: $(tasks.extract-promoted-image.results.image-ref) }
+        - { name: manifest-path, value: $(tasks.extract-promoted-image.results.manifest-path) }
+        - { name: enforce, value: "true" }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+
+    {{- end }}
+    - name: compare-api-advisory
+      onError: continue
+      {{- if $required }}
+      when:
+        - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: in, values: ["true"] }
+      {{- end }}
+      runAfter: [extract-promoted-image]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: api-compat-gate }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: image-ref, value: $(tasks.extract-promoted-image.results.image-ref) }
+        - { name: manifest-path, value: $(tasks.extract-promoted-image.results.manifest-path) }
+        - { name: enforce, value: "false" }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+
+  finally:
+    - name: comment-pr
+      when:
+        - { input: $(params.pr-number), operator: notin, values: [""] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: comment-pr-check-result }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: gate-name, value: api-compat }
+        - { name: advisory-reason, value: {{ ternary "rollback" "not-required" $required | quote }} }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: status, value: $(tasks.status) }

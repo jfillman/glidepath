@@ -1,0 +1,39 @@
+# BOILERPLATE - real (not stub) since 2026-10-24. See pull-request-sast.yaml for the full
+# pattern explanation. References the dedicated api-compat-check Pipeline, which resolves the
+# promoted image and diffs its signed API spec (cicd.yaml api.spec) against the spec of the
+# image the target environment runs (docs/admin/api-compat.md; policy in the catalog's
+# apiCompat.* values). An app owner's `/api-break-ok <reason>` comment, then
+# `/retest api-compat-`, accepts a breaking change.
+#
+# No <APP_NAMESPACE> substitution or workspace needed - same reasons as pull-request-sast.yaml.
+# pr-number anchors the promoted-image and baseline lookups and feeds the finally-block PR comment.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: api-compat-
+  labels:
+    hangar.io/app: "<APP_NAME>"
+  annotations:
+    # See pull-request-sast.yaml for why this is on-cel-expression (release-branch-only)
+    # and why has() guards the pull_request field.
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main" && body.pull_request.head.ref.startsWith("release-") && !body.pull_request.head.ref.startsWith("release-record-")'
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+spec:
+  pipelineRef:
+    resolver: cluster
+    params:
+      - { name: kind, value: pipeline }
+      - { name: name, value: api-compat-check }
+      - { name: namespace, value: platform-catalog }
+  params:
+    - { name: repo-url, value: "{{ repo_url }}" }
+    - { name: revision, value: "{{ revision }}" }
+    - { name: pr-number, value: "{{ body.pull_request.number }}" }
+  taskRunTemplate:
+    serviceAccountName: pipeline-runner
+  timeouts:
+    # tasks/finally split - see pull-request-sast.yaml's own header (2026-08-23) for
+    # why finally/comment-pr must never share a budget with the real check tasks.
+    tasks: "8m"
+    finally: "4m"
+    pipeline: "12m"

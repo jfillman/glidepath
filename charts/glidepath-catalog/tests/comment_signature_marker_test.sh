@@ -15,7 +15,8 @@ mkdir -p "${tmp}/lib" "${tmp}/bin"
 echo 'github_app_installation_token() { echo faketoken; }' > "${tmp}/lib/github-app.sh"
 cat > "${tmp}/bin/kubectl" <<'STUB'
 #!/usr/bin/env bash
-printf '%s' "${TASKRUNS}"
+# A gate's report ConfigMap (api-compat-gate.yaml) when REPORT is set; the PipelineRun's TaskRuns otherwise.
+if [[ "$*" == *configmap* ]]; then jq -cn --arg b "${REPORT:-}" 'if $b == "" then {items: []} else {items: [{data: {body: $b}}]} end'; else printf '%s' "${TASKRUNS}"; fi
 STUB
 # A POST/PATCH records the comment body it sends; every GET (existing comments, duplicates) finds none.
 cat > "${tmp}/bin/curl" <<STUB
@@ -49,6 +50,19 @@ check "a pass with no result (a cloud pin PR) carries none" "$(run provenance Su
 check "another gate never carries it" "$(run sbom Succeeded "$(taskruns True "${SIG}")" | grep -c 'glidepath:signature')" "0"
 check "a result that is not v1 is left out" "$(run provenance Succeeded "$(taskruns True '{"v":2,"path":"gitsign"}')" | grep -c 'glidepath:signature')" "0"
 check "a result with -- in it is left out" "$(run provenance Succeeded "$(taskruns True '{"v":1,"path":"gitsign","signer":"a--b@c.d"}')" | grep -c 'glidepath:signature')" "0"
+
+# A gate report ConfigMap (api-compat) replaces the plain headline, and follows the failure text on a block.
+REPORT=$'### ⚠️ `api-compat`: 1 breaking API change(s), reported only\n\n<!-- glidepath:api-compat {"version":1,"verdict":"warn"} -->'
+export REPORT
+body="$(run api-compat Succeeded "$(taskruns True "")")"
+check "a report replaces the headline" "$(sed -n 2p <<<"${body}")" "### ⚠️ \`api-compat\`: 1 breaking API change(s), reported only"
+check "the report keeps the gate marker first" "$(head -1 <<<"${body}")" "<!-- glidepath:gate:api-compat -->"
+check "and carries the contract line" "$(tail -1 <<<"${body}")" '<!-- glidepath:api-compat {"version":1,"verdict":"warn"} -->'
+body="$(run api-compat Failed "$(taskruns False "")")"
+check "a block keeps the failure text" "${body}" "*api-compat\` failed*\`/api-break-ok <reason>\`*"
+check "and appends the report" "$(tail -1 <<<"${body}")" '<!-- glidepath:api-compat {"version":1,"verdict":"warn"} -->'
+REPORT=""
+check "no report: the plain pass" "$(run api-compat Succeeded "$(taskruns True "")" | sed -n 2p)" "### ✅ \`api-compat\` passed"
 
 rm -rf "${tmp}"
 [ $fail -eq 0 ] && echo ok || exit 1
