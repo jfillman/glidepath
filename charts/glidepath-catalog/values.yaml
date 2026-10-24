@@ -45,7 +45,8 @@ rbac:
 # 2026-10-23: bumped for cicd.yaml's api block (api.spec/api.type, read by attest-api-spec.yaml).
 # 2026-10-23, -2: api.spec's pattern used a lookahead, which yajsv (Go RE2) cannot compile, so every build's
 # preflight failed until this tag. catalog-ci's schema-yajsv job now runs the same validator.
-toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-23-api-spec-2
+# 2026-10-24: bumped for oasdiff 1.33.0 (the api-compat release check's OpenAPI diff).
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-24-api-compat
 # The shared Trivy server image-scan.yaml scans against (glidepath-control-plane's trivyServer). Empty, or a
 # server that does not answer /healthz, means each scan downloads the DB itself (the pre-2026-10-09 behaviour).
 trivyServerUrl: http://trivy-server.platform-system.svc.cluster.local:4954
@@ -144,6 +145,20 @@ qa:
   # time (the provenance's buildFinishedOn only if the entry has none) to the gate's run.
   # Ns, Nm, Nh or Nd. A rollback to an eligible target is advisory and not held to this.
   maxAge: 72h
+
+# The api-compat release check (docs/admin/api-compat.md).
+apiCompat:
+  # Block (only when the gate is also required) when a breaking change touches an operation observed in use in the
+  # target environment and no app owner has overridden it with `/api-break-ok <reason>`. false: report only.
+  blockWhenInUse: false
+  # How far back "in use" looks, a PromQL range.
+  usageWindow: 7d
+  # Where each target cluster's span metrics can be queried from this cluster's pipeline pods, keyed by cluster
+  # registry name: {url: http://...}, a Prometheus-compatible query endpoint. Only endpoints these pods reach
+  # without credentials: no token is minted or stored for this. A cluster missing here has usage "unknown",
+  # and unknown usage never blocks. Example for the control-plane cluster itself:
+  #   hangar-dev: { url: http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090 }
+  usage: {}
 
 # Release-signing policy (docs/admin/commit-signing.md): who may sign, and who may merge, the app commit a
 # release promotes - read by the provenance gate (verify-commit-signature.yaml) and passed to Conforma as rule
@@ -253,6 +268,13 @@ releaseGuardrails:
     status: stub
     class: process
     required: true
+  - name: api-compat
+    description: "API compatibility - the promoted image's signed API spec (cicd.yaml api.spec) diffed against the spec of the image the target environment runs, with the operations each breaking change touches and whether they are in use"
+    status: real
+    class: content
+    # Warn-only to start (user decision 2026-10-23). Even required, it blocks only what apiCompat.blockWhenInUse
+    # allows (a breaking change to an operation observed in use, with no owner override); docs/admin/api-compat.md.
+    required: false
   - name: qa
     description: A passing, recent check ride from the shared check-rides repository, attested on the promoted image
     status: real

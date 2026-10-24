@@ -29,6 +29,8 @@
 #     fingerprints are asserted below, so a changed file fails the build; the gate never
 #     fetches a key at verify time. GitHub rotating its key means: update the .asc, the
 #     assert here and the pinned list in verify-commit-signature.yaml, then rebuild.
+#   - oasdiff: the api-compat release check's OpenAPI diff (breaking-change rules, JSON output). Pinned with the
+#     release's own sha256 per architecture, checked at build time.
 #   - oras: pushes build.artifacts' non-container outputs (python-wheel/go-binary) as
 #     real OCI artifacts to the same registry/credentials the image itself uses - see
 #     build-artifact.yaml. Respects DOCKER_CONFIG the same way crane does.
@@ -67,6 +69,9 @@ ARG COSIGN_VERSION=3.1.2
 ARG TRIVY_VERSION=0.73.0
 ARG TESTKUBE_VERSION=2.13.1
 ARG ORAS_VERSION=1.2.0
+ARG OASDIFF_VERSION=1.33.0
+ARG OASDIFF_SHA256_AMD64=43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247
+ARG OASDIFF_SHA256_ARM64=4ae3c362d6074d919aada2dea82d0ee84366591600384455d0bdc658ddf8f7ae
 
 RUN apk add --no-cache bash curl jq git openssl ca-certificates util-linux coreutils libxml2-utils gpgv
 
@@ -113,7 +118,14 @@ RUN set -euo pipefail; \
       "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_${ARCH}.tar.gz" \
     && tar -xzf /tmp/oras.tar.gz -C /usr/local/bin oras \
     && chmod +x /usr/local/bin/oras \
-    && rm /tmp/oras.tar.gz
+    && rm /tmp/oras.tar.gz \
+    && case "${ARCH}" in amd64) OASDIFF_SHA256="${OASDIFF_SHA256_AMD64}" ;; arm64) OASDIFF_SHA256="${OASDIFF_SHA256_ARM64}" ;; esac \
+    && curl -fsSL -o /tmp/oasdiff.tar.gz \
+      "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_linux_${ARCH}.tar.gz" \
+    && echo "${OASDIFF_SHA256}  /tmp/oasdiff.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/oasdiff.tar.gz -C /usr/local/bin oasdiff \
+    && chmod +x /usr/local/bin/oasdiff \
+    && rm /tmp/oasdiff.tar.gz
 
 COPY --from=yajsv-build /go/bin/yajsv /usr/local/bin/yajsv
 

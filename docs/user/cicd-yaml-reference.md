@@ -636,6 +636,9 @@ attaches a second copy.
 Keep the file in step with the code: nothing yet checks the spec against the routes the app really serves, so a
 stale spec produces wrong diffs.
 
+The `api-compat` release check, what it reports and how an owner accepts a breaking change: Glidepath
+[docs/admin/api-compat.md](../admin/api-compat.md).
+
 ## The `deploy:` block
 
 ```yaml

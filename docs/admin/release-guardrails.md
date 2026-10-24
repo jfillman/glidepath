@@ -152,7 +152,7 @@ gate advisory for one release. On GitHub Free a failed check still cannot block 
 ruleset script after changing it so the required status checks match.
 
 `itsm` is required by default once a change tool is configured; a cluster that wants to ease into
-change management sets it advisory the same way. Today `qa` is the one advisory gate: report-only while every app gets its check ride
+change management sets it advisory the same way. Today `qa` and `api-compat` ([api-compat.md](api-compat.md)) are the advisory gates; `qa` is report-only while every app gets its check ride
 ([testing.md](testing.md)); flip it once every app with a Flight environment has
 `apps/<app>/check-ride.yaml` in the check-rides repository and a `role: check-ride` test step.
 
@@ -166,6 +166,7 @@ change management sets it advisory the same way. Today `qa` is the one advisory 
 | `sbom` | Software bill of materials | real | yes |
 | `values` | Values-file validation by the validator image (Airframe's by default); check `Pipelines as Code CI / values-` | real | yes |
 | `itsm` | An approved or scheduled change request for the release in the change tool ([change-management.md](change-management.md)) | stub until `itsm.provider` is set, then real | yes once real |
+| `api-compat` | The promoted image's signed API spec diffed against the target environment's, with the operations each breaking change touches and whether they are in use ([api-compat.md](api-compat.md)) | real | no (advisory) |
 | `qa` | A passing, recent check ride from the shared check-rides repository, attested on the promoted image ([testing.md](testing.md)) | real | no (advisory) |
 | `policy-validation` | Gatekeeper/Kyverno admission-policy validation of the rendered manifest | stub | (ignored) |
 

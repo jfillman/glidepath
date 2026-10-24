@@ -172,6 +172,17 @@ spec:
           fi
         done
 
+        # api-compat's verdict and counts, from the hidden line its PR comment carries (api-compat-gate.yaml): flat
+        # keys like the gates above. Only this GitHub App's own comments are read. Absent when the check never ran.
+        api_compat="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+          -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${owner}/${repo}/issues/${pr_number}/comments?per_page=100" 2>/dev/null \
+          | jq -c '[.[] | select(.user.type == "Bot") | .body | capture("<!-- glidepath:api-compat (?<j>\\{.*\\}) -->").j | fromjson?] | last
+                   | if . == null then {} else {api_compat_verdict: .verdict, api_compat_breaking: (.breakingTotal // (.breaking | length)),
+                       api_compat_in_use: ([.breaking[] | select(.inUse == true)] | length), api_compat_override_by: (.override.by // "")} end' 2>/dev/null)"
+        [[ -n "${api_compat}" ]] || api_compat="{}"
+        gates_json="$(jq -nc --argjson g "${gates_json}" --argjson a "${api_compat}" '$g + $a')"
+
         # Loki's OTLP ingestion routes every log-record *attribute* to structured
         # metadata, not a real indexed stream label (confirmed live, 2026-08-23 against
         # the real cluster - `/loki/api/v1/labels` never lists them regardless of how
