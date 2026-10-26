@@ -30,7 +30,9 @@ type App struct {
 // NotFound is returned for a valid name with no -cicd namespace.
 type NotFound struct{ Name string }
 
-func (e NotFound) Error() string { return fmt.Sprintf("no app '%s': neither app-%[1]s-cicd nor infra-%[1]s-cicd exists", e.Name) }
+func (e NotFound) Error() string {
+	return fmt.Sprintf("no app '%s': neither app-%[1]s-cicd nor infra-%[1]s-cicd exists", e.Name)
+}
 
 // Invalid is returned for a name that can't be an app.
 type Invalid struct{ Name string }

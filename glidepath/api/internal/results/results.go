@@ -45,6 +45,12 @@ type NotFound struct{ What string }
 
 func (e NotFound) Error() string { return e.What }
 
+// NoLog: the run exists but Results archived no log for that TaskRun. Distinct from NotFound so a
+// client can tell "no log" (Tower shows a placeholder) from "no such run" (an error).
+type NoLog struct{ What string }
+
+func (e NoLog) Error() string { return e.What }
+
 // Invalid: a malformed id.
 type Invalid struct{ What string }
 
@@ -52,17 +58,18 @@ func (e Invalid) Error() string { return e.What }
 
 type Obj = map[string]any
 
-// Row is one finished run from its Result summary (~1 KB, no TaskRuns).
+// Row is one finished run from its Result summary (~1 KB, no TaskRuns). Optional fields are
+// pointers so an absent value is omitted while an empty string is kept, as Tower's undefined vs "".
 type Row struct {
-	Result    string `json:"result"`
-	Name      string `json:"name"`
-	Pipeline  string `json:"pipeline,omitempty"`
-	Status    string `json:"status"`
-	StartTime string `json:"startTime,omitempty"`
-	EndTime   string `json:"endTime,omitempty"`
-	Commit    string `json:"commit,omitempty"`
-	EventType string `json:"eventType,omitempty"`
-	PRNumber  string `json:"prNumber,omitempty"`
+	Result    string  `json:"result"`
+	Name      string  `json:"name"`
+	Pipeline  *string `json:"pipeline,omitempty"`
+	Status    string  `json:"status"`
+	StartTime *string `json:"startTime,omitempty"`
+	EndTime   *string `json:"endTime,omitempty"`
+	Commit    *string `json:"commit,omitempty"`
+	EventType *string `json:"eventType,omitempty"`
+	PRNumber  *string `json:"prNumber,omitempty"`
 }
 
 // Run is one archived run in full, trimmed.
@@ -126,10 +133,12 @@ func m(v any) Obj {
 	return o
 }
 
+// pick keeps the keys that are present, null included: Tower's TypeScript pick drops only
+// undefined (absent), so a JSON null survives there and must survive here.
 func pick(o Obj, keys ...string) Obj {
 	out := Obj{}
 	for _, k := range keys {
-		if v, ok := o[k]; ok && v != nil {
+		if v, ok := o[k]; ok {
 			out[k] = v
 		}
 	}
@@ -216,8 +225,8 @@ type summary struct {
 	Annotations map[string]string `json:"annotations"`
 	Summary     *struct {
 		Type        string            `json:"type"`
-		StartTime   string            `json:"start_time"`
-		EndTime     string            `json:"end_time"`
+		StartTime   *string           `json:"start_time"`
+		EndTime     *string           `json:"end_time"`
 		Status      string            `json:"status"`
 		Annotations map[string]string `json:"annotations"`
 	} `json:"summary"`
@@ -241,13 +250,19 @@ func toRow(s summary) (Row, bool) {
 	if !ok {
 		st = "unknown"
 	}
-	name := s.Annotations["object.metadata.name"]
-	if name == "" {
-		name = result
+	at := func(m map[string]string, k string) *string {
+		if v, ok := m[k]; ok {
+			return &v
+		}
+		return nil
+	}
+	name := result // Tower: annotations['object.metadata.name'] ?? result - only an absent name falls back
+	if v, ok := s.Annotations["object.metadata.name"]; ok {
+		name = v
 	}
 	sa := s.Summary.Annotations
-	return Row{Result: result, Name: name, Pipeline: s.Annotations["tekton.dev/pipeline"], Status: st,
-		StartTime: s.Summary.StartTime, EndTime: s.Summary.EndTime, Commit: sa["commit"], EventType: sa["eventType"], PRNumber: sa["pull_request-id"]}, true
+	return Row{Result: result, Name: name, Pipeline: at(s.Annotations, "tekton.dev/pipeline"), Status: st,
+		StartTime: s.Summary.StartTime, EndTime: s.Summary.EndTime, Commit: at(sa, "commit"), EventType: at(sa, "eventType"), PRNumber: at(sa, "pull_request-id")}, true
 }
 
 func decode(r record) Obj {
@@ -463,11 +478,18 @@ func (c *Client) Runs(ctx context.Context, parent string, since, appStart time.T
 		}
 	}
 	if len(missing) > bulkAbove {
-		oldest := since
-		first := true
-		for _, i := range missing {
-			if t, err := time.Parse(time.RFC3339Nano, rows[i].StartTime); err == nil && (first || t.Before(oldest)) {
-				oldest, first = t, false
+		// Tower: Math.min over each missing run's start time, a missing or unparsable one counting as
+		// the window start, so the bulk query never starts later than a run it has to cover.
+		var oldest time.Time
+		for n, i := range missing {
+			t := since
+			if rows[i].StartTime != nil {
+				if p, err := time.Parse(time.RFC3339Nano, *rows[i].StartTime); err == nil {
+					t = p
+				}
+			}
+			if n == 0 || t.Before(oldest) {
+				oldest = t
 			}
 		}
 		from := oldest.Add(-time.Minute) // a PipelineRun's creationTimestamp can precede its summary's start time
@@ -522,7 +544,7 @@ func (c *Client) Log(ctx context.Context, parent, result, taskRun string) (strin
 	}
 	rec := run.logs[taskRun]
 	if rec == "" {
-		return "", NotFound{"Tekton Results archived no logs for this task"}
+		return "", NoLog{"Tekton Results archived no logs for this task"}
 	}
 	if !uid.MatchString(rec) {
 		return "", Invalid{"invalid log record id"}
