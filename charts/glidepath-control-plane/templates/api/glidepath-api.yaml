@@ -1,0 +1,147 @@
+# templates/api/glidepath-api.yaml
+#
+# glidepath-api (docs/admin/api.md): Glidepath's read API for people, Tower and agents. Renders
+# nothing until apiImage is set, so a cluster can take this chart version before the first image
+# exists (api-ci.yaml builds it and sets apiImage on main).
+#
+# Two kinds of RBAC, kept apart on purpose:
+#   - glidepath-api's OWN identity: TokenReview and SubjectAccessReview (to decide who a caller is
+#     and what they may read), namespaces get (to find an app's -cicd namespace), and release-tracking
+#     ConfigMaps list/get. Tekton Results is read through tekton-results-relay, so no Results grant.
+#   - glidepath-api-reader: who may READ through the API. A virtual group, glidepath.hangar.io, that
+#     nothing in the cluster serves; the API asks a SubjectAccessReview against it in the app's
+#     namespace. Bound cluster-wide to api.readers. An app-scoped grant is a RoleBinding to the same
+#     ClusterRole in that app's -cicd namespace.
+{{- if .Values.apiImage }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: glidepath-api
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: glidepath-api
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+  # Release records live in each app's own -cicd namespace, and apps are onboarded after install,
+  # so this is cluster-wide: get+list only, and the API only ever reads release-tracking ones.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: glidepath-api
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: glidepath-api }
+subjects:
+  - kind: ServiceAccount
+    name: glidepath-api
+    namespace: platform-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: glidepath-api-reader
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+rules:
+  - apiGroups: ["glidepath.hangar.io"]
+    resources: ["runs", "runs/logs", "releases"]
+    verbs: ["get", "list"]
+{{- $readers := .Values.api.readers | default dict }}
+{{- if or $readers.users $readers.groups $readers.serviceAccounts }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: glidepath-api-reader
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: glidepath-api-reader }
+subjects:
+  {{- range $readers.users }}
+  - { apiGroup: rbac.authorization.k8s.io, kind: User, name: {{ . | quote }} }
+  {{- end }}
+  {{- range $readers.groups }}
+  - { apiGroup: rbac.authorization.k8s.io, kind: Group, name: {{ . | quote }} }
+  {{- end }}
+  {{- range $readers.serviceAccounts }}
+  - { kind: ServiceAccount, name: {{ .name | quote }}, namespace: {{ .namespace | quote }} }
+  {{- end }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: glidepath-api
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+spec:
+  replicas: {{ .Values.api.replicas | default 2 }}
+  selector:
+    matchLabels: { app: glidepath-api }
+  template:
+    metadata:
+      labels: { app: glidepath-api }
+    spec:
+      serviceAccountName: glidepath-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532 # distroless "nonroot"
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: api
+          image: {{ .Values.apiImage }}
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080, name: http }]
+          env:
+            - name: DELEGATES
+              value: {{ join "," (.Values.api.delegates | default list) | quote }}
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: glidepath-api
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+spec:
+  selector: { app: glidepath-api }
+  ports: [{ name: http, port: 8080, targetPort: http }]
+{{- end }}

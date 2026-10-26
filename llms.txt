@@ -10,6 +10,7 @@ Read in this order for a cold start.
 - [AGENTS.md](AGENTS.md): what an agent may and may not do here
 - [contract/glidepath-contract.json](contract/glidepath-contract.json): every cicd.yaml field and its agentScope, the release gates, the run and release states, the known failures (generated)
 - [docs/admin/contract.md](docs/admin/contract.md): how the contract is built, glidepath validate's rules, what an agent may change
+- [api/openapi.yaml](api/openapi.yaml) and [docs/admin/api.md](docs/admin/api.md): glidepath-api, an app's runs, logs and release records
 
 ## Writing cicd.yaml
 - [docs/user/cicd-yaml-reference.md](docs/user/cicd-yaml-reference.md): every field

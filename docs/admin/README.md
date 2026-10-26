@@ -25,6 +25,7 @@ architecture.md wherever relevant.
 - [concepts.md](concepts.md) - terminology (Application, flow, stage)
 
 **Governance & supply chain**
+- [api.md](api.md) - `glidepath-api`: runs, logs and release records for people, Tower and agents
 - [contract.md](contract.md) - the generated contract, `glidepath validate`, and what an agent may change in `cicd.yaml`
 - [governance-stubs.md](governance-stubs.md) - the stub→real gate mechanism
 - [image-signing.md](image-signing.md) - Fulcio/cosign keyless signing
