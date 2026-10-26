@@ -252,8 +252,11 @@ func TestRunTrimmedLikeTower(t *testing.T) {
 	if st != 200 || !strings.Contains(text, "no space left on device") {
 		t.Fatalf("log: %d %s", st, text)
 	}
-	if st, _, _ := call(t, s, "/v1/apps/shop/runs/"+resultID+"/logs/missing", h); st != 404 {
-		t.Fatalf("missing log: %d", st)
+	if st, out, _ := call(t, s, "/v1/apps/shop/runs/"+resultID+"/logs/missing", h); st != 404 || out["rule"] != "GP-LOG-404" {
+		t.Fatalf("missing log: %d %v", st, out)
+	}
+	if st, out, _ := call(t, s, "/v1/apps/shop/runs/"+strings.Repeat("0", 8)+"-0000-0000-0000-000000000000/logs/x", h); st != 404 || out["rule"] != "GP-API-404" {
+		t.Fatalf("missing run is not 'no log': %d %v", st, out)
 	}
 	if st, _, _ := call(t, s, "/v1/apps/shop/runs/not-a-uid", h); st != 400 {
 		t.Fatalf("bad result id: %d", st)

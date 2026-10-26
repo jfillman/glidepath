@@ -167,7 +167,7 @@ components:
         error: { type: string }
         rule:
           type: string
-          description: GP-AUTH-001 no token, GP-AUTH-002 token rejected, GP-AUTH-003 on-behalf-of refused, GP-AUTHZ-001 not allowed, GP-API-400/404/502
+          description: GP-AUTH-001 no token, GP-AUTH-002 token rejected, GP-AUTH-003 on-behalf-of refused, GP-AUTHZ-001 not allowed, GP-LOG-404 the run exists but has no archived log for that TaskRun, GP-API-400/404/502
         hint: { type: string }
     Caller:
       type: object

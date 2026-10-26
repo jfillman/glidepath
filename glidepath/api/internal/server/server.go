@@ -80,11 +80,14 @@ func classify(err error) (int, apiError) {
 		appNF  apps.NotFound
 		appInv apps.Invalid
 		resNF  results.NotFound
+		noLog  results.NoLog
 		resInv results.Invalid
 		relNF  releases.NotFound
 		relInv releases.Invalid
 	)
 	switch {
+	case errors.As(err, &noLog):
+		return http.StatusNotFound, apiError{err.Error(), "GP-LOG-404", "the run exists; Results stored no log for this TaskRun (docs/admin/tekton-results.md)"}
 	case errors.As(err, &appNF):
 		return http.StatusNotFound, apiError{err.Error(), "GP-API-404", ""}
 	case errors.As(err, &resNF), errors.As(err, &relNF):

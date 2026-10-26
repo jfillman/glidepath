@@ -92,7 +92,8 @@ Every refusal or failure is JSON with a stable `rule` and, where there is one, a
 | `GP-AUTH-003` | 403 | On-behalf-of from a caller that isn't a delegate |
 | `GP-AUTHZ-001` | 403 | Not allowed to read this in this app's namespace |
 | `GP-API-400` | 400 | A malformed app name, run id or chain id |
-| `GP-API-404` | 404 | No such app, run, log or release record |
+| `GP-API-404` | 404 | No such app, run or release record |
+| `GP-LOG-404` | 404 | The run exists, but Results archived no log for that TaskRun ([tekton-results.md](tekton-results.md#when-a-runs-logs-are-missing)) |
 | `GP-API-502` | 502 | A source failed (the API server or Tekton Results); retry |
 
 ## Audit
