@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -554,6 +555,12 @@ func (c *Client) Log(ctx context.Context, parent, result, taskRun string) (strin
 		return v.(string), nil
 	}
 	body, err := c.get(ctx, "/parents/"+parent+"/results/"+result+"/logs/"+rec)
+	var nf NotFound
+	if errors.As(err, &nf) {
+		// The Log record exists but its blob was never stored (status.isStored false): the watcher
+		// gave up on the upload (docs/admin/tekton-results.md). For the caller that is "no log".
+		return "", NoLog{"Tekton Results has a log record for this task but never stored its log"}
+	}
 	if err != nil {
 		return "", err
 	}

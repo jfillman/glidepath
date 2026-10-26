@@ -51,6 +51,7 @@ func b64(v any) string {
 
 const resultID = "0b9d1a2e-1111-4c4c-9999-aaaaaaaaaaaa"
 const logID = "0b9d1a2e-2222-4c4c-9999-bbbbbbbbbbbb"
+const lostID = "0b9d1a2e-3333-4c4c-9999-cccccccccccc"
 
 // resultsStub answers the Results queries results.Client makes.
 func resultsStub(t *testing.T) *httptest.Server {
@@ -77,10 +78,12 @@ func resultsStub(t *testing.T) *httptest.Server {
 			tr := map[string]any{"apiVersion": "tekton.dev/v1", "kind": "TaskRun", "metadata": map[string]any{"name": "shop-push-abc-build", "labels": map[string]any{"x": "y"}},
 				"status": map[string]any{"podName": "p", "steps": []any{map[string]any{"name": "compile", "imageID": "sha", "terminated": map[string]any{"exitCode": 1}}}}}
 			lg := map[string]any{"spec": map[string]any{"resource": map[string]any{"name": "shop-push-abc-build"}}}
+			lost := map[string]any{"spec": map[string]any{"resource": map[string]any{"name": "shop-push-abc-scan"}}, "status": map[string]any{"isStored": false}}
 			json.NewEncoder(w).Encode(map[string]any{"records": []any{
 				map[string]any{"name": "app-shop-cicd/results/" + resultID + "/records/a", "data": map[string]any{"type": "tekton.dev/v1.PipelineRun", "value": b64(pr)}},
 				map[string]any{"name": "app-shop-cicd/results/" + resultID + "/records/b", "data": map[string]any{"type": "tekton.dev/v1.TaskRun", "value": b64(tr)}},
 				map[string]any{"name": "app-shop-cicd/results/" + resultID + "/records/" + logID, "data": map[string]any{"type": "results.tekton.dev/v1alpha3.Log", "value": b64(lg)}},
+				map[string]any{"name": "app-shop-cicd/results/" + resultID + "/records/" + lostID, "data": map[string]any{"type": "results.tekton.dev/v1alpha3.Log", "value": b64(lost)}},
 			}})
 		case p == "/parents/app-shop-cicd/results/"+resultID+"/logs/"+logID:
 			io.WriteString(w, "[compile] error: no space left on device\n")
@@ -251,6 +254,9 @@ func TestRunTrimmedLikeTower(t *testing.T) {
 	st, _, text := call(t, s, "/v1/apps/shop/runs/"+resultID+"/logs/shop-push-abc-build", h)
 	if st != 200 || !strings.Contains(text, "no space left on device") {
 		t.Fatalf("log: %d %s", st, text)
+	}
+	if st, out, _ := call(t, s, "/v1/apps/shop/runs/"+resultID+"/logs/shop-push-abc-scan", h); st != 404 || out["rule"] != "GP-LOG-404" {
+		t.Fatalf("a log record whose blob was never stored: %d %v", st, out)
 	}
 	if st, out, _ := call(t, s, "/v1/apps/shop/runs/"+resultID+"/logs/missing", h); st != 404 || out["rule"] != "GP-LOG-404" {
 		t.Fatalf("missing log: %d %v", st, out)
