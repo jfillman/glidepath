@@ -1,2 +1,3 @@
 /platform/broker/token-review-interceptor
 /platform/dora-exporter/dora-exporter
+__pycache__/

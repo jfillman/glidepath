@@ -1,0 +1,28 @@
+# Glidepath
+
+> Glidepath is Hangar's CI/CD engine on Tekton and Pipelines-as-Code. An app declares its build, test,
+> deploy and release in one file, cicd.yaml; Glidepath runs it, gates every release behind independent
+> checks and a human-reviewed gitops pull request, and records each release's state.
+
+Read in this order for a cold start.
+
+## Contract
+- [AGENTS.md](AGENTS.md): what an agent may and may not do here
+- [contract/glidepath-contract.json](contract/glidepath-contract.json): every cicd.yaml field and its agentScope, the release gates, the run and release states, the known failures (generated)
+- [docs/admin/contract.md](docs/admin/contract.md): how the contract is built, glidepath validate's rules, what an agent may change
+
+## Writing cicd.yaml
+- [docs/user/cicd-yaml-reference.md](docs/user/cicd-yaml-reference.md): every field
+- [docs/user/examples/](docs/user/examples/): complete files, minimal to production-grade
+- [schemas/cicd.schema.json](schemas/cicd.schema.json): the schema the pipeline validates against
+
+## How it works
+- [docs/admin/architecture.md](docs/admin/architecture.md): the system, end to end
+- [docs/admin/release.md](docs/admin/release.md): how a release becomes a gitops pull request
+- [docs/admin/release-state.md](docs/admin/release-state.md): the release record and its state machine
+- [docs/admin/release-guardrails.md](docs/admin/release-guardrails.md): the release gates
+- [docs/admin/testing.md](docs/admin/testing.md): test steps, the check ride and the qa gate
+
+## Optional
+- [docs/admin/adr/](docs/admin/adr/): why each decision was made
+- [docs/admin/known-gaps.md](docs/admin/known-gaps.md): what doesn't work yet

@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""glidepath validate: check a cicd.yaml before it reaches a pipeline (docs/admin/contract.md).
+
+    tools/glidepath-validate FILE [FILE...] [--format text|json]
+    tools/glidepath-validate FILE --agent (--base OLD_FILE | --base-ref GIT_REF) [--format text|json]
+
+One pass, three layers:
+  1. the schema (schemas/cicd.schema.json, the same file stage-preflight validates against):
+     GP-YAML-001 not YAML or not a mapping, GP-SCHEMA-001 unknown key, GP-SCHEMA-002 wrong type or value
+  2. rules the schema can't express, each one a documented constraint stage-preflight or a later stage
+     enforces at run time, caught here before anything runs:
+     GP-ENV-001 (warning) an environment named like a pipeline stage
+     GP-ENV-002 two environments with the same name
+     GP-ENV-003 a Ground environment sets cluster
+     GP-ENV-004 production: true on a Ground environment
+     GP-ENV-005 deploy.lowerEnvironments / upperEnvironments / promotionOrder (retired by deploy.environments)
+     GP-PIPE-001 a deploy or release step names an environment deploy.environments doesn't list
+     GP-PIPE-002 a release step names a Ground environment
+     GP-PIPE-003 a flow has more than one check-ride step
+     GP-PIPE-004 a check-ride step sets testName
+  3. with --agent and a base: what an agent may change (tools/cicd_scope.py, from the contract):
+     GP-SCOPE-001 a human-only field changed, GP-SCOPE-002 a gate loosened,
+     GP-SCOPE-003 a Flight environment added, removed or changed, or a tier changed
+
+Exit 0 = no errors (warnings allowed), 1 = an error, 2 = bad usage. Text output: one line per finding,
+`file | pointer | rule | message | hint`. --format json: one object per file with `valid` and `problems`
+(pointer, rule, severity, message, hint), for CI or an agent.
+Needs: python3, pyyaml, jsonschema.
+"""
+import argparse
+import difflib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+from jsonschema import Draft7Validator
+from jsonschema.exceptions import best_match
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+from cicd_scope import scope_problems  # noqa: E402
+
+SCHEMA = json.loads((ROOT / "schemas" / "cicd.schema.json").read_text())
+CONTRACT_PATH = ROOT / "contract" / "glidepath-contract.json"
+STAGES = {"build", "test", "deploy", "release", "gitops-image-bump"}
+RETIRED_ENV_KEYS = ("lowerEnvironments", "upperEnvironments", "promotionOrder")
+
+
+def ptr(path) -> str:
+    return "".join("/" + str(p).replace("~", "~0").replace("/", "~1") for p in path)
+
+
+def problem(pointer, rule, message, hint="", severity="error"):
+    return {"pointer": pointer or "/", "rule": rule, "severity": severity, "message": message, "hint": hint}
+
+
+# --- layer 1: schema -------------------------------------------------------------------------
+
+def _schema_at(path):
+    node = SCHEMA
+    for seg in path:
+        if not isinstance(node, dict):
+            return {}
+        if isinstance(seg, int):
+            node = node.get("items", {})
+        else:
+            node = (node.get("properties") or {}).get(seg) or (node.get("additionalProperties") if isinstance(node.get("additionalProperties"), dict) else {})
+        while isinstance(node, dict) and "$ref" in node:
+            target = SCHEMA
+            for s in node["$ref"].lstrip("#/").split("/"):
+                target = target[s]
+            node = target
+    return node or {}
+
+
+def schema_problems(doc):
+    out = []
+    for err in sorted(Draft7Validator(SCHEMA).iter_errors(doc), key=lambda e: list(e.absolute_path)):
+        if err.validator in ("oneOf", "anyOf") and err.context:
+            err = best_match(err.context)
+        path = list(err.absolute_path)
+        if err.validator == "additionalProperties":
+            known = list((_schema_at(path).get("properties") or {}).keys())
+            extra = [k for k in (err.instance or {}) if k not in known] if isinstance(err.instance, dict) else []
+            for k in extra or ["?"]:
+                close = difflib.get_close_matches(str(k), known, n=1)
+                out.append(problem(ptr(path + [k]), "GP-SCHEMA-001", f"unknown key '{k}'",
+                                   f"did you mean '{close[0]}'?" if close else "known keys: " + ", ".join(known)))
+        else:
+            out.append(problem(ptr(path), "GP-SCHEMA-002", err.message,
+                               "see docs/user/cicd-yaml-reference.md for this field"))
+    return out
+
+
+# --- layer 2: conventions --------------------------------------------------------------------
+
+def environments(doc):
+    envs = (doc.get("deploy") or {}).get("environments")
+    return envs if isinstance(envs, list) else [{"name": "dev", "tier": "ground"}]
+
+
+def flows(doc):
+    for name, flow in (doc.get("pipelines") or {}).items():
+        steps = flow.get("steps") if isinstance(flow, dict) else flow
+        key = "steps" if isinstance(flow, dict) else None
+        for i, s in enumerate(steps or []):
+            if isinstance(s, dict):
+                base = f"/pipelines/{name}" + (f"/{key}" if key else "")
+                yield name, f"{base}/{i}", s
+
+
+def convention_problems(doc):
+    out = []
+    deploy = doc.get("deploy") or {}
+    for k in RETIRED_ENV_KEYS:
+        if k in deploy:
+            out.append(problem(f"/deploy/{k}", "GP-ENV-005", f"deploy.{k} was retired",
+                               "list each environment once under deploy.environments, in promotion order, with tier: ground or flight"))
+    envs = environments(doc)
+    by_name, seen = {}, set()
+    for i, e in enumerate(envs):
+        if not isinstance(e, dict):
+            continue
+        name, tier = e.get("name"), e.get("tier")
+        p = f"/deploy/environments/{i}"
+        if name in seen:
+            out.append(problem(p + "/name", "GP-ENV-002", f"environment '{name}' is listed twice", "list each environment once"))
+        seen.add(name)
+        by_name[name] = e
+        if name in STAGES:
+            out.append(problem(p + "/name", "GP-ENV-001", f"environment '{name}' has the same name as a pipeline stage",
+                               "legal, but steps then read `stage: {0}, env: {0}`; a different name is easier to follow".format(name), "warning"))
+        if tier == "ground" and e.get("cluster"):
+            out.append(problem(p + "/cluster", "GP-ENV-003", f"Ground environment '{name}' sets cluster",
+                               "a Ground environment runs on the app's own cluster; only Flight environments name another"))
+        if tier == "ground" and e.get("production") is True:
+            out.append(problem(p + "/production", "GP-ENV-004", f"Ground environment '{name}' sets production: true",
+                               "the production environment must be tier: flight"))
+    rides = {}
+    for flow, p, s in flows(doc):
+        stage = s.get("stage") or s.get("task")
+        env = s.get("env")
+        if stage in ("deploy", "release") and env:
+            if env not in by_name:
+                out.append(problem(p + "/env", "GP-PIPE-001", f"{stage} step names environment '{env}', which deploy.environments doesn't list",
+                                   "add it to deploy.environments" + (" (unset, it defaults to one Ground environment, dev)" if not deploy.get("environments") else "")))
+            elif stage == "release" and by_name[env].get("tier") != "flight":
+                out.append(problem(p + "/env", "GP-PIPE-002", f"release step names Ground environment '{env}'",
+                                   "a release targets a Flight environment; a deploy step deploys to a Ground one"))
+        if stage == "test" and s.get("role") == "check-ride":
+            rides[flow] = rides.get(flow, 0) + 1
+            if rides[flow] == 2:
+                out.append(problem(p, "GP-PIPE-003", f"flow '{flow}' has more than one check-ride step", "a flow has at most one check ride"))
+            if s.get("testName"):
+                out.append(problem(p + "/testName", "GP-PIPE-004", "a check-ride step takes no testName",
+                                   "the check ride is <app>-check-ride from the check-rides repository; remove testName"))
+    return out
+
+
+# --- driver ----------------------------------------------------------------------------------
+
+def load(text, label):
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        return None, [problem("/", "GP-YAML-001", f"{label} is not valid YAML: {e}".replace("\n", " "))]
+    if not isinstance(doc, dict):
+        return None, [problem("/", "GP-YAML-001", f"{label} is not a mapping", "a cicd.yaml is a YAML mapping starting with apiVersion: platform/v1")]
+    return doc, []
+
+
+def base_text(args, path):
+    if args.base:
+        return Path(args.base).read_text()
+    rel = Path(path).resolve()
+    top = subprocess.run(["git", "-C", str(rel.parent), "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
+    res = subprocess.run(["git", "-C", top, "show", f"{args.base_ref}:{rel.relative_to(top).as_posix()}"], capture_output=True, text=True)
+    return res.stdout if res.returncode == 0 else None  # absent at the base: a new file
+
+
+def check(path, args):
+    doc, probs = load(Path(path).read_text(), path)
+    if doc is None:
+        return probs
+    probs += schema_problems(doc) + convention_problems(doc)
+    if args.agent:
+        text = base_text(args, path)
+        base = None
+        if text is not None:
+            base, bprobs = load(text, "the base")
+            if base is None:
+                return probs + bprobs
+        contract = json.loads(Path(args.contract).read_text())
+        probs += [problem(p["pointer"], p["rule"], p["message"], p["hint"]) for p in scope_problems(base, doc, contract["scope"])]
+    return probs
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Check a cicd.yaml: schema, conventions, and (with --agent) what an agent may change.")
+    ap.add_argument("files", nargs="+")
+    ap.add_argument("--format", choices=["text", "json"], default="text")
+    ap.add_argument("--agent", action="store_true", help="also apply the GP-SCOPE rules to the change from the base")
+    ap.add_argument("--base", help="the file before the change (with --agent)")
+    ap.add_argument("--base-ref", help="a git ref holding the file before the change (with --agent)")
+    ap.add_argument("--contract", default=str(CONTRACT_PATH))
+    args = ap.parse_args()
+    if args.agent and not (args.base or args.base_ref):
+        ap.error("--agent needs --base or --base-ref")
+    if args.base and len(args.files) > 1:
+        ap.error("--base takes one file")
+
+    failed = False
+    results = []
+    for f in args.files:
+        probs = check(f, args)
+        errors = [p for p in probs if p["severity"] == "error"]
+        failed |= bool(errors)
+        results.append({"file": f, "valid": not errors, "problems": probs})
+    if args.format == "json":
+        print(json.dumps(results if len(results) > 1 else results[0], indent=2))
+    else:
+        for r in results:
+            for p in r["problems"]:
+                sev = "" if p["severity"] == "error" else f" ({p['severity']})"
+                print(f"{r['file']} | {p['pointer']} | {p['rule']}{sev} | {p['message']} | {p['hint']}")
+            if r["valid"]:
+                print(f"{r['file']}: ok" + (f", {len(r['problems'])} warning(s)" if r["problems"] else ""))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

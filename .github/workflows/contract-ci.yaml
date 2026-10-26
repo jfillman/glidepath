@@ -1,0 +1,41 @@
+name: contract-ci
+
+# Glidepath's contract (docs/admin/contract.md): contract/glidepath-contract.json must be what
+# tools/gen_contract.py generates from its sources, and glidepath validate's rules - schema,
+# conventions and the GP-SCOPE rules agents meet - must pass their tests. No cluster needed.
+
+on:
+  pull_request:
+    paths:
+      - "schemas/**"
+      - "tools/**"
+      - "contract/**"
+      - "api/openapi.yaml"
+      - "charts/glidepath-catalog/values.yaml"
+      - "docs/user/examples/**"
+      - ".github/workflows/contract-ci.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "schemas/**"
+      - "tools/**"
+      - "contract/**"
+      - "api/openapi.yaml"
+      - "charts/glidepath-catalog/values.yaml"
+      - "docs/user/examples/**"
+      - ".github/workflows/contract-ci.yaml"
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml jsonschema
+      - name: Contract is current
+        run: python3 tools/gen_contract.py --check
+      - name: glidepath validate tests
+        run: python3 tools/test_glidepath_validate.py
+      - name: Every example validates
+        run: tools/glidepath-validate docs/user/examples/*.yaml
