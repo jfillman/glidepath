@@ -85,6 +85,32 @@ pressure - a real, recurring capacity issue on this cluster, see
 it's kept in place as a safety net for whatever Results doesn't catch (e.g. Results
 itself unhealthy for a stretch), not removed.
 
+## When a run's logs are missing
+
+A run can be archived with some of its TaskRuns' logs missing: the Log record exists but its
+`status` reads `isStored: false`, `size: 0`, with no `errorOnStoreMsg`. Tower and glidepath-api
+then answer "Tekton Results archived no logs for this task" (404). The blob was never written, so
+nothing is in the bucket to recover, and no collector ships pod logs to Loki on the dev cluster.
+
+Two causes, both in the watcher, both seen on the dev cluster on 2026-10-25 (56 lost logs in 6 h,
+about one TaskRun in ten during release-gate bursts):
+
+- **The watcher's own timeout (53 of 56).** The watcher streams a finished TaskRun's logs on a
+  background goroutine and cancels it after `watcher.dynamic_reconcile_timeout`, 30 s by default,
+  logging `Leaving sendLogs thread only after timeout`. It creates the Log record first and never
+  retries one that exists, so a slow stream is lost for good. Under a burst of gate pipelines plus
+  etcd stalls, 30 s wasn't enough. The cluster repos now set `dynamic_reconcile_timeout: "5m0s"`, the
+  same bound `update_log_timeout` already gives the API's upload.
+- **An etcd timeout patching the log annotation** (`Error sending log ... etcdserver: request timed
+  out`). Same no-retry path; it goes with the cluster's etcd stalls, not with Results.
+
+To check a run, decode its Log records and read their `status`:
+
+```shell
+kubectl get --raw "/api/v1/namespaces/platform-system/services/tekton-results-relay:8080/proxy/apis/results.tekton.dev/v1alpha2/parents/<ns>/results/<result>/records?page_size=100" \
+  | jq -r '.records[] | select(.data.type | endswith("Log")) | .data.value | @base64d | fromjson | "\(.spec.resource.name) \(.status)"'
+```
+
 ## Querying archived runs
 
 No `HTTPRoute` exists for the Results API (see below), and `tkn`'s built-in `results`
