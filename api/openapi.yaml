@@ -1,0 +1,205 @@
+openapi: 3.0.3
+info:
+  title: Glidepath API
+  version: 0.1.0
+  description: |
+    Runs, logs and release records for one app, and Glidepath's contract (docs/admin/api.md).
+    Phase 1 of the Glidepath API spec: reads only (tier T0).
+
+    Every /v1 call needs a bearer token the cluster's TokenReview accepts, in `Authorization`, or in
+    `X-Glidepath-Authorization` when the call comes through the API server's service proxy (which
+    drops `Authorization`). App routes are then authorized with a SubjectAccessReview in the app's
+    `<type>-<app>-cicd` namespace on the virtual group `glidepath.hangar.io`.
+
+    `x-glidepath-tier` on each operation is its tier: T0 read, T1 reversible in Ground, T2 propose
+    for Flight, T3 never offered. tools/gen_contract.py copies every operation and tier into the contract.
+servers:
+  - url: http://glidepath-api.platform-system.svc.cluster.local:8080
+    description: in cluster
+  - url: /api/v1/namespaces/platform-system/services/glidepath-api:8080/proxy
+    description: through the API server's service proxy (send the token in X-Glidepath-Authorization)
+security:
+  - bearer: []
+  - proxied: []
+paths:
+  /v1/whoami:
+    get:
+      operationId: whoami
+      summary: Who the API thinks you are
+      x-glidepath-tier: T0
+      parameters: [{ $ref: "#/components/parameters/OnBehalfOf" }]
+      responses:
+        "200": { description: The caller, content: { application/json: { schema: { $ref: "#/components/schemas/Caller" } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/contract:
+    get:
+      operationId: getContract
+      summary: contract/glidepath-contract.json, as this API was built with it
+      x-glidepath-tier: T0
+      responses:
+        "200": { description: The contract, content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/runs:
+    get:
+      operationId: listRuns
+      summary: An app's runs since a time, newest first, from Tekton Results
+      description: Needs `list` on `runs.glidepath.hangar.io` in the app's namespace. Runs from before the app's -cicd namespace was created are never returned.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+        - { name: sinceHours, in: query, schema: { type: integer, minimum: 1, maximum: 744, default: 24 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 100 } }
+        - name: view
+          in: query
+          description: summary (one row per run) or full (each run's PipelineRun and TaskRuns)
+          schema: { type: string, enum: [summary, full], default: summary }
+      responses:
+        "200":
+          description: The runs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runs:
+                    type: array
+                    items: { oneOf: [{ $ref: "#/components/schemas/RunRow" }, { $ref: "#/components/schemas/Run" }] }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/runs/{result}:
+    get:
+      operationId: getRun
+      summary: One run, its PipelineRun and TaskRuns
+      description: Needs `get` on `runs.glidepath.hangar.io`. `result` is the Tekton Results id, which is the PipelineRun's uid.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/Result" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The run, content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/runs/{result}/logs/{taskRun}:
+    get:
+      operationId: getRunLog
+      summary: One TaskRun's archived step logs, as plain text
+      description: Needs `get` on `runs/logs`. Each line is prefixed with its step, `[step] ...`.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/Result" }
+        - { name: taskRun, in: path, required: true, schema: { type: string } }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The log, content: { text/plain: { schema: { type: string } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/releases:
+    get:
+      operationId: listReleases
+      summary: Every release record of an app, all environments
+      description: Needs `list` on `releases.glidepath.hangar.io`. The keys of `data`, and the release states, are in docs/admin/release-state.md and the contract's states.release.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200":
+          description: The records
+          content:
+            application/json:
+              schema: { type: object, properties: { releases: { type: array, items: { $ref: "#/components/schemas/Release" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/releases/{chainId}:
+    get:
+      operationId: getRelease
+      summary: The release record of one flow (release-tracking-<chainId>)
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { name: chainId, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,200}$" } }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The record, content: { application/json: { schema: { $ref: "#/components/schemas/Release" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }
+    proxied: { type: apiKey, in: header, name: X-Glidepath-Authorization, description: "Bearer <token>, for calls through the API server's service proxy" }
+  parameters:
+    App: { name: app, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,62}$" } }
+    Result: { name: result, in: path, required: true, schema: { type: string, pattern: "^[0-9a-f-]{36}$" } }
+    OnBehalfOf:
+      name: X-Glidepath-On-Behalf-Of
+      in: header
+      required: false
+      description: The person a delegate (Tower) acts for. Refused from anyone not in the chart's api.delegates. Recorded in the audit line.
+      schema: { type: string, maxLength: 256 }
+  responses:
+    Error:
+      description: A refusal or failure with a stable rule id
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        rule:
+          type: string
+          description: GP-AUTH-001 no token, GP-AUTH-002 token rejected, GP-AUTH-003 on-behalf-of refused, GP-AUTHZ-001 not allowed, GP-API-400/404/502
+        hint: { type: string }
+    Caller:
+      type: object
+      properties:
+        user: { type: string }
+        uid: { type: string }
+        groups: { type: array, items: { type: string } }
+        onBehalfOf: { type: string }
+        delegate: { type: boolean }
+    RunRow:
+      type: object
+      required: [result, name, status]
+      properties:
+        result: { type: string, description: The Tekton Results id (the PipelineRun's uid) }
+        name: { type: string }
+        pipeline: { type: string }
+        status: { type: string, enum: [succeeded, failed, cancelled, unknown] }
+        startTime: { type: string }
+        endTime: { type: string }
+        commit: { type: string }
+        eventType: { type: string }
+        prNumber: { type: string }
+    Run:
+      type: object
+      required: [result, pipelineRun, taskRuns]
+      properties:
+        result: { type: string }
+        pipelineRun: { type: object, description: "The PipelineRun, trimmed to metadata (name, namespace, uid, creationTimestamp, labels, Tekton/PaC/hangar annotations), spec.params, spec.pipelineRef and status" }
+        taskRuns: { type: array, items: { type: object } }
+    Release:
+      type: object
+      required: [name, data]
+      properties:
+        name: { type: string, description: "release-tracking-<chain-id>" }
+        data: { type: object, additionalProperties: { type: string } }

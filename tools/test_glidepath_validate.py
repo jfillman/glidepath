@@ -267,6 +267,15 @@ class Contract(unittest.TestCase):
             self.assertEqual(first, fid, line)
             self.assertIn(fid, by_id)
 
+    def test_api_routes_match_openapi(self):
+        # Every route the server registers is in api/openapi.yaml (with a tier), and nothing else is.
+        import re
+        server = (ROOT / "glidepath" / "api" / "internal" / "server" / "server.go").read_text()
+        served = {(m, p) for m, p in re.findall(r'"(GET|POST|PUT|PATCH|DELETE) (/v1/[^"]+)"', server)}
+        documented = {(a["method"], a["path"]) for a in CONTRACT["api"]["actions"]}
+        self.assertGreater(len(served), 3)
+        self.assertEqual(served, documented)
+
     def test_gates_from_registry(self):
         names = [g["name"] for g in CONTRACT["gates"]]
         self.assertIn("provenance", names)
