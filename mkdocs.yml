@@ -21,6 +21,7 @@ nav:
           - Chaining: admin/chaining.md
           - Multi-cluster: admin/multi-cluster.md
       - Governance & supply chain:
+          - Contract and glidepath validate: admin/contract.md
           - Governance stubs: admin/governance-stubs.md
           - Image signing: admin/image-signing.md
           - Provenance policy: admin/provenance-policy.md

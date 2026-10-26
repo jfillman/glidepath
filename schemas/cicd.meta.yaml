@@ -1,0 +1,159 @@
+# Sidecar for schemas/cicd.schema.json: what the schema can't say about a cicd.yaml field.
+#
+# tools/gen_contract.py folds this file, the schema, the release gate registry
+# (charts/glidepath-catalog/values.yaml releaseGuardrails) and the API spec (api/openapi.yaml)
+# into contract/glidepath-contract.json. tools/test_contract.py checks that every field the
+# schema defines matches exactly one entry under `fields` (first match wins, so specific
+# patterns go before broad ones).
+#
+# This file is NOT read by the pipeline: stage-preflight validates cicd.yaml against the schema
+# baked into the toolbox image. Changing it needs no toolbox rebuild.
+#
+# Patterns are JSON pointers with globs: `*` matches one segment (an object key or an array
+# index), `**` any number of segments. A pattern also matches everything under it.
+#
+# owner      who decides the value: team (the app team, in its own repo) or platform.
+# risk       low | medium | high: how much a wrong value can hurt beyond the app's own build.
+# agentScope what an agent may change in a pull request (docs/admin/contract.md):
+#              open     - change freely; a human still merges the PR
+#              tighten  - may only move in the stricter direction (see `order`)
+#              human    - never in an agent's PR
+# order      tighten only: bool (false < true), enum (the list, loosest first), int (smaller is looser)
+# default    tighten only: the value an unset field means, when the schema itself declares none
+
+fields:
+  # --- human only: identity, secrets, signing, where and how a deploy reaches a cloud or a cluster ---
+  - { pattern: /apiVersion, owner: platform, risk: low, agentScope: human }
+  - { pattern: /kind, owner: platform, risk: low, agentScope: human }
+  - { pattern: /secrets, owner: team, risk: high, agentScope: human,
+      why: "Names the Infisical keys mounted into pipeline steps. An agent must not widen what its own pipeline can read." }
+  - { pattern: /governance/allowedCommitSigners, owner: team, risk: high, agentScope: human,
+      why: "Who may sign a released commit. The provenance gate reads it; an agent must never add itself." }
+  - { pattern: /deploy/target, owner: team, risk: high, agentScope: human,
+      why: "Switches the deploy path and the cloud identity it assumes." }
+  - { pattern: /deploy/releaseFile, owner: team, risk: high, agentScope: human,
+      why: "The file a release writes; a wrong path deploys nowhere or somewhere else." }
+  - { pattern: /deploy/chart, owner: team, risk: high, agentScope: human }
+  - { pattern: /deploy/ecs, owner: team, risk: high, agentScope: human }
+  - { pattern: /deploy/lambda, owner: team, risk: high, agentScope: human }
+  - { pattern: /deploy/azureContainerApps, owner: team, risk: high, agentScope: human }
+  - { pattern: /deploy/environments/*/ecs, owner: team, risk: high, agentScope: human }
+  - { pattern: /deploy/environments/*/lambda, owner: team, risk: high, agentScope: human }
+  - { pattern: /deploy/environments/*/azureContainerApps, owner: team, risk: high, agentScope: human }
+  - { pattern: /deploy/environments/*/chart, owner: team, risk: high, agentScope: human }
+  - { pattern: /deploy/environments/*/cluster, owner: team, risk: high, agentScope: human }
+  - { pattern: /deploy/environments/*/production, owner: team, risk: medium, agentScope: human }
+  - { pattern: /api, owner: team, risk: medium, agentScope: human,
+      why: "The spec the api-compat release gate compares; moving it changes what the gate checks." }
+  - { pattern: /pipelines/*/steps/*/cluster, owner: team, risk: high, agentScope: human }
+  - { pattern: /pipelines/*/steps/*/gitopsRepo, owner: team, risk: high, agentScope: human }
+  - { pattern: /pipelines/*/steps/*/manifestPath, owner: team, risk: high, agentScope: human }
+  - { pattern: /pipelines/*/*/cluster, owner: team, risk: high, agentScope: human }
+  - { pattern: /pipelines/*/*/gitopsRepo, owner: team, risk: high, agentScope: human }
+  - { pattern: /pipelines/*/*/manifestPath, owner: team, risk: high, agentScope: human }
+
+  # --- tighten only: the gates ---
+  - { pattern: /governance/sast, owner: team, risk: high, agentScope: tighten, order: bool }
+  - { pattern: /governance/imageScan, owner: team, risk: high, agentScope: tighten, order: bool }
+  - { pattern: /governance/policyCheck, owner: team, risk: high, agentScope: tighten, order: bool }
+  - { pattern: /governance/sbom, owner: team, risk: high, agentScope: tighten, order: bool }
+  - { pattern: /governance/githubMerge/mode, owner: team, risk: high, agentScope: tighten, order: ["", merger, strict] }
+  - { pattern: /governance/githubMerge/requiredApprovals, owner: team, risk: high, agentScope: tighten, order: int }
+  - { pattern: /pipelines/*/steps/*/required, owner: team, risk: medium, agentScope: tighten, order: bool, default: true }
+  - { pattern: /pipelines/*/*/required, owner: team, risk: medium, agentScope: tighten, order: bool, default: true }
+
+  # --- open: an agent may change these in a pull request ---
+  - { pattern: /build, owner: team, risk: low, agentScope: open }
+  - { pattern: /test, owner: team, risk: low, agentScope: open }
+  - { pattern: /ephemeralEnvironments, owner: team, risk: low, agentScope: open }
+  - { pattern: /notifications, owner: team, risk: low, agentScope: open }
+  - { pattern: /deploy/strategy, owner: team, risk: medium, agentScope: open }
+  # Ground entries only: GP-SCOPE-003 refuses any change to a Flight entry or a tier.
+  - { pattern: /deploy/environments, owner: team, risk: medium, agentScope: open }
+  # GP-SCOPE-002 also refuses a flow that loses a check-ride or a required test step.
+  - { pattern: /pipelines, owner: team, risk: medium, agentScope: open }
+
+# Fixed state vocabularies. A client switches on these, never on free text.
+states:
+  run:
+    succeeded: The PipelineRun finished and every task passed.
+    failed: A task failed or the run timed out.
+    cancelled: Someone cancelled the run.
+    running: The run has not finished.
+    unknown: Tekton Results reported no status Glidepath recognises.
+  release:
+    proposed: The release PR is open on gitops-<app>.
+    merged: The release PR merged; Argo CD has not reported yet.
+    sync-failed: Argo CD's sync failed. Not terminal; a retry can move it on.
+    progressing: The Rollout is progressing or paused.
+    healthy: The Rollout reported Healthy. Terminal.
+    aborted: The Rollout was aborted. Terminal.
+    degraded: The Rollout reported Degraded. Terminal.
+    superseded: A newer release of the same app, environment and cluster replaced it. Terminal.
+    rolled-back: A rollback release naming this one turned healthy. Terminal.
+    closed: The release PR closed without merging. Terminal.
+
+# Failures with a stable id. `match` is a regular expression over a failed step's log; the first
+# match wins. explain (API P2) and agents use the id and the hint; never match on the message text.
+knownFailures:
+  - id: CicdNotFound
+    match: 'cicd\.yaml not found|Every app repo needs a cicd\.yaml'
+    hint: Add cicd.yaml at the repo root; Airframe scaffolds one for a new app.
+  - id: CicdSchemaInvalid
+    match: 'cicd\.yaml failed schema validation'
+    hint: Run `glidepath validate cicd.yaml`; it names the field and the rule.
+  - id: CicdRetiredEnvKeys
+    match: 'which deploy\.environments replaced'
+    hint: List each environment once under deploy.environments, in promotion order, with tier ground or flight.
+    field: /deploy/environments
+  - id: SourceVolumeFull
+    match: 'no space left on device'
+    hint: Raise build.sourceVolume.size one step (small, medium, large, xlarge).
+    field: /build/sourceVolume/size
+  - id: BuildScriptMissing
+    match: "build\\.script '.*' \\(from cicd\\.yaml\\) not found"
+    hint: Point build.script at a file in the repo, or remove it to use the agent's default build.
+    field: /build/script
+  - id: TestWorkflowMissing
+    match: "names no workflow: .* does not exist in this commit"
+    hint: Add glidepath/<testName>.yaml (a Testkube TestWorkflow), or fix test.name or the step's testName.
+    field: /test/name
+  - id: CheckRideMissing
+    match: 'no check ride for .*: TestWorkflow .* does not exist'
+    hint: Add apps/<app>/check-ride.yaml to the check-rides repository. An app team can't fix this in its own repo.
+  - id: CheckRideNotFromRepo
+    match: 'was not synced by Argo CD \(no argocd\.argoproj\.io/tracking-id\)'
+    hint: A check ride must come from the check-rides repository, never be applied by hand.
+  - id: ImageArchMismatch
+    match: 'has no linux/.* image - check build\.platforms|is a linux/.* image, but the Lambda function is'
+    hint: Add the target's architecture to build.platforms.
+    field: /build/platforms
+  - id: CloudDeployIdentity
+    match: 'not running as glidepath-cloud-deployer|could not assume .*: '
+    hint: The cloud target creates the deploy role; check the target XR is Ready. Not a cicd.yaml change.
+  - id: CloudTargetIncomplete
+    match: 'deploy\.target is (aws-ecs|aws-lambda|azure-container-apps) but'
+    hint: Fill the deploy block the target's status.cicd publishes. A human owns these fields.
+    field: /deploy/target
+  - id: ClusterNotRegistered
+    match: "cluster '.*' has no entry in the glidepath cluster-registry"
+    hint: The environment names a cluster the platform doesn't know. A human owns deploy.environments[].cluster.
+    field: /deploy/environments
+  - id: RolloutDegraded
+    match: 'rollout .* is Degraded on'
+    hint: The new version failed its rollout. Read the Rollout's analysis, then fix the code or roll back.
+  - id: RolloutTimeout
+    match: 'timed out waiting for rollout .* to run .* Healthy'
+    hint: The rollout never became healthy. Check the pods and the canary analysis.
+  - id: SiblingGateFailed
+    match: "sibling guardrail '.*' completed with conclusion"
+    hint: Another release gate failed first; fix that one.
+  - id: ItsmChangeNotApproved
+    match: 'is in state .* with approval .* - not approved or scheduled'
+    hint: The change request needs approval in the change tool before the release can merge.
+  - id: ProvenanceMissing
+    match: 'no verified slsaprovenance attestations found|no attestations found for'
+    hint: The image has no signed provenance; it was not built by Glidepath, or Chains has not signed it yet.
+  - id: PinnedImageMoved
+    match: 'now resolves to .*, not the pinned'
+    hint: The tag was pushed again after approval. Release the digest that was approved.

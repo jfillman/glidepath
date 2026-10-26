@@ -308,6 +308,13 @@ pipelines:
                                    # test step.
 ```
 
+## Check it before you push
+
+`tools/glidepath-validate cicd.yaml` (in the Glidepath repo) runs the same schema the pipeline
+uses, plus the environment and flow rules the pipeline would otherwise only reject partway through
+a run, and names each problem's field and rule. See
+[../admin/contract.md](../admin/contract.md#glidepath-validate).
+
 ## Design rules this file follows
 
 - **Read fresh, every run, from the triggering commit.** `preflight` (always
