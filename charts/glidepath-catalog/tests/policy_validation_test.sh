@@ -19,9 +19,9 @@ mkdir -p "$d/bin"
 # render step's Python is a quoted heredoc, so a shell variable would not reach it).
 step() { # <index> <work dir>
   yq ".spec.steps[$1].script" "$d/task.yaml" \
+    | sed -e "s#/work#$2#g" -e "s#\$(results.outcome.path)#$2/outcome#g" -e "s#\$(results.findings-summary.path)#$2/summary#g" \
     | sed -e "s#/opt/airframe/charts/airframe-application#${fx}/chart#g" -e "s#/opt/airframe/xrds#${fx}/airframe/xrds#g" \
-          -e "s#/work#$2#g" -e "s#\$(results.outcome.path)#$2/outcome#g" -e "s#\$(results.findings-summary.path)#$2/summary#g" \
-    > "$2/step$1.sh"
+    > "$2/step$1.sh"  # /work first: the checkout path itself may contain "/work" (GitHub runners do)
 }
 cat > "$d/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
