@@ -8,6 +8,9 @@
 // namespace - that check, not network topology, is the real app-isolation boundary
 // here. See docs/admin/chaining.md.
 //
+// Also serves the policy-validation gate's policy bundles (policybundle.go): a target cluster's admission policies
+// read from its GitOps repo with the same App, the documents returned and never the token.
+//
 // Also mints scoped GitHub App installation tokens for the release GitOps PR flow
 // (internal/githubapp, handleGitHubInstallationToken below) - an extension of this same
 // trusted component rather than a new service, since copying the App's private key into
@@ -101,9 +104,16 @@ func main() {
 		log.Fatalf("loading GitHub App credentials: %v", err)
 	}
 
+	// The policy-validation gate's policy source (policybundle.go). Unset = the endpoint answers 503.
+	policySrc, err := loadPolicySources()
+	if err != nil {
+		log.Fatalf("loading policy sources: %v", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handle(clientset))
 	mux.HandleFunc("/github-installation-token", handleGitHubInstallationToken(clientset, dynClient, appCreds))
+	mux.HandleFunc("/policy-bundle", handlePolicyBundle(clientset, dynClient, appCreds, policySrc))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	log.Println("cdevents-broker-auth interceptor listening on :8080 (plain HTTP - see comment above)")

@@ -6,8 +6,10 @@ actually verifies (Semgrep, Trivy, gitsign commit-signature verification, cosign
 attestation), and so is `qa` since 2026-10-19 (a check ride read from the promoted
 image's test provenance, [testing.md](testing.md)). `itsm` is real once the catalog names a change tool
 ([change-management.md](change-management.md), 2026-10-19) and this stub until then;
-`policy-validation` is the remaining stub gate, not yet real (`image-promotion` was one until
-ADR-0025 retired it, 2026-10-09, and `qa` was one until it graduated) - see
+`policy-validation` is real since 2026-10-26 (the release rendered and evaluated offline against the target
+cluster's admission policies, [policy-validation.md](policy-validation.md), ADR-0028), so `itsm` without a change
+tool is the only stub left (`image-promotion` was one until ADR-0025 retired it, 2026-10-09; `qa` and
+`policy-validation` were until they graduated) - see
 [release-guardrails.md](release-guardrails.md) for what each is intended to verify and the
 registry (`.Values.releaseGuardrails`) that drives the full current gate list. This doc covers the mechanism that got the first four there,
 and that any future gate should reuse: **a stub is never reported with the same

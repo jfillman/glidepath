@@ -7,7 +7,7 @@
 # own toolboxImage - kept in sync deliberately, not duplicated by accident. Defaults to
 # this repo's own published image (real, public, working) - override if you've built
 # and published your own copy.
-toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-24-api-compat
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-26-kyverno
 
 # The single shared namespace Testkube CE installs into on this cluster (see
 # gitops-cluster-dev/50-platform-cicd/testkube/application.yaml's own header for why
@@ -310,6 +310,21 @@ aws: {}
 # normalized without forwarding, for trying the path out beside another reporter.
 outcomeRelay:
   factsMode: emit
+
+# The policy-validation release check's policy source (glidepath-catalog tasks/policy-validation-gate.yaml,
+# ADR-0028): the broker's /policy-bundle reads each target cluster's admission policies from a directory of that
+# cluster's own GitOps repo (the repo its Argo CD syncs; Apron renders them under 30-policy/) at a revision, and returns
+# only the admission-policy documents (the repo also holds generated passwords, so the gate never gets a token for
+# it). {owner} is the calling gitops repo's GitHub owner, {cluster} the environment's cluster (the first path segment
+# of <cluster>/<env>/values.yaml). A cluster whose repo does not follow gitops-<cluster> gets an entry under clusters:
+#   clusters:
+#     hangar-prod: { repoURL: https://github.com/acme/platform-prod.git, path: policies, revision: main }
+# The GitHub App must be installed on that repo (it is on every repo Apron creates).
+policyValidation:
+  repoURL: "https://github.com/{owner}/gitops-{cluster}.git"
+  path: 30-policy
+  revision: main
+  clusters: {}
 
 # Change management (glidepath docs/admin/change-management.md): the change tool's credentials, fanned out to
 # every managed namespace as the Secret glidepath-catalog's itsm.credentialsSecret names (itsm-credentials-

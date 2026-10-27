@@ -122,6 +122,21 @@ jobs:
           sudo tar -xzf /tmp/oasdiff.tar.gz -C /usr/local/bin oasdiff
       - run: charts/glidepath-catalog/tests/api_compat_test.sh
 
+  # The policy-validation release check (docs/admin/policy-validation.md): the render and evaluate steps against a
+  # fixture chart and a 30-policy tree of every admission-policy shape, with the real helm and the Kyverno CLI at the
+  # toolbox's version (release tarball, checksum pinned from the release's checksums.txt).
+  policy-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: pip install pyyaml
+      - run: |
+          curl -fsSL -o /tmp/kyverno.tar.gz https://github.com/kyverno/kyverno/releases/download/v1.19.0/kyverno-cli_v1.19.0_linux_x86_64.tar.gz
+          echo "f5b4dc73c8e2f3f66e8e0034dc370e6eb6c4617eff7d5ae3838d2200034eb421  /tmp/kyverno.tar.gz" | sha256sum -c -
+          sudo tar -xzf /tmp/kyverno.tar.gz -C /usr/local/bin kyverno
+      - run: charts/glidepath-catalog/tests/policy_validation_test.sh
+
   # The flow slug's word lists: 256 x 256, no duplicates, and the chain-id -> slug
   # mapping Tower's mirror (src/tekton/chainSlug.ts) is pinned to.
   chain-slug:

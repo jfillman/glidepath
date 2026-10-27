@@ -1,0 +1,72 @@
+# Deny: a Rollout's containers need a memory limit. Admission-only (background off), like every Hangar policy.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata: {name: require-memory-limit}
+spec:
+  validationActions: [Deny]
+  evaluation: {background: {enabled: false}}
+  matchConstraints:
+    resourceRules: [{apiGroups: [argoproj.io], apiVersions: ["*"], operations: [CREATE, UPDATE], resources: [rollouts]}]
+  matchConditions:
+    - name: app-namespaces
+      expression: "request.namespace.startsWith('app-')"
+  validations:
+    - expression: "object.spec.template.spec.containers.all(c, has(c.resources) && has(c.resources.limits) && has(c.resources.limits.memory))"
+      message: every container needs a memory limit
+---
+# Audit: services should carry a team label - a warning, never a failure.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata: {name: service-team-label}
+spec:
+  validationActions: [Audit]
+  matchConstraints:
+    resourceRules: [{apiGroups: [""], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [services]}]
+  validations:
+    - expression: "has(object.metadata.labels) && 'team' in object.metadata.labels"
+      message: services should carry a team label
+---
+# Deny, but only in namespaces labelled hangar.io/locked: the rendered Namespace lacks it, so never applies.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata: {name: locked-namespaces}
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    namespaceSelector: {matchExpressions: [{key: hangar.io/locked, operator: Exists}]}
+    resourceRules: [{apiGroups: [""], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [services]}]
+  validations:
+    - expression: "false"
+      message: locked namespace
+---
+# Deny Redis components in managed-secrets namespaces (the rendered Namespace has the label) when red.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata: {name: no-redis-when-red}
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    namespaceSelector: {matchExpressions: [{key: hangar.io/managed-secrets, operator: Exists}]}
+    resourceRules: [{apiGroups: [catalog.hangar.io], apiVersions: ["*"], operations: [CREATE, UPDATE], resources: [redis]}]
+  matchConditions:
+    - name: red-only
+      expression: "request.namespace == 'app-red-prod'"
+  validations:
+    - expression: "false"
+      message: no Redis here
+---
+# A legacy ClusterPolicy in Enforce: no NodePort services.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata: {name: no-nodeport}
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: no-nodeport
+      match: {any: [{resources: {kinds: [Service]}}]}
+      validate:
+        message: NodePort services are not allowed
+        pattern:
+          spec:
+            =(type): "!NodePort"

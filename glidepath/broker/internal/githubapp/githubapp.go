@@ -139,7 +139,21 @@ func InstallationIDForRepo(appJWT, owner, repo string) (int64, error) {
 // might be installed on, which is the whole point: whoever calls this holds the App's
 // private key, but nothing it hands back can reach further than the one repo asked for.
 func MintInstallationToken(appJWT string, installationID int64, repo string) (token string, expiresAt string, err error) {
-	reqBody, _ := json.Marshal(map[string]any{"repositories": []string{repo}})
+	return mintInstallationToken(appJWT, installationID, map[string]any{"repositories": []string{repo}})
+}
+
+// MintReadOnlyToken is MintInstallationToken narrowed further to `contents: read`: for the broker reading a repo
+// itself (the policy-validation bundle), never handed to a caller.
+func MintReadOnlyToken(appJWT string, installationID int64, repo string) (token string, expiresAt string, err error) {
+	return mintInstallationToken(appJWT, installationID, map[string]any{
+		"repositories": []string{repo},
+		"permissions":  map[string]string{"contents": "read"},
+	})
+}
+
+func mintInstallationToken(appJWT string, installationID int64, scope map[string]any) (token string, expiresAt string, err error) {
+	repo := fmt.Sprint(scope["repositories"])
+	reqBody, _ := json.Marshal(scope)
 	req, err := http.NewRequest(http.MethodPost,
 		fmt.Sprintf("%s/app/installations/%s/access_tokens", githubAPIBase, strconv.FormatInt(installationID, 10)),
 		bytes.NewReader(reqBody))

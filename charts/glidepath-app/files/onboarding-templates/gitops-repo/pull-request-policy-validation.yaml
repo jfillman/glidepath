@@ -1,20 +1,11 @@
-# STUB - see docs/admin/governance-stubs.md and docs/admin/release-guardrails.md.
-# References the shared governance-check Pipeline (gate-name: policy-validation), which
-# calls governance-gate-stub - loud "no real check implemented yet" logging + a stub
-# span, never a silent pass (ADR-0003). Deliberately a different gate name from the
-# existing `provenance` (commit signature + SLSA provenance, docs/commit-signing.md/
-# docs/provenance-policy.md, renamed from `policy-check` 2026-08-23) - this one is about
-# admission-policy compliance of the rendered deployment manifest itself (Gatekeeper/
-# Kyverno constraints), a genuinely
-# separate concern. Intended real behavior: render this PR's promoted manifest and
-# evaluate it against the target cluster's configured ConstraintTemplates/Policies
-# (e.g. via `gator test`/`kyverno apply` against a local policy bundle, no live cluster
-# access needed). Swap for a dedicated Pipeline once that's built - see
-# governance-stubs.md's "Landing a real implementation" section; nothing else about this
-# file's shape needs to change.
+# BOILERPLATE - real since 2026-10-26 (was the shared governance-check stub). The policy-validation gate: renders
+# this release PR's environments and evaluates them offline against the target cluster's admission policies, read
+# from that cluster's GitOps repo (glidepath ADR-0028, docs/admin/policy-validation.md). Only a Deny/Enforce
+# policy's violation fails the check; Audit/Warn policies are reported as warnings.
 #
-# No <APP_NAMESPACE> substitution or workspace needed (an <APP_NAME> substitution now exists, for the hangar.io/app label below) - same reasons as
-# pull-request-sast.yaml. pr-number feeds the finally-block PR comment.
+# Release branches only, like every release gate. Delivered only to apps whose deploy.target is k8s-rollout (the
+# registry entry's `targets`): a cloud target has no Kubernetes manifest to admit. app-name picks the app repo's
+# cicd.yaml (the environment's chart) and the namespace each environment renders into.
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
@@ -31,12 +22,12 @@ spec:
     resolver: cluster
     params:
       - { name: kind, value: pipeline }
-      - { name: name, value: governance-check }
+      - { name: name, value: policy-validation-check }
       - { name: namespace, value: platform-catalog }
   params:
-    - { name: gate-name, value: policy-validation }
     - { name: repo-url, value: "{{ repo_url }}" }
     - { name: revision, value: "{{ revision }}" }
+    - { name: app-name, value: "<APP_NAME>" }
     - { name: pr-number, value: "{{ body.pull_request.number }}" }
   taskRunTemplate:
     serviceAccountName: pipeline-runner

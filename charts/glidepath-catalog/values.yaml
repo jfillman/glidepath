@@ -46,7 +46,8 @@ rbac:
 # 2026-10-23, -2: api.spec's pattern used a lookahead, which yajsv (Go RE2) cannot compile, so every build's
 # preflight failed until this tag. catalog-ci's schema-yajsv job now runs the same validator.
 # 2026-10-24: bumped for oasdiff 1.33.0 (the api-compat release check's OpenAPI diff).
-toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-24-api-compat
+# 2026-10-26: bumped for the Kyverno CLI 1.19.0 (the policy-validation release check, ADR-0028).
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-26-kyverno
 # The shared Trivy server image-scan.yaml scans against (glidepath-control-plane's trivyServer). Empty, or a
 # server that does not answer /healthz, means each scan downloads the DB itself (the pre-2026-10-09 behaviour).
 trivyServerUrl: http://trivy-server.platform-system.svc.cluster.local:4954
@@ -282,10 +283,16 @@ releaseGuardrails:
     # Advisory until every app with a Flight environment has apps/<app>/check-ride.yaml in the check-rides
     # repository and a role: check-ride test step (docs/admin/testing.md); flip to true then.
     required: false
+  # Real since 2026-10-26 (ADR-0028): the release PR's environments rendered and evaluated offline against the target
+  # cluster's admission policies from git (glidepath-control-plane's policyValidation, served by the broker). class integrity, like values: it judges whether
+  # the release can be applied at all, not the image, so it has no rollback-advisory copy - the cluster's admission
+  # makes no exception for a rollback either. Required from the start: only a Deny/Enforce policy's violation blocks
+  # (one Argo CD's sync would hit anyway); Audit/Warn policies and undecidable rules are warnings.
   - name: policy-validation
-    description: Gatekeeper/Kyverno admission-policy validation of the rendered manifest
-    status: stub
-    class: process
+    description: The release's rendered manifests evaluated offline (Kyverno CLI) against the target cluster's admission policies (ValidatingPolicy, ClusterPolicy, ValidatingAdmissionPolicy) from its GitOps repo
+    status: real
+    class: integrity
+    required: true
     targets: [k8s-rollout]
 
 # Per-cluster overrides of `required`, keyed by gate name, for a cluster's catalog Application values:

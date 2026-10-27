@@ -1,7 +1,7 @@
 # catalog/tasks/governance-gate-stub.yaml
 #
-# One reusable stub Task for every still-stub release-guardrail gate (currently itsm,
-# qa, policy-validation - see docs/admin/release-guardrails.md and
+# One reusable stub Task for every still-stub release-guardrail gate (currently itsm
+# until a change tool is configured; qa and policy-validation graduated - see docs/admin/release-guardrails.md and
 # .Values.releaseGuardrails) rather than a near-duplicate file per gate. Called from
 # governance-check.yaml (the shared, parameterized-by-gate-name Pipeline for an
 # independent stub gate), parameterized by gate-name (image-promotion's own Pipeline

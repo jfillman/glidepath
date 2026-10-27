@@ -1,0 +1,66 @@
+# catalog/pipelines/policy-validation-check.yaml
+#
+# The `policy-validation` gate's Pipeline - real since 2026-10-26 (ADR-0028, docs/admin/policy-validation.md); before
+# that the gate ran the shared governance-check stub. One task, policy-validation-gate: render the release PR's
+# environments and evaluate them offline against the target cluster's admission policies from its GitOps repo. A
+# finally: comment-pr block reports either way (the full report travels in the gate-report ConfigMap).
+#
+# class integrity, like values-check.yaml: no rollback-advisory copy. Whether a manifest is admissible does not
+# depend on the image having run healthy before; the cluster's admission makes no exception for a rollback.
+# The registry's `required` still applies: false renders only the -advisory copy (onError: continue).
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: policy-validation-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Renders a gitops release PR's environments and evaluates them offline against the target cluster's admission policies.
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+    - name: app-name
+      type: string
+    - name: pr-number
+      type: string
+      default: ""
+      description: "PaC's pull_request.number - picks the changed environments and addresses the finally-block PR comment."
+  tasks:
+    {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "policy-validation")) "true" }}
+    - name: {{ ternary "evaluate" "evaluate-advisory" $required }}
+      {{- if not $required }}
+      onError: continue
+      {{- end }}
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: policy-validation-gate }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+  finally:
+    - name: comment-pr
+      when:
+        - { input: $(params.pr-number), operator: notin, values: [""] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: comment-pr-check-result }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: gate-name, value: policy-validation }
+        - { name: advisory-reason, value: {{ ternary "rollback" "not-required" $required | quote }} }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: status, value: $(tasks.status) }

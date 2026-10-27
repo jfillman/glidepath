@@ -18,7 +18,7 @@ deploy (dev) succeeds
      flow-root trace closes here (see docs/tracing.md)
   -> the release-guardrail GitHub Checks run on that PR, one per gate in
      .Values.releaseGuardrails (sast/image-scan/provenance/sbom/values/qa real, itsm real
-     once a change tool is configured, policy-validation still a stub - see
+     once a change tool is configured, policy-validation real since 2026-10-26 - see
      [release-guardrails.md](release-guardrails.md)/[governance-stubs.md](governance-stubs.md)),
      each individually re-triggerable and independent of the others (the
      `image-promotion` check that waited on the rest was retired 2026-10-09, ADR-0025)
@@ -279,7 +279,7 @@ and current gate list). `sast`/`image-scan`/`provenance`/`sbom` are real as of P
 items 8.4/8.5/item 2/item 8.7 (see that item's own "cosign `--ca-roots` deprecation"
 fallout note in [provenance-policy.md](provenance-policy.md) for a still-unresolved edge
 case, not a stub), and so is `qa` since 2026-10-19 (a check ride read from the promoted
-image's test provenance, [testing.md](testing.md)); `itsm` is real once a change tool is configured ([change-management.md](change-management.md)) and `policy-validation` is still a stub. All run
+image's test provenance, [testing.md](testing.md)); `itsm` is real once a change tool is configured ([change-management.md](change-management.md)) and `policy-validation` is real since 2026-10-26 (the release evaluated offline against the target cluster's admission policies, [policy-validation.md](policy-validation.md)). All run
 independently of each other (`image-promotion`, which waited on the rest, was retired
 2026-10-09 - see that doc's "Two shapes" section and ADR-0025).
 

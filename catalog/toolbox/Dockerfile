@@ -31,6 +31,9 @@
 #     assert here and the pinned list in verify-commit-signature.yaml, then rebuild.
 #   - oasdiff: the api-compat release check's OpenAPI diff (breaking-change rules, JSON output). Pinned with the
 #     release's own sha256 per architecture, checked at build time.
+#   - kyverno (CLI): the policy-validation release check (ADR-0028) evaluates rendered manifests offline against a
+#     cluster's admission policies. Copied from Kyverno's own multi-arch CLI image, pinned by index digest (the
+#     build platform picks the matching static binary), at the version the clusters run (1.19.0).
 #   - oras: pushes build.artifacts' non-container outputs (python-wheel/go-binary) as
 #     real OCI artifacts to the same registry/credentials the image itself uses - see
 #     build-artifact.yaml. Respects DOCKER_CONFIG the same way crane does.
@@ -41,6 +44,8 @@
 # schemas/cicd.schema.json is baked in rather than mounted from a ConfigMap, so a
 # schema change requires an image rebuild + version bump, not a silent live update -
 # deliberate, see docs/user/cicd-yaml-reference.md.
+
+FROM ghcr.io/kyverno/kyverno-cli:v1.19.0@sha256:f40718123e3eea8dc36960023e2af7a980bcc76dec24842ad8705c82f4c9172e AS kyverno-cli
 
 FROM golang:1.22-alpine AS yajsv-build
 ARG YAJSV_VERSION=1.4.1
@@ -128,6 +133,7 @@ RUN set -euo pipefail; \
     && rm /tmp/oasdiff.tar.gz
 
 COPY --from=yajsv-build /go/bin/yajsv /usr/local/bin/yajsv
+COPY --from=kyverno-cli /ko-app/kubectl-kyverno /usr/local/bin/kyverno
 
 COPY catalog/lib/otel.sh /opt/platform/lib/otel.sh
 COPY catalog/lib/chain-slug.sh /opt/platform/lib/chain-slug.sh

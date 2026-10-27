@@ -1,0 +1,2 @@
+release:
+  image: ghcr.io/example/app:1.0.0-abc1234

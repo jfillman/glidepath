@@ -1,0 +1,38 @@
+# A native VAP that matches only pods/exec: the CLI alone would apply it to everything; the gate must not.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: no-exec}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules: [{apiGroups: [""], apiVersions: [v1], operations: [CONNECT], resources: [pods/exec]}]
+  validations:
+    - expression: "false"
+      message: no exec
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: no-exec}
+spec:
+  policyName: no-exec
+  validationActions: [Deny]
+---
+# A native VAP on services that reads spec.type without has(): the rendered Service has no type (the API server
+# defaults it), so offline this is an `error` - reported as a warning, never a deny.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: clusterip-only}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules: [{apiGroups: [""], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [services]}]
+  validations:
+    - expression: "object.spec.type == 'ClusterIP'"
+      message: ClusterIP services only
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: clusterip-only}
+spec:
+  policyName: clusterip-only
+  validationActions: [Deny]
