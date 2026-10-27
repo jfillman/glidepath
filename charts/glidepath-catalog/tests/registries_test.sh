@@ -84,6 +84,19 @@ release_file
   || { echo "FAIL: an unpinned deploy does not wait for repo:tag"; fail=1; }
 script_of "$work/deploy-manifests-on.yaml" 0 | grep -q -- '--arg img "${want_image}"' || { echo "FAIL: the Rollout check does not use want_image"; fail=1; }
 
+# --- a deploy rerun whose commit already landed waits instead of failing on an empty commit -----------------------
+script_of "$work/deploy-manifests-on.yaml" 0 | sed -n '/^ *if git diff --cached --quiet; then$/,/^ *fi$/p' > "$work/commit.sh"
+[ "$(wc -l < "$work/commit.sh")" -eq 6 ] || { echo "FAIL: could not extract the deploy commit block: $(cat "$work/commit.sh")"; fail=1; }
+git init -q "$work/repo" && git -C "$work/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+( cd "$work/repo" && with_retry() { echo "PUSHED"; }; manifest=m IMAGE_REF=i APP_NAME=a ENV=dev clone_url=x; set -e
+  source "$work/commit.sh" ) > "$work/commit.out" 2>&1 || { echo "FAIL: a no-change deploy rerun errored: $(cat "$work/commit.out")"; fail=1; }
+grep -q "nothing to commit" "$work/commit.out" && ! grep -q PUSHED "$work/commit.out" \
+  || { echo "FAIL: a no-change deploy rerun pushed or said nothing: $(cat "$work/commit.out")"; fail=1; }
+echo x > "$work/repo/f" && git -C "$work/repo" add f
+( cd "$work/repo" && with_retry() { echo "PUSHED"; }; manifest=m IMAGE_REF=i APP_NAME=a ENV=dev clone_url=x; set -e
+  git() { command git -c user.name=t -c user.email=t@t "$@"; }; source "$work/commit.sh" ) > "$work/commit.out" 2>&1
+grep -q PUSHED "$work/commit.out" || { echo "FAIL: a deploy with a change did not commit and push: $(cat "$work/commit.out")"; fail=1; }
+
 # --- promotion.enabled -------------------------------------------------------------------------------------------
 render "$work/bad.yaml" tasks/open-release-pr.yaml --set promotion.enabled=true
 grep -q "promotion.enabled needs promotion.pinDigest" "$work/bad.yaml" || { echo "FAIL: promotion without pinDigest rendered"; fail=1; }

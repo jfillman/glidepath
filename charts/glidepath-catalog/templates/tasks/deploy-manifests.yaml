@@ -190,8 +190,14 @@ spec:
 
         git config user.name "glidepath deploy automation"
         git config user.email "deploy@glidepath.invalid"
-        git commit --quiet -m "Deploy ${APP_NAME} to ${ENV}: ${IMAGE_REF}"
-        with_retry 3 -- git push --quiet "${clone_url}" main
+        # A rerun of a deploy whose commit already landed (it failed later, in the wait) has nothing to commit:
+        # skip straight to the wait rather than fail on an empty commit.
+        if git diff --cached --quiet; then
+          echo "${manifest} already deploys ${IMAGE_REF} - nothing to commit"
+        else
+          git commit --quiet -m "Deploy ${APP_NAME} to ${ENV}: ${IMAGE_REF}"
+          with_retry 3 -- git push --quiet "${clone_url}" main
+        fi
 
         NAMESPACE="${APP_TYPE}-${APP_NAME}-${ENV}"
         echo "pushed ${manifest} - waiting for argocd-apps' ${APP_NAME}-${ENV} Application to sync and the Rollout to become Healthy"
