@@ -49,7 +49,7 @@ spec:
       description: Name of the calling Task's projected-ServiceAccount-token volume (audience github-installation-token, path github-token-broker-token).
   results:
     - name: image-ref
-      description: "<repository>:<tag> read from the promoted manifest."
+      description: "<repository>:<tag> read from the promoted manifest; the repository is release.image.source when set (ADR-0029)."
     - name: manifest-path
       description: Repo-relative path of the manifest the image was read from.
   volumeMounts:
@@ -124,7 +124,9 @@ spec:
     fi
 
     api -H "Accept: application/vnd.github.raw+json" "${base}/contents/${manifest}?ref=${REVISION}" > /tmp/manifest.yaml
-    image_repo="$(yq -r '.release.image.repository // .rollout.image.repository' /tmp/manifest.yaml)"
+    # The gates verify evidence where it was made: release.image.source (the Ground repository, ADR-0029) when the
+    # release file records it - a Flight repository holds the image only once the promoter has copied it.
+    image_repo="$(yq -r '.release.image.source // .release.image.repository // .rollout.image.repository' /tmp/manifest.yaml)"
     image_tag="$(yq -r '.release.image.tag // .rollout.image.tag' /tmp/manifest.yaml)"
     if [[ -z "${image_repo}" || "${image_repo}" == "null" || -z "${image_tag}" || "${image_tag}" == "null" ]]; then
       echo "error: no release.image.repository/tag (or the deprecated rollout.image) in ${manifest} @ ${REVISION:0:12}" >&2

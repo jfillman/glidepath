@@ -303,3 +303,19 @@ releaseGuardrails:
 # registry (the gate Pipelines, detect-bypass-merge, release-log-emit, open-release-pr) renders from the merged
 # result (_helpers.tpl, glidepath-catalog.guardrails); hack/apply-guardrail-ruleset.sh takes the same file with -f.
 releaseGuardrailOverrides: {}
+
+# Ground and Flight registries (ADR-0029). Ground is where builds push and what lower clusters, Testkube and the
+# release gates read. Flight is what a Flight environment's release file pins once promotion is on; only the
+# promoter writes it. Admin-owned: never cicd.yaml, never Tower settings. A namespace of "" means the app's GitHub
+# owner, which is today's behaviour, so both blocks default to exactly what was hardcoded before.
+registries:
+  ground: { host: ghcr.io, namespace: "" }
+  flight: { host: ghcr.io, namespace: "" }
+promotion:
+  # On: open-release-pr pins the Flight repository (the promote pipeline copies the image there). Off (default):
+  # a Flight release pins the Ground repository, as before. Needs pinDigest.
+  enabled: false
+  # Write release.image.digest and release.image.source into every release file (deploy-manifests for Ground
+  # environments, open-release-pr for Flight). airframe-application before v0.3.166 rejects both keys, so turn this
+  # on only after every cluster's defaultChart is at v0.3.166 or later.
+  pinDigest: false

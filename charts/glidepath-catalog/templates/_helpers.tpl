@@ -38,6 +38,26 @@ The AWS CLI exchanges the token for a session itself.
 If one is missing, or STS refuses the role (not created yet, or nothing the platform's targets manage), the step fails
 and says which, with the fix.
 */ -}}
+{{- /*
+glidepath-catalog.releaseImagePin - bash function release_image_pin MANIFEST SOURCE_REPO DIGEST (ADR-0029). With
+promotion.pinDigest on, writes release.image.digest and release.image.source; off, deletes them, so a release file
+never keeps a digest from an earlier release under a newer tag. DIGEST must be sha256:<64 hex> when pinning.
+*/ -}}
+{{- define "glidepath-catalog.releaseImagePin" -}}
+release_image_pin() {
+  local manifest="$1" source_repo="$2" digest="$3"
+{{- if .Values.promotion.pinDigest }}
+  if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "error: promotion.pinDigest is on but the image digest is '${digest}', not sha256:<hex> - resolve-image-ref could not read it from the registry" >&2
+    return 1
+  fi
+  yq -i -e ".release.image.digest = \"${digest}\" | .release.image.source = \"${source_repo}\"" "${manifest}"
+{{- else }}
+  yq -i 'del(.release.image.digest, .release.image.source)' "${manifest}"
+{{- end }}
+}
+{{- end -}}
+
 {{- define "glidepath-catalog.awsCredentials" -}}
 aws_token_subject() {
   local payload

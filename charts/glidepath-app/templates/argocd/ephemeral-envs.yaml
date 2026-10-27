@@ -148,7 +148,8 @@ spec:
               envName: "pr-{{ "{{" }}.number{{ "}}" }}"
               release:
                 image:
-                  repository: ghcr.io/{{ .Values.platformIdentity.githubOwner }}/{{ .Values.platformIdentity.appName }}-pr
+                  # The Ground registry (ADR-0029): registries.ground, "" = ghcr.io / the GitHub owner.
+                  repository: {{ .Values.registries.ground.host | default "ghcr.io" }}/{{ .Values.registries.ground.namespace | default .Values.platformIdentity.githubOwner }}/{{ .Values.platformIdentity.appName }}-pr
                   # trunc 12 matches build-image.yaml's own <app>-pr:<12-char-sha> tag.
                   tag: "{{ "{{" }} trunc 12 .head_sha {{ "}}" }}"
               # Moved here from managedNamespaceMetadata.labels (removed below) - an

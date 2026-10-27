@@ -42,7 +42,11 @@ spec:
   params:
     - name: image-ref
       type: string
-      description: The already-built image reference (by digest) to promote.
+      description: The already-built image reference (repository:tag, in the Ground registry) to promote.
+    - name: image-digest
+      type: string
+      default: none
+      description: Its manifest digest (resolve-image-ref's image-digest), pinned when promotion.pinDigest is on (ADR-0029).
     - name: git-url
       type: string
       description: The app repo's git-url - only its GitHub org/owner is used, to derive the gitops repo's owner.
@@ -150,6 +154,8 @@ spec:
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
         - name: IMAGE_REF
           value: $(params.image-ref)
+        - name: IMAGE_DIGEST
+          value: $(params.image-digest)
         - name: GIT_URL
           value: $(params.git-url)
         - name: APP_NAME
@@ -379,6 +385,16 @@ spec:
         # deploy-manifests.yaml uses for glidepath/envs/<env>.yaml.
         image_repo="${IMAGE_REF%:*}"
         image_tag="${IMAGE_REF##*:}"
+        # ADR-0029: the image was built in Ground (source). With promotion on, a Flight environment pins the Flight
+        # repository instead; the promote pipeline copies the digest there before the PR can merge.
+        source_repo="${image_repo}"
+{{- if .Values.promotion.enabled }}
+{{- if not .Values.promotion.pinDigest }}
+{{- fail "promotion.enabled needs promotion.pinDigest: a Flight release must pin the digest the promoter copied" }}
+{{- end }}
+        flight_ns='{{ .Values.registries.flight.namespace }}'
+        image_repo="{{ .Values.registries.flight.host }}/${flight_ns:-${owner}}/${APP_NAME}"
+{{- end }}
 
         # deploy.releaseFile (D9/AF-5) opt-in, same signal deploy-manifests.yaml reads
         # off the app repo's cicd.yaml - here read from CONFIG_JSON instead (already
@@ -422,6 +438,8 @@ spec:
               .releaseTracking.gitRevision, .releaseTracking.flowStartTime, .releaseTracking.chainId,
               .releaseTracking.configJsonB64)
         " "${manifest}"
+        {{- include "glidepath-catalog.releaseImagePin" . | nindent 8 }}
+        release_image_pin "${manifest}" "${source_repo}" "${IMAGE_DIGEST}"
         git add "${manifest}"
 
         git config user.name "glidepath release automation"
