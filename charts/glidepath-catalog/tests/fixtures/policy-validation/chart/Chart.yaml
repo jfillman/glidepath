@@ -1,0 +1,4 @@
+apiVersion: v2
+name: fixture-app
+version: 0.1.0
+description: A stand-in for airframe-application in policy_validation_test.sh - a Namespace, a Service, a Rollout and one Airframe component.

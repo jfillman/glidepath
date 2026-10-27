@@ -58,6 +58,12 @@ gate, not a placeholder that always passes:
   [../admin/commit-signing.md](../admin/commit-signing.md).
 - **`sbom`** - real cosign SBOM attestation.
 
+Every release PR of a Kubernetes app is also checked against the **target cluster's admission policies**
+(`policy-validation`, not a `cicd.yaml` switch): the environments the PR changes are rendered and evaluated
+offline against the policies in that cluster's GitOps repo, and a violation of a Deny/Enforce policy fails the
+check with the policy, resource and message, before Argo CD would refuse the sync. See
+[../admin/policy-validation.md](../admin/policy-validation.md).
+
 On a `release`, these four run as independent, individually-required GitHub status
 checks against the gitops PR - branch protection won't let the PR merge until all four
 pass and the required reviewer count is met. See

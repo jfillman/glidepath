@@ -31,7 +31,7 @@ spec:
   params:
     - name: gate-name
       type: string
-      description: Any still-stub name from .Values.releaseGuardrails, e.g. policy-validation (itsm has itsm-check.yaml, which is this same stub until a change tool is configured).
+      description: Any still-stub name from .Values.releaseGuardrails, e.g. a new gate before it is real (policy-validation was one until 2026-10-26; itsm has itsm-check.yaml, which is this same stub until a change tool is configured).
     - name: repo-url
       type: string
       default: ""

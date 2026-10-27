@@ -120,6 +120,10 @@ spec:
           # having previously pulled that exact commit's image.
           imagePullPolicy: IfNotPresent
           ports: [{ containerPort: 8080, name: http }]
+          env:
+            # Where /policy-bundle reads each target cluster's admission policies (policybundle.go, ADR-0028).
+            - name: POLICY_SOURCES
+              value: {{ .Values.policyValidation | toJson | quote }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

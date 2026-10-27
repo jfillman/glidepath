@@ -50,8 +50,8 @@ gate once `itsm.provider` is set, so the onboarding template never changes, see
 - **Stub, fully generic (least effort)**: add one onboarding template file,
   `charts/glidepath-app/files/onboarding-templates/gitops-repo/pull-request-<name>.yaml`,
   pointing at the existing shared `governance-check` Pipeline with `gate-name: <name>`
-  (copy `pull-request-itsm.yaml` or `pull-request-policy-validation.yaml` as a starting
-  point). That Pipeline already calls `governance-gate-stub` (loud "no real check
+  (`pull-request-policy-validation.yaml` before 2026-10-26, in git history, is the
+  shape). That Pipeline already calls `governance-gate-stub` (loud "no real check
   implemented yet" logging + a `governance.stub=true` span + a `"stub"` result, never a
   silent pass) and posts a PR comment. **No new Pipeline or Task needed** - this is the
   whole change, plus the registry entry above. Good default when the gate's eventual
@@ -74,6 +74,10 @@ gate once `itsm.provider` is set, so the onboarding template never changes, see
   gate was already scaffolded dedicated-stub-style, this step shrinks further: just
   replace the Task's stub step with real logic, keeping its name/params/results
   contract the same - no Pipeline or onboarding-template change at all.
+  `policy-validation` graduated this way from the generic stub on 2026-10-26 (ADR-0028):
+  its own `policy-validation-check` Pipeline and `policy-validation-gate` Task, `class:
+  integrity` like `values` (so no rollback-advisory copy), see
+  [policy-validation.md](policy-validation.md).
 
 **B. A gate that depends on the others (none today)** - Tekton has no cross-PipelineRun
 `runAfter` (every gate is its own independently PaC-triggered PipelineRun off the same
@@ -168,7 +172,7 @@ change management sets it advisory the same way. Today `qa` and `api-compat` ([a
 | `itsm` | An approved or scheduled change request for the release in the change tool ([change-management.md](change-management.md)) | stub until `itsm.provider` is set, then real | yes once real |
 | `api-compat` | The promoted image's signed API spec diffed against the target environment's, with the operations each breaking change touches and whether they are in use ([api-compat.md](api-compat.md)) | real | no (advisory) |
 | `qa` | A passing, recent check ride from the shared check-rides repository, attested on the promoted image ([testing.md](testing.md)) | real | no (advisory) |
-| `policy-validation` | Gatekeeper/Kyverno admission-policy validation of the rendered manifest | stub | (ignored) |
+| `policy-validation` | The release's environments rendered and evaluated offline (Kyverno CLI) against the target cluster's admission policies from its GitOps repo; only Deny/Enforce findings block ([policy-validation.md](policy-validation.md)) | real | yes |
 
 **How `qa` judges a release (2026-10-19, phase 3 of [testing.md](testing.md)).** The gate never runs tests. It
 resolves the promoted image like the other image gates, downloads the digest's attestations, verifies each SLSA

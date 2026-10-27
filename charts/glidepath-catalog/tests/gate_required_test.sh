@@ -56,6 +56,8 @@ expect "api-compat-check default (advisory)" "$(tasks api-compat-check "${tmp}/d
   "extract-promoted-image compare-api-advisory+continue advisory-reason=not-required "
 expect "values-check default" "$(tasks values-check "${tmp}/default.yaml" | tr '\n' ' ')" \
   "validate advisory-reason=rollback "
+expect "policy-validation-check default (required, no rollback copy)" "$(tasks policy-validation-check "${tmp}/default.yaml" | tr '\n' ' ')" \
+  "evaluate advisory-reason=rollback "
 for task in detect-bypass-merge release-log-emit wait-for-release-guardrails open-release-pr comment-pr-check-result; do
   script_of "${task}" "${tmp}/default.yaml" > "${tmp}/${task}.sh"
   [[ -s "${tmp}/${task}.sh" ]] || { echo "FAIL: no script for ${task}"; fail=1; }
@@ -75,8 +77,9 @@ grep -q '| `api-compat` | [^|]* | real, advisory - reports without blocking' "${
   || { echo "FAIL: the PR body table does not mark api-compat advisory"; fail=1; }
 grep -q '| `sast` | [^|]* | real |' "${tmp}/open-release-pr.sh" || { echo "FAIL: the PR body table does not mark sast real"; fail=1; }
 grep -q '| `itsm` | [^|]* | not yet real' "${tmp}/open-release-pr.sh" || { echo "FAIL: the PR body table does not mark itsm a stub"; fail=1; }
+grep -q '| `policy-validation` | [^|]* | real |' "${tmp}/open-release-pr.sh" || { echo "FAIL: the PR body table does not mark policy-validation real"; fail=1; }
 
-# ---- a cluster's overrides: qa required, sbom and values advisory (a map, so the list is untouched)
+# ---- a cluster's overrides: qa required, sbom, values and policy-validation advisory (a map, so the list is untouched)
 cat > "${tmp}/override-values.yaml" <<'YAML'
 releaseGuardrailOverrides:
   qa: { required: true }
@@ -84,6 +87,7 @@ releaseGuardrailOverrides:
   values: { required: false }
   itsm: { required: false }
   api-compat: { required: true }
+  policy-validation: { required: false }
 YAML
 render override -f "${tmp}/override-values.yaml"
 expect "qa-check required" "$(tasks qa-check "${tmp}/override.yaml" | tr "\n" " ")" \
@@ -94,17 +98,19 @@ expect "sbom-check advisory" "$(tasks sbom-check "${tmp}/override.yaml" | tr '\n
   "extract-promoted-image generate-sbom-advisory+continue advisory-reason=not-required "
 expect "values-check advisory" "$(tasks values-check "${tmp}/override.yaml" | tr '\n' ' ')" \
   "validate-advisory+continue advisory-reason=not-required "
+expect "policy-validation-check advisory" "$(tasks policy-validation-check "${tmp}/override.yaml" | tr '\n' ' ')" \
+  "evaluate-advisory+continue advisory-reason=not-required "
 script_of detect-bypass-merge "${tmp}/override.yaml" > "${tmp}/detect-override.sh"
 expect "detect-bypass-merge with overrides (stub itsm stays; sbom/values out; qa in)" \
   "$(grep -o 'for gate in .*; do' "${tmp}/detect-override.sh")" \
-  "for gate in sast image-scan provenance itsm api-compat qa policy-validation ; do"
+  "for gate in sast image-scan provenance itsm api-compat qa ; do"
 
 # ---- the ruleset script applies the same rule
 rs() { hack/apply-guardrail-ruleset.sh --dry-run "$@" x/y | grep -v '^#' \
   | jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context' \
   | sed 's#Pipelines as Code CI / ##' | tr '\n' ' '; }
 expect "ruleset default" "$(rs)" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- "
-expect "ruleset with overrides" "$(rs -f "${tmp}/override-values.yaml")" "sast- image-scan- provenance- itsm- api-compat- qa- policy-validation- "
+expect "ruleset with overrides" "$(rs -f "${tmp}/override-values.yaml")" "sast- image-scan- provenance- itsm- api-compat- qa- "
 
 # ---- sast and provenance cannot be made advisory
 for locked in sast provenance; do

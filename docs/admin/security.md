@@ -83,6 +83,14 @@ which case your cluster is in before treating it as a security reference; see
   today, and any gate still awaiting a real backend is structurally marked as a stub -
   never silently reported as a pass. See [governance-stubs.md](governance-stubs.md)
   and [ADR-0003](adr/0003-governance-stubs.md).
+- **A release is checked against the target cluster's admission policies before the merge**
+  (`policy-validation`, 2026-10-26): the release's environments are rendered and evaluated offline
+  (Kyverno CLI) against the policies in the target cluster's GitOps repo; a Deny/Enforce violation fails
+  the check. The gate holds no credential to the target cluster or its repo: the broker reads the repo
+  with a `contents: read` token it never hands out (the repo also holds generated passwords, and an app's
+  pipeline namespace runs the app's own build scripts) and returns only the policy documents. See
+  [policy-validation.md](policy-validation.md) and
+  [ADR-0028](adr/0028-policy-validation-offline-against-target-cluster-policies.md).
 
 ## Release: no direct-mutation path exists
 

@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    hangar.io/app: {{ .Values.appName }}
+    {{- toYaml .Values.namespace.labels | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.appName }}
+  namespace: {{ .Release.Namespace }}
+  {{- with .Values.serviceLabels }}
+  labels: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.serviceType }}
+  type: {{ . }}
+  {{- end }}
+  ports: [{port: 8080}]
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ .Values.appName }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: {{ .Values.release.image }}
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: catalog.hangar.io/v1alpha1
+kind: Redis
+metadata:
+  name: redis
+  namespace: {{ .Release.Namespace }}
+spec: {}

@@ -145,7 +145,7 @@ spec:
           summary="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "findings-summary")][0].value // empty')"
           # governance-gate-stub/qa-gate (ADR-0003) emit outcome=stub - a stub always
           # succeeds, so STATUS alone can't tell "really passed" from "not a real check
-          # yet". Without this, a stubbed gate (currently itsm/policy-validation)
+          # yet". Without this, a stubbed gate (currently itsm without a change tool)
           # posts the same "passed" wording as a genuine result, which
           # reads as the gate having actually verified something it never checked.
           outcome="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "outcome")][0].value // empty')"
@@ -227,7 +227,7 @@ spec:
               recommendation="The release's change request is not approved or scheduled in the change tool, or no change is linked to this PR (the log above names which). Get the change approved (its link is in the PR description and the log), or, for a PR made by hand, add \`<!-- glidepath:change-request:<id> -->\` to the PR body, then \`/retest itsm-\`. See Glidepath docs/admin/change-management.md."
               ;;
             policy-validation)
-              recommendation="This gate is a stub - it always no-ops and reports \`stub\`, never a real pass/fail judgment (see docs/admin/governance-stubs.md). A failure here means something broke in the platform scaffolding itself (e.g. the shared toolbox image or OTel collector), not a real ITSM/QA/policy rejection - check the log excerpt above and \`/retest ${GATE_NAME}-\`."
+              recommendation="The table below lists each violation by environment, policy, rule and resource. A ❌ row is a Deny/Enforce admission policy of the target cluster (read from its GitOps repo, docs/admin/policy-validation.md): Argo CD's sync would be refused, so change the values (or the chart) so the rendered object complies, then push to the release branch or \`/retest policy-validation-\`. If the policy itself is wrong, that is a change to the cluster's GitOps repo by its admins, never an override here. \"could not evaluate\" means the render or the policy read failed (the log above says which): a platform problem, not a verdict."
               ;;
             *)
               recommendation="See the log excerpt above for detail."

@@ -1,0 +1,508 @@
+# catalog/tasks/policy-validation-gate.yaml
+#
+# The policy-validation release check (docs/admin/policy-validation.md, ADR-0028). Renders the manifests a gitops
+# release PR would make the target cluster's Argo CD apply, and evaluates them offline with the Kyverno CLI against
+# that cluster's own admission policies, read from git: the `30-policy/` tree of the cluster's GitOps repo (Apron's
+# layout), at the revision its Argo CD syncs. No credential to the target cluster is used or needed, and none to its
+# GitOps repo either: the broker's /policy-bundle reads the repo and returns only the policy documents (the repo also
+# holds generated passwords; glidepath-control-plane's policyValidation names the source).
+#
+# Three steps:
+#   fetch     (toolbox)          the PR head, the environments it changes (<cluster>/<env>/values.yaml|release.yaml,
+#                                or a cluster's base.yaml = every environment on it), each environment's chart
+#                                (validate-values.yaml's resolution: an own chart is fetched, the default is the one
+#                                baked into the validator image), and each target cluster's policy bundle
+#   render    (validator image)  `helm template` per environment with the same value files and injected values the
+#                                Flight ApplicationSet layers (base < values < release); then, for the Kyverno CLI:
+#                                stand-in CRDs for the custom kinds rendered (plurals from Airframe's XRDs, else the
+#                                API server's own guess), the rendered Namespaces' labels (namespaceSelector), and the
+#                                policy bundle normalized (below)
+#   evaluate  (toolbox)          `kyverno apply` per environment, every result classified, the report written
+#
+# Which policies count: Kyverno ValidatingPolicy / NamespacedValidatingPolicy, ClusterPolicy / Policy, and native
+# ValidatingAdmissionPolicy + ValidatingAdmissionPolicyBinding. The bundle is normalized for an offline run, because
+# the CLI (1.19) otherwise gets two things wrong for admission policies:
+#   - a policy with background evaluation off (every admission-only policy) is skipped outright; offline there is
+#     only the admission view, so it is turned on in the copy evaluated here;
+#   - a native VAP's matchConstraints are ignored (it is applied to every resource), so each binding is converted to
+#     the equivalent ValidatingPolicy (same CEL, the binding's validationActions), which the CLI matches properly.
+# ImageValidatingPolicy (needs registry access) and mutating policies are not evaluated.
+#
+# Verdicts (the `outcome` result):
+#   pass      nothing failed
+#   warn      only warnings: a failure under a policy whose actions are Audit/Warn (Kyverno: Audit), or a rule that
+#             could not be evaluated offline (an `error`, typically a field the API server would default)
+#   fail      at least one failure under a Deny (Kyverno: Enforce) policy: the cluster would refuse this release.
+#             The task exits 1; a required gate blocks, an advisory one reports (the Pipeline's -advisory copy).
+#   skipped   nothing to evaluate: no environment file changed, or the app does not deploy to Kubernetes
+# An environment whose render or evaluation fails outright fails the task too: an unreadable policy tree is not a pass.
+#
+# The full report goes to a ConfigMap owned by the PipelineRun, labelled glidepath.io/gate-report=policy-validation;
+# comment-pr-check-result posts it (the api-compat-gate.yaml convention).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: policy-validation-gate
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Renders a gitops release PR's environments and evaluates them offline against the target cluster's admission policies from git. Fails on a Deny-mode violation.
+  params:
+    - name: repo-url
+      type: string
+      description: The gitops repo's own URL - PaC's repo_url.
+    - name: revision
+      type: string
+      description: The PR head commit - PaC's revision.
+    - name: pr-number
+      type: string
+      default: ""
+      description: PaC's body.pull_request.number - the environments are those whose files changed between the PR's base and revision. Empty means "just this commit".
+    - name: app-name
+      type: string
+      description: The application's name.
+    - name: pipeline-run-name
+      type: string
+      default: ""
+      description: Owner of the report ConfigMap; empty writes none.
+    - name: validator-image
+      type: string
+      default: {{ .Values.valuesValidatorImage | default (printf "%s:%s" (required "valuesValidatorRepository (or valuesValidatorImage) must be set" .Values.valuesValidatorRepository) (required "defaultChart.targetRevision must be set" .Values.defaultChart.targetRevision)) | quote }}
+      description: The values gate's validator image (helm, python3 + pyyaml, the default chart under /opt/airframe/charts and Airframe's XRDs under /opt/airframe/xrds).
+  results:
+    - name: outcome
+      description: pass | warn | fail | skipped
+    - name: findings-summary
+      description: One line for the PR comment's headline.
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+    - name: policy-bundle-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: policy-bundle-token
+              audience: policy-bundle
+              expirationSeconds: 600
+    - name: work
+      emptyDir: {}
+  steps:
+    - name: fetch
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: github-token-broker-token, mountPath: /var/run/secrets/platform, readOnly: true }
+        - { name: policy-bundle-token, mountPath: /var/run/secrets/policy-bundle, readOnly: true }
+        - { name: work, mountPath: /work }
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: POLICY_BUNDLE_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/policy-bundle
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: REVISION
+          value: $(params.revision)
+        - name: PR_NUMBER
+          value: $(params.pr-number)
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: DEFAULT_CHART_REPO_URL
+          value: {{ .Values.defaultChart.repoURL | quote }}
+        - name: DEFAULT_CHART_PATH
+          value: {{ .Values.defaultChart.path | quote }}
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        source "${PLATFORM_LIB}/retry.sh"
+
+        owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+        api() {
+          curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"
+        }
+        # Fetch one revision of a GitHub repo into a directory, one commit deep, no token left in .git.
+        fetch_repo() { # <repo-url> <revision> <dir>
+          local url="$1" rev="$2" dir="$3" o r t clone_url
+          clone_url="${url%.git}.git"
+          o="$(echo "${url}" | sed -nE 's#https?://github\.com/([^/]+)/.*#\1#p')"
+          r="$(echo "${url}" | sed -nE 's#https?://github\.com/[^/]+/([^/.]+).*#\1#p')"
+          if [[ -n "${o}" ]] && t="$(github_app_installation_token "${o}" "${r}" 2>/dev/null)"; then
+            clone_url="https://x-access-token:${t}@github.com/${o}/${r}.git"
+          fi
+          mkdir -p "${dir}"
+          git -C "${dir}" init --quiet
+          with_retry 3 -- git -C "${dir}" fetch --quiet --depth 1 "${clone_url}" "${rev}"
+          git -C "${dir}" checkout --quiet FETCH_HEAD
+          rm -f "${dir}/.git/config"
+        }
+
+        mkdir -p /work/repo && cd /work/repo
+        git init --quiet
+        with_retry 3 -- git fetch --quiet --depth 1 "https://x-access-token:${token}@github.com/${owner}/${repo}.git" "${REVISION}"
+        git checkout --quiet FETCH_HEAD
+        rm -f .git/config
+
+        # Changed files: the PR's base...head compare, or the single commit when there is no PR (validate-values.yaml).
+        if [[ -n "${PR_NUMBER}" ]]; then
+          base_sha="$(api "https://api.github.com/repos/${owner}/${repo}/pulls/${PR_NUMBER}" | jq -r '.base.sha')"
+          changed="$(api "https://api.github.com/repos/${owner}/${repo}/compare/${base_sha}...${REVISION}" \
+            | jq -r '.files[] | select(.status != "removed") | .filename')"
+        else
+          changed="$(api "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}" \
+            | jq -r '.files[] | select(.status != "removed") | .filename')"
+        fi
+        # The environments this PR changes: <cluster>/<env>/{values,release}.yaml, and every environment under a
+        # changed <cluster>/base.yaml (it is layered under each of them).
+        : > /work/envs.txt
+        while IFS= read -r f; do
+          if [[ "${f}" =~ ^([^/]+)/([^/]+)/(values|release)\.yaml$ ]]; then
+            echo "${BASH_REMATCH[1]}|${BASH_REMATCH[2]}" >> /work/envs.txt
+          elif [[ "${f}" =~ ^([^/]+)/base\.yaml$ ]]; then
+            for d in "${BASH_REMATCH[1]}"/*/; do
+              [[ -f "${d}values.yaml" || -f "${d}release.yaml" ]] && echo "${BASH_REMATCH[1]}|$(basename "${d}")" >> /work/envs.txt
+            done
+          fi
+        done <<<"${changed}"
+        sort -u -o /work/envs.txt /work/envs.txt
+        echo "environments this PR changes: $(wc -l < /work/envs.txt | tr -d ' ')"
+        cat /work/envs.txt
+
+        # The app's cicd.yaml decides the chart and the target. An infra service's gitops repo is its own app repo
+        # and carries it; an app's gitops repo does not, so read the app repo's (validate-values.yaml).
+        cicd=""
+        if [[ -f cicd.yaml ]]; then
+          cicd="$(cat cicd.yaml)"
+        else
+          app_token="$(github_app_installation_token "${owner}" "${APP_NAME}" 2>/dev/null || true)"
+          cicd="$(curl -fsSL -H "Authorization: Bearer ${app_token}" -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/${owner}/${APP_NAME}/contents/cicd.yaml" 2>/dev/null || true)"
+        fi
+        target="$(echo "${cicd}" | yq '.deploy.target // ""' 2>/dev/null || true)"
+        [[ -z "${target}" || "${target}" == null ]] && target=k8s-rollout
+        if [[ "${target}" != "k8s-rollout" ]]; then
+          echo "deploy.target is ${target}: no Kubernetes manifest to evaluate."
+          : > /work/envs.txt
+        fi
+
+        # Each environment's chart, glidepath-app.resolveChart's rules (the same jq as validate-values.yaml): the
+        # environment's chart over deploy.chart over the catalog default. "default" = the chart baked into the
+        # validator image at the default chart's pinned revision.
+        mkdir -p /work/charts /work/policies
+        : > /work/plan.txt
+        n=0
+        while IFS='|' read -r cluster env; do
+          [[ -n "${cluster}" ]] || continue
+          chart_dir=default
+          resolved="$(echo "${cicd}" | yq -o json "{\"app\": (.deploy.chart // {}), \"env\": ((.deploy.environments // [])[] | select(.name == \"${env}\") | .chart // {})}" 2>/dev/null \
+            | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" '
+                def over($b; $o): if ($o.repoURL // "") != "" then $o
+                  else $b + ($o | with_entries(select(.value != null and .value != "")))
+                    | (if ($o.path // "") != "" then del(.chart) elif ($o.chart // "") != "" then del(.path) else . end) end;
+                over(over({repoURL: $r, path: $p}; .app); .env)' 2>/dev/null || true)"
+          if [[ -n "${resolved}" && "$(echo "${resolved}" | jq -r --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" \
+               '.repoURL != $r or (.chart // "") != "" or .path != $p')" == "true" ]]; then
+            n=$((n + 1))
+            repo_url="$(echo "${resolved}" | jq -r .repoURL)"; rev="$(echo "${resolved}" | jq -r '.targetRevision // "main"')"
+            if [[ "${repo_url}" == oci://* ]]; then
+              with_retry 3 -- oras pull "${repo_url#oci://}/$(echo "${resolved}" | jq -r .chart):${rev}" -o "/work/charts/${n}-oci" >/dev/null
+              mv "$(ls /work/charts/${n}-oci/*.tgz | head -1)" "/work/charts/${n}.tgz"
+              chart_dir="/work/charts/${n}.tgz"
+            else
+              fetch_repo "${repo_url}" "${rev}" "/work/charts/${n}"
+              chart_dir="/work/charts/${n}/$(echo "${resolved}" | jq -r '.path // "."')"
+            fi
+            echo "own chart for ${cluster}/${env}: ${resolved}"
+          fi
+          echo "${cluster}|${env}|${chart_dir}" >> /work/plan.txt
+        done < /work/envs.txt
+
+        # Each target cluster's admission policies, from the broker (ADR-0028): the policy documents of the cluster's
+        # GitOps repo at the revision the control plane names, and where they came from. A failure here fails the
+        # check: an unreadable policy source is not a pass.
+        for cluster in $(cut -d'|' -f1 /work/plan.txt | sort -u); do
+          resp="$(curl --silent --show-error --max-time 60 --retry 3 --retry-connrefused -w '\n%{http_code}' -X POST "${POLICY_BUNDLE_URL}" \
+            -H "Authorization: Bearer $(cat /var/run/secrets/policy-bundle/policy-bundle-token)" -H "Content-Type: application/json" \
+            -d "$(jq -nc --arg c "${cluster}" --arg o "${owner}" '{cluster: $c, owner: $o}')")"
+          code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+          if [[ "${code}" != 200 ]]; then
+            echo "could not read ${cluster}'s admission policies: HTTP ${code}: $(jq -r '.error // .' <<<"${body}" 2>/dev/null || echo "${body}")" >&2
+            exit 1
+          fi
+          mkdir -p "/work/policies/${cluster}"
+          jq -c '{repoURL, path, revision, commit, files}' <<<"${body}" > "/work/policies/${cluster}.source.json"
+          # One JSON document per YAML document (JSON is YAML), so the render step reads it like any policy file.
+          jq -r '.documents[] | tojson, "---"' <<<"${body}" > "/work/policies/${cluster}/bundle.yaml"
+          echo "policies for ${cluster}: $(jq -r '"\(.repoURL) \(.path) @ \(.revision) (\(.commit[0:12])): \(.documents | length) document(s) in \(.files) file(s)"' <<<"${body}")"
+        done
+        chmod -R a+rwX /work/repo /work/charts /work/policies /work/plan.txt 2>/dev/null || true
+    - name: render
+      image: $(params.validator-image)
+      imagePullPolicy: IfNotPresent
+      # Not readOnly and no workingDir: see validate-values.yaml's validate step.
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      env:
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: NAMESPACE
+          value: $(context.taskRun.namespace)
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        [[ -s /work/plan.txt ]] || exit 0
+        cd /work/repo
+        # <type>-<app>-cicd runs this; the environment's namespace is <type>-<app>-<env> (app, or infra for an
+        # InfraService: the Flight ApplicationSet's destination).
+        type="${NAMESPACE%%-*}"
+        rc=0
+        mkdir -p /work/eval
+        while IFS='|' read -r cluster env chart; do
+          [[ "${chart}" == default ]] && chart=/opt/airframe/charts/airframe-application
+          out="/work/eval/${cluster}__${env}"
+          mkdir -p "${out}"
+          # The values the Flight ApplicationSet injects (valuesObject), then the value files it layers.
+          printf 'appName: %s\ncluster: %s\nenvName: %s\nnamespace:\n  labels:\n    hangar.io/managed-secrets: "true"\n' \
+            "${APP_NAME}" "${cluster}" "${env}" > "${out}/injected.yaml"
+          vf=()
+          for v in "${cluster}/base.yaml" "${cluster}/${env}/values.yaml" "${cluster}/${env}/release.yaml"; do
+            [[ -f "${v}" ]] && vf+=(-f "${v}")
+          done
+          if ! helm template "${APP_NAME}" "${chart}" --namespace "${type}-${APP_NAME}-${env}" "${vf[@]}" -f "${out}/injected.yaml" > "${out}/resources.yaml" 2> "${out}/render.err"; then
+            echo "FAIL ${cluster}/${env}: helm template failed"; cat "${out}/render.err"; echo render-failed > "${out}/status"; rc=1
+            continue
+          fi
+          echo "${cluster}/${env}: rendered $(grep -c '^kind:' "${out}/resources.yaml") objects with ${chart}"
+        done < /work/plan.txt
+
+        # Kyverno CLI inputs: stand-in CRDs, Namespace labels, and each cluster's normalized policy bundle.
+        python3 - <<'PY' || rc=1
+        import glob, json, os, sys, yaml
+
+        def docs(path):
+            try:
+                return [d for d in yaml.safe_load_all(open(path)) if isinstance(d, dict)]
+            except yaml.YAMLError as e:
+                print(f"warning: {path} is not valid YAML, ignored: {e}", file=sys.stderr)
+                return []
+
+        # Plurals the cluster really uses for Airframe's kinds; anything else gets the API server's own guess
+        # (k8s.io/apimachinery UnsafeGuessKindToResource), which is what a CRD without explicit names would get.
+        xrd_plural = {}
+        for f in glob.glob("/opt/airframe/xrds/*.yaml"):
+            for d in docs(f):
+                if d.get("kind") == "CompositeResourceDefinition":
+                    n = d["spec"]["names"]
+                    xrd_plural[(d["spec"]["group"], n["kind"])] = n["plural"]
+
+        def guess(kind):
+            k = kind.lower()
+            if k.endswith(("s", "x", "z", "ch", "sh")):
+                return k + "es"
+            if k.endswith("y") and len(k) > 1 and k[-2] not in "aeiou":
+                return k[:-1] + "ies"
+            return k + "s"
+
+        BUILTIN = {"", "v1", "apps", "batch", "autoscaling", "policy"}
+        for out in sorted(glob.glob("/work/eval/*")):
+            if os.path.exists(f"{out}/status"):
+                continue
+            seen, namespaces = {}, []
+            for d in docs(f"{out}/resources.yaml"):
+                av, kind = d.get("apiVersion", ""), d.get("kind", "")
+                if kind == "Namespace":
+                    labels = dict((d.get("metadata") or {}).get("labels") or {})
+                    labels["kubernetes.io/metadata.name"] = d["metadata"]["name"]  # set by the API server
+                    namespaces.append({"name": d["metadata"]["name"], "labels": labels})
+                group, _, version = av.rpartition("/")
+                if group in BUILTIN or group.endswith(".k8s.io"):
+                    continue
+                seen.setdefault((group, kind), set()).add(version)
+            crds = []
+            for (group, kind), versions in sorted(seen.items()):
+                plural = xrd_plural.get((group, kind)) or guess(kind)
+                crds.append({"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition",
+                             "metadata": {"name": f"{plural}.{group}"},
+                             "spec": {"group": group, "scope": "Namespaced",
+                                      "names": {"kind": kind, "plural": plural, "singular": kind.lower(), "listKind": kind + "List"},
+                                      "versions": [{"name": v, "served": True, "storage": i == 0,
+                                                    "schema": {"openAPIV3Schema": {"type": "object", "x-kubernetes-preserve-unknown-fields": True}}}
+                                                   for i, v in enumerate(sorted(versions))]}})
+            with open(f"{out}/crds.yaml", "w") as f:
+                yaml.safe_dump_all(crds, f)
+            with open(f"{out}/values.yaml", "w") as f:
+                yaml.safe_dump({"apiVersion": "cli.kyverno.io/v1alpha1", "kind": "Values", "namespaceSelector": namespaces}, f)
+
+        # The bundle, normalized for an offline run (the header says why). index.json maps each evaluated policy name
+        # to its source object and its blocking mode: deny (the cluster refuses) or warn (Audit/Warn only).
+        for cdir in sorted(d for d in glob.glob("/work/policies/*") if os.path.isdir(d)):
+            all_docs = [d for f in sorted(glob.glob(f"{cdir}/**/*.y*ml", recursive=True)) for d in docs(f)]
+            vaps = {d["metadata"]["name"]: d for d in all_docs if d.get("kind") == "ValidatingAdmissionPolicy"}
+            bundle, index = [], {}
+            for d in all_docs:
+                kind, name = d.get("kind"), (d.get("metadata") or {}).get("name", "")
+                if kind in ("ValidatingPolicy", "NamespacedValidatingPolicy") and d.get("apiVersion", "").startswith("policies.kyverno.io/"):
+                    d["spec"].setdefault("evaluation", {}).setdefault("background", {})["enabled"] = True
+                    actions = d["spec"].get("validationActions") or ["Deny"]
+                    index[name] = {"source": f"{kind}/{name}", "mode": "deny" if "Deny" in actions else "warn"}
+                    bundle.append(d)
+                elif kind in ("ClusterPolicy", "Policy") and d.get("apiVersion", "").startswith("kyverno.io/"):
+                    spec = d.get("spec") or {}
+                    spec["background"] = True
+                    rules = [r for r in spec.get("rules") or [] if "validate" in r]
+                    if not rules:
+                        continue
+                    modes = [((r["validate"].get("failureAction") or spec.get("validationFailureAction") or "Audit").lower()) for r in rules]
+                    index[name] = {"source": f"{kind}/{name}", "mode": "deny" if "enforce" in modes else "warn"}
+                    bundle.append(d)
+                elif kind == "ValidatingAdmissionPolicyBinding":
+                    p = vaps.get((d.get("spec") or {}).get("policyName"))
+                    if not p:
+                        continue
+                    if p["spec"].get("paramKind"):
+                        print(f"note: {name}: ValidatingAdmissionPolicy {p['metadata']['name']} takes parameters, not evaluated offline", file=sys.stderr)
+                        continue
+                    spec = {k: v for k, v in p["spec"].items()}
+                    actions = d["spec"].get("validationActions") or ["Deny"]
+                    spec["validationActions"] = actions
+                    spec["evaluation"] = {"background": {"enabled": True}}
+                    # The binding narrows where the policy applies; both must match (selectors only, which is what
+                    # Apron's bindings use).
+                    mr = d["spec"].get("matchResources") or {}
+                    mc = spec.setdefault("matchConstraints", {})
+                    for sel in ("namespaceSelector", "objectSelector"):
+                        if sel in mr and sel not in mc:
+                            mc[sel] = mr[sel]
+                    bundle.append({"apiVersion": "policies.kyverno.io/v1", "kind": "ValidatingPolicy",
+                                   "metadata": {"name": name}, "spec": spec})
+                    index[name] = {"source": f"ValidatingAdmissionPolicy/{p['metadata']['name']} (binding {name})",
+                                   "mode": "deny" if "Deny" in actions else "warn"}
+            with open(f"{cdir}.bundle.yaml", "w") as f:
+                yaml.safe_dump_all(bundle, f)
+            with open(f"{cdir}.index.json", "w") as f:
+                json.dump(index, f)
+            print(f"{os.path.basename(cdir)}: {len(bundle)} admission polic{'y' if len(bundle) == 1 else 'ies'} to evaluate: {', '.join(sorted(index)) or 'none'}")
+        PY
+        # The evaluate step runs as the toolbox's user, not this image's: let it write next to these files.
+        chmod -R a+rwX /work/eval /work/policies 2>/dev/null || true
+        exit "${rc}"
+    - name: evaluate
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      env:
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: PIPELINE_RUN
+          value: $(params.pipeline-run-name)
+        - name: NAMESPACE
+          value: $(context.taskRun.namespace)
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        report=/work/report.md
+        write_results() { # <outcome> <summary>
+          printf '%s' "$1" > "$(results.outcome.path)"
+          printf '%s' "$2" | head -c 900 > "$(results.findings-summary.path)"
+        }
+        if [[ ! -s /work/plan.txt ]]; then
+          echo "No environment of a Kubernetes target changes in this PR: nothing to evaluate."
+          write_results skipped "No environment file changed: nothing to evaluate."
+          exit 0
+        fi
+
+        rc=0; denies=0; warns=0; envs=0
+        : > /work/findings.jsonl
+        while IFS='|' read -r cluster env _; do
+          out="/work/eval/${cluster}__${env}"
+          envs=$((envs + 1))
+          if [[ -f "${out}/status" ]]; then
+            echo "{\"env\":\"${cluster}/${env}\",\"level\":\"broken\",\"message\":\"the manifest did not render (helm template failed)\"}" >> /work/findings.jsonl
+            rc=1; continue
+          fi
+          bundle="/work/policies/${cluster}.bundle.yaml"
+          if [[ ! -s "${bundle}" ]] || [[ "$(jq 'length' "/work/policies/${cluster}.index.json")" == 0 ]]; then
+            echo "${cluster}/${env}: ${cluster} has no admission policy to evaluate"
+            continue
+          fi
+          # kyverno exits 1 when a rule fails, so its exit code is not the signal: a report that parses is.
+          kyverno apply "${bundle}" --resource "${out}/resources.yaml" --crd-paths "${out}/crds.yaml" \
+            -f "${out}/values.yaml" --policy-report --output-format json --remove-color \
+            > "${out}/report.json" 2> "${out}/kyverno.err"
+          krc=$?
+          if [[ ! -s "${out}/report.json" && "${krc}" == 0 ]]; then
+            echo '{"results":[]}' > "${out}/report.json"  # every policy skipped: no report at all
+          fi
+          if ! jq -e '.' "${out}/report.json" >/dev/null 2>&1; then
+            echo "FAIL ${cluster}/${env}: kyverno could not evaluate the policies (exit ${krc})"; tail -20 "${out}/kyverno.err"
+            echo "{\"env\":\"${cluster}/${env}\",\"level\":\"broken\",\"message\":\"kyverno could not evaluate (exit ${krc}): $(tail -1 "${out}/kyverno.err" | tr -d '"\\')\"}" >> /work/findings.jsonl
+            rc=1; continue
+          fi
+          # Every non-passing result, with the policy's source and mode. fail under a deny policy = deny; any other
+          # fail, warn or error = warn (an error is a rule offline evaluation could not decide).
+          jq -c --arg e "${cluster}/${env}" --slurpfile idx "/work/policies/${cluster}.index.json" '
+            .results[]? | select(.result == "fail" or .result == "warn" or .result == "error")
+            | ($idx[0][.policy] // {source: .policy, mode: "warn"}) as $p
+            | {env: $e, policy: $p.source, rule: (.rule // ""), result,
+               level: (if .result == "fail" and $p.mode == "deny" then "deny" else "warn" end),
+               resource: ((.resources // [])[0] | "\(.kind // "?")/\(.name // "?")"),
+               message: ((.message // "") | gsub("\\s+"; " "))}' "${out}/report.json" >> /work/findings.jsonl
+          echo "${cluster}/${env}: $(jq -c '.summary // {}' "${out}/report.json")"
+        done < /work/plan.txt
+
+        denies="$(jq -s '[.[] | select(.level == "deny")] | length' /work/findings.jsonl)"
+        warns="$(jq -s '[.[] | select(.level == "warn")] | length' /work/findings.jsonl)"
+        broken="$(jq -s '[.[] | select(.level == "broken")] | length' /work/findings.jsonl)"
+        sources="$(for s in /work/policies/*.source.json; do [[ -f "$s" ]] && jq -r '"\(.repoURL) `\(.path)` @ \(.revision)\(if .commit then " (" + .commit[0:12] + ")" else "" end)"' "$s"; done | sort -u | paste -sd ';' - | sed 's/;/; /g')"
+        if (( broken > 0 )); then
+          outcome=fail; title="### ❌ \`policy-validation\` could not evaluate ${broken} environment(s)"
+        elif (( denies > 0 )); then
+          outcome=fail; title="### ❌ \`policy-validation\`: ${denies} violation(s) the target cluster would refuse"
+        elif (( warns > 0 )); then
+          outcome=warn; title="### ⚠️ \`policy-validation\` passed with ${warns} warning(s)"
+        else
+          outcome=pass; title="### ✅ \`policy-validation\` passed"
+        fi
+        {
+          echo "${title}"
+          echo
+          echo "Rendered ${envs} environment(s) of \`${APP_NAME}\` and evaluated them offline (Kyverno CLI) against the target cluster's admission policies: ${sources:-none}."
+          if (( denies + warns + broken > 0 )); then
+            echo
+            echo "| | Environment | Policy | Rule | Resource | Message |"
+            echo "|---|---|---|---|---|---|"
+            jq -r -s 'sort_by(.level != "broken", .level != "deny", .env, .policy) | .[:60][]
+              | "| \(if .level == "deny" or .level == "broken" then "❌" else "⚠️" end) | \(.env) | \(.policy // "") | \(.rule // "") | \(.resource // "") | \((.message // "") | gsub("\\|"; "\\\\|") | .[0:300]) |"' /work/findings.jsonl
+            total=$((denies + warns + broken)); (( total > 60 )) && echo && echo "_${total} findings, the first 60 shown; the check run's log has the rest._"
+            echo
+            echo "❌ = a Deny/Enforce policy: Argo CD's sync of this release would be refused. ⚠️ = Audit/Warn policy, or a rule that could not be decided offline (an \`error\`, often a field the API server defaults). See Glidepath docs/admin/policy-validation.md."
+          fi
+        } > "${report}"
+        cat "${report}"
+        jq -r -s '.[] | "\(.level)\t\(.env)\t\(.policy // "")\t\(.resource // "")\t\(.message // "")"' /work/findings.jsonl
+
+        # The report ConfigMap, owned by the PipelineRun so it goes when the run is pruned.
+        if [[ -n "${PIPELINE_RUN}" ]]; then
+          uid="$(kubectl get pipelinerun "${PIPELINE_RUN}" -n "${NAMESPACE}" -o jsonpath='{.metadata.uid}' 2>/dev/null)"
+          kubectl create configmap "gate-report-${PIPELINE_RUN}" -n "${NAMESPACE}" \
+            --from-file=body="${report}" --from-literal=title="${title}" --dry-run=client -o json \
+            | jq --arg run "${PIPELINE_RUN}" --arg uid "${uid}" \
+                '.metadata.labels = {"glidepath.io/gate-report": "policy-validation", "tekton.dev/pipelineRun": $run}
+                 | if $uid != "" then .metadata.ownerReferences = [{apiVersion: "tekton.dev/v1", kind: "PipelineRun", name: $run, uid: $uid}] else . end' \
+            | kubectl apply -f - >/dev/null || echo "warning: could not write the report ConfigMap; the PR comment falls back to the summary" >&2
+        fi
+
+        write_results "${outcome}" "${title#\#\#\# } (${envs} environment(s), ${denies} deny, ${warns} warning(s))"
+        echo "outcome=${outcome}"
+        [[ "${outcome}" == fail ]] && exit 1
+        exit "${rc}"

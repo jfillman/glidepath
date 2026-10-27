@@ -1,0 +1,6 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata: {name: redis.catalog.hangar.io}
+spec:
+  group: catalog.hangar.io
+  names: {kind: Redis, plural: redis}
