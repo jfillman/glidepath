@@ -1,0 +1,10 @@
+# The promote pipeline's own ServiceAccount (ADR-0029 phase 2). It has no Kubernetes permissions: its projected token
+# (audience glidepath-promoter) is what the broker's /promoter-token trusts, by exact name, to mint the dispatch and
+# check-run tokens. No app pipeline runs as it, so no tenant-written script can reach Flight's writer.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: glidepath-promoter
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+automountServiceAccountToken: false

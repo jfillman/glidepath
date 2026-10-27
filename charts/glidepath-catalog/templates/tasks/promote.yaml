@@ -1,0 +1,190 @@
+# catalog/tasks/promote.yaml
+#
+# Promotes the image an open release PR pins from Ground to Flight and reports it as the PR's image-promotion check
+# (ADR-0029 phase 2, docs/admin/registries.md). Runs in the catalog namespace as glidepath-promoter, never in an app's
+# -cicd namespace: the identity that can start Flight's writer must not be reachable from a tenant's build scripts.
+# Phase 2 starts it by hand (docs/admin/registries.md); phase 3's fan-in starts the same Pipeline when the last
+# required gate turns green.
+#
+#   release  reads the PR and its release file and refuses, with the reason, anything the rules forbid: a closed or
+#            merged PR (PROM-08: a merge before promotion is a bypass, never repaired afterwards), a release without
+#            a digest, a source outside the app's own Ground repository (PROM-06), a required gate that is not green
+#            on the PR's current head commit (PROM-03). It opens the check run as in_progress.
+#   copy     the promote-image StepAction: dispatch, wait, verify in Flight.
+#   report   concludes the check run with the outcome, and fails the TaskRun when the promotion did not happen.
+#
+# The check run is named exactly as Pipelines as Code names a gate's ("Pipelines as Code CI / <gate>-") and posted by
+# the same App, so the guardrail registry, detect-bypass-merge and the PR's gate table read it like any other gate.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: promote
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Promotes an open release PR's image from Ground to Flight and posts its image-promotion check.
+  params:
+    - name: repo-url
+      type: string
+      description: The gitops repo, https://github.com/<owner>/gitops-<app>.
+    - name: pr-number
+      type: string
+      description: The open release PR.
+  results:
+    - name: flight-ref
+      description: <flight repo>@<digest> when promoted, else empty.
+    - name: outcome
+      description: success or failure.
+  volumes:
+    - name: promote-work
+      emptyDir: {}
+    - name: promoter-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: token
+              audience: glidepath-promoter
+              expirationSeconds: 3600
+    - name: flight-read
+      secret:
+        secretName: flight-registry-read
+        optional: true
+        items:
+          - key: .dockerconfigjson
+            path: config.json
+  stepTemplate:
+    env:
+      - name: PROMOTER_TOKEN_URL
+        value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/promoter-token
+      - name: REPO_URL
+        value: $(params.repo-url)
+      - name: PR_NUMBER
+        value: $(params.pr-number)
+      - name: RUN_NAME
+        value: $(context.taskRun.name)
+  steps:
+    - name: release
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      onError: continue
+      volumeMounts:
+        - { name: promote-work, mountPath: /workspace/promote }
+        - { name: promoter-token, mountPath: /var/run/secrets/promoter, readOnly: true }
+      env:
+        - name: GROUND_HOST
+          value: {{ .Values.registries.ground.host | quote }}
+        - name: GROUND_NAMESPACE
+          value: {{ .Values.registries.ground.namespace | quote }}
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        W="${PROMOTE_WORK:-/workspace/promote}"
+        refuse() { printf '%s' "$1" > "${W}/reason"; echo "error: $1" >&2; exit 1; }
+        {{- include "glidepath-catalog.promoterGitHub" . | nindent 8 }}
+
+        [[ "${REPO_URL}" =~ ^https://github\.com/([A-Za-z0-9-]+)/(gitops-([a-z0-9][a-z0-9-]*))(\.git)?/?$ ]] \
+          || refuse "${REPO_URL} is not a gitops-<app> repository"
+        owner="${BASH_REMATCH[1]}"; repo="${BASH_REMATCH[2]}"; app="${BASH_REMATCH[3]}"
+        [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] || refuse "pr-number ${PR_NUMBER} is not a number"
+        printf 'OWNER=%q\nREPO=%q\n' "${owner}" "${repo}" > "${W}/repo.env"
+        release_pr_token "${owner}" "${repo}" || refuse "the broker refused a release-pr token for ${owner}/${repo}"
+
+        pr="$(gh_ "https://api.github.com/repos/${owner}/${repo}/pulls/${PR_NUMBER}")" || refuse "could not read ${owner}/${repo}#${PR_NUMBER}"
+        head_sha="$(jq -r .head.sha <<<"${pr}")"
+        printf 'HEAD_SHA=%q\n' "${head_sha}" >> "${W}/repo.env"
+        # PROM-08: never after a merge. A merged release whose image is not in Flight is a bypass, and promoting it
+        # now would make the bypass deploy.
+        [[ "$(jq -r .merged <<<"${pr}")" != true ]] || refuse "#${PR_NUMBER} is already merged: a merge before promotion is a bypass and is not promoted afterwards (PROM-08)"
+        [[ "$(jq -r .state <<<"${pr}")" == open ]] || refuse "#${PR_NUMBER} is closed"
+        check_run_start "${owner}" "${repo}" "${head_sha}"
+
+        manifest="$(gh_ "https://api.github.com/repos/${owner}/${repo}/pulls/${PR_NUMBER}/files?per_page=100" \
+          | jq -r '[.[].filename | select(test("^[^/]+/[^/]+/release\\.yaml$"))][0] // empty')"
+        [[ -n "${manifest}" ]] || refuse "#${PR_NUMBER} changes no <cluster>/<env>/release.yaml: not a release PR"
+        gh_ -H "Accept: application/vnd.github.raw+json" \
+          "https://api.github.com/repos/${owner}/${repo}/contents/${manifest}?ref=${head_sha}" > "${W}/release.yaml" \
+          || refuse "could not read ${manifest} at ${head_sha}"
+        read_field() { yq -r "$1 // \"\"" "${W}/release.yaml"; }
+        repository="$(read_field .release.image.repository)"; tag="$(read_field .release.image.tag)"
+        digest="$(read_field .release.image.digest)"; source_repo="$(read_field .release.image.source)"
+        release_id="$(read_field .releaseTracking.releaseId)"
+        [[ -n "${tag}" ]] || refuse "${manifest} has no release.image.tag"
+        [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || refuse "${manifest} pins no digest (catalog promotion.pinDigest): only a digest is promotable"
+        source_repo="${source_repo:-${repository}}"
+        # PROM-06: only the app's own Ground repository; never <app>-pr (ephemeral builds) or another app's image.
+        ground="${GROUND_HOST}/${GROUND_NAMESPACE:-${owner}}/${app}"
+        [[ "${source_repo}" == "${ground}" ]] || refuse "the release's source ${source_repo} is not ${ground}, the app's Ground repository (PROM-06)"
+
+        # PROM-03: every required gate green on the PR's current head commit. A /retest leaves several runs per gate;
+        # the newest counts.
+        checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")" \
+          || refuse "could not read the gates on ${head_sha}"
+        gates=""; red=""
+        for gate in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if and .required (ne .name "image-promotion") }}{{ .name }} {{ end }}{{ end }}; do
+          c="$(jq -r --arg n "Pipelines as Code CI / ${gate}-" \
+            '[.check_runs[] | select(.name == $n)] | sort_by(.started_at) | last | if . == null then "missing" elif .status != "completed" then .status else .conclusion end' <<<"${checks}")"
+          gates="${gates}${gates:+,}${gate}=${c}"
+          [[ "${c}" == success ]] || red="${red}${red:+, }${gate} (${c})"
+        done
+        [[ -z "${red}" ]] || refuse "required gates are not green on ${head_sha:0:7}: ${red} (PROM-03)"
+
+        printf 'SOURCE=%q\nPACKAGE=%q\nTAG=%q\nDIGEST=%q\nRELEASE_ID=%q\nPULL_REQUEST=%q\nGATES=%q\n' \
+          "${source_repo}@${digest}" "${app}" "${tag}" "${digest}" "${release_id}" \
+          "${owner}/${repo}#${PR_NUMBER}@${head_sha}" "${gates}" > "${W}/release.env"
+        echo "promoting ${source_repo}@${digest} (${tag}) for ${owner}/${repo}#${PR_NUMBER}; gates: ${gates}"
+    - name: copy
+      ref:
+        resolver: cluster
+        params:
+          - { name: kind, value: stepaction }
+          - { name: name, value: promote-image }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      onError: continue
+      params:
+        - { name: request-id, value: $(context.taskRun.name) }
+        - { name: work-volume, value: promote-work }
+        - { name: token-volume, value: promoter-token }
+        - { name: flight-read-volume, value: flight-read }
+    - name: report
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: promote-work, mountPath: /workspace/promote }
+        - { name: promoter-token, mountPath: /var/run/secrets/promoter, readOnly: true }
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        W="${PROMOTE_WORK:-/workspace/promote}"
+        {{- include "glidepath-catalog.promoterGitHub" . | nindent 8 }}
+        flight_ref="$(cat "${W}/flight-ref" 2>/dev/null || true)"
+        run_url="$(cat "${W}/run-url" 2>/dev/null || true)"
+        if [[ -n "${flight_ref}" && ! -e "${W}/reason" ]]; then
+          outcome=success; title="Promoted to ${flight_ref%%@*}"
+          summary="\`${flight_ref}\` holds the release's image with its signatures and attestations, and a promotion attestation for this request verifies."
+        else
+          outcome=failure; title="Not promoted"
+          summary="$(cat "${W}/reason" 2>/dev/null || echo "the promotion stopped without a reason; see the TaskRun ${RUN_NAME}")"
+        fi
+        printf '%s' "${flight_ref}" > "$(results.flight-ref.path)"
+        printf '%s' "${outcome}" > "$(results.outcome.path)"
+        echo "${outcome}: ${summary}"
+
+        # The check run: concluded if the release step opened one, else opened and concluded now (a refusal before
+        # the PR was read leaves nothing to attach it to, and only the TaskRun says why).
+        if [[ -f "${W}/repo.env" ]]; then
+          # shellcheck disable=SC1091
+          source "${W}/repo.env"
+          if [[ -n "${HEAD_SHA:-}" ]] && release_pr_token "${OWNER}" "${REPO}"; then
+            [[ -f "${W}/check-id" ]] || check_run_start "${OWNER}" "${REPO}" "${HEAD_SHA}" || true
+            if [[ -f "${W}/check-id" ]]; then
+              gates="$(. "${W}/release.env" 2>/dev/null; echo "${GATES:-}")"
+              text="Promote run: \`${RUN_NAME}\`${run_url:+ · workflow run: ${run_url}}${gates:+ · gates seen: ${gates}}"
+              gh_ -X PATCH "https://api.github.com/repos/${OWNER}/${REPO}/check-runs/$(cat "${W}/check-id")" \
+                -d "$(jq -n --arg c "${outcome}" --arg t "${title}" --arg s "${summary}" --arg x "${text}" --arg u "${run_url}" \
+                  '{status: "completed", conclusion: $c, output: {title: $t, summary: $s, text: $x}} + (if $u == "" then {} else {details_url: $u} end)')" >/dev/null \
+                || echo "warn: could not conclude the image-promotion check run" >&2
+            fi
+          fi
+        fi
+        [[ "${outcome}" == success ]]

@@ -337,3 +337,19 @@ itsm:
     # token (a bearer), or username and password (basic). Keep only the keys the tool uses: a key missing from
     # Infisical fails the whole ExternalSecret.
     keys: [token]
+
+# The Flight promoter (ADR-0029 phase 2, docs/admin/registries.md). On, the broker's /promoter-token serves exactly one
+# ServiceAccount (glidepath-catalog's promote pipeline): a dispatch token for the promoter App's workflow repo and a
+# check-run token for gitops-<app> repos. The promoter App's id and key come from the platform's Infisical project
+# (appIdKey/privateKeyKey) into platform-system only; the Flight read credential the pipeline verifies with goes to
+# the catalog namespace. Off: neither secret exists and /promoter-token answers 503.
+promoter:
+  enabled: false
+  caller: system:serviceaccount:platform-catalog:glidepath-promoter
+  catalogNamespace: platform-catalog
+  # <owner>/<repo> holding the promote workflow (installed with the promoter App).
+  dispatchRepo: ""
+  appIdKey: flight-promoter-app-id
+  privateKeyKey: flight-promoter-private-key
+  # A read:packages dockerconfigjson for the Flight registry.
+  flightReadKey: flight-registry-read-dockerconfigjson

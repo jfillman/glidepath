@@ -1,7 +1,8 @@
 # ADR-0029: Ground and Flight registries; Flight images are promoted by digest before the release merges
 
 *Status: Accepted (2026-10-27). Supersedes decision 3 of [ADR-0025](0025-retire-image-promotion-stub-check.md).
-Phase 0 (spike) done; phase 1 (configuration and digest pinning) built, off by default. Detail:
+Phase 0 (spike) done; phase 1 (configuration and digest pinning) live on hangar-dev 2026-10-27; phase 2 (the
+promoter: Pipeline, StepAction, broker `/promoter-token`) built, started by hand. Detail:
 [registries.md](../registries.md).*
 
 ## Context

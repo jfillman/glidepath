@@ -114,6 +114,7 @@ func main() {
 	mux.HandleFunc("/", handle(clientset))
 	mux.HandleFunc("/github-installation-token", handleGitHubInstallationToken(clientset, dynClient, appCreds))
 	mux.HandleFunc("/policy-bundle", handlePolicyBundle(clientset, dynClient, appCreds, policySrc))
+	mux.HandleFunc("/promoter-token", handlePromoterToken(clientset, appCreds, loadPromoter()))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	log.Println("cdevents-broker-auth interceptor listening on :8080 (plain HTTP - see comment above)")
@@ -156,6 +157,21 @@ func handle(clientset kubernetes.Interface) http.HandlerFunc {
 // verifyCallerAppNamespace is the one TokenReview trust primitive, shared by both the
 // CDEvents broker path and handleGitHubInstallationToken below.
 func verifyCallerAppNamespace(clientset kubernetes.Interface, token, audience string) (namespace string, errMsg string) {
+	username, errMsg := verifyCallerUsername(clientset, token, audience)
+	if errMsg != "" {
+		return "", errMsg
+	}
+	// SA-token usernames are "system:serviceaccount:<namespace>:<name>".
+	parts := strings.Split(username, ":")
+	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" {
+		return "", "caller is not a ServiceAccount identity"
+	}
+	return parts[2], ""
+}
+
+// verifyCallerUsername is the TokenReview itself: the caller's username, for a check that needs the ServiceAccount
+// and not only its namespace (/promoter-token).
+func verifyCallerUsername(clientset kubernetes.Interface, token, audience string) (username string, errMsg string) {
 	review := &authenticationv1.TokenReview{
 		Spec: authenticationv1.TokenReviewSpec{
 			Token:     token,
@@ -169,13 +185,7 @@ func verifyCallerAppNamespace(clientset kubernetes.Interface, token, audience st
 	if !result.Status.Authenticated {
 		return "", "token not authenticated: " + result.Status.Error
 	}
-
-	// SA-token usernames are "system:serviceaccount:<namespace>:<name>".
-	parts := strings.Split(result.Status.User.Username, ":")
-	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" {
-		return "", "caller is not a ServiceAccount identity"
-	}
-	return parts[2], ""
+	return result.Status.User.Username, ""
 }
 
 func bearerToken(authHeader string) string {

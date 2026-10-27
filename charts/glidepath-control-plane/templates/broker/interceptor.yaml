@@ -124,6 +124,13 @@ spec:
             # Where /policy-bundle reads each target cluster's admission policies (policybundle.go, ADR-0028).
             - name: POLICY_SOURCES
               value: {{ .Values.policyValidation | toJson | quote }}
+            {{- if .Values.promoter.enabled }}
+            # /promoter-token (promoter.go, ADR-0029): the one ServiceAccount it serves and the promote workflow's repo.
+            - name: PROMOTER_CALLER
+              value: {{ .Values.promoter.caller | quote }}
+            - name: PROMOTER_DISPATCH_REPO
+              value: {{ required "promoter.dispatchRepo is required when promoter.enabled" .Values.promoter.dispatchRepo | quote }}
+            {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -134,10 +141,22 @@ spec:
             - name: github-app-creds
               mountPath: /etc/github-app
               readOnly: true
+            {{- if .Values.promoter.enabled }}
+            - name: flight-promoter-app
+              mountPath: /etc/flight-promoter-app
+              readOnly: true
+            {{- end }}
       volumes:
         - name: github-app-creds
           secret:
             secretName: github-app-creds
+        {{- if .Values.promoter.enabled }}
+        # optional: the broker starts without it; only /promoter-token's dispatch answers 503 until it syncs.
+        - name: flight-promoter-app
+          secret:
+            secretName: flight-promoter-app
+            optional: true
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
