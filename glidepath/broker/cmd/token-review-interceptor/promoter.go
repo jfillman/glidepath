@@ -20,16 +20,17 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/glidepath/broker/token-review-interceptor/internal/githubapp"
 
 	"k8s.io/client-go/kubernetes"
 )
 
-const (
-	promoterAudience = "glidepath-promoter"
-	promoterCredsDir = "/etc/flight-promoter-app"
-)
+const promoterAudience = "glidepath-promoter"
+
+// promoterCredsDir is a var only so the late-load test can point it at a temp dir.
+var promoterCredsDir = "/etc/flight-promoter-app"
 
 type promoterConfig struct {
 	// Caller is the one ServiceAccount allowed, as TokenReview names it: system:serviceaccount:<ns>:<name>.
@@ -87,8 +88,9 @@ func scopeFor(cfg promoterConfig, caller string, req promoterTokenRequest) (prom
 	}
 }
 
-// loadPromoter reads the configuration once at startup. A missing key mount is not fatal: the broker's other
-// endpoints keep working and dispatch answers 503 with the reason.
+// loadPromoter reads the configuration at startup. A missing key mount is not fatal: the broker's other endpoints keep
+// working, dispatch answers 503 with the reason, and every request retries the load (withApp), because the mount is
+// optional and its Secret usually syncs after the pods start (first seen 2026-10-27).
 func loadPromoter() promoterConfig {
 	cfg := promoterConfig{Caller: os.Getenv("PROMOTER_CALLER"), DispatchRepo: os.Getenv("PROMOTER_DISPATCH_REPO")}
 	if cfg.Caller == "" {
@@ -103,8 +105,29 @@ func loadPromoter() promoterConfig {
 	return cfg
 }
 
-func handlePromoterToken(clientset kubernetes.Interface, platformApp *githubapp.Creds, cfg promoterConfig) http.HandlerFunc {
+// withApp returns cfg with the promoter App's credentials, loading them now if startup could not: the kubelet fills an
+// optional Secret volume once the Secret exists, without a restart.
+func (l *promoterLoader) withApp() promoterConfig {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.cfg.Caller != "" && l.cfg.App == nil {
+		if creds, err := githubapp.LoadCredsFrom(promoterCredsDir); err == nil {
+			l.cfg.App = creds
+			log.Printf("promoter App credentials loaded from %s", promoterCredsDir)
+		}
+	}
+	return l.cfg
+}
+
+type promoterLoader struct {
+	mu  sync.Mutex
+	cfg promoterConfig
+}
+
+func handlePromoterToken(clientset kubernetes.Interface, platformApp *githubapp.Creds, startup promoterConfig) http.HandlerFunc {
+	loader := &promoterLoader{cfg: startup}
 	return func(w http.ResponseWriter, r *http.Request) {
+		cfg := loader.withApp()
 		w.Header().Set("Content-Type", "application/json")
 		fail := func(code int, msg string) {
 			w.WriteHeader(code)

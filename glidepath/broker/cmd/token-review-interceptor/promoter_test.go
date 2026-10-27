@@ -1,7 +1,13 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/glidepath/broker/token-review-interceptor/internal/githubapp"
@@ -60,5 +66,38 @@ func TestScopeFor(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The key's Secret usually syncs after the broker starts: a later request must pick it up without a restart.
+func TestPromoterLoaderLoadsLate(t *testing.T) {
+	dir := t.TempDir()
+	promoterCredsDir = dir
+	t.Cleanup(func() { promoterCredsDir = "/etc/flight-promoter-app" })
+	loader := &promoterLoader{cfg: promoterConfig{Caller: "sa", DispatchRepo: "o/r"}}
+	if loader.withApp().App != nil {
+		t.Fatal("credentials loaded from an empty dir")
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := os.WriteFile(filepath.Join(dir, "github-application-id"), []byte("5490650\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "github-private-key"), pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := loader.withApp()
+	if cfg.App == nil {
+		t.Fatal("credentials not loaded once the files exist")
+	}
+	if _, code, err := scopeFor(cfg, "sa", promoterTokenRequest{Purpose: "dispatch"}); code != http.StatusOK {
+		t.Fatalf("dispatch after a late load: %d %v", code, err)
+	}
+	// Unconfigured (no caller): never loads, whatever is mounted.
+	if (&promoterLoader{}).withApp().App != nil {
+		t.Fatal("loaded credentials for an unconfigured promoter")
 	}
 }
