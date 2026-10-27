@@ -185,3 +185,32 @@ provider). itsm.sh defaults an absent URL to empty, so the scripts read the same
 {{- define "glidepath-catalog.itsmLib" -}}
 {{ .Files.Get "files/lib/itsm.sh" }}
 {{- end -}}
+
+{{/*
+Bash for the promote Task's steps (ADR-0029): release_pr_token OWNER REPO sets $token to a release-pr token from the
+broker's /promoter-token (checks: write, contents/pull_requests: read on that gitops repo); gh_ calls the GitHub API
+with it; check_run_start OWNER REPO SHA opens the image-promotion check run and writes its id to <work>/check-id.
+*/}}
+{{- define "glidepath-catalog.promoterGitHub" -}}
+token=""
+release_pr_token() {
+  local raw
+  raw="$(curl --silent --show-error --max-time 20 --retry 3 --retry-connrefused -w '\n%{http_code}' -X POST "${PROMOTER_TOKEN_URL}" \
+    -H "Authorization: Bearer $(cat "${PROMOTER_TOKEN_FILE:-/var/run/secrets/promoter/token}")" -H "Content-Type: application/json" \
+    -d "$(jq -n --arg o "$1" --arg r "$2" '{purpose: "release-pr", owner: $o, repo: $r}')")" || return 1
+  [[ "${raw##*$'\n'}" == "200" ]] || { echo "promoter-token: ${raw}" >&2; return 1; }
+  token="$(jq -r .token <<<"${raw%$'\n'*}")"
+}
+gh_() {
+  curl --fail-with-body --silent --show-error --max-time 20 --retry 3 --retry-connrefused \
+    -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"
+}
+check_run_start() {
+  local out
+  out="$(gh_ -X POST "https://api.github.com/repos/$1/$2/check-runs" \
+    -d "$(jq -n --arg sha "$3" --arg id "${RUN_NAME}" \
+      '{name: "Pipelines as Code CI / image-promotion-", head_sha: $sha, external_id: $id, status: "in_progress",
+        output: {title: "Promoting to Flight", summary: "Copying the release image to Flight and verifying it."}}')")" || return 1
+  jq -r .id <<<"${out}" > "${W}/check-id"
+}
+{{- end -}}

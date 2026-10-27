@@ -92,6 +92,16 @@ jobs:
       - run: pip install pyyaml
       - run: charts/glidepath-catalog/tests/registries_test.sh
 
+  # The promote Task and promote-image StepAction (ADR-0029 phase 2): the promotion rules' refusals, the workflow's
+  # failing step as the reason, the Flight verification and the image-promotion check run, against fakes.
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: pip install pyyaml
+      - run: charts/glidepath-catalog/tests/promote_test.sh
+
   # The registry's per-gate `required` (docs/admin/release-guardrails.md): which task each gate Pipeline renders
   # (hard + advisory, or advisory alone), the bypass tooling's required set, the ruleset script, and the refusal
   # to make sast/provenance advisory.
@@ -179,8 +189,9 @@ jobs:
           docs = [d for d in yaml.safe_load_all(open("/tmp/rendered.yaml")) if d]
           if not docs:
               print("ERROR: rendered output is empty"); sys.exit(1)
-          # ConfigMap: release-signing-policy only (ADR-0027) - data, never secrets.
-          expected_kinds = {"Task", "Pipeline", "StepAction", "Role", "RoleBinding", "ConfigMap"}
+          # ConfigMap: release-signing-policy only (ADR-0027) - data, never secrets. ServiceAccount:
+          # glidepath-promoter only (ADR-0029), no permissions of its own.
+          expected_kinds = {"Task", "Pipeline", "StepAction", "Role", "RoleBinding", "ConfigMap", "ServiceAccount"}
           bad = [d for d in docs if d.get("kind") not in expected_kinds]
           if bad:
               print(f"ERROR: unexpected kind(s) in catalog chart output: {[d.get('kind') for d in bad]}")

@@ -1,0 +1,135 @@
+# catalog/stepactions/promote-image.yaml
+#
+# Copies one image from Ground to Flight by digest and proves the copy (ADR-0029, docs/admin/registries.md). Nothing
+# in this cluster can write Flight: GHCR refuses App installation tokens (phase 0), so the copy is the promote
+# workflow in promotion.promoter.repo, whose own GITHUB_TOKEN is Flight's only writer. This step:
+#   1. gets a dispatch token (actions: write on that one repo) from the broker's /promoter-token,
+#   2. starts the workflow with a request id and finds the run by it (workflow_dispatch returns no run id),
+#   3. waits for it; a red run's reason is the name of the step that failed (the workflow gives each refusal its own
+#      step, e.g. "Check the source is signed and attested"),
+#   4. verifies Flight itself with a read-only credential: the digest resolves to itself, the Chains .sig and .att
+#      came across, and a promotion attestation signed by the workflow's identity and naming this request id
+#      verifies (keyless, public Sigstore: what upper-cluster admission checks).
+#
+# Input: <work>/release.env written by the calling Task (SOURCE PACKAGE TAG DIGEST RELEASE_ID PULL_REQUEST GATES).
+# It does nothing when <work>/reason exists (an earlier step refused). On failure it writes <work>/reason.
+# Output: <work>/flight-ref and <work>/run-url.
+apiVersion: tekton.dev/v1beta1
+kind: StepAction
+metadata:
+  name: promote-image
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  image: {{ .Values.toolboxImage }}
+  params:
+    - name: request-id
+      type: string
+      description: Unique per promotion attempt (the TaskRun name); the workflow puts it in its run name and the attestation.
+    - name: work-volume
+      type: string
+      description: The calling Task's emptyDir shared between its steps, mounted at /workspace/promote.
+    - name: token-volume
+      type: string
+      description: The calling Task's projected ServiceAccount token volume (audience glidepath-promoter, path token).
+    - name: flight-read-volume
+      type: string
+      description: The calling Task's flight-registry-read Secret volume (.dockerconfigjson as config.json).
+  volumeMounts:
+    - name: $(params.work-volume)
+      mountPath: /workspace/promote
+    - name: $(params.token-volume)
+      mountPath: /var/run/secrets/promoter
+      readOnly: true
+    - name: $(params.flight-read-volume)
+      mountPath: /var/run/secrets/flight-read
+      readOnly: true
+  env:
+    - name: REQUEST_ID
+      value: $(params.request-id)
+    - name: PROMOTER_TOKEN_URL
+      value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/promoter-token
+    - name: PROMOTER_REPO
+      value: {{ .Values.promotion.promoter.repo | quote }}
+    - name: PROMOTER_WORKFLOW
+      value: {{ .Values.promotion.promoter.workflow | quote }}
+    - name: PROMOTER_REF
+      value: {{ .Values.promotion.promoter.ref | quote }}
+    - name: PROMOTER_TIMEOUT_MINUTES
+      value: {{ .Values.promotion.promoter.timeoutMinutes | quote }}
+    - name: PROMOTER_ISSUER
+      value: {{ .Values.promotion.promoter.issuer | quote }}
+    - name: FLIGHT_HOST
+      value: {{ .Values.registries.flight.host | quote }}
+    - name: FLIGHT_NAMESPACE
+      value: {{ .Values.registries.flight.namespace | quote }}
+  script: |
+    #!/usr/bin/env bash
+    set -uo pipefail
+    W="${PROMOTE_WORK:-/workspace/promote}"
+    [[ -e "${W}/reason" ]] && { echo "not promoting: $(cat "${W}/reason")"; exit 0; }
+    refuse() { printf '%s' "$1" > "${W}/reason"; echo "error: $1" >&2; exit 1; }
+    [[ -n "${PROMOTER_REPO}" ]] || refuse "promotion.promoter.repo is not set in the catalog"
+    [[ -n "${FLIGHT_NAMESPACE}" ]] || refuse "registries.flight.namespace is not set in the catalog"
+    # shellcheck disable=SC1091
+    source "${W}/release.env"
+
+    raw="$(curl --silent --show-error --max-time 20 --retry 3 --retry-connrefused -w '\n%{http_code}' -X POST "${PROMOTER_TOKEN_URL}" \
+      -H "Authorization: Bearer $(cat "${PROMOTER_TOKEN_FILE:-/var/run/secrets/promoter/token}")" -H "Content-Type: application/json" -d '{"purpose":"dispatch"}')"
+    [[ "${raw##*$'\n'}" == "200" ]] || refuse "the broker refused a dispatch token: ${raw%$'\n'*}"
+    token="$(jq -r .token <<<"${raw%$'\n'*}")"
+    gh_() { curl --fail-with-body --silent --show-error --max-time 20 --retry 3 --retry-connrefused \
+              -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
+    api="https://api.github.com/repos/${PROMOTER_REPO}/actions/workflows/${PROMOTER_WORKFLOW}"
+
+    started="$(date -u -d "@$(( $(date +%s) - 60 ))" +%Y-%m-%dT%H:%M:%SZ)"
+    body="$(jq -n --arg ref "${PROMOTER_REF}" --arg source "${SOURCE}" --arg package "${PACKAGE}" --arg tag "${TAG}" \
+      --arg rid "${REQUEST_ID}" --arg release "${RELEASE_ID}" --arg pr "${PULL_REQUEST}" --arg gates "${GATES}" \
+      '{ref: $ref, inputs: {source: $source, package: $package, tag: $tag, "request-id": $rid,
+                            "release-id": $release, "pull-request": $pr, gates: $gates}}')"
+    out="$(gh_ -X POST "${api}/dispatches" -d "${body}" 2>&1)" || refuse "could not start ${PROMOTER_REPO} ${PROMOTER_WORKFLOW}: ${out}"
+    echo "started ${PROMOTER_REPO} ${PROMOTER_WORKFLOW}@${PROMOTER_REF} for ${SOURCE} (request ${REQUEST_ID})"
+
+    # The run name carries the request id (the workflow's run-name), which is how this run is told apart.
+    deadline=$((SECONDS + PROMOTER_TIMEOUT_MINUTES * 60)); run=""
+    while (( SECONDS < deadline )); do
+      runs="$(gh_ "${api}/runs?event=workflow_dispatch&created=>=${started}&per_page=50" 2>/dev/null || echo '{}')"
+      run="$(jq -c --arg rid "${REQUEST_ID}" '[.workflow_runs[]? | select(.display_title | endswith(" " + $rid))][0] // empty' <<<"${runs}")"
+      if [[ -n "${run}" ]]; then
+        printf '%s' "$(jq -r .html_url <<<"${run}")" > "${W}/run-url"
+        [[ "$(jq -r .status <<<"${run}")" == completed ]] && break
+      fi
+      sleep 10
+    done
+    [[ -n "${run}" ]] || refuse "the promote workflow run for request ${REQUEST_ID} never appeared"
+    url="$(jq -r .html_url <<<"${run}")"
+    [[ "$(jq -r .status <<<"${run}")" == completed ]] || refuse "the promote workflow did not finish in ${PROMOTER_TIMEOUT_MINUTES} minutes: ${url}"
+    conclusion="$(jq -r .conclusion <<<"${run}")"
+    if [[ "${conclusion}" != success ]]; then
+      failed="$(gh_ "$(jq -r .jobs_url <<<"${run}")" 2>/dev/null \
+        | jq -r '[.jobs[].steps[]? | select(.conclusion == "failure") | .name][0] // empty')"
+      refuse "the promote workflow ${conclusion}${failed:+ at \"${failed}\"}: ${url}"
+    fi
+    echo "promote workflow succeeded: ${url}"
+
+    # Verify in Flight with the read-only credential, never trusting the run's own word for it.
+    export DOCKER_CONFIG=/var/run/secrets/flight-read HOME=/tmp/promoter-home
+    mkdir -p "${HOME}"
+    [[ -s "${DOCKER_CONFIG}/config.json" ]] || refuse "no flight-registry-read credential in this namespace (glidepath-control-plane promoter.enabled)"
+    flight="${FLIGHT_HOST}/${FLIGHT_NAMESPACE}/${PACKAGE}"
+    got="$(oras resolve "${flight}:${TAG}" 2>&1)" || refuse "${flight}:${TAG} does not resolve after the copy: ${got}"
+    [[ "${got}" == "${DIGEST}" ]] || refuse "${flight}:${TAG} is ${got}, not ${DIGEST}"
+    base="sha256-${DIGEST#sha256:}"
+    for t in sig att; do
+      oras resolve "${flight}:${base}.${t}" >/dev/null 2>&1 || refuse "${flight} has no .${t} for ${DIGEST}"
+    done
+    identity="^https://github\.com/${PROMOTER_REPO//./\\.}/\.github/workflows/${PROMOTER_WORKFLOW//./\\.}@refs/heads/${PROMOTER_REF}$"
+    verified="$(cosign verify-attestation --type https://hangar.io/attestations/promotion/v1 \
+      --certificate-oidc-issuer "${PROMOTER_ISSUER}" --certificate-identity-regexp "${identity}" \
+      "${flight}@${DIGEST}" 2>"${W}/cosign.err")" || refuse "no promotion attestation verifies on ${flight}@${DIGEST}: $(tail -c 300 "${W}/cosign.err")"
+    mine="$(jq -r '.payload // .dsseEnvelope.payload // empty' <<<"${verified}" 2>/dev/null | while read -r p; do base64 -d <<<"${p}" | jq -r '.predicate.requestId // empty'; done \
+      | grep -cFx "${REQUEST_ID}" || true)"
+    (( mine > 0 )) || refuse "the promotion attestations on ${flight}@${DIGEST} verify, but none is this request's (${REQUEST_ID})"
+    printf '%s' "${flight}@${DIGEST}" > "${W}/flight-ref"
+    echo "verified ${flight}@${DIGEST}: digest, .sig, .att and this request's promotion attestation"

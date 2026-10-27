@@ -1,0 +1,29 @@
+# catalog/pipelines/promote.yaml
+#
+# Ground -> Flight promotion of one release PR's image (ADR-0029, tasks/promote.yaml). Run in the catalog namespace as
+# the glidepath-promoter ServiceAccount. Phase 2: started by hand (docs/admin/registries.md, "Promote by hand").
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: promote
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Promotes an open release PR's image from Ground to Flight and posts its image-promotion check.
+  params:
+    - name: repo-url
+      type: string
+      description: The gitops repo, https://github.com/<owner>/gitops-<app>.
+    - name: pr-number
+      type: string
+      description: The open release PR.
+  results:
+    - name: flight-ref
+      value: $(tasks.promote.results.flight-ref)
+  tasks:
+    - name: promote
+      taskRef: { name: promote }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: pr-number, value: $(params.pr-number) }

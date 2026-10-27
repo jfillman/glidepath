@@ -319,3 +319,13 @@ promotion:
   # environments, open-release-pr for Flight). airframe-application before v0.3.166 rejects both keys, so turn this
   # on only after every cluster's defaultChart is at v0.3.166 or later.
   pinDigest: false
+  # The promote pipeline (ADR-0029 phase 2, docs/admin/registries.md): it starts this workflow through the broker's
+  # /promoter-token (glidepath-control-plane promoter.*), waits for it, verifies the copy in Flight
+  # (registries.flight.namespace) and posts the release PR's image-promotion check. Empty repo: the pipeline refuses.
+  promoter:
+    repo: ""            # <owner>/<repo> of the promote workflow
+    workflow: promote.yaml
+    ref: main
+    timeoutMinutes: 20
+    # The promotion attestation's signer (keyless, public Sigstore): the workflow's own Actions identity.
+    issuer: https://token.actions.githubusercontent.com

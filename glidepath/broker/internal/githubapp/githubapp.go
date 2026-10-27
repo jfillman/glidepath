@@ -29,8 +29,7 @@ import (
 )
 
 const (
-	appIDPath     = "/etc/github-app/github-application-id"
-	appKeyPath    = "/etc/github-app/github-private-key"
+	appCredsDir   = "/etc/github-app"
 	githubAPIBase = "https://api.github.com"
 )
 
@@ -43,6 +42,14 @@ type Creds struct {
 // github-app-creds Secret is mounted at (a copy of two fields from PaC's own secret,
 // never pasted through chat).
 func LoadCreds() (*Creds, error) {
+	return LoadCredsFrom(appCredsDir)
+}
+
+// LoadCredsFrom reads github-application-id and github-private-key from dir: the platform App's mount, or a second
+// App's (the Flight promoter, ADR-0029) in the same shape.
+func LoadCredsFrom(dir string) (*Creds, error) {
+	appIDPath := dir + "/github-application-id"
+	appKeyPath := dir + "/github-private-key"
 	idBytes, err := os.ReadFile(appIDPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", appIDPath, err)
@@ -148,6 +155,15 @@ func MintReadOnlyToken(appJWT string, installationID int64, repo string) (token 
 	return mintInstallationToken(appJWT, installationID, map[string]any{
 		"repositories": []string{repo},
 		"permissions":  map[string]string{"contents": "read"},
+	})
+}
+
+// MintScopedToken is MintInstallationToken narrowed to the given permissions (GitHub caps them at what the App
+// holds): for a caller that should get less than the App can do.
+func MintScopedToken(appJWT string, installationID int64, repo string, permissions map[string]string) (token string, expiresAt string, err error) {
+	return mintInstallationToken(appJWT, installationID, map[string]any{
+		"repositories": []string{repo},
+		"permissions":  permissions,
 	})
 }
 
