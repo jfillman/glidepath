@@ -69,6 +69,21 @@ for t in open-release-pr deploy-manifests; do
   script_of "$work/$t-on.yaml" 0 | grep -q 'release_image_pin "${manifest}"' || { echo "FAIL: $t never calls release_image_pin"; fail=1; }
 done
 
+# --- deploy-manifests waits for the image the chart renders (repo:tag@digest when pinned) ----------------------
+want_of() { # rendered deploy-manifests -> the lines that pick the Rollout image to wait for
+  script_of "$1" 0 | sed -n '/^ *want_image="\${IMAGE_REF}"$/,/want_image="\${IMAGE_REF}@/p'
+}
+want_of "$work/deploy-manifests-on.yaml" > "$work/want.sh"
+[ "$(wc -l < "$work/want.sh")" -eq 3 ] || { echo "FAIL: could not extract the wait-image lines: $(cat "$work/want.sh")"; fail=1; }
+release_file "    digest: $D
+"
+[ "$(manifest="$work/rel.yaml" IMAGE_REF=ghcr.io/o/app:1.0.0-abc; source "$work/want.sh"; echo "$want_image")" = "ghcr.io/o/app:1.0.0-abc@$D" ] \
+  || { echo "FAIL: a pinned deploy does not wait for repo:tag@digest"; fail=1; }
+release_file
+[ "$(manifest="$work/rel.yaml" IMAGE_REF=ghcr.io/o/app:1.0.0-abc; source "$work/want.sh"; echo "$want_image")" = ghcr.io/o/app:1.0.0-abc ] \
+  || { echo "FAIL: an unpinned deploy does not wait for repo:tag"; fail=1; }
+script_of "$work/deploy-manifests-on.yaml" 0 | grep -q -- '--arg img "${want_image}"' || { echo "FAIL: the Rollout check does not use want_image"; fail=1; }
+
 # --- promotion.enabled -------------------------------------------------------------------------------------------
 render "$work/bad.yaml" tasks/open-release-pr.yaml --set promotion.enabled=true
 grep -q "promotion.enabled needs promotion.pinDigest" "$work/bad.yaml" || { echo "FAIL: promotion without pinDigest rendered"; fail=1; }

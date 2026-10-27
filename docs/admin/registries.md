@@ -29,7 +29,7 @@ Never in `cicd.yaml` or Tower settings. With the defaults, every release renders
 | Setting | Effect |
 |---|---|
 | `registries.ground` | Where builds push (onboarding's `image-repo`) and the preview (`-pr`) repository. glidepath-app reads its own `registries.ground`, empty = the same default. |
-| `promotion.pinDigest` | `resolve-image-ref` reads the digest from the registry (`image-digest` result); `deploy-manifests` and `open-release-pr` write `digest` and `source`. Off: they delete both, so a release file never keeps an old digest under a new tag. |
+| `promotion.pinDigest` | `resolve-image-ref` reads the digest from the registry (`image-digest` result); `deploy-manifests` and `open-release-pr` write `digest` and `source`. Off: they delete both, so a release file never keeps an old digest under a new tag. `deploy-manifests` then waits for the Rollout to run `repo:tag@digest`, the string the chart renders. |
 | `promotion.enabled` | `open-release-pr` pins `<flight host>/<flight namespace or owner>/<app>`. The render fails without `pinDigest`. |
 
 ## Release file
