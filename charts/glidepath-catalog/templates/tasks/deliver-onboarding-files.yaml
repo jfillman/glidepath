@@ -109,7 +109,9 @@ spec:
 
         owner="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         repo="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
-        image_repo="ghcr.io/${GITHUB_OWNER}/${APP_NAME}"
+        # Builds push to the Ground registry (ADR-0029, catalog registries.ground; "" namespace = the GitHub owner).
+        ground_ns='{{ .Values.registries.ground.namespace }}'
+        image_repo="{{ .Values.registries.ground.host }}/${ground_ns:-${GITHUB_OWNER}}/${APP_NAME}"
 
         # app-type is optional so a stale trigger file committed before app-type existed
         # can still fire this Task and self-heal. Derived from app-namespace when absent:

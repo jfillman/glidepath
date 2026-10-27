@@ -54,6 +54,10 @@ spec:
   params:
     - name: image-ref
       type: string
+    - name: image-digest
+      type: string
+      default: none
+      description: The image's manifest digest (resolve-image-ref's image-digest), pinned when promotion.pinDigest is on (ADR-0029).
     - name: env
       type: string
       description: >-
@@ -92,6 +96,8 @@ spec:
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
         - name: IMAGE_REF
           value: $(params.image-ref)
+        - name: IMAGE_DIGEST
+          value: $(params.image-digest)
         - name: ENV
           value: $(params.env)
         - name: APP_NAME
@@ -162,6 +168,9 @@ spec:
           .release.image.repository = \"${image_repo}\" |
           .release.image.tag = \"${image_tag}\"
         " "${manifest}"
+        # ADR-0029: a Ground environment runs the Ground image, so repository and source are the same.
+        {{- include "glidepath-catalog.releaseImagePin" . | nindent 8 }}
+        release_image_pin "${manifest}" "${image_repo}" "${IMAGE_DIGEST}"
         git add "${manifest}"
 
         # Moving an app onto the split: the env file may still carry the image an earlier deploy

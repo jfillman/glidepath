@@ -230,6 +230,11 @@ defaultChart: {}
 # renders the cluster's default chart. Unset: nothing is passed.
 observability: {}
 
+# The Ground registry builds push to (ADR-0029), forwarded from the catalog's registries.ground. Empty = ghcr.io and
+# the GitHub owner, today's behaviour.
+registries:
+  ground: { host: "", namespace: "" }
+
 # The cluster taxonomy (ADR-0024), passed in by the control plane: {self: <control-plane cluster>, zones: {<cluster>:
 # lower|upper}}. Used only by the deploy.environments checks (a named cluster must be registered; a production
 # environment must run on an upper cluster). Unset: those checks are skipped.

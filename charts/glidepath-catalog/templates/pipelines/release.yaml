@@ -213,6 +213,7 @@ spec:
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
         - { name: image-ref, value: $(tasks.resolve-image-ref.results.image-ref) }
+        - { name: image-digest, value: $(tasks.resolve-image-ref.results.image-digest) }
         - { name: git-url, value: $(params.git-url) }
         - { name: app-name, value: $(params.app-name) }
         - { name: app-namespace, value: $(params.app-namespace) }

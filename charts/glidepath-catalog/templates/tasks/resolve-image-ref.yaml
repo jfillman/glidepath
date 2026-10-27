@@ -59,6 +59,10 @@ spec:
       description: Only read with pin-file - the source repo the pin lives in.
   results:
     - name: image-ref
+    - name: image-digest
+      description: >-
+        The image's manifest digest (sha256:...), for release_image_pin (ADR-0029): the pin's own digest for a cloud
+        release pin, else read from the registry when promotion.pinDigest is on. "none" when not read.
   volumes:
     - name: github-token-broker-token
       projected:
@@ -122,14 +126,30 @@ spec:
           echo "pinned image ${repository}:${tag} (${digest})"
           _r="${repository}:${tag}"
           printf '%s' "${_r}" > "$(results.image-ref.path)"
+          printf '%s' "${digest}" > "$(results.image-digest.path)"
           echo "image-ref=${_r}"
           exit 0
         fi
+
+        # ADR-0029: the digest every release file pins, read once here so the release file records the exact image
+        # the tag named at release time. Only with promotion.pinDigest; "none" otherwise (a Tekton result must be
+        # written to be consumed).
+        write_digest() {
+{{- if .Values.promotion.pinDigest }}
+          local d
+          d="$(oras resolve "$1" | tr -d '\n')" || { echo "error: could not resolve $1 to a digest in the registry" >&2; exit 1; }
+          echo "image-digest=${d}"
+          printf '%s' "${d}" > "$(results.image-digest.path)"
+{{- else }}
+          printf '%s' none > "$(results.image-digest.path)"
+{{- end }}
+        }
 
         IMAGE_REF='$(params.image-ref)'
         if [[ -n "${IMAGE_REF}" ]]; then
           printf '%s' "${IMAGE_REF}" > "$(results.image-ref.path)"
           echo "image-ref=${IMAGE_REF}"
+          write_digest "${IMAGE_REF}"
           exit 0
         fi
 
@@ -152,3 +172,4 @@ spec:
         _r="${IMAGE_REPO}:${VERSION}-${SHORT_SHA}"
         printf '%s' "${_r}" > "$(results.image-ref.path)"
         echo "image-ref=${_r}"
+        write_digest "${_r}"
