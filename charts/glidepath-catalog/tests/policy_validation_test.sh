@@ -60,6 +60,7 @@ run() {
   echo $? > "$WORK/render.rc"
   ( cd "$WORK" && PATH="$d/bin:$PATH" APP_NAME="$app" NAMESPACE="app-${app}-cicd" PIPELINE_RUN=pr-1 bash "$WORK/step2.sh" ) > "$WORK/eval.log" 2>&1
   echo $? > "$WORK/eval.rc"
+  [[ "$(cat "$WORK/render.rc")" == 0 ]] || { echo "-- ${s}: render step log:"; cat "$WORK/render.log"; }
 }
 
 # green: compliant values - every policy passes or does not apply.
