@@ -1,9 +1,10 @@
 // glidepath-api: Glidepath's API for people, Tower and agents (docs/admin/api.md).
 //
-// Phases 1 and 2 of the Glidepath API spec: reads only. Runs and their logs from Tekton Results,
+// Phases 1 and 2 of the Glidepath API spec are reads: runs and their logs from Tekton Results,
 // release records from the app's -cicd namespace, an image's signatures and attestations from GHCR
 // re-verified against the cluster's Fulcio root and Rekor, test runs from Testkube, and the
-// contract. Every call is authenticated with the cluster's TokenReview and authorized with a
+// contract. Phase 3's first writes (tier T1) re-run and cancel a PipelineRun in the app's namespace.
+// Every call is authenticated with the cluster's TokenReview and authorized with a
 // SubjectAccessReview in the app's namespace.
 //
 // Results is read through glidepath's own tekton-results-relay (charts/glidepath-control-plane),
@@ -35,11 +36,13 @@ import (
 	"github.com/glidepath/api/internal/auth"
 	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
+	"github.com/glidepath/api/internal/pipelineruns"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
 	"github.com/glidepath/api/internal/server"
 	"github.com/glidepath/api/internal/testkube"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -67,6 +70,10 @@ func main() {
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Fatalf("glidepath-api: kubernetes client: %v", err)
+	}
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		log.Fatalf("glidepath-api: dynamic client: %v", err)
 	}
 	delegates := map[string]bool{}
 	for _, d := range strings.Split(os.Getenv("DELEGATES"), ",") {
@@ -98,6 +105,7 @@ func main() {
 			HTTP: &http.Client{Timeout: 30 * time.Second},
 			Log:  logger,
 		},
+		Runs:     &pipelineruns.Client{Store: pipelineruns.NewKubeStore(dyn)},
 		Contract: contract,
 		Known:    known,
 		Version:  version,
