@@ -8,13 +8,15 @@
 // (the same limit glidepath/tekton-results-relay works around).
 //
 // What: a SubjectAccessReview on a virtual resource in the app's own -cicd namespace, group
-// glidepath.hangar.io (runs, runs/logs, releases, evidence, tests). Nothing in the cluster serves that group; RBAC
-// only needs the strings. So who may read an app's runs is ordinary RBAC, bound by the chart.
+// glidepath.hangar.io (runs, runs/logs, releases, evidence, tests; verbs get and list to read, rerun
+// and cancel on runs to write). Nothing in the cluster serves that group; RBAC only needs the strings.
+// So who may read an app's runs, or re-run them, is ordinary RBAC, bound by the chart.
 //
 // On behalf of: a delegate (Tower) may name the person it acts for in X-Glidepath-On-Behalf-Of.
-// Only callers listed as delegates may; anyone else is refused. In P1 every call is a read, and a
-// read is authorized as the caller itself; the person is recorded in the audit line. Writes (P3)
-// will authorize the person.
+// Only callers listed as delegates may; anyone else is refused. Every call, read or write, is
+// authorized as the caller itself: the person is a Backstage identity, not a Kubernetes one, and the
+// delegate is trusted to have checked them. A delegate's write must name the person (the server
+// refuses it otherwise, GP-AUTH-004), and the person is recorded in the audit line.
 package auth
 
 import (
@@ -142,9 +144,12 @@ func (a *Auth) Authorize(ctx context.Context, c *Caller, verb, resource, subreso
 		if subresource != "" {
 			what += "/" + subresource
 		}
+		hint := "bind the glidepath-api-reader ClusterRole to this identity (the chart's api.readers)"
+		if verb != "get" && verb != "list" {
+			hint = "bind the glidepath-api-operator ClusterRole to this identity (the chart's api.operators)"
+		}
 		return &Error{http.StatusForbidden, "GP-AUTHZ-001",
-			fmt.Sprintf("%s may not %s %s.%s in %s", c.User, verb, what, Group, namespace),
-			"bind the glidepath-api-reader ClusterRole to this identity (the chart's api.readers)"}
+			fmt.Sprintf("%s may not %s %s.%s in %s", c.User, verb, what, Group, namespace), hint}
 	}
 	return nil
 }

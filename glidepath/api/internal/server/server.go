@@ -1,8 +1,9 @@
 // Package server is glidepath-api's HTTP surface: api/openapi.yaml, served.
 //
 // Every /v1 call is authenticated (auth.Authenticate), resolved to the app's -cicd namespace, and
-// authorized there (auth.Authorize) before any data is read. Every call writes one audit line to
-// stdout: who, on whose behalf, which operation and tier, the decision and the status.
+// authorized there (auth.Authorize) before any data is read or written. Every call writes one audit
+// line to stdout: who, on whose behalf, which operation and tier, the decision and the status; a
+// write adds what it wrote.
 package server
 
 import (
@@ -19,6 +20,7 @@ import (
 	"github.com/glidepath/api/internal/auth"
 	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
+	"github.com/glidepath/api/internal/pipelineruns"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
 	"github.com/glidepath/api/internal/testkube"
@@ -32,6 +34,7 @@ type Server struct {
 	Releases releases.Reader
 	Evidence *evidence.Reader
 	Tests    *testkube.Client
+	Runs     *pipelineruns.Client
 	Contract []byte
 	Known    []explain.KnownFailure // the contract's knownFailures, compiled (explain.Load)
 	Version  int                    // the contract's contractVersion
@@ -66,6 +69,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/apps/{app}/evidence", s.wrap(op{"getEvidence", "T0", "evidence", "", "get"}, s.getEvidence))
 	mux.Handle("GET /v1/apps/{app}/tests", s.wrap(op{"listTests", "T0", "tests", "", "list"}, s.listTests))
 	mux.Handle("GET /v1/apps/{app}/tests/{id}/report", s.wrap(op{"getTestReport", "T0", "tests", "", "get"}, s.getTestReport))
+	mux.Handle("POST /v1/apps/{app}/pipelineruns/{name}/rerun", s.wrap(op{"rerunRun", "T1", "runs", "", "rerun"}, s.rerunRun))
+	mux.Handle("POST /v1/apps/{app}/pipelineruns/{name}/cancel", s.wrap(op{"cancelRun", "T1", "runs", "", "cancel"}, s.cancelRun))
 	return mux
 }
 
@@ -99,16 +104,25 @@ func classify(err error) (int, apiError) {
 		evInv  evidence.Invalid
 		tkNF   testkube.NotFound
 		tkInv  testkube.Invalid
+		prNF   pipelineruns.NotFound
+		prInv  pipelineruns.Invalid
+		prConf pipelineruns.Conflict
+		prRef  pipelineruns.Refused
 	)
 	switch {
 	case errors.As(err, &noLog):
 		return http.StatusNotFound, apiError{err.Error(), "GP-LOG-404", "the run exists; Results stored no log for this TaskRun (docs/admin/tekton-results.md)"}
 	case errors.As(err, &appNF):
 		return http.StatusNotFound, apiError{err.Error(), "GP-API-404", ""}
-	case errors.As(err, &resNF), errors.As(err, &relNF), errors.As(err, &tkNF):
+	case errors.As(err, &resNF), errors.As(err, &relNF), errors.As(err, &tkNF), errors.As(err, &prNF):
 		return http.StatusNotFound, apiError{err.Error(), "GP-API-404", ""}
-	case errors.As(err, &appInv), errors.As(err, &resInv), errors.As(err, &relInv), errors.As(err, &evInv), errors.As(err, &tkInv):
+	case errors.As(err, &appInv), errors.As(err, &resInv), errors.As(err, &relInv), errors.As(err, &evInv), errors.As(err, &tkInv), errors.As(err, &prInv):
 		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
+	case errors.As(err, &prConf):
+		return http.StatusConflict, apiError{err.Error(), "GP-API-409", "send a new Idempotency-Key"}
+	case errors.As(err, &prRef):
+		return http.StatusUnprocessableEntity, apiError{err.Error(), "GP-API-422",
+			"an admission policy (tower-pipelinerun-shape) or glidepath-api's own RBAC refused it; retrying won't help"}
 	}
 	return http.StatusBadGateway, apiError{err.Error(), "GP-API-502", "a source Glidepath reads (the API server, Tekton Results, GHCR, Rekor or Testkube) failed; retry"}
 }
@@ -116,6 +130,14 @@ func classify(err error) (int, apiError) {
 type recorder struct {
 	http.ResponseWriter
 	status int
+	audit  []any // what a write adds to its audit line
+}
+
+// note adds key/value pairs to the call's audit line.
+func note(w http.ResponseWriter, kv ...any) {
+	if r, ok := w.(*recorder); ok {
+		r.audit = append(r.audit, kv...)
+	}
 }
 
 func (r *recorder) WriteHeader(s int) { r.status = s; r.ResponseWriter.WriteHeader(s) }
@@ -123,7 +145,8 @@ func (r *recorder) WriteHeader(s int) { r.status = s; r.ResponseWriter.WriteHead
 func (s *Server) wrap(o op, h handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rec := &recorder{w, http.StatusOK}
+		rec := &recorder{ResponseWriter: w, status: http.StatusOK}
+		write := o.tier != "T0"
 		var caller *auth.Caller
 		decision := "allow"
 		appName := r.PathValue("app")
@@ -133,6 +156,12 @@ func (s *Server) wrap(o op, h handler) http.Handler {
 				return err
 			}
 			caller = c
+			// The delegate is trusted to have checked the person (Tower's owner permission), so a write
+			// it makes must say who that was.
+			if write && c.Delegate && c.OnBehalfOf == "" {
+				return &auth.Error{Status: http.StatusBadRequest, Rule: "GP-AUTH-004",
+					Msg: "a delegate's write must name the person", Hint: "send " + auth.HeaderOnBehalf}
+			}
 			var app *apps.App
 			if appName != "" {
 				if app, err = s.Apps.Resolve(r.Context(), appName); err != nil {
@@ -164,6 +193,10 @@ func (s *Server) wrap(o op, h handler) http.Handler {
 			"ms", time.Since(start).Milliseconds()}
 		if caller != nil {
 			attrs = append(attrs, "caller", caller.User, "onBehalfOf", caller.OnBehalfOf)
+		}
+		if write {
+			attrs = append(attrs, "name", r.PathValue("name"), "dryRun", r.URL.Query().Get("dryRun") == "true")
+			attrs = append(attrs, rec.audit...)
 		}
 		if err != nil {
 			attrs = append(attrs, "error", err.Error())
@@ -304,6 +337,59 @@ func (s *Server) getTestReport(ctx context.Context, w http.ResponseWriter, r *ht
 	}
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.Write(xml)
+	return nil
+}
+
+// dryRun reads ?dryRun=true|false.
+func dryRun(r *http.Request) (bool, error) {
+	switch r.URL.Query().Get("dryRun") {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	}
+	return false, pipelineruns.Invalid{What: "dryRun must be true or false"}
+}
+
+// rerunRun starts a copy of a PipelineRun, once per Idempotency-Key: 201 when this call created it,
+// 200 when it is a replay or a dry run.
+func (s *Server) rerunRun(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
+	dry, err := dryRun(r)
+	if err != nil {
+		return err
+	}
+	key := r.Header.Get("Idempotency-Key")
+	if err := pipelineruns.ValidKey(key); err != nil {
+		return err
+	}
+	name := r.PathValue("name")
+	note(w, "idempotencyKeySha256", pipelineruns.KeyHash(app.Name, name, key)[:12])
+	out, created, err := s.Runs.Rerun(ctx, app.Namespace, app.Name, name, key, dry)
+	if err != nil {
+		return err
+	}
+	note(w, "created", out.Name, "replayed", out.Replayed)
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, out)
+	return nil
+}
+
+// cancelRun cancels a PipelineRun (CancelledRunFinally); one already cancelled or finished is a 200
+// that says so.
+func (s *Server) cancelRun(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
+	dry, err := dryRun(r)
+	if err != nil {
+		return err
+	}
+	out, err := s.Runs.Cancel(ctx, app.Namespace, r.PathValue("name"), dry)
+	if err != nil {
+		return err
+	}
+	note(w, "result", out.Status)
+	writeJSON(w, http.StatusOK, out)
 	return nil
 }
 

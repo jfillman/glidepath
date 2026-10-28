@@ -1,21 +1,26 @@
 # templates/api/glidepath-api.yaml
 #
-# glidepath-api (docs/admin/api.md): Glidepath's read API for people, Tower and agents. Renders
+# glidepath-api (docs/admin/api.md): Glidepath's API for people, Tower and agents. Renders
 # nothing until apiImage is set, so a cluster can take this chart version before the first image
 # exists (api-ci.yaml builds it and sets apiImage on main).
 #
-# Two kinds of RBAC, kept apart on purpose:
+# Three kinds of RBAC, kept apart on purpose:
 #   - glidepath-api's OWN identity: TokenReview and SubjectAccessReview (to decide who a caller is
-#     and what they may read), namespaces get (to find an app's -cicd namespace), release-tracking
-#     ConfigMaps list/get, and each app's registry-credentials Secret (get, that name only: evidence
-#     reads it per request to pull the image's attestations from GHCR). Tekton Results is read
-#     through tekton-results-relay, so no Results grant. The Fulcio root (fulcio-root-ca in
-#     platform-catalog) needs nothing here: templates/sigstore/fulcio-root-configmap.yaml already
-#     lets every ServiceAccount get exactly that ConfigMap.
+#     and what they may do), namespaces get (to find an app's -cicd namespace), release-tracking
+#     ConfigMaps list/get, each app's registry-credentials Secret (get, that name only: evidence
+#     reads it per request to pull the image's attestations from GHCR), and PipelineRuns get, create
+#     and patch (re-run and cancel). Tekton Results is read through tekton-results-relay, so no
+#     Results grant. The Fulcio root (fulcio-root-ca in platform-catalog) needs nothing here:
+#     templates/sigstore/fulcio-root-configmap.yaml already lets every ServiceAccount get exactly
+#     that ConfigMap.
 #   - glidepath-api-reader: who may READ through the API. A virtual group, glidepath.hangar.io, that
 #     nothing in the cluster serves; the API asks a SubjectAccessReview against it in the app's
 #     namespace. Bound cluster-wide to api.readers. An app-scoped grant is a RoleBinding to the same
 #     ClusterRole in that app's -cicd namespace.
+#   - glidepath-api-operator: who may RE-RUN and CANCEL through the API (verbs rerun and cancel on
+#     runs.glidepath.hangar.io). Bound cluster-wide to api.operators; an app-scoped grant is a
+#     RoleBinding to it in that app's -cicd namespace, as for the reader. It holds no read: an
+#     operator that should also see runs needs glidepath-api-reader too.
 {{- if .Values.apiImage }}
 apiVersion: v1
 kind: ServiceAccount
@@ -54,6 +59,13 @@ rules:
     resources: ["secrets"]
     resourceNames: ["registry-credentials"]
     verbs: ["get"]
+  # Re-run (get the source, create the copy) and cancel (merge patch spec.status). Cluster-wide is
+  # unavoidable, since apps are onboarded after install, and RBAC can't say "only Glidepath's shape":
+  # the shape lock is the cluster's admission policy (gitops tower-pipelinerun-shape), which must
+  # match system:serviceaccount:platform-system:glidepath-api as it matches Tower's identity.
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns"]
+    verbs: ["get", "create", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -98,6 +110,40 @@ subjects:
   - { apiGroup: rbac.authorization.k8s.io, kind: Group, name: {{ . | quote }} }
   {{- end }}
   {{- range $readers.serviceAccounts }}
+  - { kind: ServiceAccount, name: {{ .name | quote }}, namespace: {{ .namespace | quote }} }
+  {{- end }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: glidepath-api-operator
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+rules:
+  - apiGroups: ["glidepath.hangar.io"]
+    resources: ["runs"]
+    verbs: ["rerun", "cancel"]
+{{- $operators := .Values.api.operators | default dict }}
+{{- if or $operators.users $operators.groups $operators.serviceAccounts }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: glidepath-api-operator
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: glidepath-api-operator }
+subjects:
+  {{- range $operators.users }}
+  - { apiGroup: rbac.authorization.k8s.io, kind: User, name: {{ . | quote }} }
+  {{- end }}
+  {{- range $operators.groups }}
+  - { apiGroup: rbac.authorization.k8s.io, kind: Group, name: {{ . | quote }} }
+  {{- end }}
+  {{- range $operators.serviceAccounts }}
   - { kind: ServiceAccount, name: {{ .name | quote }}, namespace: {{ .namespace | quote }} }
   {{- end }}
 {{- end }}
