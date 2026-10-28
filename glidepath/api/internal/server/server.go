@@ -17,6 +17,7 @@ import (
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
+	"github.com/glidepath/api/internal/explain"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
 )
@@ -28,6 +29,8 @@ type Server struct {
 	Results  *results.Client
 	Releases releases.Reader
 	Contract []byte
+	Known    []explain.KnownFailure // the contract's knownFailures, compiled (explain.Load)
+	Version  int                    // the contract's contractVersion
 	Log      *slog.Logger
 	Now      func() time.Time
 }
@@ -53,6 +56,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/apps/{app}/runs", s.wrap(op{"listRuns", "T0", "runs", "", "list"}, s.listRuns))
 	mux.Handle("GET /v1/apps/{app}/runs/{result}", s.wrap(op{"getRun", "T0", "runs", "", "get"}, s.getRun))
 	mux.Handle("GET /v1/apps/{app}/runs/{result}/logs/{taskRun}", s.wrap(op{"getRunLog", "T0", "runs", "logs", "get"}, s.getLog))
+	mux.Handle("GET /v1/apps/{app}/runs/{result}/explain", s.wrap(op{"explainRun", "T0", "runs", "logs", "get"}, s.explainRun))
 	mux.Handle("GET /v1/apps/{app}/releases", s.wrap(op{"listReleases", "T0", "releases", "", "list"}, s.listReleases))
 	mux.Handle("GET /v1/apps/{app}/releases/{chainId}", s.wrap(op{"getRelease", "T0", "releases", "", "get"}, s.getRelease))
 	return mux
@@ -216,6 +220,23 @@ func (s *Server) getLog(ctx context.Context, w http.ResponseWriter, r *http.Requ
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write([]byte(text))
+	return nil
+}
+
+// explainRun reads the run and its failed TaskRuns' logs, so it needs what getRunLog needs.
+func (s *Server) explainRun(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
+	result := r.PathValue("result")
+	run, err := s.Results.Get(ctx, app.Namespace, result)
+	if err != nil {
+		return err
+	}
+	ex, err := explain.Run(run, s.Known, s.Version, func(taskRun string) (string, error) {
+		return s.Results.Log(ctx, app.Namespace, result, taskRun)
+	})
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, ex)
 	return nil
 }
 

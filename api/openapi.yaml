@@ -106,6 +106,27 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/runs/{result}/explain:
+    get:
+      operationId: explainRun
+      summary: Why a run failed, classified against the contract's knownFailures
+      description: >-
+        Needs `get` on `runs/logs` (it reads the failed TaskRuns' logs). For each failed TaskRun, the first step that
+        exited non-zero, the first knownFailure (in contract order) its log lines or condition message match, the line
+        that matched, and the hint and field to change. `knownFailure` is null when nothing matched; `evidence` is then
+        the step's last lines. Act on the id and the hint, never on the message text.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/Result" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The run explained, content: { application/json: { schema: { $ref: "#/components/schemas/Explanation" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
   /v1/apps/{app}/releases:
     get:
       operationId: listReleases
@@ -169,6 +190,35 @@ components:
           type: string
           description: GP-AUTH-001 no token, GP-AUTH-002 token rejected, GP-AUTH-003 on-behalf-of refused, GP-AUTHZ-001 not allowed, GP-LOG-404 the run exists but has no archived log for that TaskRun, GP-API-400/404/502
         hint: { type: string }
+    Explanation:
+      type: object
+      required: [result, status, failures, contractVersion]
+      properties:
+        result: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [succeeded, failed, cancelled, running, unknown] }
+        contractVersion: { type: integer }
+        failures:
+          type: array
+          items:
+            type: object
+            required: [taskRun, knownFailure, log]
+            properties:
+              taskRun: { type: string }
+              task: { type: string, description: The pipeline task (tekton.dev/pipelineTask) }
+              step: { type: string, description: The first step that exited non-zero }
+              reason: { type: string }
+              message: { type: string, description: The TaskRun's Succeeded condition message }
+              knownFailure:
+                nullable: true
+                type: object
+                required: [id, hint]
+                properties:
+                  id: { type: string, description: A knownFailures id from the contract }
+                  hint: { type: string }
+                  field: { type: string, description: JSON pointer into cicd.yaml, when one field is the fix }
+              evidence: { type: string, description: The matching line, or the failing step's last lines when nothing matched }
+              log: { type: string, enum: [archived, missing] }
     Caller:
       type: object
       properties:
