@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The promote Task and promote-image StepAction (ADR-0029 phase 2), as rendered. Runs each step's bash against a fake
-# curl/oras/cosign that serve fixtures, and checks the refusals the rules require (PROM-03 red gate, PROM-06 foreign
-# source, PROM-08 merged PR, no digest), the happy path's hand-off file, the workflow's failing step as the reason, an
+# curl/oras/cosign that serve fixtures, and checks the refusals the rules require (PROM-01 Ground pin, PROM-03 red
+# gate, PROM-06 foreign source, PROM-08 merged PR, no digest), the happy path's hand-off file, the workflow's failing step as the reason, an
 # attestation from another request, and the check run's conclusion.
 # Needs helm, yq (mikefarah v4), jq and python3 (pyyaml).
 # Usage: charts/glidepath-catalog/tests/promote_test.sh
@@ -84,14 +84,14 @@ scenario() { # name -> fresh fixture dir in $FX, defaults for a promotable relea
   echo '{"id":42}' > "$FX/check-created.json"; echo '{}' > "$FX/empty.json"
   jq -n --arg sha "$SHA" '{state: "open", merged: false, head: {sha: $sha}}' > "$FX/pr.json"
   echo '[{"filename":"hangar-prod/prod/release.yaml"}]' > "$FX/files.json"
-  printf 'release:\n  image:\n    repository: ghcr.io/jfillman/boarding-api\n    tag: 2.0.5-832e475\n    digest: %s\n    source: ghcr.io/jfillman/boarding-api\nreleaseTracking:\n  releaseId: r1:hangar-prod/prod\n' "$D" > "$FX/release.yaml"
+  printf 'release:\n  image:\n    repository: ghcr.io/riley-roooo/boarding-api\n    tag: 2.0.5-832e475\n    digest: %s\n    source: ghcr.io/jfillman/boarding-api\nreleaseTracking:\n  releaseId: r1:hangar-prod/prod\n' "$D" > "$FX/release.yaml"
   jq -n '{check_runs: [ "sast","image-scan","provenance","sbom","values","itsm","policy-validation"
           | {name: ("Pipelines as Code CI / " + . + "-"), status: "completed", conclusion: "success", started_at: "2026-10-27T10:00:00Z"} ]}' > "$FX/checks.json"
 }
 run_step() { # step-file -> runs it with the fakes; exit code in $rc
   ( export PATH="$work/bin:$PATH" PROMOTE_WORK="$FX/w" PROMOTER_TOKEN_FILE="$work/sa-token" \
       PROMOTER_TOKEN_URL=http://broker/promoter-token REPO_URL="${REPO_URL:-https://github.com/jfillman/gitops-boarding-api}" \
-      PR_NUMBER=7 RUN_NAME=promote-run-abc GROUND_HOST=ghcr.io GROUND_NAMESPACE= REQUEST_ID=promote-run-abc
+      PR_NUMBER=7 RUN_NAME=promote-run-abc GROUND_HOST=ghcr.io GROUND_NAMESPACE= FLIGHT_HOST=ghcr.io FLIGHT_NAMESPACE="${FLIGHT_NAMESPACE-riley-roooo}" REQUEST_ID=promote-run-abc
     # shellcheck disable=SC1091
     [[ "$1" == copy.sh ]] && source "$work/copy.env"
     bash "$work/$1" ) > "$FX/out" 2>&1
@@ -127,6 +127,9 @@ scenario nodigest; yq -i 'del(.release.image.digest)' "$FX/release.yaml"
 expect_refusal no-digest "pins no digest"
 scenario prsource; yq -i '.release.image.source = "ghcr.io/jfillman/boarding-api-pr"' "$FX/release.yaml"
 expect_refusal pr-source "PROM-06"
+scenario groundpin; yq -i '.release.image.repository = "ghcr.io/jfillman/boarding-api"' "$FX/release.yaml"
+expect_refusal ground-pin "pins ghcr.io/jfillman/boarding-api, not the Flight repository ghcr.io/riley-roooo/boarding-api.*PROM-01"
+scenario noflightns; FLIGHT_NAMESPACE="" expect_refusal no-flight-namespace "registries.flight.namespace is not set"
 scenario otherapp; yq -i '.release.image.source = "ghcr.io/jfillman/gate-api"' "$FX/release.yaml"
 expect_refusal other-app "PROM-06"
 scenario redgate
