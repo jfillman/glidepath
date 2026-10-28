@@ -29,6 +29,7 @@ import (
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
+	"github.com/glidepath/api/internal/explain"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
 	"github.com/glidepath/api/internal/server"
@@ -48,6 +49,10 @@ func main() {
 	contract, err := os.ReadFile(env("CONTRACT_PATH", "/contract/glidepath-contract.json"))
 	if err != nil {
 		log.Fatalf("glidepath-api: reading the contract: %v", err)
+	}
+	known, version, err := explain.Load(contract)
+	if err != nil {
+		log.Fatalf("glidepath-api: %v", err)
 	}
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -72,6 +77,8 @@ func main() {
 		},
 		Releases: releases.Reader{CS: cs},
 		Contract: contract,
+		Known:    known,
+		Version:  version,
 		Log:      server.NewLogger(),
 		Now:      time.Now,
 	}

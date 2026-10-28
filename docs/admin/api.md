@@ -1,8 +1,8 @@
 # glidepath-api
 
 `glidepath-api` answers questions about an app's CI/CD for people, Tower and agents: its runs,
-their logs, its release records, and Glidepath's [contract](contract.md). It is phase 1 of the
-[Glidepath API spec](https://hangarplatform.dev/library/glidepath-api/): **reads only**. Re-runs,
+their logs, why a run failed, its release records, and Glidepath's [contract](contract.md). It is
+phases 1 and 2 of the [Glidepath API spec](https://hangarplatform.dev/library/glidepath-api/): **reads only**. Re-runs,
 previews and `cicd.yaml` pull requests come in phase 3, promotion and rollback in phase 4.
 
 The operations are [`api/openapi.yaml`](../../api/openapi.yaml). The contract lists every
@@ -16,6 +16,7 @@ fails if the server's routes and the spec ever differ.
 | `GET /v1/apps/{app}/runs?sinceHours=&limit=&view=` | `list runs` | Runs newest first; `view=full` adds each PipelineRun and TaskRuns |
 | `GET /v1/apps/{app}/runs/{result}` | `get runs` | One run (the id is the PipelineRun's uid) |
 | `GET /v1/apps/{app}/runs/{result}/logs/{taskRun}` | `get runs/logs` | One TaskRun's step logs, as text |
+| `GET /v1/apps/{app}/runs/{result}/explain` | `get runs/logs` | Each failed TaskRun's failing step, its [known failure](#explain) id, hint and field, and the line that matched |
 | `GET /v1/apps/{app}/releases` | `list releases` | Every `release-tracking-*` record of the app |
 | `GET /v1/apps/{app}/releases/{chainId}` | `get releases` | One record |
 
@@ -87,6 +88,26 @@ one who could, so the API doesn't tell strangers which apps exist.
 `X-Glidepath-On-Behalf-Of`. Only usernames in `api.delegates` may send it; anyone else gets
 `GP-AUTH-003`. In phase 1 every call is a read and is authorized as the caller itself; the person is
 recorded in the audit line. Phase 3's writes will authorize the person.
+
+## Explain
+
+`explain` reads the run and each failed TaskRun's archived log. For each one, it takes the first step
+that exited non-zero and tests that step's lines, plus the TaskRun's condition message, against the
+contract's `knownFailures` (`schemas/cicd.meta.yaml`), in contract order. The first match wins:
+
+```json
+{"taskRun": "itsm-bh5bn-verify-change", "task": "verify-change", "step": "verify",
+ "knownFailure": {"id": "ItsmChangeNotApproved", "hint": "..."},
+ "evidence": "error: change CHG0010035 for ... is in state '-5' with approval 'not requested' - not approved or scheduled. ...",
+ "log": "archived"}
+```
+
+`knownFailure` is `null` when nothing matched, and `evidence` is then the step's last 15 lines. `log`
+is `missing` when Results stored no log (see [tekton-results.md](tekton-results.md#when-a-runs-logs-are-missing));
+the condition message is still classified, which catches timeouts. A log Results can't serve fails
+the call with 502, so "nothing matched" always means the log was read. The patterns compile when
+the API starts; one that doesn't compile stops it. A new failure gets an id by adding it to
+`knownFailures` and regenerating the contract.
 
 ## Errors
 

@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
+	"github.com/glidepath/api/internal/explain"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
 
@@ -73,10 +75,12 @@ func resultsStub(t *testing.T) *httptest.Server {
 			pr := map[string]any{"apiVersion": "tekton.dev/v1", "kind": "PipelineRun",
 				"metadata": map[string]any{"name": "shop-push-abc", "namespace": "app-shop-cicd", "uid": resultID, "managedFields": []any{1},
 					"annotations": map[string]any{"tekton.dev/pipeline": "build", "kubectl.kubernetes.io/last-applied-configuration": "{}"}},
-				"spec":   map[string]any{"params": []any{map[string]any{"name": "a", "value": "b"}}, "taskRunTemplate": map[string]any{}},
-				"status": map[string]any{"completionTime": "e", "provenance": map[string]any{}, "pipelineSpec": map[string]any{"tasks": []any{map[string]any{"name": "build", "taskSpec": map[string]any{}}}}}}
+				"spec": map[string]any{"params": []any{map[string]any{"name": "a", "value": "b"}}, "taskRunTemplate": map[string]any{}},
+				"status": map[string]any{"completionTime": "e", "provenance": map[string]any{},
+					"conditions": []any{map[string]any{"type": "Succeeded", "status": "False", "reason": "Failed"}}, "pipelineSpec": map[string]any{"tasks": []any{map[string]any{"name": "build", "taskSpec": map[string]any{}}}}}}
 			tr := map[string]any{"apiVersion": "tekton.dev/v1", "kind": "TaskRun", "metadata": map[string]any{"name": "shop-push-abc-build", "labels": map[string]any{"x": "y"}},
-				"status": map[string]any{"podName": "p", "steps": []any{map[string]any{"name": "compile", "imageID": "sha", "terminated": map[string]any{"exitCode": 1}}}}}
+				"status": map[string]any{"podName": "p", "steps": []any{map[string]any{"name": "compile", "imageID": "sha", "terminated": map[string]any{"exitCode": 1}}},
+					"conditions": []any{map[string]any{"type": "Succeeded", "status": "False", "reason": "Failed", "message": `"step-compile" exited with code 1`}}}}
 			lg := map[string]any{"spec": map[string]any{"resource": map[string]any{"name": "shop-push-abc-build"}}}
 			lost := map[string]any{"spec": map[string]any{"resource": map[string]any{"name": "shop-push-abc-scan"}}, "status": map[string]any{"isStored": false}}
 			json.NewEncoder(w).Encode(map[string]any{"records": []any{
@@ -103,7 +107,17 @@ func newServer(t *testing.T, allow map[string]bool) (*Server, func()) {
 		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "release-tracking-other-1", Namespace: "app-shop-cicd",
 			Labels: map[string]string{"hangar.io/subcomponent": "release-tracking", "hangar.io/app": "other"}}},
 	)
+	contract, err := os.ReadFile("../../../../contract/glidepath-contract.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	known, version, err := explain.Load(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := &Server{
+		Known:    known,
+		Version:  version,
 		Auth:     &auth.Auth{Reviewer: fakeReviewer{allow}, Delegates: map[string]bool{"tower": true}},
 		Apps:     &apps.Resolver{CS: cs, TTL: time.Minute},
 		Results:  &results.Client{Base: stub.URL, HTTP: stub.Client()},
@@ -270,6 +284,30 @@ func TestRunTrimmedLikeTower(t *testing.T) {
 	_, full, _ := call(t, s, "/v1/apps/shop/runs?view=full", h)
 	if runs := full["runs"].([]any); len(runs) != 1 || runs[0].(map[string]any)["pipelineRun"] == nil {
 		t.Fatalf("view=full: %v", full)
+	}
+}
+
+func TestExplain(t *testing.T) {
+	s, done := newServer(t, map[string]bool{"tower get runs/logs app-shop-cicd": true, "nologs get runs app-shop-cicd": true})
+	defer done()
+	st, out, body := call(t, s, "/v1/apps/shop/runs/"+resultID+"/explain", map[string]string{"Authorization": "Bearer t-tower"})
+	if st != 200 {
+		t.Fatalf("%d %s", st, body)
+	}
+	if out["status"] != "failed" || out["contractVersion"] != float64(s.Version) {
+		t.Fatalf("explain: %s", body)
+	}
+	f := out["failures"].([]any)[0].(map[string]any)
+	k, _ := f["knownFailure"].(map[string]any)
+	if f["taskRun"] != "shop-push-abc-build" || f["step"] != "compile" || k["id"] != "SourceVolumeFull" || k["field"] != "/build/sourceVolume/size" {
+		t.Fatalf("failure: %s", body)
+	}
+	if f["evidence"] != "error: no space left on device" || f["log"] != "archived" {
+		t.Fatalf("evidence: %s", body)
+	}
+	// explain reads logs, so get on runs alone is not enough.
+	if st, out, _ := call(t, s, "/v1/apps/shop/runs/"+resultID+"/explain", map[string]string{"Authorization": "Bearer t-nologs"}); st != 403 {
+		t.Fatalf("explain without runs/logs: %d %v", st, out)
 	}
 }
 

@@ -11,8 +11,9 @@ Glidepath is Hangar's CI/CD engine: Tekton and Pipelines-as-Code, driven by one 
 3. `schemas/cicd.schema.json`: the schema the pipeline validates `cicd.yaml` against.
 4. [docs/user/cicd-yaml-reference.md](docs/user/cicd-yaml-reference.md) and
    [docs/user/examples/](docs/user/examples/): every field explained, and complete files.
-5. The Glidepath API, `api/openapi.yaml` ([docs/admin/api.md](docs/admin/api.md)): an app's runs, step logs and
-   release records, read only. *(planned)* re-runs, previews and `cicd.yaml` pull requests (phase 3), promotion and
+5. The Glidepath API, `api/openapi.yaml` ([docs/admin/api.md](docs/admin/api.md)): an app's runs, step logs,
+   why a run failed (`explain`: a knownFailures id, its hint and the field to change) and release records, read
+   only. *(planned)* re-runs, previews and `cicd.yaml` pull requests (phase 3), promotion and
    rollback (phase 4).
 
 ## Changing an app's cicd.yaml
