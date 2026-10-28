@@ -19,6 +19,10 @@ promoter writes. A release file pins the image by digest and records where it wa
   (PROM-08), a release without a digest, a release that pins the Ground repository instead of Flight (PROM-01: the
   merge would deploy the unpromoted copy), a source other than the app's own Ground repository (PROM-06), a required
   gate not green on the PR's head commit (PROM-03), and an image without a Chains signature and attestation.
+- **Promotion starts itself** (phase 3): the moment the last required gate turns green on the release PR's head
+  commit, with no polling pod, exactly once per commit and attempt. The PR gets the `image-promotion-` check and a
+  comment like every other gate's, and with promotion on `image-promotion` is a required gate: a merge before it is
+  green is reported as a bypass.
 
 ## Configuration (catalog values, admin-owned)
 
@@ -45,11 +49,47 @@ Never in `cicd.yaml` or Tower settings. With the defaults, every release renders
 |---|---|---|
 | `promote` Pipeline + Task | glidepath-catalog, run in `platform-catalog` as `glidepath-promoter` | reads the PR and release file, applies the rules, opens and concludes the `Pipelines as Code CI / image-promotion-` check run |
 | `promote-image` StepAction | glidepath-catalog | starts the workflow, finds its run by request id, waits, verifies Flight (digest, `.sig`, `.att`, and a promotion attestation for this request signed by the workflow identity) |
-| `/promoter-token` | the broker (`cdevents-broker-auth`, `promoter.go`) | for `glidepath-promoter` only: `dispatch` = the promoter App, `actions: write` on the promoter repo; `release-pr` = the platform App, `checks: write` + read on a `gitops-<app>` repo |
+| `/promoter-token` | the broker (`cdevents-broker-auth`, `promoter.go`) | for `glidepath-promoter` only: `dispatch` = the promoter App, `actions: write` on the promoter repo; `release-pr` = the platform App, `checks: write` + `pull_requests: write` (the PR comment) + `contents: read` on a `gitops-<app>` repo |
 | `promote.yaml` workflow | the promoter repo (lab: `riley-roooo/flight-promoter`) | checks the source is signed and attested, copies by digest with every referrer, keeps Flight's own referrers, signs the promotion attestation |
 
 The check run carries the same name and App as a Pipelines as Code gate, so the registry, `detect-bypass-merge` and
-the PR's gate table read it unchanged. Phase 3 adds the registry entry and the fan-in that starts the Pipeline.
+the PR's gate table read it unchanged. The report step also leaves the gate comment (marker
+`<!-- glidepath:gate:image-promotion -->`, edited in place on the next attempt): what was promoted, or why not and how
+to retry.
+
+## The fan-in (phase 3)
+
+```
+gate PipelineRun (app -cicd ns)            broker                      platform-catalog
+  finally: comment-pr-check-result
+    comment         -> PR comment, verdict
+    promotion-ready -> gate ledger in the release record
+                    -> all required green?  --promotion-ready-->  Trigger `promote`  -->  PipelineRun promote-<id>
+```
+
+| Piece | Where | Does |
+|---|---|---|
+| `promotion-ready` step | `comment-pr-check-result` (every gate's `finally`), rendered only with `promotion.enabled` | records this gate's verdict for the head commit in the release record (`gate.<sha12>.<gate>`, written with the record's `resourceVersion`); when every required gate is green, sends `dev.hangar.release.promotion-ready.0.1.0` |
+| `promote` Trigger | glidepath-catalog `rbac/promote-trigger.yaml`, `platform-catalog` | accepts the event only from `<type>-<app>-cicd` for `gitops-<app>`, and creates `promote-<event id>` as `glidepath-promoter` |
+| `glidepath-promote-trigger` | ServiceAccount, `platform-catalog` | creates PipelineRuns there and nothing else; the broker may impersonate exactly it |
+| `image-promotion` registry entry | `glidepath-catalog.guardrails`, only with `promotion.enabled` | required, `class: integrity`, `targets: [k8s-rollout]`; read by `detect-bypass-merge`, `release-log-emit` and the PR body's gate table. Nothing delivers a `.tekton` file for it |
+
+Why it works without a polling pod or a lock:
+
+- **This gate's own verdict counts.** A gate's check run is still in progress while its `finally` runs, so the step
+  uses its own verdict for itself, and `promote` waits (up to 5 minutes, `GATE_WAIT_SECONDS`) for a required gate that
+  is queued or in progress. A red or missing gate refuses at once.
+- **Two gates finishing together.** Each would see the other's check run in progress. The ledger write carries the
+  release record's `resourceVersion`, so the two writes are serialized and the second sees both verdicts. A verdict in
+  the ledger outranks the check run (a `/retest` that went red is red). With no release record (a PR opened by hand)
+  the check runs alone decide.
+- **Exactly once.** The event id is a hash of repository, PR, head commit and the number of earlier
+  `image-promotion-` check runs on it; the PipelineRun is named after it, so two gates that both see the set complete
+  start one run. After a refused or failed attempt, the next gate to finish asks again under a new id.
+- **Skipped:** a stale commit (the PR moved on), a merged or closed PR, a branch that is not `release-*`, a PR that
+  changes no `<cluster>/<env>/release.yaml` (cloud pin PRs copy at deploy), a commit already promoted or promoting.
+- **A lost event** is recovered by the next gate to finish: comment `/retest <gate>-` on any gate. `promote` re-checks
+  every rule itself, so an event sent by hand gets nothing the rules forbid.
 
 Configuration:
 
@@ -69,7 +109,7 @@ Secrets, in the platform's Infisical project (never in values): `flight-promoter
 `flight-promoter-private-key` (the promoter App; synced into `platform-system` for the broker only) and
 `flight-registry-read-dockerconfigjson` (a `read:packages` credential for Flight; synced into `platform-catalog`).
 
-### Promote by hand (phase 2)
+### Promote by hand
 
 ```sh
 kubectl -n platform-catalog create -f - <<'YAML'
@@ -108,8 +148,9 @@ release:
    Rollout's image ends in `@sha256:`, every gate is green.
 3. The promoter: the Infisical secrets above, `promoter.enabled` in the control plane, `promotion.promoter.repo` and
    `registries.flight.namespace` in the catalog. Promote one open release PR by hand.
-4. `promotion.enabled: true` only with the fan-in (phase 3) in place: before that a Flight release would pin an image
-   nobody copied.
+4. `promotion.enabled: true` (glidepath with the phase 3 fan-in). From then on a release PR pins the Flight
+   repository, `image-promotion` is a required gate, and the fan-in promotes when the last required gate turns green.
+   A release PR opened before the switch still pins Ground and is refused (PROM-01): open it again (Tower Promote).
 
 ## Files
 
@@ -121,5 +162,7 @@ release:
 - `charts/glidepath-catalog/tests/registries_test.sh`
 - `templates/pipelines/promote.yaml`, `templates/tasks/promote.yaml`, `templates/stepactions/promote-image.yaml`,
   `templates/rbac/promoter.yaml`, `_helpers.tpl` `glidepath-catalog.promoterGitHub`; `tests/promote_test.sh`
+- `templates/tasks/comment-pr-check-result.yaml` (`promotion-ready`), `templates/rbac/promote-trigger.yaml`,
+  `_helpers.tpl` `glidepath-catalog.guardrails` (the `image-promotion` entry); `tests/promotion_fan_in_test.sh`
 - `glidepath/broker/cmd/token-review-interceptor/promoter.go`;
   `charts/glidepath-control-plane/templates/secretstore/flight-promoter-external-secrets.yaml`

@@ -1,7 +1,8 @@
 # catalog/pipelines/promote.yaml
 #
 # Ground -> Flight promotion of one release PR's image (ADR-0029, tasks/promote.yaml). Run in the catalog namespace as
-# the glidepath-promoter ServiceAccount. Phase 2: started by hand (docs/admin/registries.md, "Promote by hand").
+# the glidepath-promoter ServiceAccount. Started by the fan-in's Trigger (rbac/promote-trigger.yaml) when the last
+# required gate turns green, or by hand (docs/admin/registries.md, "Promote by hand").
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:

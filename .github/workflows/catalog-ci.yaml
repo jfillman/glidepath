@@ -102,6 +102,14 @@ jobs:
       - run: pip install pyyaml
       - run: charts/glidepath-catalog/tests/promote_test.sh
 
+  # The promotion fan-in (ADR-0029 phase 3): comment-pr-check-result's promotion-ready step.
+  promotion-fan-in:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: charts/glidepath-catalog/tests/promotion_fan_in_test.sh
+
   # validate-values and policy-validation-gate on a /retest: pr-number arrives as the unsubstituted PaC template.
   retest-pr-number:
     runs-on: ubuntu-latest
@@ -189,26 +197,35 @@ jobs:
           helm template glidepath-catalog charts/glidepath-catalog \
             -f charts/glidepath-catalog/tests/values.example.yaml \
             --namespace platform-catalog > /tmp/rendered.yaml
+          # With promotion on (ADR-0029 phase 3): the fan-in step and the promote Trigger render too.
+          helm template glidepath-catalog charts/glidepath-catalog \
+            -f charts/glidepath-catalog/tests/values.example.yaml \
+            --set promotion.enabled=true --set promotion.pinDigest=true \
+            --set registries.flight.namespace=riley-roooo --set promotion.promoter.repo=riley-roooo/flight-promoter \
+            --namespace platform-catalog > /tmp/rendered-promotion.yaml
 
       - name: Structural sanity check
         run: |
           python3 - <<'EOF'
           import yaml, sys
-          docs = [d for d in yaml.safe_load_all(open("/tmp/rendered.yaml")) if d]
-          if not docs:
-              print("ERROR: rendered output is empty"); sys.exit(1)
           # ConfigMap: release-signing-policy only (ADR-0027) - data, never secrets. ServiceAccount:
-          # glidepath-promoter only (ADR-0029), no permissions of its own.
-          expected_kinds = {"Task", "Pipeline", "StepAction", "Role", "RoleBinding", "ConfigMap", "ServiceAccount"}
-          bad = [d for d in docs if d.get("kind") not in expected_kinds]
-          if bad:
-              print(f"ERROR: unexpected kind(s) in catalog chart output: {[d.get('kind') for d in bad]}")
-              sys.exit(1)
-          unnamed = [d for d in docs if not d.get("metadata", {}).get("name")]
-          if unnamed:
-              print(f"ERROR: {len(unnamed)} resource(s) missing metadata.name")
-              sys.exit(1)
-          print(f"OK: {len(docs)} resources rendered, all named, all expected kinds")
+          # glidepath-promoter (ADR-0029), no permissions of its own, and with promotion on glidepath-promote-trigger
+          # (create PipelineRuns here, nothing else) with the promote Trigger.
+          kinds = {"Task", "Pipeline", "StepAction", "Role", "RoleBinding", "ConfigMap", "ServiceAccount"}
+          for path, expected_kinds in (("/tmp/rendered.yaml", kinds),
+                                       ("/tmp/rendered-promotion.yaml", kinds | {"Trigger", "TriggerBinding", "TriggerTemplate"})):
+              docs = [d for d in yaml.safe_load_all(open(path)) if d]
+              if not docs:
+                  print(f"ERROR: {path} is empty"); sys.exit(1)
+              bad = [d for d in docs if d.get("kind") not in expected_kinds]
+              if bad:
+                  print(f"ERROR: unexpected kind(s) in {path}: {[d.get('kind') for d in bad]}")
+                  sys.exit(1)
+              unnamed = [d for d in docs if not d.get("metadata", {}).get("name")]
+              if unnamed:
+                  print(f"ERROR: {len(unnamed)} resource(s) missing metadata.name in {path}")
+                  sys.exit(1)
+              print(f"OK: {path}: {len(docs)} resources rendered, all named, all expected kinds")
           EOF
 
       - name: No stray unrendered Helm/PaC template syntax
@@ -221,7 +238,7 @@ jobs:
           # grep -n prefixes each line with "<number>:", so the comment filter has to skip that
           # prefix: a bare `grep -v "^\s*#"` never matched, and flagged a comment that deliberately
           # renders a literal brace pair (comment-pr-check-result.yaml).
-          if grep -n '{{' /tmp/rendered.yaml | grep -v -E '^[0-9]+:\s*#'; then
+          if cat /tmp/rendered.yaml /tmp/rendered-promotion.yaml | grep -n '{{' | grep -v -E '^[0-9]+:\s*#'; then
             echo "ERROR: rendered output contains a literal '{{' - check for an unescaped PaC/ArgoCD template variable in a comment or string"
             exit 1
           fi

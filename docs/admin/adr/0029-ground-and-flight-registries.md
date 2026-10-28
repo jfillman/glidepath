@@ -2,8 +2,8 @@
 
 *Status: Accepted (2026-10-27). Supersedes decision 3 of [ADR-0025](0025-retire-image-promotion-stub-check.md).
 Phase 0 (spike) done; phase 1 (configuration and digest pinning) live on hangar-dev 2026-10-27; phase 2 (the
-promoter: Pipeline, StepAction, broker `/promoter-token`) built, started by hand. Detail:
-[registries.md](../registries.md).*
+promoter: Pipeline, StepAction, broker `/promoter-token`) live-verified on hangar-dev 2026-10-28; phase 3 (the
+fan-in, the `image-promotion` registry entry and PR comment) built. Detail: [registries.md](../registries.md).*
 
 ## Context
 
@@ -23,7 +23,9 @@ and was copied.
    `repository:tag@digest`) and `release.image.source` (the Ground repository, where the evidence was verified). A
    Flight environment's release file pins the Flight repository from the moment the release PR is opened.
 3. **Promotion happens before the merge**, when every required gate is green on the release PR's head commit (an
-   event fan-in in the relay's reducer, not a polling pod). Merging before promotion fails closed.
+   event fan-in, not a polling pod). Merging before promotion fails closed. As built (phase 3), the fan-in is a step
+   in every gate's `finally` with a gate ledger in the release record, not the relay's reducer: the relay consumes no
+   broker events and runs only where remote clusters exist, and the gate's own finally already knows its verdict.
 4. **The copy keeps every digest.** Index, platform manifests, the legacy `.sig`/`.att` tags and the OCI 1.1
    referrers are copied by digest; nothing is re-signed, so Rekor entries and their integrated times stay valid.
 5. **The copy runs in GitHub Actions.** GHCR does not accept GitHub App installation tokens, even with

@@ -3,8 +3,8 @@
 # Promotes the image an open release PR pins from Ground to Flight and reports it as the PR's image-promotion check
 # (ADR-0029 phase 2, docs/admin/registries.md). Runs in the catalog namespace as glidepath-promoter, never in an app's
 # -cicd namespace: the identity that can start Flight's writer must not be reachable from a tenant's build scripts.
-# Phase 2 starts it by hand (docs/admin/registries.md); phase 3's fan-in starts the same Pipeline when the last
-# required gate turns green.
+# The fan-in (phase 3: comment-pr-check-result.yaml's promotion-ready step and rbac/promote-trigger.yaml) starts it
+# when the last required gate turns green; an admin can still start it by hand (docs/admin/registries.md).
 #
 #   release  reads the PR and its release file and refuses, with the reason, anything the rules forbid: a closed or
 #            merged PR (PROM-08: a merge before promotion is a bypass, never repaired afterwards), a release without
@@ -13,7 +13,8 @@
 #            required gate that is not green on the PR's current head commit (PROM-03). It opens the check run as
 #            in_progress.
 #   copy     the promote-image StepAction: dispatch, wait, verify in Flight.
-#   report   concludes the check run with the outcome, and fails the TaskRun when the promotion did not happen.
+#   report   concludes the check run with the outcome, leaves the gate's PR comment (what was promoted, or why not),
+#            and fails the TaskRun when the promotion did not happen.
 #
 # The check run is named exactly as Pipelines as Code names a gate's ("Pipelines as Code CI / <gate>-") and posted by
 # the same App, so the guardrail registry, detect-bypass-merge and the PR's gate table read it like any other gate.
@@ -133,17 +134,31 @@ spec:
         [[ "${repository}" == "${flight}" ]] || refuse "${manifest} pins ${repository}, not the Flight repository ${flight}: merging it would deploy the Ground copy (PROM-01; catalog promotion.enabled)"
 
         # PROM-03: every required gate green on the PR's current head commit. A /retest leaves several runs per gate;
-        # the newest counts.
-        checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")" \
-          || refuse "could not read the gates on ${head_sha}"
-        gates=""; red=""
-        for gate in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if and .required (ne .name "image-promotion") }}{{ .name }} {{ end }}{{ end }}; do
-          c="$(jq -r --arg n "Pipelines as Code CI / ${gate}-" \
-            '[.check_runs[] | select(.name == $n)] | sort_by(.started_at) | last | if . == null then "missing" elif .status != "completed" then .status else .conclusion end' <<<"${checks}")"
-          gates="${gates}${gates:+,}${gate}=${c}"
-          [[ "${c}" == success ]] || red="${red}${red:+, }${gate} (${c})"
+        # the newest counts. The fan-in starts this run from the last gate's finally, while that gate's own check run
+        # is still in progress, so a gate that is queued or in progress is waited for (GATE_WAIT_SECONDS); a red or
+        # missing one refuses at once.
+        required_gates="{{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if and .required (ne .name "image-promotion") }}{{ .name }} {{ end }}{{ end }}"
+        deadline=$(( SECONDS + ${GATE_WAIT_SECONDS:-300} ))
+        while :; do
+          checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")" \
+            || refuse "could not read the gates on ${head_sha}"
+          gates=""; red=""; pending=""
+          for gate in ${required_gates}; do
+            c="$(jq -r --arg n "Pipelines as Code CI / ${gate}-" \
+              '[.check_runs[] | select(.name == $n)] | sort_by(.started_at) | last | if . == null then "missing" elif .status != "completed" then .status else .conclusion end' <<<"${checks}")"
+            gates="${gates}${gates:+,}${gate}=${c}"
+            case "${c}" in
+              success) ;;
+              queued|in_progress) pending="${pending}${pending:+, }${gate} (${c})" ;;
+              *) red="${red}${red:+, }${gate} (${c})" ;;
+            esac
+          done
+          [[ -z "${red}" ]] || refuse "required gates are not green on ${head_sha:0:7}: ${red} (PROM-03)"
+          [[ -n "${pending}" ]] || break
+          (( SECONDS < deadline )) || refuse "required gates still running on ${head_sha:0:7} after ${GATE_WAIT_SECONDS:-300}s: ${pending} (PROM-03)"
+          echo "waiting for ${pending}"
+          sleep "${GATE_POLL_SECONDS:-15}"
         done
-        [[ -z "${red}" ]] || refuse "required gates are not green on ${head_sha:0:7}: ${red} (PROM-03)"
 
         printf 'SOURCE=%q\nPACKAGE=%q\nTAG=%q\nDIGEST=%q\nRELEASE_ID=%q\nPULL_REQUEST=%q\nGATES=%q\n' \
           "${source_repo}@${digest}" "${app}" "${tag}" "${digest}" "${release_id}" \
@@ -173,6 +188,25 @@ spec:
         set -uo pipefail
         W="${PROMOTE_WORK:-/workspace/promote}"
         {{- include "glidepath-catalog.promoterGitHub" . | nindent 8 }}
+        # The PR comment every gate leaves (comment-pr-check-result.yaml's marker, edited in place on the next run), so
+        # the conversation says what happened to the image and what to do about a refusal.
+        pr_comment() { # owner repo outcome summary
+          local marker="<!-- glidepath:gate:image-promotion -->" body id
+          if [[ "$3" == success ]]; then
+            body="$(printf '### ✅ `image-promotion` passed\n\n%s\n\nPromote run: `%s`%s' "$4" "${RUN_NAME}" "${run_url:+ · workflow run: ${run_url}}")"
+          else
+            body="$(printf '### ❌ `image-promotion` failed\n\n**Why:** %s\n\n**To retry:** promotion starts again when a gate finishes on this commit and every required gate is green. Fix the cause, then comment `/retest <gate>-` for any gate (for example `/retest sbom-`). Merging before promotion is a bypass and is never promoted afterwards (PROM-08). Promote run: `%s`%s' \
+              "$4" "${RUN_NAME}" "${run_url:+ · workflow run: ${run_url}}")"
+          fi
+          body="${marker}"$'\n'"${body}"
+          id="$(gh_ "https://api.github.com/repos/$1/$2/issues/${PR_NUMBER}/comments?per_page=100" \
+            | jq -r --arg m "${marker}" '[.[] | select(.body | startswith($m))][0].id // empty')" || return 1
+          if [[ -n "${id}" ]]; then
+            gh_ -X PATCH "https://api.github.com/repos/$1/$2/issues/comments/${id}" -d "$(jq -n --arg b "${body}" '{body: $b}')" >/dev/null
+          else
+            gh_ -X POST "https://api.github.com/repos/$1/$2/issues/${PR_NUMBER}/comments" -d "$(jq -n --arg b "${body}" '{body: $b}')" >/dev/null
+          fi
+        }
         flight_ref="$(cat "${W}/flight-ref" 2>/dev/null || true)"
         run_url="$(cat "${W}/run-url" 2>/dev/null || true)"
         if [[ -n "${flight_ref}" && ! -e "${W}/reason" ]]; then
@@ -201,6 +235,7 @@ spec:
                   '{status: "completed", conclusion: $c, output: {title: $t, summary: $s, text: $x}} + (if $u == "" then {} else {details_url: $u} end)')" >/dev/null \
                 || echo "warn: could not conclude the image-promotion check run" >&2
             fi
+            pr_comment "${OWNER}" "${REPO}" "${outcome}" "${summary}" || echo "warn: could not comment on #${PR_NUMBER}" >&2
           fi
         fi
         [[ "${outcome}" == success ]]
