@@ -45,9 +45,10 @@ rules:
   - apiGroups: ["authorization.k8s.io"]
     resources: ["subjectaccessreviews"]
     verbs: ["create"]
+  # list: the start-up warm-up finds every app's -cicd namespace (cmd/glidepath-api/warm.go).
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get"]
+    verbs: ["get", "list"]
   # Release records live in each app's own -cicd namespace, and apps are onboarded after install,
   # so this is cluster-wide: get+list only, and the API only ever reads release-tracking ones.
   - apiGroups: [""]

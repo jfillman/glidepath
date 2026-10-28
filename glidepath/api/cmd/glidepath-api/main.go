@@ -119,6 +119,7 @@ func main() {
 		}
 	}()
 	log.Printf("glidepath-api: listening on %s, %d delegate(s)", srv.Addr, len(delegates))
+	go warm(context.Background(), cs, s.Apps, s.Results, time.Now)
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 	<-stop
