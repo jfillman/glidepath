@@ -8,8 +8,10 @@
 #
 #   release  reads the PR and its release file and refuses, with the reason, anything the rules forbid: a closed or
 #            merged PR (PROM-08: a merge before promotion is a bypass, never repaired afterwards), a release without
-#            a digest, a source outside the app's own Ground repository (PROM-06), a required gate that is not green
-#            on the PR's current head commit (PROM-03). It opens the check run as in_progress.
+#            a digest, a release that does not pin the Flight repository (PROM-01: the merge would deploy the Ground
+#            copy, so promoting it proves nothing), a source outside the app's own Ground repository (PROM-06), a
+#            required gate that is not green on the PR's current head commit (PROM-03). It opens the check run as
+#            in_progress.
 #   copy     the promote-image StepAction: dispatch, wait, verify in Flight.
 #   report   concludes the check run with the outcome, and fails the TaskRun when the promotion did not happen.
 #
@@ -79,6 +81,12 @@ spec:
         - name: GROUND_NAMESPACE
           value: {{ . | quote }}
         {{- end }}
+        - name: FLIGHT_HOST
+          value: {{ .Values.registries.flight.host | quote }}
+        {{- with .Values.registries.flight.namespace }}
+        - name: FLIGHT_NAMESPACE
+          value: {{ . | quote }}
+        {{- end }}
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
@@ -118,6 +126,11 @@ spec:
         # PROM-06: only the app's own Ground repository; never <app>-pr (ephemeral builds) or another app's image.
         ground="${GROUND_HOST}/${GROUND_NAMESPACE:-${owner}}/${app}"
         [[ "${source_repo}" == "${ground}" ]] || refuse "the release's source ${source_repo} is not ${ground}, the app's Ground repository (PROM-06)"
+        # PROM-01: the release must pull what is promoted. A Ground pin would deploy the unpromoted copy, so a green
+        # check would vouch for an image the cluster never pulls (catalog promotion.enabled pins Flight at PR open).
+        [[ -n "${FLIGHT_NAMESPACE:-}" ]] || refuse "registries.flight.namespace is not set in the catalog"
+        flight="${FLIGHT_HOST}/${FLIGHT_NAMESPACE}/${app}"
+        [[ "${repository}" == "${flight}" ]] || refuse "${manifest} pins ${repository}, not the Flight repository ${flight}: merging it would deploy the Ground copy (PROM-01; catalog promotion.enabled)"
 
         # PROM-03: every required gate green on the PR's current head commit. A /retest leaves several runs per gate;
         # the newest counts.

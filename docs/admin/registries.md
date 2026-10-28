@@ -16,7 +16,8 @@ promoter writes. A release file pins the image by digest and records where it wa
   repository whose own `GITHUB_TOKEN` is Flight's only writer. The cluster can only *start* it, through a token the
   broker mints for one ServiceAccount (`glidepath-promoter`), and then checks the result with a read-only credential.
 - **Promotion refuses what the rules forbid**, and the `image-promotion` check says why: a merged or closed PR
-  (PROM-08), a release without a digest, a source other than the app's own Ground repository (PROM-06), a required
+  (PROM-08), a release without a digest, a release that pins the Ground repository instead of Flight (PROM-01: the
+  merge would deploy the unpromoted copy), a source other than the app's own Ground repository (PROM-06), a required
   gate not green on the PR's head commit (PROM-03), and an image without a Chains signature and attestation.
 
 ## Configuration (catalog values, admin-owned)
