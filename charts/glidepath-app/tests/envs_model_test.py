@@ -343,6 +343,35 @@ class LowerEnvsChart(unittest.TestCase):
         # Unset on the cluster: nothing is passed.
         self.assertNotIn("observability", self.chart_of(lower_envs(cicd(BUILD_DEPLOY, {"environments": env})))["helm"]["valuesObject"])
 
+    def test_service_namespace_pattern_reaches_the_default_chart_only(self):
+        # airframe-application's env[].fromService resolves another app's namespace with the pattern that names
+        # this app's own: the destination namespace and the passed pattern come from envNamespacePattern.
+        env = [{"name": "dev", "tier": "ground"}, {"name": "test", "tier": "ground", "chart": {"targetRevision": "v3-canary"}}]
+        a = lower_envs(cicd(BUILD_DEPLOY, {"environments": env}))
+        self.assertEqual(self.chart_of(a)["helm"]["valuesObject"]["serviceNamespacePattern"], "{type}-{app}-{env}")
+        pattern = self.chart_of(a)["helm"]["valuesObject"]["serviceNamespacePattern"]
+        filled = pattern.replace("{type}", "app").replace("{app}", "sample").replace("{env}", "{{.envName}}")
+        self.assertEqual(a["spec"]["template"]["spec"]["destination"]["namespace"], filled)
+        # A pinned chart (app-wide or per environment) may predate the key: nothing is passed.
+        self.assertNotIn("serviceNamespacePattern", a["spec"]["templatePatch"])
+        pinned = lower_envs(cicd(BUILD_DEPLOY, {"chart": {"targetRevision": "v9.9.9"}, "environments": env[:1]}))
+        self.assertNotIn("serviceNamespacePattern", self.chart_of(pinned)["helm"]["valuesObject"])
+        # An InfraService's own namespaces are infra-<name>-<env>; the pattern it passes is the same one.
+        infra = dict(IDENTITY, platformIdentity=dict(IDENTITY["platformIdentity"], type="infra"))
+        i = lower_envs(cicd(BUILD_DEPLOY, {"environments": env[:1]}), infra)
+        self.assertEqual(i["spec"]["template"]["spec"]["destination"]["namespace"], "infra-sample-{{.envName}}")
+        self.assertEqual(self.chart_of(i)["helm"]["valuesObject"]["serviceNamespacePattern"], "{type}-{app}-{env}")
+
+    def test_a_preview_gets_the_service_namespace_pattern(self):
+        config = cicd(BUILD_DEPLOY, {"environments": [{"name": "dev", "tier": "ground"}]})
+        config["ephemeralEnvironments"] = {"pullRequest": {"enabled": True}}
+        rc, out, err = render(config)
+        self.assertEqual(rc, 0, err[:400])
+        pr = [d for d in docs(out) if d.get("kind") == "ApplicationSet" and "pullRequest" in str(d["spec"].get("generators"))][0]
+        spec = pr["spec"]["template"]["spec"]
+        self.assertEqual(spec["sources"][0]["helm"]["valuesObject"]["serviceNamespacePattern"], "{type}-{app}-{env}")
+        self.assertEqual(spec["destination"]["namespace"], "app-sample-pr-{{.number}}")
+
     def test_a_registry_chart_replaces_path(self):
         own = {"repoURL": "oci://ghcr.io/o/charts", "chart": "web", "targetRevision": "1.2.3"}
         src = self.chart_of(lower_envs(cicd(BUILD_DEPLOY, {"chart": own, "environments": [{"name": "dev", "tier": "ground"}]})))
