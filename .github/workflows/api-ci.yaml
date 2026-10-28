@@ -45,6 +45,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: docker/setup-buildx-action@v3
       - name: Build and push
         id: image
@@ -59,13 +61,37 @@ jobs:
           echo "pushed ${image} for ${archs}"
           [ "${archs}" = "amd64,arm64" ] || { echo "expected amd64,arm64, got ${archs}"; exit 1; }
           echo "image=${image}" >> "$GITHUB_OUTPUT"
+      # Applied to main as it is now, not to this run's commit: two merges close together each bump the same line, so
+      # committing on the run's commit and rebasing conflicted every time, re-runs included (2026-10-28, #173/#174).
+      # An image older than the one main already runs is not set: a slow run must not move apiImage backwards.
       - name: Set apiImage in glidepath-control-plane's values.yaml
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
         run: |
           set -euo pipefail
-          sed -i "s|^apiImage: .*|apiImage: ${{ steps.image.outputs.image }}|" charts/glidepath-control-plane/values.yaml
+          values=charts/glidepath-control-plane/values.yaml
+          mine="$(git rev-parse HEAD)"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add charts/glidepath-control-plane/values.yaml
-          git commit -m "Bump glidepath-api image to ${{ steps.image.outputs.image }}"
-          git pull --rebase origin main
-          git push
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main
+            git checkout -q -B bump origin/main
+            current="$(sed -n 's|^apiImage: .*:sha-||p' "${values}")"
+            if [[ -n "${current}" ]] && git cat-file -e "${current}^{commit}" 2>/dev/null \
+              && ! git merge-base --is-ancestor "${current}" "${mine}"; then
+              echo "main already runs sha-${current}, which this run's commit does not contain; leaving apiImage alone"
+              exit 0
+            fi
+            sed -i "s|^apiImage: .*|apiImage: ${IMAGE}|" "${values}"
+            if git diff --quiet; then
+              echo "apiImage is already ${IMAGE}"
+              exit 0
+            fi
+            git commit -qam "Bump glidepath-api image to ${IMAGE}"
+            if git push -q origin HEAD:main; then
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "could not push the bump after 5 attempts" >&2
+          exit 1
