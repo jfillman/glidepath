@@ -112,3 +112,20 @@ func TestBadPatternFailsLoad(t *testing.T) {
 		t.Fatal("an uncompilable pattern must fail")
 	}
 }
+
+// Real failure lines from hangar-dev's archived runs (2026-10-27/28), one per knownFailure explain
+// has been checked against. A pattern edit that stops matching its own evidence fails here.
+func TestRealFailureLines(t *testing.T) {
+	known, _ := contract(t)
+	for line, want := range map[string]string{
+		"error: change CHG0010035 for https://github.com/jfillman/gitops-gate-api/pull/53 is in state '-5' with approval 'not requested' - not approved or scheduled.": "ItsmChangeNotApproved",
+		"error: timed out waiting for rollout gate-api in app-gate-api-dev to run ghcr.io/jfillman/gate-api:2.0.3-5d33ebc Healthy (last phase: Healthy)":               "RolloutTimeout",
+		"fatal: repository 'https://github.com/jfillman/backstage.git/' not found":                                                                                     "SourceRepoNotFound",
+		"TestWorkflowExecution 6ae04cdcc151f87ac364981d finished with status: failed":                                                                                  "TestsFailed",
+		"image-scan: trivy found 89 HIGH/CRITICAL vulnerabilities":                                                                                                     "ImageVulnerabilities",
+	} {
+		if k, _ := Classify(known, []string{line}); k == nil || k.ID != want {
+			t.Errorf("%q: got %v, want %s", line, k, want)
+		}
+	}
+}
