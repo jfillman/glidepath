@@ -63,8 +63,8 @@ api:
   # Usernames (as TokenReview reports them) that may send X-Glidepath-On-Behalf-Of: Tower's
   # identities, e.g. hangar:<prod-cluster>:backstage-ingestor. Per cluster.
   delegates: []
-  # Who may read every app's runs and releases through the API (glidepath-api-reader, cluster-wide).
-  # Per cluster; empty binds nobody.
+  # Who may read every app's runs, releases, evidence and tests through the API (glidepath-api-reader,
+  # cluster-wide). Per cluster; empty binds nobody.
   readers:
     users: []
     groups: []

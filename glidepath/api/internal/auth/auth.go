@@ -8,7 +8,7 @@
 // (the same limit glidepath/tekton-results-relay works around).
 //
 // What: a SubjectAccessReview on a virtual resource in the app's own -cicd namespace, group
-// glidepath.hangar.io (runs, runs/logs, releases). Nothing in the cluster serves that group; RBAC
+// glidepath.hangar.io (runs, runs/logs, releases, evidence, tests). Nothing in the cluster serves that group; RBAC
 // only needs the strings. So who may read an app's runs is ordinary RBAC, bound by the chart.
 //
 // On behalf of: a delegate (Tower) may name the person it acts for in X-Glidepath-On-Behalf-Of.

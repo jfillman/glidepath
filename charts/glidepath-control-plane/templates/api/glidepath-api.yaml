@@ -6,8 +6,12 @@
 #
 # Two kinds of RBAC, kept apart on purpose:
 #   - glidepath-api's OWN identity: TokenReview and SubjectAccessReview (to decide who a caller is
-#     and what they may read), namespaces get (to find an app's -cicd namespace), and release-tracking
-#     ConfigMaps list/get. Tekton Results is read through tekton-results-relay, so no Results grant.
+#     and what they may read), namespaces get (to find an app's -cicd namespace), release-tracking
+#     ConfigMaps list/get, and each app's registry-credentials Secret (get, that name only: evidence
+#     reads it per request to pull the image's attestations from GHCR). Tekton Results is read
+#     through tekton-results-relay, so no Results grant. The Fulcio root (fulcio-root-ca in
+#     platform-catalog) needs nothing here: templates/sigstore/fulcio-root-configmap.yaml already
+#     lets every ServiceAccount get exactly that ConfigMap.
 #   - glidepath-api-reader: who may READ through the API. A virtual group, glidepath.hangar.io, that
 #     nothing in the cluster serves; the API asks a SubjectAccessReview against it in the app's
 #     namespace. Bound cluster-wide to api.readers. An app-scoped grant is a RoleBinding to the same
@@ -44,6 +48,12 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list"]
+  # Evidence: the app's dockerconfigjson for GHCR, in every -cicd namespace (apps are onboarded after
+  # install, so cluster-wide), restricted by name. get only: a name-restricted rule can't grant list.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["registry-credentials"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -67,7 +77,7 @@ metadata:
     hangar.io/subcomponent: "glidepath-api"
 rules:
   - apiGroups: ["glidepath.hangar.io"]
-    resources: ["runs", "runs/logs", "releases"]
+    resources: ["runs", "runs/logs", "releases", "evidence", "tests"]
     verbs: ["get", "list"]
 {{- $readers := .Values.api.readers | default dict }}
 {{- if or $readers.users $readers.groups $readers.serviceAccounts }}
