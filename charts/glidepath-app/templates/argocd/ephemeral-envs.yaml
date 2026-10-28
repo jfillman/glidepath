@@ -167,6 +167,9 @@ spec:
               {{- with include "glidepath-app.observabilityValues" (dict "ctx" $ "chart" $chart) }}
               {{- . | nindent 14 }}
               {{- end }}
+              {{- with include "glidepath-app.serviceNamespaceValues" (dict "ctx" $ "chart" $chart) }}
+              {{- . | nindent 14 }}
+              {{- end }}
             valueFiles:
               # Not glidepath/envs/pr.yaml - lower-envs-applicationset.yaml's own git
               # generator already watches glidepath/envs/*.yaml on every onboarded app's
@@ -204,7 +207,7 @@ spec:
               prNumber: "{{ "{{" }}.number{{ "}}" }}"
               githubOwner: {{ .Values.platformIdentity.githubOwner }}
               appRepoName: {{ .Values.platformIdentity.appName }}
-              namespace: "{{ .Values.platformIdentity.type | default "app" }}-{{ .Values.platformIdentity.appName }}-pr-{{ "{{" }}.number{{ "}}" }}"
+              namespace: "{{ include "glidepath-app.envNamespace" (list . "pr-{{.number}}") }}"
               argocdAppName: "{{ .Values.platformIdentity.appName }}-pr-{{ "{{" }}.number{{ "}}" }}"
               serviceName: {{ .Values.platformIdentity.appName }}
               ingressBaseDomain: {{ .Values.platformIdentity.previewIngressBaseDomain | default "" | quote }}
@@ -212,7 +215,7 @@ spec:
               toolboxImage: {{ .Values.toolboxImage }}
       destination:
         server: https://kubernetes.default.svc
-        namespace: "{{ .Values.platformIdentity.type | default "app" }}-{{ .Values.platformIdentity.appName }}-pr-{{ "{{" }}.number{{ "}}" }}"
+        namespace: "{{ include "glidepath-app.envNamespace" (list . "pr-{{.number}}") }}"
       syncPolicy:
         automated:
           prune: true

@@ -77,6 +77,11 @@ override them. Missing `base.yaml` and release files are tolerated.
 | `namespace.labels` | labels the chart must put on the Namespace it renders, including `hangar.io/managed-secrets: "true"` (and `hangar.io/ephemeral-env: "true"` for previews) |
 | `release.image.repository`, `release.image.tag` | previews only: stamped per pull request |
 
+Environments that render the cluster's default airframe-application chart (not an app's own chart) also get that
+chart's platform-owned `observability` (when the cluster sets it) and `serviceNamespacePattern`
+(`{type}-{app}-{env}`, from `glidepath-app.envNamespacePattern`, for the chart's `env[].fromService`). An own chart is
+never sent either, so it does not need to accept them.
+
 The chart must render its own Namespace object (not rely on `CreateNamespace=true`),
 tracked so that pruning works, and label it as above. Otherwise the labels are lost and
 registry credentials never reach the namespace.

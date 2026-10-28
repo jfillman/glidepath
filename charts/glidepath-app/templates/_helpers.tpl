@@ -57,10 +57,23 @@ rather than Helm time and so can't call this helper.
 {{- end -}}
 
 {{/*
-glidepath-app.envNamespace - builds `<type>-<app-name>-<env>`, the one namespace
+glidepath-app.envNamespacePattern - THE environment-namespace convention, `{type}-{app}-{env}`, as a pattern. The
+one place it is written down in this chart: envNamespace fills it in, and every environment that renders the
+cluster's default airframe-application chart is handed it verbatim as that chart's platform-owned
+serviceNamespacePattern (serviceNamespaceValues), so env[].fromService resolves another app's namespace with the
+same rule that named it. Changing the convention is this one edit (plus the Flight tenant-onboarding ApplicationSet
+in each cluster repo, whose destination namespace and serviceNamespacePattern come from its own copy).
+*/}}
+{{- define "glidepath-app.envNamespacePattern" -}}
+{type}-{app}-{env}
+{{- end -}}
+
+{{/*
+glidepath-app.envNamespace - builds `<type>-<app-name>-<env>` from envNamespacePattern, the one namespace
 pattern this platform uses. Every namespace an app gets (cicd, a deploy target, release
 staging, a PR env) is a flat peer under this pattern, not a hierarchy - see
-docs/naming-conventions.md.
+docs/naming-conventions.md. <env> may be an Argo CD template expression (`{{.envName}}`) for the ApplicationSets,
+or `*` for an AppProject's destination wildcard.
 
 Takes [<root context>, <env>] as a list (Helm named templates take one arg).
 Usage: {{ include "glidepath-app.envNamespace" (list $ "staging") }}
@@ -68,7 +81,7 @@ Usage: {{ include "glidepath-app.envNamespace" (list $ "staging") }}
 {{- define "glidepath-app.envNamespace" -}}
 {{- $ctx := index . 0 -}}
 {{- $env := index . 1 -}}
-{{- $ctx.Values.platformIdentity.type }}-{{ $ctx.Values.platformIdentity.appName }}-{{ $env }}
+{{- include "glidepath-app.envNamespacePattern" $ctx | replace "{type}" ($ctx.Values.platformIdentity.type | default "app") | replace "{app}" $ctx.Values.platformIdentity.appName | replace "{env}" $env -}}
 {{- end -}}
 
 {{/*
@@ -680,15 +693,39 @@ Usage: {{ include "glidepath-app.observabilityValues" (dict "ctx" $ "chart" $c) 
 {{- define "glidepath-app.observabilityValues" -}}
 {{- $ctx := .ctx -}}
 {{- $o := $ctx.Values.observability | default dict -}}
-{{- $d := include "glidepath-app.defaultChart" $ctx | fromYaml -}}
-{{- $c := .chart -}}
-{{- if and (or $o.namespace $o.instrumentation) (eq (toString $c.repoURL) (toString $d.repoURL)) (eq (toString $c.path) (toString $d.path)) (eq (toString $c.targetRevision) (toString $d.targetRevision)) -}}
+{{- if and (or $o.namespace $o.instrumentation) (eq (include "glidepath-app.isDefaultChart" .) "true") -}}
 observability:
   namespace: {{ $o.namespace | default "" | quote }}
   instrumentation: {{ $o.instrumentation | default "" | quote }}
   runtime: {{ $ctx.Values.platformIdentity.runtime | default "" | quote }}
 {{- end -}}
 {{- end }}
+
+{{/*
+glidepath-app.isDefaultChart - "true" when `chart` is exactly the cluster's default chart (repoURL, path and
+targetRevision). Platform-owned airframe-application values that newer charts added are passed only then: an older
+chart pinned through deploy.chart / environments[].chart has a strict schema without them, and the render would fail.
+Usage: {{ include "glidepath-app.isDefaultChart" (dict "ctx" $ "chart" $c) }}
+*/}}
+{{- define "glidepath-app.isDefaultChart" -}}
+{{- $d := include "glidepath-app.defaultChart" .ctx | fromYaml -}}
+{{- $c := .chart -}}
+{{- and (eq (toString $c.repoURL) (toString $d.repoURL)) (eq (toString $c.path) (toString $d.path)) (eq (toString $c.targetRevision) (toString $d.targetRevision)) -}}
+{{- end -}}
+
+{{/*
+glidepath-app.serviceNamespaceValues - airframe-application's platform-owned `serviceNamespacePattern` for an
+environment that renders `chart`: envNamespacePattern verbatim, so the chart's env[].fromService resolves another
+app's namespace by the convention that named it. "" when `chart` is not the cluster default (see isDefaultChart);
+a fromService there fails its render, by design, rather than guess. Needs the cluster default chart to be an
+airframe-application with this key: merge only once every cluster's defaultChart is at that tag or later.
+Usage: {{ include "glidepath-app.serviceNamespaceValues" (dict "ctx" $ "chart" $c) }}
+*/}}
+{{- define "glidepath-app.serviceNamespaceValues" -}}
+{{- if eq (include "glidepath-app.isDefaultChart" .) "true" -}}
+serviceNamespacePattern: {{ include "glidepath-app.envNamespacePattern" .ctx | quote }}
+{{- end -}}
+{{- end -}}
 
 {{/*
 glidepath-app.resolveChart - one level of ADR-0023's chart precedence: `over` (deploy.chart, or an environment's
@@ -735,6 +772,9 @@ ApplicationSet template.
         labels:
           hangar.io/managed-secrets: "true"
       {{- with include "glidepath-app.observabilityValues" (dict "ctx" $ctx "chart" $c) }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      {{- with include "glidepath-app.serviceNamespaceValues" (dict "ctx" $ctx "chart" $c) }}
       {{- . | nindent 6 }}
       {{- end }}
     ignoreMissingValueFiles: true

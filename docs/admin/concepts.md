@@ -52,7 +52,14 @@ baking "cicd" into its name would be a real naming smell, not just redundant.
 `charts/glidepath-app`'s `glidepath-app.envNamespace` helper computes any of
 these from `platformIdentity.type` + `platformIdentity.appName` + a given `env` value -
 nothing is a separately-set, independently-typed field that could drift from the
-convention.
+convention. The convention itself is written once, as the pattern `{type}-{app}-{env}` in
+`glidepath-app.envNamespacePattern`: envNamespace fills it in (every Ground, PR-preview and
+AppProject destination namespace goes through it), and every environment that renders the
+cluster's default airframe-application chart gets it verbatim as that chart's
+`serviceNamespacePattern`, so an app's `env[].fromService` resolves another app's namespace
+by the same rule. The Flight tenant-onboarding ApplicationSet in each cluster repo carries
+its own copy of the pattern for its destination namespace and `serviceNamespacePattern`;
+change both together.
 
 ## App identity
 

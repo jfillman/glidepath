@@ -272,12 +272,19 @@ spec:
         rc=0
         mkdir -p /work/eval
         while IFS='|' read -r cluster env chart; do
-          [[ "${chart}" == default ]] && chart=/opt/airframe/charts/airframe-application
+          # serviceNamespacePattern: the platform's namespace convention, as the Flight tenant-onboarding ApplicationSet
+          # passes it, so airframe-application's env[].fromService renders here as it will there. The same pattern as
+          # glidepath-app's envNamespacePattern helper (envs_model_test.py checks the two agree). Only for the cluster's
+          # default chart (the validator image's, at defaultChart): an app's own chart may predate the key, and this
+          # gate's own-chart contract (chart-contract.md) does not include it.
+          ns_pattern=""
+          [[ "${chart}" == default ]] && chart=/opt/airframe/charts/airframe-application && ns_pattern='{type}-{app}-{env}'
           out="/work/eval/${cluster}__${env}"
           mkdir -p "${out}"
           # The values the Flight ApplicationSet injects (valuesObject), then the value files it layers.
           printf 'appName: %s\ncluster: %s\nenvName: %s\nnamespace:\n  labels:\n    hangar.io/managed-secrets: "true"\n' \
             "${APP_NAME}" "${cluster}" "${env}" > "${out}/injected.yaml"
+          [[ -n "${ns_pattern}" ]] && printf 'serviceNamespacePattern: "%s"\n' "${ns_pattern}" >> "${out}/injected.yaml"
           vf=()
           for v in "${cluster}/base.yaml" "${cluster}/${env}/values.yaml" "${cluster}/${env}/release.yaml"; do
             [[ -f "${v}" ]] && vf+=(-f "${v}")

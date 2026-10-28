@@ -54,6 +54,12 @@ The control plane forwards `platformCicdRepoUrl`, `defaultChart`, the Backstage 
 and `clusterType: dev`. With `observability` set, each environment that renders the cluster's default chart also
 gets airframe-application's `observability` values: Prometheus is admitted through the app's NetworkPolicy, and
 the OpenTelemetry Operator instruments the app for its runtime (`platformIdentity.runtime`, written by Airframe).
+Each of those environments also gets airframe-application's platform-owned `serviceNamespacePattern`
+(`{type}-{app}-{env}`, from `glidepath-app.envNamespacePattern`, the same helper that names the environment's own
+namespace), which the chart's `env[].fromService` uses to resolve another app's Service URL. It needs the cluster's
+default chart to be an airframe-application with that key (the release after v0.3.167): bump every cluster's
+`defaultChart` first. An environment pinned to another chart (`deploy.chart`, `environments[].chart`) gets neither
+value, and a `fromService` there fails its render instead of guessing.
 
 This keeps `platform-cicd` installable standalone on any cluster - it carries zero
 cluster-specific secrets or identity in its own repo. For local/`kind` development,
