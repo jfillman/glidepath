@@ -17,9 +17,11 @@ import (
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
+	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
+	"github.com/glidepath/api/internal/testkube"
 )
 
 // Server holds the API's dependencies.
@@ -28,6 +30,8 @@ type Server struct {
 	Apps     *apps.Resolver
 	Results  *results.Client
 	Releases releases.Reader
+	Evidence *evidence.Reader
+	Tests    *testkube.Client
 	Contract []byte
 	Known    []explain.KnownFailure // the contract's knownFailures, compiled (explain.Load)
 	Version  int                    // the contract's contractVersion
@@ -59,6 +63,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/apps/{app}/runs/{result}/explain", s.wrap(op{"explainRun", "T0", "runs", "logs", "get"}, s.explainRun))
 	mux.Handle("GET /v1/apps/{app}/releases", s.wrap(op{"listReleases", "T0", "releases", "", "list"}, s.listReleases))
 	mux.Handle("GET /v1/apps/{app}/releases/{chainId}", s.wrap(op{"getRelease", "T0", "releases", "", "get"}, s.getRelease))
+	mux.Handle("GET /v1/apps/{app}/evidence", s.wrap(op{"getEvidence", "T0", "evidence", "", "get"}, s.getEvidence))
+	mux.Handle("GET /v1/apps/{app}/tests", s.wrap(op{"listTests", "T0", "tests", "", "list"}, s.listTests))
+	mux.Handle("GET /v1/apps/{app}/tests/{id}/report", s.wrap(op{"getTestReport", "T0", "tests", "", "get"}, s.getTestReport))
 	return mux
 }
 
@@ -75,7 +82,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // classify maps an error to a status and body. Unknown errors are 502: the API's own sources
-// (the API server, Tekton Results) failed, which is what Tower's routes answer too.
+// (the API server, Tekton Results, GHCR, Rekor, Testkube) failed, which is what Tower's routes
+// answer too.
 func classify(err error) (int, apiError) {
 	if e, ok := auth.AsError(err); ok {
 		return e.Status, apiError{e.Msg, e.Rule, e.Hint}
@@ -88,18 +96,21 @@ func classify(err error) (int, apiError) {
 		resInv results.Invalid
 		relNF  releases.NotFound
 		relInv releases.Invalid
+		evInv  evidence.Invalid
+		tkNF   testkube.NotFound
+		tkInv  testkube.Invalid
 	)
 	switch {
 	case errors.As(err, &noLog):
 		return http.StatusNotFound, apiError{err.Error(), "GP-LOG-404", "the run exists; Results stored no log for this TaskRun (docs/admin/tekton-results.md)"}
 	case errors.As(err, &appNF):
 		return http.StatusNotFound, apiError{err.Error(), "GP-API-404", ""}
-	case errors.As(err, &resNF), errors.As(err, &relNF):
+	case errors.As(err, &resNF), errors.As(err, &relNF), errors.As(err, &tkNF):
 		return http.StatusNotFound, apiError{err.Error(), "GP-API-404", ""}
-	case errors.As(err, &appInv), errors.As(err, &resInv), errors.As(err, &relInv):
+	case errors.As(err, &appInv), errors.As(err, &resInv), errors.As(err, &relInv), errors.As(err, &evInv), errors.As(err, &tkInv):
 		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
 	}
-	return http.StatusBadGateway, apiError{err.Error(), "GP-API-502", "a source Glidepath reads (the API server or Tekton Results) failed; retry"}
+	return http.StatusBadGateway, apiError{err.Error(), "GP-API-502", "a source Glidepath reads (the API server, Tekton Results, GHCR, Rekor or Testkube) failed; retry"}
 }
 
 type recorder struct {
@@ -255,6 +266,44 @@ func (s *Server) getRelease(ctx context.Context, w http.ResponseWriter, r *http.
 		return err
 	}
 	writeJSON(w, http.StatusOK, rec)
+	return nil
+}
+
+// getEvidence is Tower's /provenance for one image, read with the app's own registry credential.
+func (s *Server) getEvidence(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
+	image := r.URL.Query().Get("image")
+	if image == "" {
+		return evidence.Invalid{What: `missing required "image" query param`}
+	}
+	p, err := s.Evidence.Read(ctx, app.Namespace, image)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, p)
+	return nil
+}
+
+func (s *Server) listTests(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
+	q, present := r.URL.Query()["limit"]
+	limit := ""
+	if present {
+		limit = q[0]
+	}
+	runs, err := s.Tests.Runs(ctx, app.Name, testkube.Limit(limit, present))
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+	return nil
+}
+
+func (s *Server) getTestReport(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
+	xml, err := s.Tests.Report(ctx, app.Name, r.PathValue("id"))
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	w.Write(xml)
 	return nil
 }
 

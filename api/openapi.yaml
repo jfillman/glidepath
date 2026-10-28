@@ -3,8 +3,8 @@ info:
   title: Glidepath API
   version: 0.1.0
   description: |
-    Runs, logs and release records for one app, and Glidepath's contract (docs/admin/api.md).
-    Phase 1 of the Glidepath API spec: reads only (tier T0).
+    Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
+    contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec: reads only (tier T0).
 
     Every /v1 call needs a bearer token the cluster's TokenReview accepts, in `Authorization`, or in
     `X-Glidepath-Authorization` when the call comes through the API server's service proxy (which
@@ -163,6 +163,72 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/evidence:
+    get:
+      operationId: getEvidence
+      summary: Every signature and attestation on an image, each re-verified against the cluster's Fulcio root and Rekor
+      description: >-
+        Needs `get` on `evidence.glidepath.hangar.io` in the app's namespace. Reads the image from GHCR with the app's own
+        `registry-credentials` Secret (read for this request only), finds its attestations in all three places they live
+        (the legacy `.att` tag, OCI 1.1 referrers, the `.sig` tag), re-reads each one's Rekor entry by log index and
+        verifies it. Tower's `/provenance` answer, field for field. Act on `verified` and `verificationCode`, never on
+        `verificationError`'s text.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - name: image
+          in: query
+          required: true
+          description: "ghcr.io/<repo>:<tag>, ghcr.io/<repo>@sha256:<digest> or ghcr.io/<repo>:<tag>@sha256:<digest>"
+          schema: { type: string }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The image's evidence, content: { application/json: { schema: { $ref: "#/components/schemas/Evidence" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/tests:
+    get:
+      operationId: listTests
+      summary: An app's test runs from Testkube, newest first, each read in full
+      description: >-
+        Needs `list` on `tests.glidepath.hangar.io`. Every Testkube execution Glidepath tagged `app=<app>`. A run the agent
+        reported `aborted` while every step passed is counted as passed and carries `statusNote` (a known race on short
+        runs, which Glidepath's run-testworkflow also corrects).
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        "200":
+          description: The runs
+          content:
+            application/json:
+              schema: { type: object, properties: { runs: { type: array, items: { $ref: "#/components/schemas/TestRun" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/tests/{id}/report:
+    get:
+      operationId: getTestReport
+      summary: The JUnit report a test run left (data/artifacts/junit.xml)
+      description: Needs `get` on `tests.glidepath.hangar.io`. The run must be this app's. 404 when the run has no report.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { name: id, in: path, required: true, schema: { type: string, pattern: "^[A-Za-z0-9_-]+$" } }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The report, content: { application/xml: { schema: { type: string } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
 components:
   securitySchemes:
     bearer: { type: http, scheme: bearer }
@@ -219,6 +285,73 @@ components:
                   field: { type: string, description: JSON pointer into cicd.yaml, when one field is the fix }
               evidence: { type: string, description: The matching line, or the failing step's last lines when nothing matched }
               log: { type: string, enum: [archived, missing] }
+    Evidence:
+      type: object
+      required: [digest, attestations]
+      properties:
+        digest: { type: string, description: "sha256:<hex>, resolved from the tag when the image named one" }
+        attestations:
+          type: array
+          description: Legacy-tag attestations, then referrer attestations, then image signatures, in the order each was found
+          items: { $ref: "#/components/schemas/Attestation" }
+    Attestation:
+      type: object
+      description: >-
+        An attestation's in-toto statement, every field of it as signed (`_type`, `predicateType`, `subject`, `predicate`),
+        plus what verifying it found. A classic image signature has predicateType
+        cosign.sigstore.dev/signature/simple-signing and its simple-signing payload as the predicate. A field with no value
+        is absent, not null.
+      required: [predicateType, verified, verificationCode, logSource]
+      additionalProperties: true
+      properties:
+        predicateType: { type: string }
+        predicate: { description: The statement's predicate (any JSON) }
+        subject:
+          type: array
+          items: { type: object, properties: { name: { type: string }, digest: { type: object, additionalProperties: { type: string } } } }
+        certificate:
+          type: object
+          description: The signing certificate, as Node's X509Certificate prints it. Absent when there is none or it doesn't parse.
+          required: [validFrom, validTo]
+          properties:
+            subject: { type: string, description: "One RDN per line; absent for an empty name (a Fulcio leaf's)" }
+            issuer: { type: string }
+            identity: { type: string, description: The first URI SAN, where Fulcio puts the signer's identity }
+            validFrom: { type: string, example: "Oct 21 06:12:16 2026 GMT" }
+            validTo: { type: string }
+        transparencyLog:
+          type: object
+          required: [logIndex]
+          properties:
+            logIndex: { type: number, nullable: true }
+            logId: { type: string, description: hex }
+            integratedTime: { type: number, nullable: true, description: Unix seconds }
+        verified: { type: boolean }
+        verificationError: { type: string, description: Why it didn't verify, in the verifier's words. Display only. }
+        verificationCode:
+          type: string
+          enum: [verified, no-log-entry, log-entry-mismatch, stale-receipt, digest-mismatch, signature-invalid, trust-root-unavailable, incomplete]
+        logSource: { type: string, enum: [rekor, embedded, none], description: "The log entry checked: read fresh from Rekor, the image's own copy, or none" }
+    TestRun:
+      type: object
+      required: [id, name, workflow, status, steps, hasReport]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        workflow: { type: string }
+        status: { type: string, description: "passed, failed, aborted, running, queued..., after the aborted-but-passed correction" }
+        statusNote: { type: string }
+        role: { type: string, description: "check-ride or test (the tag Glidepath set)" }
+        env: { type: string }
+        test: { type: string }
+        image: { type: string }
+        revision: { type: string }
+        chain: { type: string }
+        startedAt: { type: string }
+        finishedAt: { type: string }
+        durationMs: { type: number }
+        steps: { type: array, items: { type: object, properties: { name: { type: string }, status: { type: string } } } }
+        hasReport: { type: boolean, description: True when the run left a JUnit report (getTestReport) }
     Caller:
       type: object
       properties:

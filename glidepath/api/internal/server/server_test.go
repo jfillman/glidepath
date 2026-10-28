@@ -15,9 +15,11 @@ import (
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
+	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
+	"github.com/glidepath/api/internal/testkube"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
@@ -333,5 +335,127 @@ func TestContract(t *testing.T) {
 	defer done()
 	if _, out, _ := call(t, s, "/v1/contract", map[string]string{"Authorization": "Bearer t-anyone"}); out["contractVersion"] != float64(1) {
 		t.Fatalf("contract: %v", out)
+	}
+}
+
+const ghcrPassword = "ghp_SECRET_never_shown_0123456789"
+
+// supplyChain gives s an evidence reader over a stub GHCR that accepts only the app's Secret (and
+// echoes whatever it was sent when it refuses), and a stub Testkube. It returns the audit log.
+func supplyChain(t *testing.T, s *Server, refuse bool) *strings.Builder {
+	t.Helper()
+	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("robot:"+ghcrPassword))
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/token":
+			if refuse || r.Header.Get("Authorization") != basic {
+				w.WriteHeader(http.StatusUnauthorized)
+				io.WriteString(w, `{"errors":[{"message":"denied for `+r.Header.Get("Authorization")+`"}]}`)
+				return
+			}
+			io.WriteString(w, `{"token":"pull-bearer"}`)
+		case r.URL.Path == "/v2/o/shop/manifests/1.0" && r.Header.Get("Authorization") == "Bearer pull-bearer":
+			w.Header().Set("Docker-Content-Digest", "sha256:"+strings.Repeat("ab", 32))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	tk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.EscapedPath() {
+		case "/v1/test-workflow-executions":
+			io.WriteString(w, `{"results":[{"id":"e1"}]}`)
+		case "/v1/test-workflow-executions/e1":
+			io.WriteString(w, `{"id":"e1","tags":{"app":"shop","role":"check-ride"},"result":{"status":"passed"}}`)
+		case "/v1/test-workflow-executions/e1/artifacts/data%2Fartifacts%2Fjunit.xml":
+			io.WriteString(w, `<testsuites/>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(gh.Close)
+	t.Cleanup(tk.Close)
+	cfg, _ := json.Marshal(map[string]any{"auths": map[string]any{"ghcr.io": map[string]string{"username": "robot", "password": ghcrPassword}}})
+	cs := fake.NewSimpleClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: evidence.PullSecret, Namespace: "app-shop-cicd"},
+		Data: map[string][]byte{".dockerconfigjson": cfg}})
+	logs := &strings.Builder{}
+	s.Log = slog.New(slog.NewJSONHandler(logs, nil))
+	s.Evidence = &evidence.Reader{CS: cs, Credentials: evidence.SecretCredentials(cs), RegistryURL: gh.URL, RekorURL: gh.URL + "/no-rekor",
+		HTTP: gh.Client(), Log: s.Log}
+	s.Tests = &testkube.Client{Base: tk.URL, HTTP: tk.Client(), Log: s.Log}
+	return logs
+}
+
+func TestEvidenceAndTestsAuthorization(t *testing.T) {
+	s, done := newServer(t, map[string]bool{"auditor get evidence app-shop-cicd": true, "tester list tests app-shop-cicd": true})
+	defer done()
+	supplyChain(t, s, false)
+	auditor, tester := map[string]string{"Authorization": "Bearer t-auditor"}, map[string]string{"Authorization": "Bearer t-tester"}
+	if st, out, body := call(t, s, "/v1/apps/shop/evidence?image=ghcr.io/o/shop:1.0", auditor); st != 200 || out["digest"] != "sha256:"+strings.Repeat("ab", 32) {
+		t.Fatalf("evidence: %d %s", st, body)
+	} else if a, ok := out["attestations"].([]any); !ok || len(a) != 0 {
+		t.Fatalf("no attestations is [], not null: %s", body)
+	}
+	if st, out, _ := call(t, s, "/v1/apps/shop/evidence?image=ghcr.io/o/shop:1.0", tester); st != 403 || out["rule"] != "GP-AUTHZ-001" {
+		t.Fatalf("evidence needs get evidence: %d %v", st, out)
+	}
+	if st, out, _ := call(t, s, "/v1/apps/shop/tests", auditor); st != 403 || out["rule"] != "GP-AUTHZ-001" {
+		t.Fatalf("tests need list tests: %d %v", st, out)
+	}
+	if st, out, body := call(t, s, "/v1/apps/shop/tests?limit=5", tester); st != 200 || len(out["runs"].([]any)) != 1 {
+		t.Fatalf("tests: %d %s", st, body)
+	}
+	if st, _, _ := call(t, s, "/v1/apps/shop/tests/e1/report", tester); st != 403 {
+		t.Fatalf("a report needs get tests: %d", st)
+	}
+}
+
+func TestEvidenceRequests(t *testing.T) {
+	s, done := newServer(t, reader)
+	defer done()
+	supplyChain(t, s, false)
+	h := map[string]string{"Authorization": "Bearer t-tower"}
+	for _, q := range []string{"", "?image=docker.io/o/shop:1.0", "?image=ghcr.io/o/shop"} {
+		if st, out, _ := call(t, s, "/v1/apps/shop/evidence"+q, h); st != 400 || out["rule"] != "GP-API-400" {
+			t.Fatalf("%q: %d %v", q, st, out)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/apps/shop/tests/e1/report", nil)
+	req.Header.Set("Authorization", "Bearer t-tower")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 || rec.Body.String() != "<testsuites/>" || rec.Header().Get("Content-Type") != "application/xml; charset=utf-8" {
+		t.Fatalf("report: %d %q %s", rec.Code, rec.Body.String(), rec.Header().Get("Content-Type"))
+	}
+	if st, out, _ := call(t, s, "/v1/apps/shop/tests/e9/report", h); st != 404 || out["rule"] != "GP-API-404" {
+		t.Fatalf("no such run: %d %v", st, out)
+	}
+	if st, out, _ := call(t, s, "/v1/apps/shop/tests/a.b/report", h); st != 400 || out["rule"] != "GP-API-400" {
+		t.Fatalf("malformed id: %d %v", st, out)
+	}
+}
+
+// The app's registry credential is used for GHCR's token exchange and nowhere else: not in an
+// answer, an error or the audit line, whether GHCR accepts it or refuses it and echoes it back.
+func TestRegistryCredentialNeverEscapes(t *testing.T) {
+	secrets := []string{ghcrPassword, base64.StdEncoding.EncodeToString([]byte("robot:" + ghcrPassword)), "pull-bearer"}
+	for _, refuse := range []bool{false, true} {
+		s, done := newServer(t, reader)
+		logs := supplyChain(t, s, refuse)
+		st, out, body := call(t, s, "/v1/apps/shop/evidence?image=ghcr.io/o/shop:1.0", map[string]string{"Authorization": "Bearer t-tower"})
+		done()
+		if refuse && (st != 502 || out["error"] != "GHCR token request failed with 401" || out["rule"] != "GP-API-502") {
+			t.Fatalf("refused: %d %s", st, body)
+		}
+		if !refuse && st != 200 {
+			t.Fatalf("accepted: %d %s", st, body)
+		}
+		if !strings.Contains(logs.String(), `"op":"getEvidence"`) {
+			t.Fatalf("no audit line: %s", logs)
+		}
+		for _, secret := range secrets {
+			if strings.Contains(body, secret) || strings.Contains(logs.String(), secret) {
+				t.Fatalf("refuse=%v: a credential escaped", refuse)
+			}
+		}
 	}
 }

@@ -1,7 +1,8 @@
 # glidepath-api
 
 `glidepath-api` answers questions about an app's CI/CD for people, Tower and agents: its runs,
-their logs, why a run failed, its release records, and Glidepath's [contract](contract.md). It is
+their logs, why a run failed, its release records, the supply-chain evidence on its images, its test
+runs, and Glidepath's [contract](contract.md). It is
 phases 1 and 2 of the [Glidepath API spec](https://hangarplatform.dev/library/glidepath-api/): **reads only**. Re-runs,
 previews and `cicd.yaml` pull requests come in phase 3, promotion and rollback in phase 4.
 
@@ -19,11 +20,15 @@ fails if the server's routes and the spec ever differ.
 | `GET /v1/apps/{app}/runs/{result}/explain` | `get runs/logs` | Each failed TaskRun's failing step, its [known failure](#explain) id, hint and field, and the line that matched |
 | `GET /v1/apps/{app}/releases` | `list releases` | Every `release-tracking-*` record of the app |
 | `GET /v1/apps/{app}/releases/{chainId}` | `get releases` | One record |
+| `GET /v1/apps/{app}/evidence?image=` | `get evidence` | Every signature and attestation on the image, each [re-verified](#evidence) |
+| `GET /v1/apps/{app}/tests?limit=` | `list tests` | The app's [test runs](#tests) from Testkube, newest first |
+| `GET /v1/apps/{app}/tests/{id}/report` | `get tests` | A run's JUnit report, as XML |
 
 Runs come from Tekton Results, so they cover 30 days and never go back past the creation of the
 app's current `-cicd` namespace (an app deleted and recreated under the same name doesn't inherit
-the old one's runs). The shapes match what Tower's backend has served since 2026-10-08, so Tower
-can compare its own answers against these field for field while it moves over.
+the old one's runs). The shapes match what Tower's backend serves (runs since 2026-10-08, evidence
+and tests since 2026-10-28), so Tower can compare its own answers against these field for field
+while it moves over.
 
 ## Where it runs
 
@@ -73,7 +78,7 @@ in-cluster ServiceAccount, or a federated identity from another cluster (Tower's
 the prod cluster arrive as `hangar:<cluster>:<serviceaccount>`).
 
 **What you may read** is a SubjectAccessReview in the app's `-cicd` namespace, on a group nothing
-serves: `glidepath.hangar.io`, resources `runs`, `runs/logs` and `releases`. RBAC only needs the
+serves: `glidepath.hangar.io`, resources `runs`, `runs/logs`, `releases`, `evidence` and `tests`. RBAC only needs the
 strings, so access is ordinary RBAC:
 
 - `api.readers` binds the chart's `glidepath-api-reader` ClusterRole cluster-wide (users, groups,
@@ -109,6 +114,69 @@ the call with 502, so "nothing matched" always means the log was read. The patte
 the API starts; one that doesn't compile stops it. A new failure gets an id by adding it to
 `knownFailures` and regenerating the contract.
 
+## Evidence
+
+`evidence` is Tower's supply-chain panel as an API: everything signed about one image, and whether
+each signature still verifies against this cluster's own trust roots. It reads the image from GHCR
+in the three places an attestation can live, in this order, and returns all of them:
+
+1. the legacy tag `<repo>:sha256-<digest>.att`: Tekton Chains' SLSA provenance, one DSSE envelope
+   per layer, with the certificate and the Rekor receipt in the layer's annotations;
+2. OCI 1.1 referrers (GHCR's referrers-tag fallback, `<repo>:sha256-<digest>`): cosign 3's
+   attestations (the SBOM, the API spec), each a complete sigstore bundle with an inclusion proof;
+3. the signature tag `<repo>:sha256-<digest>.sig`: the image signature itself.
+
+Each one is verified the way Tower's `@sigstore/verify` check does, with the same checks in the same
+order: the statement names this image's digest, the signing certificate chains to the Fulcio root
+and was valid when Rekor logged the entry, the log entry's receipt is signed by Rekor's key (or, for
+a bundle checked on its own, its Merkle inclusion proof reaches a checkpoint Rekor signed), the
+entry records this signature over this content, and the signature verifies with the certificate's
+key. Each receipt is re-read from Rekor by its log index first, so it is signed by Rekor's current
+key; a different body at that index is `log-entry-mismatch` and never verifies. The signature tag
+carries no receipt (Chains logs it without attaching one), so its entry is found among the entries
+next to the attestations' and kept only if it records exactly this payload hash and signature.
+
+Act on `verified` and `verificationCode` (`verified`, `no-log-entry`, `log-entry-mismatch`,
+`stale-receipt`, `digest-mismatch`, `signature-invalid`, `trust-root-unavailable`, `incomplete`).
+`verificationError` is the verifier's own message, kept identical to Tower's for the shadow
+comparison; display it, don't parse it. The certificate's identity is shown, not checked against the
+release gate's identity policy: that is the gate's job (`verify-image-provenance`).
+
+Where the inputs come from:
+
+| Input | Source | Kept |
+|---|---|---|
+| The image, its manifests and blobs | GHCR, with a pull token for that one repository | per request |
+| The GHCR credential | the app's own `registry-credentials` Secret (dockerconfigjson, `auths["ghcr.io"]`) in its `-cicd` namespace | per request |
+| Fulcio root | ConfigMap `fulcio-root-ca` (`cert.pem`) in `platform-catalog` | 10 minutes |
+| Rekor's public key | `rekor-server.rekor-system` `/api/v1/log/publicKey` | 10 minutes |
+| Rekor entries | `rekor-server.rekor-system` `/api/v1/log/entries?logIndex=` (GET only) | per request |
+
+The registry credential is read for each request and used only for GHCR's token exchange
+(`/token?scope=repository:<repo>:pull`). It is never cached, logged, returned, or put in an error;
+a refused exchange reports GHCR's status code, never its body. The pull token GHCR returns is not
+cached either. A missing Secret, or one without a `ghcr.io` entry, is an anonymous exchange, which
+only public packages allow. The chart grants glidepath-api `get` on Secrets named
+`registry-credentials`, and nothing else among Secrets; the Fulcio ConfigMap is readable by every
+ServiceAccount already (`templates/sigstore/fulcio-root-configmap.yaml`).
+
+A Fulcio root that can't be read doesn't fail the call: every attestation comes back unverified with
+`trust-root-unavailable`. A Rekor key that can't be read is softer still: verification runs without
+the log and fails with `no-log-entry`, since nothing then shows the ten-minute certificate was valid
+when it was used. Only `ghcr.io/...` images are accepted (`GP-API-400`). Tower's identity carries
+`get evidence` through `glidepath-api-reader` like every other read; whoever can read an app's
+evidence can ask about any image that app's credential can pull.
+
+## Tests
+
+`tests` lists the app's Testkube executions (every run Glidepath tagged `app=<app>`, newest first, up
+to `limit`, default 50, at most 200) from `testkube-api-server.testkube:8088` in the cluster. Testkube's
+list returns summaries only, so each run is read in full, four at a time; a run whose full read fails
+is shown from its summary. A run the agent reported `aborted` while every step passed is counted as
+`passed` and says so in `statusNote` (a known race on short runs). `tests/{id}/report` returns the
+JUnit report the check-ride templates leave (`data/artifacts/junit.xml`), and only for a run tagged
+with this app; Tower's own route doesn't check that.
+
 ## Errors
 
 Every refusal or failure is JSON with a stable `rule` and, where there is one, a `hint`:
@@ -119,10 +187,10 @@ Every refusal or failure is JSON with a stable `rule` and, where there is one, a
 | `GP-AUTH-002` | 401 | The cluster didn't accept the token |
 | `GP-AUTH-003` | 403 | On-behalf-of from a caller that isn't a delegate |
 | `GP-AUTHZ-001` | 403 | Not allowed to read this in this app's namespace |
-| `GP-API-400` | 400 | A malformed app name, run id or chain id |
-| `GP-API-404` | 404 | No such app, run or release record |
+| `GP-API-400` | 400 | A malformed app name, run id, chain id or test run id, or an image outside `ghcr.io` |
+| `GP-API-404` | 404 | No such app, run, release record, or test report |
 | `GP-LOG-404` | 404 | The run exists, but Results archived no log for that TaskRun ([tekton-results.md](tekton-results.md#when-a-runs-logs-are-missing)) |
-| `GP-API-502` | 502 | A source failed (the API server or Tekton Results); retry |
+| `GP-API-502` | 502 | A source failed (the API server, Tekton Results, GHCR, Rekor or Testkube); retry |
 
 ## Audit
 

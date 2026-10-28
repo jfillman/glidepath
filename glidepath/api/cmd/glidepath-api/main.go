@@ -1,8 +1,10 @@
 // glidepath-api: Glidepath's API for people, Tower and agents (docs/admin/api.md).
 //
-// Phase 1 of the Glidepath API spec: reads only. Runs and their logs from Tekton Results, release
-// records from the app's -cicd namespace, and the contract. Every call is authenticated with the
-// cluster's TokenReview and authorized with a SubjectAccessReview in the app's namespace.
+// Phases 1 and 2 of the Glidepath API spec: reads only. Runs and their logs from Tekton Results,
+// release records from the app's -cicd namespace, an image's signatures and attestations from GHCR
+// re-verified against the cluster's Fulcio root and Rekor, test runs from Testkube, and the
+// contract. Every call is authenticated with the cluster's TokenReview and authorized with a
+// SubjectAccessReview in the app's namespace.
 //
 // Results is read through glidepath's own tekton-results-relay (charts/glidepath-control-plane),
 // the hop Tower already uses: the relay holds the Results read grant, and this service decides who
@@ -13,6 +15,8 @@
 //	LISTEN              address to serve on (default :8080)
 //	CONTRACT_PATH       contract/glidepath-contract.json, baked into the image (default /contract/glidepath-contract.json)
 //	RESULTS_URL         the Results relay (default http://tekton-results-relay.platform-system.svc.cluster.local:8080)
+//	REKOR_URL           Rekor, for evidence (default http://rekor-server.rekor-system.svc.cluster.local)
+//	TESTKUBE_URL        Testkube's agent API (default http://testkube-api-server.testkube.svc.cluster.local:8088)
 //	DELEGATES           comma-separated usernames that may send X-Glidepath-On-Behalf-Of
 package main
 
@@ -29,10 +33,12 @@ import (
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
+	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
 	"github.com/glidepath/api/internal/server"
+	"github.com/glidepath/api/internal/testkube"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -68,6 +74,7 @@ func main() {
 			delegates[d] = true
 		}
 	}
+	logger := server.NewLogger()
 	s := &server.Server{
 		Auth: &auth.Auth{Reviewer: auth.NewKubeReviewer(cs), Delegates: delegates},
 		Apps: &apps.Resolver{CS: cs, TTL: 5 * time.Minute},
@@ -76,10 +83,25 @@ func main() {
 			HTTP: &http.Client{Timeout: 30 * time.Second},
 		},
 		Releases: releases.Reader{CS: cs},
+		// Evidence reads each app's registry-credentials Secret per request (never cached), the Fulcio
+		// root ConfigMap and Rekor (cached 10 minutes, as Tower does).
+		Evidence: &evidence.Reader{
+			CS:          cs,
+			Credentials: evidence.SecretCredentials(cs),
+			RegistryURL: "https://" + evidence.Registry,
+			RekorURL:    env("REKOR_URL", "http://rekor-server.rekor-system.svc.cluster.local"),
+			HTTP:        &http.Client{Timeout: 30 * time.Second},
+			Log:         logger,
+		},
+		Tests: &testkube.Client{
+			Base: env("TESTKUBE_URL", "http://testkube-api-server.testkube.svc.cluster.local:8088"),
+			HTTP: &http.Client{Timeout: 30 * time.Second},
+			Log:  logger,
+		},
 		Contract: contract,
 		Known:    known,
 		Version:  version,
-		Log:      server.NewLogger(),
+		Log:      logger,
 		Now:      time.Now,
 	}
 	srv := &http.Server{Addr: env("LISTEN", ":8080"), Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
