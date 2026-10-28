@@ -7,7 +7,7 @@ package main
 //     workflow repo, actions: write. Starting that workflow is the only way anything writes Flight: GHCR refuses App
 //     tokens, so the workflow's own GITHUB_TOKEN does the copy (phase 0).
 //   - release-pr: the platform App on a gitops-<app> repo, to read the release PR and post its image-promotion
-//     check run. The caller's namespace owns no Repository CR, so /github-installation-token's ownership rule
+//     check run and PR comment. The caller's namespace owns no Repository CR, so /github-installation-token's ownership rule
 //     cannot apply; this endpoint trusts exactly one ServiceAccount instead, configured, never a namespace.
 //
 // The promoter App's key is mounted here, next to the platform App's, so no Task pod ever holds either key.
@@ -82,7 +82,7 @@ func scopeFor(cfg promoterConfig, caller string, req promoterTokenRequest) (prom
 			return promoterScope{}, http.StatusForbidden, fmt.Errorf("release-pr tokens are for gitops-<app> repos only, not %s/%s", req.Owner, req.Repo)
 		}
 		return promoterScope{Owner: req.Owner, Repo: req.Repo,
-			Permissions: map[string]string{"checks": "write", "contents": "read", "pull_requests": "read"}}, http.StatusOK, nil
+			Permissions: map[string]string{"checks": "write", "contents": "read", "pull_requests": "write"}}, http.StatusOK, nil
 	default:
 		return promoterScope{}, http.StatusBadRequest, fmt.Errorf("purpose must be dispatch or release-pr, not %q", req.Purpose)
 	}

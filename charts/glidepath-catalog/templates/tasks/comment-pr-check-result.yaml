@@ -22,6 +22,12 @@
 # still gets edited in place on its next run instead of getting a duplicate new-marker
 # comment posted alongside it. New comments always write the new marker only; drop the
 # old-marker branch once confident no PR with an old-marker comment is still open.
+#
+# With promotion on (catalog promotion.enabled, ADR-0029 phase 3), a second step is the promotion fan-in: every gate
+# ends here, so after this gate's verdict it records the verdict in the release record's gate ledger and, when every
+# required gate is green on the release PR's head commit, sends `release.promotion-ready` to the broker. A Trigger in
+# the catalog namespace turns that into the `promote` PipelineRun (rbac/promote-trigger.yaml), which re-checks
+# everything itself; this step only decides when to ask.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -63,6 +69,15 @@ spec:
               path: github-token-broker-token
               audience: github-installation-token
               expirationSeconds: 600
+{{- if .Values.promotion.enabled }}
+          - serviceAccountToken:
+              path: broker-token
+              audience: cdevents-broker
+              expirationSeconds: 600
+    # This gate's verdict and PR number, from the comment step to the promotion-ready step.
+    - name: gate-work
+      emptyDir: {}
+{{- end }}
   steps:
     - name: comment
       image: {{ .Values.toolboxImage }}
@@ -71,6 +86,9 @@ spec:
         - name: github-token-broker-token
           mountPath: /var/run/secrets/platform
           readOnly: true
+{{- if .Values.promotion.enabled }}
+        - { name: gate-work, mountPath: /workspace/gate }
+{{- end }}
       env:
         - name: GITHUB_TOKEN_BROKER_URL
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
@@ -128,6 +146,8 @@ spec:
           fi
           PR_NUMBER="${resolved}"
         fi
+        gate_work="${GATE_WORK:-/workspace/gate}"
+        [[ -d "${gate_work}" ]] && printf '%s' "${PR_NUMBER}" > "${gate_work}/pr"
 
         taskrun_results="$(kubectl get taskrun -n "${NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json 2>/dev/null)"
         # ADR-0021 phase 4: on an eligible rollback the content gates run their check as
@@ -140,6 +160,7 @@ spec:
         advisory_failed="$(echo "${taskrun_results}" | jq -r '[.items[] | select((.metadata.labels["tekton.dev/pipelineTask"] // "") | endswith("-advisory")) | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
         hard_failed="$(echo "${taskrun_results}" | jq -r '[.items[] | select((.metadata.labels["tekton.dev/pipelineTask"] // "") | endswith("-advisory") | not) | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
         if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" || ( -n "${advisory_failed}" && -z "${hard_failed}" ) ]]; then
+          [[ -d "${gate_work}" ]] && echo success > "${gate_work}/verdict"
           # Best-effort: surface a Task result if one exists (image-scan and qa-gate produce
           # findings-summary) - never required, a plain pass is a complete comment too.
           summary="$(echo "${taskrun_results}" | jq -r '[.items[].status.results[]? | select(.name == "findings-summary")][0].value // empty')"
@@ -189,6 +210,7 @@ spec:
             fi
           fi
         else
+          [[ -d "${gate_work}" ]] && echo failure > "${gate_work}/verdict"
           # Same failed-TaskRun + log-excerpt lookup notify-slack.yaml uses - best-effort,
           # naturally empty if no False-conditioned child exists yet.
           failed_taskrun="${hard_failed}"
@@ -305,3 +327,106 @@ spec:
               "https://api.github.com/repos/${owner}/${repo}/issues/comments/${dup_id}" || true
           done <<<"${dup_ids}"
         fi
+{{- if .Values.promotion.enabled }}
+    # ADR-0029 phase 3: the promotion fan-in (header). Never fails the gate: a lost event is recovered by the next
+    # gate that finishes (`/retest <gate>-`), and the promote pipeline re-checks every rule itself.
+    - name: promotion-ready
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      onError: continue
+      volumeMounts:
+        - { name: github-token-broker-token, mountPath: /var/run/secrets/platform, readOnly: true }
+        - { name: gate-work, mountPath: /workspace/gate }
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: CDEVENTS_BROKER_URL
+          value: http://el-cdevents-broker.platform-system.svc.cluster.local:8080
+        - { name: REPO_URL, value: $(params.repo-url) }
+        - { name: REVISION, value: $(params.revision) }
+        - { name: GATE_NAME, value: $(params.gate-name) }
+        - { name: PIPELINE_RUN_NAME, value: $(params.pipeline-run-name) }
+        - { name: NAMESPACE, value: $(context.taskRun.namespace) }
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        W="${GATE_WORK:-/workspace/gate}"
+        verdict="$(cat "${W}/verdict" 2>/dev/null || true)"
+        pr_number="$(cat "${W}/pr" 2>/dev/null || true)"
+        [[ -n "${verdict}" && "${pr_number}" =~ ^[0-9]+$ ]] || { echo "no verdict or PR for ${GATE_NAME}: nothing to record"; exit 0; }
+        [[ "${REPO_URL}" =~ ^https://github\.com/([A-Za-z0-9-]+)/gitops-([a-z0-9][a-z0-9-]*)(\.git)?/?$ ]] \
+          || { echo "${REPO_URL} is not a gitops-<app> repository: not a release"; exit 0; }
+        owner="${BASH_REMATCH[1]}"; app="${BASH_REMATCH[2]}"; repo="gitops-${app}"
+        token="$(github_app_installation_token "${owner}" "${repo}")" || { echo "no GitHub token: skipping" >&2; exit 0; }
+        gh_() { curl --fail --silent --show-error --max-time 15 --retry 3 --retry-connrefused \
+          -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" "$@"; }
+
+        pr="$(gh_ "https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}")" || exit 0
+        head_sha="$(jq -r .head.sha <<<"${pr}")"
+        [[ "$(jq -r '.state + " " + (.merged | tostring)' <<<"${pr}")" == "open false" ]] || { echo "#${pr_number} is not open"; exit 0; }
+        [[ "$(jq -r .head.ref <<<"${pr}")" == release-* ]] || { echo "#${pr_number} is not a release PR"; exit 0; }
+        # A newer commit's gates decide; this run verified an older one.
+        [[ -z "${REVISION}" || "${REVISION}" == "${head_sha}" ]] || { echo "${GATE_NAME} ran on ${REVISION:0:7}, the PR is at ${head_sha:0:7}"; exit 0; }
+        # Only a Flight environment's release file is promoted (a cloud pin PR keeps its own copy at deploy).
+        gh_ "https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/files?per_page=100" \
+          | jq -e '[.[].filename | select(test("^[^/]+/[^/]+/release\\.yaml$"))] | length > 0' >/dev/null \
+          || { echo "#${pr_number} changes no <cluster>/<env>/release.yaml: nothing to promote"; exit 0; }
+
+        # The gate ledger: this gate's verdict for this commit in the release record, written with the record's
+        # resourceVersion so two gates finishing together are serialized - the second one sees both verdicts. A
+        # gate's check run is still in progress while its finally runs, so the check runs alone would let two
+        # simultaneous last gates each wait for the other and nobody would ask.
+        key="gate.${head_sha:0:12}.${GATE_NAME}"
+        pr_url="$(jq -r .html_url <<<"${pr}")"
+        ledger="{}"
+        for attempt in 1 2 3 4 5; do
+          record="$(kubectl get configmap -n "${NAMESPACE}" -l hangar.io/subcomponent=release-tracking -o json 2>/dev/null \
+            | jq -c --arg u "${pr_url}" '[.items[] | select(.data.prUrl == $u)] | .[0] // empty')"
+          [[ -n "${record}" ]] || { echo "no release record for ${pr_url}: deciding from the check runs alone"; break; }
+          patch="$(jq -nc --arg rv "$(jq -r .metadata.resourceVersion <<<"${record}")" --arg k "${key}" --arg v "${verdict}" \
+            '{metadata: {resourceVersion: $rv}, data: {($k): $v}}')"
+          if kubectl patch configmap "$(jq -r .metadata.name <<<"${record}")" -n "${NAMESPACE}" --type merge -p "${patch}" >/dev/null; then
+            ledger="$(jq -c --arg k "${key}" --arg v "${verdict}" '.data + {($k): $v}' <<<"${record}")"
+            break
+          fi
+          echo "release record changed underneath (attempt ${attempt}); retrying"
+          sleep 1
+        done
+        [[ "${verdict}" == success ]] || { echo "${GATE_NAME} is not green: no promotion"; exit 0; }
+
+        checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")" || exit 0
+        newest() { jq -r --arg n "Pipelines as Code CI / $1-" \
+          '[.check_runs[] | select(.name == $n)] | sort_by(.started_at) | last | if . == null then "missing" elif .status != "completed" then .status else .conclusion end' <<<"${checks}"; }
+        waiting=""
+        for gate in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if and .required (ne .name "image-promotion") }}{{ .name }} {{ end }}{{ end }}; do
+          if [[ "${gate}" == "${GATE_NAME}" ]]; then c=success
+          else c="$(jq -r --arg k "gate.${head_sha:0:12}.${gate}" '.[$k] // empty' <<<"${ledger}")"; [[ -n "${c}" ]] || c="$(newest "${gate}")"
+          fi
+          [[ "${c}" == success ]] || waiting="${waiting}${waiting:+, }${gate} (${c})"
+        done
+        [[ -z "${waiting}" ]] || { echo "not every required gate is green on ${head_sha:0:7} yet: ${waiting}"; exit 0; }
+        case "$(newest image-promotion)" in
+          success) echo "already promoted on ${head_sha:0:7}"; exit 0 ;;
+          queued|in_progress) echo "a promotion is already running on ${head_sha:0:7}"; exit 0 ;;
+        esac
+
+        # One event id per commit and attempt: two gates that both see the set complete send the same id, and the
+        # Trigger names the PipelineRun after it, so only one runs; after a refused or failed promotion the next
+        # attempt (a new image-promotion check run) gets a new id.
+        attempts="$(jq -r '[.check_runs[] | select(.name == "Pipelines as Code CI / image-promotion-")] | length' <<<"${checks}")"
+        id="$(printf '%s' "${owner}/${repo}#${pr_number}@${head_sha}#${attempts}" | sha256sum | cut -c1-20)"
+        event="$(jq -nc --arg id "${id}" --arg ns "${NAMESPACE}" --arg pr "${PIPELINE_RUN_NAME}" --arg app "${app}" \
+          --arg url "https://github.com/${owner}/${repo}" --arg n "${pr_number}" --arg sha "${head_sha}" --arg g "${GATE_NAME}" \
+          --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          '{context: {version: "0.4.1", id: $id, source: ("/glidepath/" + $ns + "/" + $pr), type: "dev.hangar.release.promotion-ready.0.1.0", timestamp: $ts},
+            subject: {id: ($url + "/pull/" + $n), source: ("/glidepath/" + $ns + "/" + $pr), type: "release",
+              content: {appName: $app, repoUrl: $url, prNumber: $n, headSha: $sha, lastGate: $g}}}')"
+        if curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused -X POST "${CDEVENTS_BROKER_URL}" \
+            -H "Authorization: Bearer $(cat /var/run/secrets/platform/broker-token)" -H "Content-Type: application/cloudevents+json" \
+            -d "${event}" >/dev/null; then
+          echo "every required gate is green on ${head_sha:0:7}: asked for promotion (event ${id})"
+        else
+          echo "warn: the broker did not take the promotion-ready event; the next gate to finish asks again" >&2
+        fi
+{{- end }}

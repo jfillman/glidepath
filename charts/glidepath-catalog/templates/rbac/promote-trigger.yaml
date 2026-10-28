@@ -1,0 +1,139 @@
+{{- /*
+ADR-0029 phase 3: the promotion fan-in's Trigger. comment-pr-check-result.yaml's promotion-ready step (every gate's
+finally, in the app's -cicd namespace) sends `dev.hangar.release.promotion-ready.0.1.0` to the shared broker when every
+required gate is green on a release PR's head commit; this Trigger turns it into the `promote` PipelineRun here, run as
+glidepath-promoter.
+
+Trust: the broker's TokenReview interceptor proves which namespace sent the event, and the CEL filter accepts it only
+for that namespace's own gitops repository (<type>-<app>-cicd -> gitops-<app>). The PipelineRun's shape is fixed by
+the template below; the event chooses only the repository, the PR number and the name. A tenant that sends the event
+by hand gets no more than the promote pipeline's own rules allow: it re-reads the PR, the release file and the gates
+and refuses anything they forbid. The PipelineRun is named after the event id (one per commit and attempt), so two
+gates that finish together start one run.
+
+The Trigger's ServiceAccount can create PipelineRuns in this namespace and nothing else; the broker may impersonate
+exactly that ServiceAccount (the same scoped-impersonation shape as each app's pipeline-runner grant).
+*/ -}}
+{{- if .Values.promotion.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: glidepath-promote-trigger
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: glidepath-promote-trigger
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: glidepath-promote-trigger
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: glidepath-promote-trigger }
+subjects:
+  - { kind: ServiceAccount, name: glidepath-promote-trigger, namespace: {{ .Release.Namespace }} }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: allow-broker-impersonate-promote-trigger
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    resourceNames: ["glidepath-promote-trigger"]
+    verbs: ["impersonate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: allow-broker-impersonate-promote-trigger
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: allow-broker-impersonate-promote-trigger }
+subjects:
+  - { kind: ServiceAccount, name: cdevents-broker, namespace: platform-system }
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  name: promote-binding
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+spec:
+  params:
+    - { name: pipeline-run-name, value: "promote-$(body.context.id)" }
+    - { name: repo-url, value: "$(body.subject.content.repoUrl)" }
+    - { name: pr-number, value: "$(body.subject.content.prNumber)" }
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: promote-template
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+spec:
+  params:
+    - name: pipeline-run-name
+    - name: repo-url
+    - name: pr-number
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        name: $(tt.params.pipeline-run-name)
+        labels:
+          hangar.io/subcomponent: "promote"
+      spec:
+        pipelineRef: { name: promote }
+        taskRunTemplate: { serviceAccountName: glidepath-promoter }
+        params:
+          - { name: repo-url, value: $(tt.params.repo-url) }
+          - { name: pr-number, value: $(tt.params.pr-number) }
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: Trigger
+metadata:
+  name: promote
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+spec:
+  serviceAccountName: glidepath-promote-trigger
+  interceptors:
+    - ref: { name: cdevents-broker-auth, kind: ClusterInterceptor }
+      params: [{ name: audience, value: cdevents-broker }]
+    - ref: { name: cel, kind: ClusterInterceptor }
+      params:
+        - name: filter
+          value: >-
+            body.context.type == 'dev.hangar.release.promotion-ready.0.1.0' &&
+            body.context.id.matches('^[0-9a-f]{20}$') &&
+            body.subject.content.appName.matches('^[a-z0-9][a-z0-9-]*$') &&
+            extensions.app_namespace.matches('^[a-z0-9]+-' + body.subject.content.appName + '-cicd$') &&
+            body.subject.content.repoUrl.matches('^https://github[.]com/[A-Za-z0-9-]+/gitops-' + body.subject.content.appName + '$') &&
+            body.subject.content.prNumber.matches('^[0-9]+$')
+  bindings:
+    - { ref: promote-binding }
+  template:
+    ref: promote-template
+{{- end }}

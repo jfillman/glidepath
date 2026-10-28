@@ -29,7 +29,7 @@ func TestScopeFor(t *testing.T) {
 		{"dispatch", full, sa, promoterTokenRequest{Purpose: "dispatch"}, 200, true, "flight-promoter", map[string]string{"actions": "write"}},
 		{"dispatch ignores a requested repo", full, sa, promoterTokenRequest{Purpose: "dispatch", Owner: "jfillman", Repo: "gitops-x"}, 200, true, "flight-promoter", map[string]string{"actions": "write"}},
 		{"release-pr", full, sa, promoterTokenRequest{Purpose: "release-pr", Owner: "jfillman", Repo: "gitops-boarding-api"}, 200, false, "gitops-boarding-api",
-			map[string]string{"checks": "write", "contents": "read", "pull_requests": "read"}},
+			map[string]string{"checks": "write", "contents": "read", "pull_requests": "write"}},
 		{"release-pr refuses an app repo", full, sa, promoterTokenRequest{Purpose: "release-pr", Owner: "jfillman", Repo: "boarding-api"}, 403, false, "", nil},
 		{"release-pr refuses a path in the repo", full, sa, promoterTokenRequest{Purpose: "release-pr", Owner: "jfillman", Repo: "gitops-x/../y"}, 403, false, "", nil},
 		{"release-pr refuses a bad owner", full, sa, promoterTokenRequest{Purpose: "release-pr", Owner: "a/b", Repo: "gitops-x"}, 403, false, "", nil},
@@ -39,7 +39,7 @@ func TestScopeFor(t *testing.T) {
 		{"not configured", promoterConfig{}, sa, promoterTokenRequest{Purpose: "dispatch"}, 503, false, "", nil},
 		{"no promoter key", promoterConfig{Caller: sa, DispatchRepo: "riley-roooo/flight-promoter"}, sa, promoterTokenRequest{Purpose: "dispatch"}, 503, false, "", nil},
 		{"no promoter key still serves release-pr", promoterConfig{Caller: sa}, sa, promoterTokenRequest{Purpose: "release-pr", Owner: "jfillman", Repo: "gitops-a"}, 200, false, "gitops-a",
-			map[string]string{"checks": "write", "contents": "read", "pull_requests": "read"}},
+			map[string]string{"checks": "write", "contents": "read", "pull_requests": "write"}},
 		{"bad dispatch repo", promoterConfig{Caller: sa, DispatchRepo: "flight-promoter", App: &githubapp.Creds{}}, sa, promoterTokenRequest{Purpose: "dispatch"}, 503, false, "", nil},
 	}
 	for _, c := range cases {

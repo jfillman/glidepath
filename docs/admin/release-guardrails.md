@@ -89,7 +89,10 @@ Checks API (Helm-rendered off `releaseGuardrails`, minus the gate named in `self
 check ([ADR-0025](adr/0025-retire-image-promotion-stub-check.md): it could not block a
 merge on this GitHub plan, its result was the AND of its siblings, and there is no upper
 registry to promote into). That ADR also records how a real promotion should be ordered:
-event-driven fan-in on the release record rather than a polling pod.
+event-driven fan-in on the release record rather than a polling pod. It came back that way with the Flight registry
+([ADR-0029](adr/0029-ground-and-flight-registries.md) phase 3, [registries.md](registries.md#the-fan-in-phase-3)):
+with catalog `promotion.enabled`, `image-promotion` is a required entry of the effective registry (not of
+`releaseGuardrails`, and no `.tekton` file), started by the last gate's `finally` instead of a waiting Pipeline.
 
 ## Timeouts: always split `tasks`/`finally`, never a single `pipeline` budget alone
 
@@ -173,6 +176,7 @@ change management sets it advisory the same way. Today `qa` and `api-compat` ([a
 | `api-compat` | The promoted image's signed API spec diffed against the target environment's, with the operations each breaking change touches and whether they are in use ([api-compat.md](api-compat.md)) | real | no (advisory) |
 | `qa` | A passing, recent check ride from the shared check-rides repository, attested on the promoted image ([testing.md](testing.md)) | real | no (advisory) |
 | `policy-validation` | The release's environments rendered and evaluated offline (Kyverno CLI) against the target cluster's admission policies from its GitOps repo; only Deny/Enforce findings block ([policy-validation.md](policy-validation.md)) | real | yes |
+| `image-promotion` | Only with catalog `promotion.enabled`: the release image copied by digest to the Flight registry with its signatures and attestations, plus a promotion attestation ([registries.md](registries.md)) | real | yes |
 
 **How `qa` judges a release (2026-10-19, phase 3 of [testing.md](testing.md)).** The gate never runs tests. It
 resolves the promoted image like the other image gates, downloads the digest's attestations, verifies each SLSA

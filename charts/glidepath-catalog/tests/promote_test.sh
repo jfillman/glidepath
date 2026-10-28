@@ -7,6 +7,7 @@
 # Usage: charts/glidepath-catalog/tests/promote_test.sh
 set -u
 cd "$(dirname "$0")/../../.."
+export GATE_POLL_SECONDS=0
 fail=0
 work="$(mktemp -d)"
 EX=charts/glidepath-catalog/tests/values.example.yaml
@@ -49,10 +50,12 @@ echo "$method $url $( [[ -n "$data" ]] && { jq -c . <<<"$data" 2>/dev/null || ec
 route() {
   case "$method $url" in
     "POST "*promoter-token) echo broker ;;
+    "GET "*/issues/*/comments*) echo comments.json ;;
+    "POST "*/issues/*/comments|"PATCH "*/issues/comments/*) echo empty.json ;;
     "GET "*/pulls/*/files*) echo files.json ;;
     "GET "*/pulls/*) echo pr.json ;;
     "GET "*/contents/*) echo release.yaml ;;
-    "GET "*/check-runs*) echo checks.json ;;
+    "GET "*/check-runs*) if [[ -f "$FX/checks.first.json" ]]; then echo checks.first.json; else echo checks.json; fi ;;
     "POST "*/check-runs) echo check-created.json ;;
     "PATCH "*/check-runs/*) echo empty.json ;;
     "POST "*/dispatches) echo empty.json ;;
@@ -63,6 +66,7 @@ route() {
 }
 r="$(route)"
 if [[ "$r" == broker ]]; then printf '{"token":"t"}'; else cat "$FX/$r" 2>/dev/null || { echo "{}"; exit 22; }; fi
+[[ "$r" == checks.first.json ]] && rm -f "$FX/checks.first.json"   # served once: the next read sees checks.json
 (( wcode )) && printf '\n200'
 exit 0
 EOF
@@ -81,7 +85,7 @@ echo t > "$work/sa-token"
 
 scenario() { # name -> fresh fixture dir in $FX, defaults for a promotable release
   FX="$work/fx-$1"; mkdir -p "$FX/w"; export FX
-  echo '{"id":42}' > "$FX/check-created.json"; echo '{}' > "$FX/empty.json"
+  echo '{"id":42}' > "$FX/check-created.json"; echo '{}' > "$FX/empty.json"; echo '[]' > "$FX/comments.json"
   jq -n --arg sha "$SHA" '{state: "open", merged: false, head: {sha: $sha}}' > "$FX/pr.json"
   echo '[{"filename":"hangar-prod/prod/release.yaml"}]' > "$FX/files.json"
   printf 'release:\n  image:\n    repository: ghcr.io/riley-roooo/boarding-api\n    tag: 2.0.5-832e475\n    digest: %s\n    source: ghcr.io/jfillman/boarding-api\nreleaseTracking:\n  releaseId: r1:hangar-prod/prod\n' "$D" > "$FX/release.yaml"
@@ -149,7 +153,14 @@ expect_refusal retest-red "sast (failure)"
 scenario running   # a gate still running is not green
 jq '.check_runs |= map(if .name == "Pipelines as Code CI / qa-" or .name == "Pipelines as Code CI / values-" then .status = "in_progress" | .conclusion = null else . end)' \
   "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
-expect_refusal running "values (in_progress)"
+GATE_WAIT_SECONDS=0 expect_refusal running "still running on 1111111 after 0s: values (in_progress)"
+scenario running-then-green   # the fan-in's own gate is still in progress at first, then green: waited for, not refused
+jq '.check_runs |= map(if .name == "Pipelines as Code CI / sbom-" then .status = "in_progress" | .conclusion = null else . end)' \
+  "$FX/checks.json" > "$FX/checks.first.json"
+run_step release.sh
+if (( rc != 0 )) || ! grep -q 'waiting for sbom (in_progress)' "$FX/out" || [[ ! -f "$FX/w/release.env" ]]; then
+  echo "FAIL: running-then-green: rc=$rc reason='$(cat "$FX/w/reason" 2>/dev/null)'"; tail -3 "$FX/out"; fail=1
+fi
 scenario notgitops; REPO_URL=https://github.com/jfillman/boarding-api expect_refusal not-gitops "not a gitops-<app>"
 scenario notrelease; echo '[{"filename":"README.md"}]' > "$FX/files.json"
 expect_refusal not-release "not a release PR"
@@ -196,11 +207,17 @@ echo "ghcr.io/riley-roooo/boarding-api@$D" > "$FX/w/flight-ref"; printf 'GATES=s
 run_step report.sh
 (( rc == 0 )) && grep 'PATCH .*/check-runs/42' "$FX/calls" | grep -q '"conclusion":"success"' || { echo "FAIL: report success: rc=$rc $(grep PATCH "$FX/calls")"; fail=1; }
 [[ "$(cat "$work/res-outcome")" == success ]] || { echo "FAIL: outcome result"; fail=1; }
+grep 'POST .*/issues/7/comments' "$FX/calls" | grep -q '<!-- glidepath:gate:image-promotion -->\\n### ✅ `image-promotion` passed' \
+  || { echo "FAIL: report success: no new PR comment with the gate marker: $(grep comments "$FX/calls")"; fail=1; }
 scenario report-red; printf 'OWNER=jfillman\nREPO=gitops-boarding-api\nHEAD_SHA=%s\n' "$SHA" > "$FX/w/repo.env"
 echo "required gates are not green" > "$FX/w/reason"
+echo '[{"id":5,"body":"<!-- glidepath:gate:sbom -->\nx"},{"id":9,"body":"<!-- glidepath:gate:image-promotion -->\nold"}]' > "$FX/comments.json"
 run_step report.sh   # no check-id yet (refused before opening): report opens one, then concludes it
 (( rc != 0 )) && grep 'PATCH .*/check-runs/42' "$FX/calls" | grep -q '"conclusion":"failure"' \
   && grep -q 'POST .*/check-runs' "$FX/calls" || { echo "FAIL: report failure: rc=$rc $(cat "$FX/calls")"; fail=1; }
+grep 'PATCH .*/issues/comments/9' "$FX/calls" | grep -q '### ❌ `image-promotion` failed.*Why:\*\* required gates are not green' \
+  && ! grep -q 'POST .*/issues/7/comments' "$FX/calls" \
+  || { echo "FAIL: report failure: the earlier image-promotion comment was not edited in place: $(grep comments "$FX/calls")"; fail=1; }
 
 [[ $fail == 0 ]] && echo ok
 exit $fail

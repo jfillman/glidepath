@@ -120,6 +120,12 @@ override map and the refusal apply everywhere at once (docs/admin/release-guardr
 {{- $_ := set $g "required" $required -}}
 {{- $out = append $out $g -}}
 {{- end -}}
+{{- /* ADR-0029 phase 3: with promotion on, the promote pipeline's check is a required gate. It is not a
+releaseGuardrails entry because nothing delivers a .tekton file for it (the fan-in starts it), and with promotion
+off no PR would ever get the check and every merge would read as a bypass. */ -}}
+{{- if .Values.promotion.enabled -}}
+{{- $out = append $out (dict "name" "image-promotion" "description" "The release image copied by digest to the Flight registry with its signatures and attestations, and a promotion attestation for this release" "status" "real" "class" "integrity" "required" true "targets" (list "k8s-rollout")) -}}
+{{- end -}}
 {{- $out | toJson -}}
 {{- end -}}
 
@@ -188,7 +194,7 @@ provider). itsm.sh defaults an absent URL to empty, so the scripts read the same
 
 {{/*
 Bash for the promote Task's steps (ADR-0029): release_pr_token OWNER REPO sets $token to a release-pr token from the
-broker's /promoter-token (checks: write, contents/pull_requests: read on that gitops repo); gh_ calls the GitHub API
+broker's /promoter-token (checks + pull_requests: write, contents: read on that gitops repo); gh_ calls the GitHub API
 with it; check_run_start OWNER REPO SHA opens the image-promotion check run and writes its id to <work>/check-id.
 */}}
 {{- define "glidepath-catalog.promoterGitHub" -}}
