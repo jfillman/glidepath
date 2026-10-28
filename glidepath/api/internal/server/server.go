@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/glidepath/api/internal/apps"
@@ -195,7 +196,8 @@ func (s *Server) wrap(o op, h handler) http.Handler {
 			attrs = append(attrs, "caller", caller.User, "onBehalfOf", caller.OnBehalfOf)
 		}
 		if write {
-			attrs = append(attrs, "name", r.PathValue("name"), "dryRun", r.URL.Query().Get("dryRun") == "true")
+			dry, _ := dryRun(r)
+			attrs = append(attrs, "name", r.PathValue("name"), "dryRun", dry)
 			attrs = append(attrs, rec.audit...)
 		}
 		if err != nil {
@@ -340,15 +342,30 @@ func (s *Server) getTestReport(ctx context.Context, w http.ResponseWriter, r *ht
 	return nil
 }
 
-// dryRun reads ?dryRun=true|false.
+// HeaderDryRun asks for a dry run like ?dryRun=true does. A caller coming through the API server's service proxy
+// (Tower) must use it: the API server refuses a proxied request whose query has dryRun ("dryRun is not supported").
+const HeaderDryRun = "X-Glidepath-Dry-Run"
+
+// dryRun reads ?dryRun=true|false and the X-Glidepath-Dry-Run header; either may ask, and they must not disagree.
 func dryRun(r *http.Request) (bool, error) {
-	switch r.URL.Query().Get("dryRun") {
-	case "", "false":
-		return false, nil
-	case "true":
-		return true, nil
+	parse := func(v string) (bool, bool) {
+		switch v {
+		case "", "false":
+			return false, true
+		case "true":
+			return true, true
+		}
+		return false, false
 	}
-	return false, pipelineruns.Invalid{What: "dryRun must be true or false"}
+	q, okQ := parse(r.URL.Query().Get("dryRun"))
+	h, okH := parse(strings.TrimSpace(r.Header.Get(HeaderDryRun)))
+	if !okQ || !okH {
+		return false, pipelineruns.Invalid{What: "dryRun must be true or false"}
+	}
+	if r.URL.Query().Get("dryRun") != "" && r.Header.Get(HeaderDryRun) != "" && q != h {
+		return false, pipelineruns.Invalid{What: "dryRun and " + HeaderDryRun + " disagree"}
+	}
+	return q || h, nil
 }
 
 // rerunRun starts a copy of a PipelineRun, once per Idempotency-Key: 201 when this call created it,

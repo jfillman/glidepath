@@ -172,6 +172,10 @@ with the API's before any real write goes through the API:
 A dry run of a key already used answers the replay, with the run it found as `object`. A dry run is
 audited with `"dryRun": true`.
 
+Through the API server's service proxy (how Tower calls), ask with the header `X-Glidepath-Dry-Run: true`
+instead: the API server refuses a proxied request with `dryRun` in its query ("dryRun is not supported").
+Query and header may both be given only if they agree.
+
 ### Who may write
 
 **Authorization is a SubjectAccessReview on the caller**, as for reads: `rerun` or `cancel` on

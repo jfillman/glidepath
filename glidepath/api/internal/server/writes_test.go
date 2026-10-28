@@ -368,3 +368,31 @@ func TestWriteAuthorization(t *testing.T) {
 		t.Fatalf("writes: %d", n)
 	}
 }
+
+// Tower comes through the API server's service proxy, which refuses ?dryRun on a proxied request
+// ("dryRun is not supported", seen live 2026-10-28), so the header must ask for a dry run the same way.
+func TestDryRunHeader(t *testing.T) {
+	s, store, _ := withRuns(t, operator)
+	h := hdr("op", "k1")
+	h[HeaderDryRun] = "true"
+	st, out, body := post(t, s, "/v1/apps/shop/pipelineruns/shop-push-abc/rerun", h)
+	if st != 200 || out["dryRun"] != true || out["object"] == nil {
+		t.Fatalf("dry rerun by header: %d %s", st, body)
+	}
+	c := hdr("op", "")
+	c[HeaderDryRun] = "true"
+	if st, out, body := post(t, s, "/v1/apps/shop/pipelineruns/shop-running/cancel", c); st != 200 || out["dryRun"] != true {
+		t.Fatalf("dry cancel by header: %d %s", st, body)
+	}
+	if w := store.writes(); len(w) != 0 {
+		t.Fatalf("a header dry run wrote: %v", w)
+	}
+	h[HeaderDryRun] = "false"
+	if st, out, _ := post(t, s, "/v1/apps/shop/pipelineruns/shop-push-abc/rerun?dryRun=true", h); st != 400 || out["rule"] != "GP-API-400" {
+		t.Fatalf("query and header disagree: %d %v", st, out)
+	}
+	h[HeaderDryRun] = "yes"
+	if st, _, _ := post(t, s, "/v1/apps/shop/pipelineruns/shop-push-abc/rerun", h); st != 400 {
+		t.Fatalf("bad header value: %d", st)
+	}
+}

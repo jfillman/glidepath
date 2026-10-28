@@ -249,6 +249,7 @@ paths:
         - { $ref: "#/components/parameters/RunName" }
         - { $ref: "#/components/parameters/OnBehalfOf" }
         - { $ref: "#/components/parameters/DryRun" }
+        - { $ref: "#/components/parameters/DryRunHeader" }
         - name: Idempotency-Key
           in: header
           required: true
@@ -280,6 +281,7 @@ paths:
         - { $ref: "#/components/parameters/RunName" }
         - { $ref: "#/components/parameters/OnBehalfOf" }
         - { $ref: "#/components/parameters/DryRun" }
+        - { $ref: "#/components/parameters/DryRunHeader" }
       responses:
         "200": { description: What happened, content: { application/json: { schema: { $ref: "#/components/schemas/Cancellation" } } } }
         "400": { $ref: "#/components/responses/Error" }
@@ -299,7 +301,12 @@ components:
     DryRun:
       name: dryRun
       in: query
-      description: true does every read and check, and a Kubernetes server-side dry run (dryRun All), and returns what would be written. Audited with dryRun true.
+      description: true does every read and check, and a Kubernetes server-side dry run (dryRun All), and returns what would be written. Audited with dryRun true. Through the API server's service proxy use the X-Glidepath-Dry-Run header instead; the API server refuses a proxied request with dryRun in its query.
+      schema: { type: boolean, default: false }
+    DryRunHeader:
+      name: X-Glidepath-Dry-Run
+      in: header
+      description: Same as ?dryRun (true or false); the form a caller must use through the API server's service proxy. If both are given they must agree.
       schema: { type: boolean, default: false }
     OnBehalfOf:
       name: X-Glidepath-On-Behalf-Of
