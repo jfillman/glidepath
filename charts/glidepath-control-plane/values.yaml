@@ -45,7 +45,7 @@ doraExporterImage: ghcr.io/jfillman/glidepath-dora-exporter:latest
 # pull-based model as every app deploy on this platform. See interceptor.yaml's own
 # comment on this value for the real live bug (stale image, 2026-09-06) a floating
 # "latest" tag caused here.
-interceptorImage: ghcr.io/jfillman/glidepath-token-review-interceptor:sha-3b53cc3
+interceptorImage: ghcr.io/jfillman/glidepath-token-review-interceptor:sha-66bf5e5
 
 # templates/clusters/glidepath-relay.yaml's own image (the release relay, ADR-0021) - same reasoning as
 # doraExporterImage above. Was a literal in the template.
