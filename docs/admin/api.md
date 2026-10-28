@@ -50,7 +50,9 @@ finished run never changes, so it is kept 7 days; run lists for a minute, step l
 cold `view=full` read of a busy app's window is several MB from Results and can take longer than a
 caller waits (Tower gives up at 10 s), so a cache-filling read is detached from the request: it
 finishes within 90 s and fills the cache even when its caller has gone, and concurrent callers
-asking for the same thing share one read. Each replica starts cold after a restart.
+asking for the same thing share one read. At start-up each replica reads every app's last 7 days of runs in the
+background, one app at a time (`cmd/glidepath-api/warm.go`; it needs `list` on namespaces to find them), so its first
+answers after a restart or a deploy are cached ones.
 
 ## Calling it
 
