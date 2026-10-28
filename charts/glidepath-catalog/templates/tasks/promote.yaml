@@ -74,8 +74,11 @@ spec:
       env:
         - name: GROUND_HOST
           value: {{ .Values.registries.ground.host | quote }}
+        {{- with .Values.registries.ground.namespace }}
+        # Unset means the repo owner; an empty value would be dropped by the API server and leave Argo CD OutOfSync.
         - name: GROUND_NAMESPACE
-          value: {{ .Values.registries.ground.namespace | quote }}
+          value: {{ . | quote }}
+        {{- end }}
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
