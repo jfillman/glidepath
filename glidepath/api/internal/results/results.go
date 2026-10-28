@@ -30,7 +30,7 @@ const (
 	logType      = "results.tekton.dev/v1alpha3.Log"
 	summaryPage  = 200 // Results rejects a page size under 5
 	maxSummary   = 15
-	runTTL       = 6 * time.Hour
+	runTTL       = 7 * 24 * time.Hour // a finished run never changes; long enough that the windows Tower asks for stay warm
 	listTTL      = time.Minute
 	logTTL       = time.Hour
 	concurrency  = 4
@@ -88,6 +88,7 @@ type Client struct {
 	TokenPath string // optional bearer token file, re-read per request so kubelet rotation needs no restart
 	HTTP      *http.Client
 	cache     ttlCache
+	fills     flights
 }
 
 func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
@@ -354,6 +355,15 @@ func (c *Client) cachedRun(ctx context.Context, parent, result string, needLogs 
 			return r, nil
 		}
 	}
+	v, err := c.fills.do(ctx, runKey(parent, result), func(ctx context.Context) (any, error) { return c.readRun(ctx, parent, result) })
+	if err != nil {
+		return nil, err
+	}
+	return v.(*Run), nil
+}
+
+// readRun reads one result's records (PipelineRun, TaskRuns, Log pointers) and caches the run.
+func (c *Client) readRun(ctx context.Context, parent, result string) (*Run, error) {
 	var records []record
 	token := ""
 	for {
@@ -497,12 +507,13 @@ func (c *Client) Runs(ctx context.Context, parent string, since, appStart time.T
 		if from.Before(since) {
 			from = since
 		}
-		got, err := c.bulk(ctx, parent, from, limit)
+		key := fmt.Sprintf("bulk:%s:%d:%d", parent, from.Unix(), limit)
+		v, err := c.fills.do(ctx, key, func(ctx context.Context) (any, error) { return c.bulk(ctx, parent, from, limit) })
 		if err != nil {
 			return nil, err
 		}
 		by := map[string]*Run{}
-		for _, r := range got {
+		for _, r := range v.([]*Run) {
 			by[r.Result] = r
 		}
 		for _, i := range missing {

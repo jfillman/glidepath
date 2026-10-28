@@ -45,7 +45,15 @@ func (c *ttlCache) set(k string, v any, ttl time.Duration) {
 			}
 		}
 		if len(c.m) >= maxEntries {
-			c.m = map[string]ttlEntry{} // still full of live entries: start over rather than grow
+			// Still full of live entries: drop the one closest to expiry. Starting over would make
+			// every app's next read a cold one, which is what the long run TTL is there to avoid.
+			var oldest string
+			for key, e := range c.m {
+				if oldest == "" || e.exp.Before(c.m[oldest].exp) {
+					oldest = key
+				}
+			}
+			delete(c.m, oldest)
 		}
 	}
 	c.m[k] = ttlEntry{v, time.Now().Add(ttl)}

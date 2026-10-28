@@ -35,6 +35,13 @@ images use. The contract is baked into the image, so `GET /v1/contract` always m
 Tekton Results is read through `tekton-results-relay`, the hop Tower already uses. The relay holds
 the Results read grant; the API decides who may ask before it asks.
 
+Each replica caches what it reads in memory (nothing persisted; Results stays the record). A
+finished run never changes, so it is kept 7 days; run lists for a minute, step logs for an hour. A
+cold `view=full` read of a busy app's window is several MB from Results and can take longer than a
+caller waits (Tower gives up at 10 s), so a cache-filling read is detached from the request: it
+finishes within 90 s and fills the cache even when its caller has gone, and concurrent callers
+asking for the same thing share one read. Each replica starts cold after a restart.
+
 ## Calling it
 
 In the cluster, send a ServiceAccount token:
