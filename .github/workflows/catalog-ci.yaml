@@ -102,6 +102,14 @@ jobs:
       - run: pip install pyyaml
       - run: charts/glidepath-catalog/tests/promote_test.sh
 
+  # validate-values and policy-validation-gate on a /retest: pr-number arrives as the unsubstituted PaC template.
+  retest-pr-number:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: charts/glidepath-catalog/tests/retest_pr_number_test.sh
+
   # The registry's per-gate `required` (docs/admin/release-guardrails.md): which task each gate Pipeline renders
   # (hard + advisory, or advisory alone), the bypass tooling's required set, the ruleset script, and the refusal
   # to make sast/provenance advisory.

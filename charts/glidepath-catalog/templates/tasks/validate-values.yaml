@@ -102,6 +102,11 @@ spec:
 
         # Changed files: the PR's base...head compare (merge-base semantics, like the old `git merge-base
         # origin/main`), or the single commit when there is no PR. `removed` dropped = the old --diff-filter=AMR.
+        # A /retest fires an issue_comment webhook whose payload has no pull_request, so PaC leaves the
+        # template string in place - resolve the PR from the commit, as itsm-gate.yaml does.
+        if [[ -n "${PR_NUMBER}" ]] && ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+          PR_NUMBER="$(api "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/pulls" | jq -r '.[0].number // empty')"
+        fi
         if [[ -n "${PR_NUMBER}" ]]; then
           base_sha="$(api "https://api.github.com/repos/${owner}/${repo}/pulls/${PR_NUMBER}" | jq -r '.base.sha')"
           changed="$(api "https://api.github.com/repos/${owner}/${repo}/compare/${base_sha}...${REVISION}" \
