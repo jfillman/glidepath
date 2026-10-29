@@ -351,6 +351,7 @@ spec:
         #!/usr/bin/env bash
         set -uo pipefail
         source "${PLATFORM_LIB}/github-app.sh"
+        {{- include "glidepath-catalog.advisoryGatesByApp" . | nindent 8 }}
         W="${GATE_WORK:-/workspace/gate}"
         verdict="$(cat "${W}/verdict" 2>/dev/null || true)"
         pr_number="$(cat "${W}/pr" 2>/dev/null || true)"
@@ -393,13 +394,19 @@ spec:
           echo "release record changed underneath (attempt ${attempt}); retrying"
           sleep 1
         done
-        [[ "${verdict}" == success ]] || { echo "${GATE_NAME} is not green: no promotion"; exit 0; }
+        # A gate advisory for this app (releaseGuardrailOverridesByApp) keeps its red check, but finishing last it must
+        # still ask, or a release whose advisory gate happened to finish after the required ones would never promote.
+        advisory="$(advisory_gates_for_app "${app}")"
+        [[ -z "${advisory}" ]] || echo "advisory for ${app} (catalog releaseGuardrailOverridesByApp), not waited for: ${advisory}"
+        [[ "${verdict}" == success ]] || gate_advisory_for_app "${app}" "${GATE_NAME}" \
+          || { echo "${GATE_NAME} is not green: no promotion"; exit 0; }
 
         checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")" || exit 0
         newest() { jq -r --arg n "Pipelines as Code CI / $1-" \
           '[.check_runs[] | select(.name == $n)] | sort_by(.started_at) | last | if . == null then "missing" elif .status != "completed" then .status else .conclusion end' <<<"${checks}"; }
         waiting=""
         for gate in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if and .required (ne .name "image-promotion") }}{{ .name }} {{ end }}{{ end }}; do
+          gate_advisory_for_app "${app}" "${gate}" && continue
           if [[ "${gate}" == "${GATE_NAME}" ]]; then c=success
           else c="$(jq -r --arg k "gate.${head_sha:0:12}.${gate}" '.[$k] // empty' <<<"${ledger}")"; [[ -n "${c}" ]] || c="$(newest "${gate}")"
           fi

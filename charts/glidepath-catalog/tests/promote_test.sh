@@ -2,7 +2,8 @@
 # The promote Task and promote-image StepAction (ADR-0029 phase 2), as rendered. Runs each step's bash against a fake
 # curl/oras/cosign that serve fixtures, and checks the refusals the rules require (PROM-01 Ground pin, PROM-03 red
 # gate, PROM-06 foreign source, PROM-08 merged PR, no digest), the happy path's hand-off file, the workflow's failing step as the reason, an
-# attestation from another request, and the check run's conclusion.
+# attestation from another request, and the check run's conclusion. With releaseGuardrailOverridesByApp (2026-10-28),
+# PROM-03 skips a gate advisory for the promoted app only (backstage: image-scan) and still refuses it for any other.
 # Needs helm, yq (mikefarah v4), jq and python3 (pyyaml).
 # Usage: charts/glidepath-catalog/tests/promote_test.sh
 set -u
@@ -28,6 +29,11 @@ sa = yaml.safe_load(open(f"{w}/sa.yaml"))["spec"]
 open(f"{w}/copy.sh", "w").write(sa["script"])
 open(f"{w}/copy.env", "w").write("".join(f"export {e['name']}='{e['value']}'\n" for e in sa["env"] if "$(" not in e["value"]))
 PY
+# The release step again, rendered with a per-app advisory gate (backstage: image-scan).
+helm template t charts/glidepath-catalog -f "$EX" --show-only templates/tasks/promote.yaml \
+  --set-json 'releaseGuardrailOverridesByApp={"backstage":{"image-scan":{"required":false}}}' \
+  | yq '.spec.steps[] | select(.name == "release") | .script' > "$work/release-perapp.sh" || exit 1
+[[ -s "$work/release-perapp.sh" ]] || { echo "FAIL: no release step in the per-app render"; exit 1; }
 
 # --- fakes ------------------------------------------------------------------------------------------------------
 mkdir -p "$work/bin"
@@ -164,6 +170,36 @@ fi
 scenario notgitops; REPO_URL=https://github.com/jfillman/boarding-api expect_refusal not-gitops "not a gitops-<app>"
 scenario notrelease; echo '[{"filename":"README.md"}]' > "$FX/files.json"
 expect_refusal not-release "not a release PR"
+
+# --- releaseGuardrailOverridesByApp: image-scan red on every scenario here ------------------------------------------
+app_scenario() { # name app: a promotable release of <app> with image-scan red
+  scenario "$1"
+  yq -i ".release.image.repository = \"ghcr.io/riley-roooo/$2\" | .release.image.source = \"ghcr.io/jfillman/$2\"" "$FX/release.yaml"
+  jq '.check_runs |= map(if .name == "Pipelines as Code CI / image-scan-" then .conclusion = "failure" else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+}
+app_scenario perapp-backstage backstage
+REPO_URL=https://github.com/jfillman/gitops-backstage run_step release-perapp.sh
+if (( rc != 0 )) || [[ ! -f "$FX/w/release.env" ]]; then
+  echo "FAIL: perapp-backstage: image-scan is advisory for backstage but PROM-03 refused: $(cat "$FX/w/reason" 2>/dev/null)"; tail -3 "$FX/out"; fail=1
+else
+  ( source "$FX/w/release.env"; [[ "$PACKAGE" == backstage && "$GATES" == *sbom=success* && "$GATES" != *image-scan* ]] \
+      || { echo "FAIL: perapp-backstage release.env: $(cat "$FX/w/release.env")"; exit 1; } ) || fail=1
+  grep -q 'advisory for backstage (catalog releaseGuardrailOverridesByApp), not required: image-scan' "$FX/out" \
+    || { echo "FAIL: perapp-backstage does not say image-scan is advisory"; fail=1; }
+fi
+app_scenario perapp-other boarding-api
+run_step release-perapp.sh
+if (( rc == 0 )) || ! grep -q 'image-scan (failure).*PROM-03' "$FX/w/reason" 2>/dev/null; then
+  echo "FAIL: perapp-other: image-scan red must still refuse boarding-api: rc=$rc reason='$(cat "$FX/w/reason" 2>/dev/null)'"; fail=1
+fi
+app_scenario perapp-default backstage   # the chart default render: backstage is held like any app
+REPO_URL=https://github.com/jfillman/gitops-backstage expect_refusal perapp-default "image-scan (failure).*PROM-03"
+app_scenario perapp-sbom-red backstage  # only the listed gate is advisory for backstage
+jq '.check_runs |= map(if .name == "Pipelines as Code CI / sbom-" then .conclusion = "failure" else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+REPO_URL=https://github.com/jfillman/gitops-backstage run_step release-perapp.sh
+if (( rc == 0 )) || ! grep -q 'sbom (failure)' "$FX/w/reason" 2>/dev/null || grep -q 'image-scan' "$FX/w/reason"; then
+  echo "FAIL: perapp-sbom-red: want a refusal for sbom only: rc=$rc reason='$(cat "$FX/w/reason" 2>/dev/null)'"; fail=1
+fi
 
 # --- copy (promote-image) -----------------------------------------------------------------------------------------
 copy_fixture() { # scenario name + conclusion [failed step]

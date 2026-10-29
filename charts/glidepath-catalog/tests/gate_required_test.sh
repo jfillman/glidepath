@@ -2,7 +2,9 @@
 # The registry's per-gate `required` (docs/admin/release-guardrails.md): renders the catalog with the chart default
 # and with releaseGuardrailOverrides, and checks what each gate Pipeline, detect-bypass-merge, release-log-emit,
 # wait-for-release-guardrails, open-release-pr and hack/apply-guardrail-ruleset.sh make of it; bash -n on every
-# rendered script that ranges over the registry; and that sast/provenance refuse required: false.
+# rendered script that ranges over the registry; and that sast/provenance refuse required: false. 2026-10-28: the
+# per-app map (releaseGuardrailOverridesByApp) - the bypass set, the PR body table and the ruleset for one app, the
+# gate Pipelines left as they are, and its render refusals.
 # Needs helm, python3 (pyyaml), jq, yq. Usage: charts/glidepath-catalog/tests/gate_required_test.sh
 set -u
 cd "$(dirname "$0")/../../.."
@@ -121,6 +123,85 @@ for locked in sast provenance; do
     echo "FAIL: ${locked} refusal has the wrong message: $(cat "${tmp}/err")"; fail=1
   fi
 done
+
+# ---- releaseGuardrailOverridesByApp (2026-10-28): advisory for one app at runtime, the render-time variants untouched
+cat > "${tmp}/perapp-values.yaml" <<'YAML'
+releaseGuardrailOverridesByApp:
+  backstage:
+    image-scan: { required: false }
+YAML
+render perapp -f "${tmp}/perapp-values.yaml"
+expect "image-scan-check per-app render (still the hard check)" "$(tasks image-scan-check "${tmp}/perapp.yaml" | tr '\n' ' ')" \
+  "extract-promoted-image image-scan+when image-scan-advisory+continue+when advisory-reason=rollback "
+for task in detect-bypass-merge release-log-emit wait-for-release-guardrails open-release-pr; do
+  script_of "${task}" "${tmp}/perapp.yaml" > "${tmp}/perapp-${task}.sh"
+  bash -n "${tmp}/perapp-${task}.sh" || { echo "FAIL: bash -n ${task} (per-app)"; fail=1; }
+  grep -q '^    backstage) echo "image-scan" ;;$' "${tmp}/perapp-${task}.sh" || { echo "FAIL: ${task} has no per-app lookup"; fail=1; }
+done
+expect "detect-bypass-merge gate loop unchanged by the per-app map" "$(grep -o 'for gate in .*; do' "${tmp}/perapp-detect-bypass-merge.sh")" \
+  "for gate in sast image-scan provenance sbom values itsm policy-validation ; do"
+helpers() { sed -n '/^advisory_gates_for_app() {$/,/^gate_advisory_for_app() /p' "$1"; }
+# release-log-emit's bypass set for backstage and another app: the helper and the two lines that build the set.
+log_set() { # app
+  { helpers "${tmp}/perapp-release-log-emit.sh"; grep -E '^ *(required_gates=" |log_app=|for g in \$\(advisory_gates_for_app)' "${tmp}/perapp-release-log-emit.sh"
+    echo 'printf "%s" "${required_gates}"'; } > "${tmp}/log-set.sh"
+  APP_NAME=ignored repo="gitops-$1" bash "${tmp}/log-set.sh"
+}
+expect "release-log-emit bypass set, backstage" "$(log_set backstage)" " sast provenance sbom values itsm policy-validation "
+expect "release-log-emit bypass set, gate-api" "$(log_set gate-api)" " sast image-scan provenance sbom values itsm policy-validation "
+# open-release-pr's PR body table: the image-scan row says advisory for backstage only.
+table_for() { # app
+  { helpers "${tmp}/perapp-open-release-pr.sh"
+    # from the rendered table through the per-app rewrite's last line (anchored on it: nothing after it may run here)
+    sed -n '/^governance_text="\$(printf /,/^  governance_text="\${table%/p' "${tmp}/perapp-open-release-pr.sh"
+    printf 'fi\nprintf "%%s" "${governance_text}"\n'; } > "${tmp}/table.sh"
+  grep -q 'curl\|git ' "${tmp}/table.sh" && { echo "FAIL: the PR-body extract reaches past the table"; fail=1; return 1; }
+  APP_NAME="$1" bash "${tmp}/table.sh"
+}
+table_for backstage > "${tmp}/table-backstage.md"; table_for gate-api > "${tmp}/table-other.md"
+grep -q '^| `image-scan` | [^|]* | real, advisory for backstage - its check can fail without holding this release' "${tmp}/table-backstage.md" \
+  || { echo "FAIL: the backstage PR body table does not mark image-scan advisory for backstage"; cat "${tmp}/table-backstage.md"; fail=1; }
+grep -q '^| `sbom` | [^|]* | real |$' "${tmp}/table-backstage.md" || { echo "FAIL: the backstage table changed sbom too"; fail=1; }
+grep -q '^| `image-scan` | [^|]* | real |$' "${tmp}/table-other.md" || { echo "FAIL: another app's table marks image-scan advisory"; fail=1; }
+expect "PR body table: only the image-scan row differs" "$(diff "${tmp}/table-backstage.md" "${tmp}/table-other.md" | grep -c '^[<>]')" 2
+# the ruleset for gitops-backstage leaves image-scan out; for any other repo it stays.
+rs_repo() { hack/apply-guardrail-ruleset.sh --dry-run -f "${tmp}/perapp-values.yaml" "$1" | grep -v '^#' \
+  | jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context' \
+  | sed 's#Pipelines as Code CI / ##' | tr '\n' ' '; }
+expect "ruleset gitops-backstage" "$(rs_repo x/gitops-backstage)" "sast- provenance- sbom- values- itsm- policy-validation- "
+expect "ruleset gitops-gate-api" "$(rs_repo x/gitops-gate-api)" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- "
+
+# ---- per-app refusals: integrity gates, image-promotion, an unknown gate, a non-plain app, anything but required: false
+refuse() { # label want-in-message values-yaml [extra helm args...]
+  local label="$1" want="$2" body="$3"; shift 3
+  printf '%s\n' "${body}" > "${tmp}/refuse.yaml"
+  if helm template t charts/glidepath-catalog -f "${values}" -f "${tmp}/refuse.yaml" --namespace platform-catalog "$@" > /dev/null 2> "${tmp}/err"; then
+    echo "FAIL: per-app ${label} rendered"; fail=1
+  elif ! grep -qF -- "${want}" "${tmp}/err"; then
+    echo "FAIL: per-app ${label} refusal has the wrong message: $(cat "${tmp}/err")"; fail=1
+  fi
+}
+for locked in sast provenance; do
+  refuse "${locked}" "releaseGuardrailOverridesByApp.backstage: ${locked} cannot be required: false" \
+    "$(printf 'releaseGuardrailOverridesByApp:\n  backstage:\n    %s: { required: false }' "${locked}")"
+done
+refuse image-promotion "releaseGuardrailOverridesByApp.backstage: image-promotion cannot be required: false" \
+  $'releaseGuardrailOverridesByApp:\n  backstage:\n    image-promotion: { required: false }' \
+  --set promotion.enabled=true --set promotion.pinDigest=true --set registries.flight.namespace=riley-roooo
+refuse image-promotion-off "releaseGuardrailOverridesByApp.backstage: image-promotion cannot be required: false" \
+  $'releaseGuardrailOverridesByApp:\n  backstage:\n    image-promotion: { required: false }'
+refuse unknown-gate '"image-scann" is not a gate in releaseGuardrails' \
+  $'releaseGuardrailOverridesByApp:\n  backstage:\n    image-scann: { required: false }'
+refuse app-name '"gitops/backstage" is not an app name' \
+  $'releaseGuardrailOverridesByApp:\n  gitops/backstage:\n    image-scan: { required: false }'
+refuse app-name-case '"Backstage" is not an app name' \
+  $'releaseGuardrailOverridesByApp:\n  Backstage:\n    image-scan: { required: false }'
+refuse required-true "releaseGuardrailOverridesByApp.backstage.qa: only { required: false } is supported" \
+  $'releaseGuardrailOverridesByApp:\n  backstage:\n    qa: { required: true }'
+refuse required-string "releaseGuardrailOverridesByApp.backstage.image-scan: only { required: false } is supported" \
+  $'releaseGuardrailOverridesByApp:\n  backstage:\n    image-scan: { required: "false" }'
+refuse not-a-map "releaseGuardrailOverridesByApp.backstage must be a map" \
+  $'releaseGuardrailOverridesByApp:\n  backstage: [image-scan]'
 
 rm -rf "${tmp}"
 [[ ${fail} -eq 0 ]] && echo "OK: the registry's required field drives every gate, the bypass tooling and the ruleset"

@@ -194,6 +194,7 @@ spec:
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
         {{- include "glidepath-catalog.itsmLib" . | nindent 8 }}
+        {{- include "glidepath-catalog.advisoryGatesByApp" . | nindent 8 }}
 
         # Change management (docs/admin/change-management.md). With a provider configured, every release gets
         # a change request: created here (an emergency change for a rollback, linked to the change of the
@@ -488,6 +489,20 @@ spec:
         # (see docs/admin/multi-cluster.md's "Live end-to-end verification" section for
         # the real, live-confirmed bug this technique was adopted to avoid).
         governance_text="$(printf '\n\n## Governance checks\n\n| Check | What it verifies | Status |\n|---|---|---|\n{{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}| `{{ .name }}` | {{ .description | replace "'" "'\"'\"'" }} | {{ if ne .status "real" }}not yet real - see Glidepath docs/admin/governance-stubs.md{{ else if .required }}real{{ else }}real, advisory - reports without blocking until required (Glidepath docs/admin/release-guardrails.md){{ end }} |\n{{ end }}\n**If a check fails**: comment `/retest <check-name>-` (the check name with its dash) on this PR to re-run just that one (e.g. `/retest sast`), or `/retest` alone to re-run all of them. Fix the underlying issue first if the failure is real - re-running does not bypass a check, it only re-evaluates it.')"
+        # A gate advisory for this app only (catalog releaseGuardrailOverridesByApp) still runs as a hard check here,
+        # so its row stays "real" from the render; the app is a runtime value, so the row's status is rewritten for it.
+        if [[ -n "$(advisory_gates_for_app "${APP_NAME}")" ]]; then
+          table=""
+          while IFS= read -r line; do
+            for g in $(advisory_gates_for_app "${APP_NAME}"); do
+              if [[ "${line}" == "| \`${g}\` |"* && "${line}" == *" | real |" ]]; then
+                line="${line%" real |"} real, advisory for ${APP_NAME} - its check can fail without holding this release (Glidepath docs/admin/release-guardrails.md) |"
+              fi
+            done
+            table="${table}${line}"$'\n'
+          done <<<"${governance_text}"
+          governance_text="${table%$'\n'}"
+        fi
         requested=""
         if [[ "${RELEASE_KIND}" == "rollback" ]]; then
           [[ -n "${INITIATOR}" ]] && requested="$(printf '\n**Requested by**: %s (via Tower Roll back)' "${INITIATOR}")"

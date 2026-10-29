@@ -15,7 +15,9 @@
 # docs/admin/release-guardrails.md) - the single source of truth for every gate enforced
 # on a release PR, so adding/removing a gate there is reflected here automatically without
 # touching this file's own logic. A gate with required: false is advisory: its check is
-# green by construction and a merge past its finding is not a bypass, so it is left out.
+# green by construction and a merge past its finding is not a bypass, so it is left out. A gate advisory for this
+# app only (releaseGuardrailOverridesByApp, _helpers.tpl glidepath-catalog.advisoryGatesByApp) is skipped at
+# runtime for gitops-<that app>: its check stays red, but merging past it is allowed, not a bypass.
 #
 # Always alerts, ignoring notifications.slack.enabled - a security bypass shouldn't be
 # silenceable via a routine preference. Uses the same app-secrets webhook and
@@ -75,6 +77,7 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         source "${PLATFORM_LIB}/github-app.sh"
+        {{- include "glidepath-catalog.advisoryGatesByApp" . | nindent 8 }}
 
         if [[ "${MERGED}" != "true" ]]; then
           echo "PR closed without merging - not a bypass candidate, nothing to check."
@@ -83,6 +86,8 @@ spec:
 
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        # The app, for its per-app advisory gates (catalog releaseGuardrailOverridesByApp): gitops-<app>, else none.
+        app=""; [[ "${repo}" == gitops-* ]] && app="${repo#gitops-}"
         token="$(github_app_installation_token "${owner}" "${repo}")"
 
         pr_json="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
@@ -101,6 +106,9 @@ spec:
         # Check some other tool adds can't cause a false positive/negative.
         failed_checks=""
         for gate in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if .required }}{{ .name }} {{ end }}{{ end }}; do
+          # Advisory for this app only (releaseGuardrailOverridesByApp): its check may be red, and merging past it is
+          # what the admin allowed, not a bypass.
+          if gate_advisory_for_app "${app}" "${gate}"; then continue; fi
           # Trailing "-": see wait-for-release-guardrails.yaml's identical match for why
           # - the real check-run name includes generateName's own trailing dash. Without
           # this every gate reads back "missing" here, which would report BYPASS DETECTED

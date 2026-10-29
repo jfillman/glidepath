@@ -18,7 +18,8 @@ registry of every gate enforced on a release PR - `name`, a human `description`,
 "Required and advisory gates" below). The chart resolves the list once
 (`_helpers.tpl`, `glidepath-catalog.guardrails`: `required` defaulted, a cluster's
 `releaseGuardrailOverrides` applied) and every consumer renders off that instead of
-hardcoding the gate list:
+hardcoding the gate list (a gate advisory for one app only, `releaseGuardrailOverridesByApp`, is
+applied on top at runtime - "One app only" below):
 
 - the gate Pipelines (`sast-check`, `image-scan-check`, `sbom-check`, `qa-check`,
   `values-check`) - whether the hard task renders at all;
@@ -157,6 +158,52 @@ It is not in `cicd.yaml` and not a Tower setting: no app team or release approve
 gate advisory for one release. On GitHub Free a failed check still cannot block a merge
 (GATE-03), so `required: true` makes a bypass detectable (GATE-04), not impossible; re-run the
 ruleset script after changing it so the required status checks match.
+
+### One app only: `releaseGuardrailOverridesByApp` (2026-10-28)
+
+Sometimes one app has a real, known finding that cannot be fixed yet and should not hold its
+releases, while every other app keeps the gate required. The first case: `backstage`'s
+`image-scan` fails on 85 HIGH Debian trixie base-package CVEs that have no fixed package, and with
+promotion on ([registries.md](registries.md)) a red required gate means the release is never
+promoted. The per-app map, in the same cluster catalog values as the per-cluster one:
+
+```yaml
+releaseGuardrailOverridesByApp:
+  backstage:                          # the <app> of gitops-<app>
+    image-scan: { required: false }
+```
+
+**It still runs; it does not hold the release.** This is narrower than the per-cluster form. The
+gate Pipelines pick their hard or advisory variant at render time, once per cluster, so for
+`backstage` `image-scan` still runs as the hard check and posts its real verdict: red stays red
+on the PR, because the findings are real. What changes is everything that decides at runtime,
+for a known app, whether the release may go ahead. Each of these skips a gate that is advisory
+for the app it is looking at:
+
+- the promotion fan-in (`comment-pr-check-result`, `promotion-ready` step): does not wait for it,
+  and still asks for promotion when that gate itself finishes last and red;
+- `promote` PROM-03: does not refuse on it (the promotion attestation's `gates` snapshot leaves it
+  out, as it leaves out every advisory gate);
+- `detect-bypass-merge`: a merge past it is not a bypass;
+- `release-log-emit`: records its real conclusion, but it does not set `bypass`;
+- `wait-for-release-guardrails`: does not wait on it;
+- `open-release-pr`: the PR body's table says "real, advisory for <app>" on that app's PRs;
+- `hack/apply-guardrail-ruleset.sh`: leaves it out of `OWNER/gitops-<app>`'s required status
+  checks (with `-f` for the cluster's values), and keeps it for every other repo.
+
+The app is read from the gitops repository's name (`gitops-<app>`; `open-release-pr` uses its
+`app-name`, which names that repository). A repository not named that way gets no per-app
+exemption.
+
+**Refusals** (the chart render fails, `_helpers.tpl` `glidepath-catalog.advisoryGatesByApp`):
+`sast` and `provenance`, as above; `image-promotion` (the Flight copy is what the release
+deploys); a gate that is not in `releaseGuardrails`; an app key that is not a plain
+`gitops-<app>` name (lowercase letters, digits, dashes); and anything but `required: false` - a
+per-app entry can make a gate advisory for that app, never stricter than its cluster.
+
+Who sets it is the same as for the per-cluster map: a platform admin, in the cluster's catalog
+Application values. It is not in `cicd.yaml` and not a Tower setting. Treat an entry as a dated
+exception with a reason next to it, and remove it once the finding is fixed.
 
 `itsm` is required by default once a change tool is configured; a cluster that wants to ease into
 change management sets it advisory the same way. Today `qa` and `api-compat` ([api-compat.md](api-compat.md)) are the advisory gates; `qa` is report-only while every app gets its check ride

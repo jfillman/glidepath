@@ -3,7 +3,8 @@
 # bash against a fake curl (GitHub + the broker) and kubectl (the release record) and checks when it asks for a
 # promotion: only when every required gate is green on the PR's head commit, counting this gate's own verdict and the
 # gate ledger (two gates finishing together), never twice for one attempt, never for a stale commit, a red gate, a
-# merged PR or a PR without a release file.
+# merged PR or a PR without a release file. With releaseGuardrailOverridesByApp (2026-10-28) a gate advisory for one app
+# (backstage: image-scan) does not hold that app's promotion, red or last, and still holds every other app's.
 # Needs helm, yq (mikefarah v4) and jq.
 # Usage: charts/glidepath-catalog/tests/promotion_fan_in_test.sh
 set -u
@@ -14,12 +15,18 @@ trap 'rm -rf "$work"' EXIT
 SHA=1111111111111111111111111111111111111111
 URL=https://github.com/jfillman/gitops-gate-api/pull/53
 
-helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
-  --set promotion.enabled=true --set promotion.pinDigest=true --set registries.flight.namespace=riley-roooo \
-  --show-only templates/tasks/comment-pr-check-result.yaml > "$work/task.yaml" || exit 1
-yq '.spec.steps[] | select(.name == "promotion-ready") | .script' "$work/task.yaml" \
-  | sed "s#/var/run/secrets/platform/broker-token#$work/broker-token#" > "$work/step.sh"
-[[ -s "$work/step.sh" ]] || { echo "FAIL: no promotion-ready step rendered"; exit 1; }
+render_step() { # <out> [extra helm args...]
+  local out="$1"; shift
+  helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
+    --set promotion.enabled=true --set promotion.pinDigest=true --set registries.flight.namespace=riley-roooo "$@" \
+    --show-only templates/tasks/comment-pr-check-result.yaml > "$work/task.yaml" || exit 1
+  yq '.spec.steps[] | select(.name == "promotion-ready") | .script' "$work/task.yaml" \
+    | sed "s#/var/run/secrets/platform/broker-token#$work/broker-token#" > "$work/$out"
+  [[ -s "$work/$out" ]] || { echo "FAIL: no promotion-ready step rendered ($out)"; exit 1; }
+}
+# Every scenario runs against the per-app render (backstage: image-scan advisory); the gate-api ones are untouched by it.
+render_step step.sh --set-json 'releaseGuardrailOverridesByApp={"backstage":{"image-scan":{"required":false}}}'
+render_step step-noapp.sh
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
   --show-only templates/tasks/comment-pr-check-result.yaml | yq -e '.spec.steps[] | select(.name == "promotion-ready")' >/dev/null 2>&1 \
   && { echo "FAIL: promotion-ready renders with promotion off"; fail=1; }
@@ -80,8 +87,8 @@ scenario() { # <name> [gate]: a promotable release PR whose required gates are g
 run() {
   ( cd "$FX" && PATH="$work/bin:$PATH" PLATFORM_LIB="$work/lib" GATE_WORK="$FX/gate" GITHUB_TOKEN_BROKER_URL=x \
       CDEVENTS_BROKER_URL=http://el-cdevents-broker.platform-system.svc.cluster.local:8080 \
-      REPO_URL=https://github.com/jfillman/gitops-gate-api REVISION="${REV-$SHA}" GATE_NAME="$GATE" \
-      PIPELINE_RUN_NAME="$GATE-x1" NAMESPACE=app-gate-api-cicd bash "$work/step.sh" ) > "$FX/out" 2>&1
+      REPO_URL="https://github.com/jfillman/gitops-${APP:-gate-api}" REVISION="${REV-$SHA}" GATE_NAME="$GATE" \
+      PIPELINE_RUN_NAME="$GATE-x1" NAMESPACE="app-${APP:-gate-api}-cicd" bash "$work/${STEP:-step.sh}" ) > "$FX/out" 2>&1
   echo $? > "$FX/rc"
 }
 events() { [[ -f "$FX/events" ]] && wc -l < "$FX/events" | tr -d ' ' || echo 0; }
@@ -164,5 +171,33 @@ expect "not-release: no event" "$(events)" 0
 scenario no-release-file; echo '[{"filename":"hangar-prod/prod/values.yaml"}]' > "$FX/files.json"; run
 expect "no-release-file: no event" "$(events)" 0
 expect "no-release-file: exit 0" "$(cat "$FX/rc")" 0
+
+# releaseGuardrailOverridesByApp: image-scan is red (the trixie base CVEs) on every scenario below.
+scan_red() { jq '.check_runs |= map(if .name == "Pipelines as Code CI / image-scan-" then .conclusion = "failure" else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"; }
+# backstage, sbom last and green, image-scan red: image-scan is advisory for backstage, so it asks.
+scenario app-advisory; scan_red; APP=backstage run
+expect "app-advisory: one event" "$(events)" 1
+expect "app-advisory: app is backstage" "$(jq -r .subject.content.appName "$FX/events" 2>/dev/null)" backstage
+expect "app-advisory: says why" "$(grep -c 'advisory for backstage (catalog releaseGuardrailOverridesByApp), not waited for: image-scan' "$FX/out")" 1
+# another app with the same red image-scan: still held.
+scenario app-other; scan_red; APP=gate-api run
+expect "app-other: no event" "$(events)" 0
+expect "app-other: says image-scan" "$(grep -c 'image-scan (failure)' "$FX/out")" 1
+# image-scan itself finishing last, red: for backstage it still asks (else an advisory gate that finished last would
+# leave the release unpromoted), and its red verdict is recorded in the ledger as it is.
+scenario app-advisory-last image-scan; echo failure > "$FX/gate/verdict"; APP=backstage run
+expect "app-advisory-last: one event" "$(events)" 1
+expect "app-advisory-last: verdict recorded" "$(jq -r '.data["gate.111111111111.image-scan"]' "$FX/patches")" failure
+scenario app-other-last image-scan; echo failure > "$FX/gate/verdict"; APP=gate-api run
+expect "app-other-last: no event" "$(events)" 0
+# a red required gate still holds backstage: only the listed gate is advisory.
+scenario app-advisory-sbom-red; scan_red
+jq '.items[1].data["gate.111111111111.values"] = "failure"' "$FX/records.json" > "$FX/x" && mv "$FX/x" "$FX/records.json"
+APP=backstage run
+expect "app-advisory-sbom-red: no event" "$(events)" 0
+expect "app-advisory-sbom-red: says values" "$(grep -c 'values (failure)' "$FX/out")" 1
+# without the override (chart default render) backstage is held like any app: the lookup comes from the values.
+scenario app-no-override; scan_red; APP=backstage STEP=step-noapp.sh run
+expect "app-no-override: no event" "$(events)" 0
 
 [[ "${fail}" == 0 ]] && echo "PASS promotion_fan_in_test" || exit 1
