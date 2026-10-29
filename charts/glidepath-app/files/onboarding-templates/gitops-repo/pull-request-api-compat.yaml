@@ -34,6 +34,6 @@ spec:
   timeouts:
     # tasks/finally split - see pull-request-sast.yaml's own header (2026-08-23) for
     # why finally/comment-pr must never share a budget with the real check tasks.
-    tasks: "8m"
+    tasks: "14m"
     finally: "4m"
-    pipeline: "12m"
+    pipeline: "18m"

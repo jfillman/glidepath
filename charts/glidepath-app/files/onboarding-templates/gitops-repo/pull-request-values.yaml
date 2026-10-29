@@ -32,6 +32,6 @@ spec:
   taskRunTemplate:
     serviceAccountName: pipeline-runner
   timeouts:
-    tasks: "6m"
+    tasks: "12m"
     finally: "4m"
-    pipeline: "10m"
+    pipeline: "16m"

@@ -83,6 +83,12 @@ Why it works without a polling pod or a lock:
   release record's `resourceVersion`, so the two writes are serialized and the second sees both verdicts. A verdict in
   the ledger outranks the check run (a `/retest` that went red is red). With no release record (a PR opened by hand)
   the check runs alone decide.
+- **A green run that will end timed out is not green.** Tekton counts `finally` against `timeouts.tasks`
+  ([release-guardrails.md](release-guardrails.md#timeouts-always-split-tasksfinally-never-a-single-pipeline-budget-alone)),
+  so a run whose tasks succeeded can still end `PipelineRunTimeout` with a red check run. The step reads its own
+  PipelineRun: past `startTime + timeouts.tasks` it records a failure; within 60 seconds of it, it records nothing
+  and does not ask (the other gates then read this gate's check run, and `/retest <gate>-` asks again). Before
+  2026-10-29 such a run recorded success and started a promotion that PROM-03 refused (gitops-backstage#159).
 - **Exactly once.** The event id is a hash of repository, PR, head commit and the number of earlier
   `image-promotion-` check runs on it; the PipelineRun is named after it, so two gates that both see the set complete
   start one run. After a refused or failed attempt, the next gate to finish asks again under a new id.
