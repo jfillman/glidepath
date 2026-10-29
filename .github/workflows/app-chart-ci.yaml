@@ -164,7 +164,7 @@ jobs:
           # ephemeral-envs.yaml deliberately emits literal {{.number}}/{{.head_sha}}/etc
           # for ArgoCD's own template engine to evaluate later - see that file's header
           # comment. The onboarding-templates ConfigMaps also carry Pipelines-as-Code's own
-          # variables ({{ repo_url }}, {{ revision }}, {{ body.pull_request.number }}: a space
+          # variables ({{ repo_url }}, {{ revision }}, {{ pull_request_number }}: a space
           # after the braces, a bare lower-case name) because those files are delivered to a
           # repo and evaluated by PaC there. A Helm leak looks different ({{ .Values.x }}, a
           # leading dot), so only the PaC shape is allowed. Anything else is a real bug.
