@@ -371,6 +371,18 @@ githubRead:
   callers:
     - system:serviceaccount:platform-system:glidepath-api
 
+# The broker's /agent-installation-token (agenttoken.go, Autopilot AP-B1, hangar D4): a token for the agents' own GitHub
+# App on one of an app's own repos (the /github-read-token rule), contents and pull_requests write, metadata read; never
+# workflows. callers are the only identities it serves (Clearance's); the App's id and key come from the platform's
+# Infisical project (appIdKey/privateKeyKey) into platform-system and are mounted only into the broker. Off: no secret,
+# and the endpoint answers 503.
+agentToken:
+  enabled: false
+  callers:
+    - system:serviceaccount:autopilot-system:clearance
+  appIdKey: agent-app-id
+  privateKeyKey: agent-app-private-key
+
 # The Flight promoter (ADR-0029 phase 2, docs/admin/registries.md). On, the broker's /promoter-token serves exactly one
 # ServiceAccount (glidepath-catalog's promote pipeline): a dispatch token for the promoter App's workflow repo and a
 # check-run token for gitops-<app> repos. The promoter App's id and key come from the platform's Infisical project
