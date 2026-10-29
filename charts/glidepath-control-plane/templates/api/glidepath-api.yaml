@@ -9,7 +9,8 @@
 #     and what they may do), namespaces get (to find an app's -cicd namespace), release-tracking
 #     ConfigMaps list/get, each app's registry-credentials Secret (get, that name only: evidence
 #     reads it per request to pull the image's attestations from GHCR), and PipelineRuns get, create
-#     and patch (re-run and cancel). Tekton Results is read through tekton-results-relay, so no
+#     and patch (re-run and cancel), TriggerTemplates get (promote and rollback fill the app's own
+#     promote-release / rollback-release template). Tekton Results is read through tekton-results-relay, so no
 #     Results grant. The Fulcio root (fulcio-root-ca in platform-catalog) needs nothing here:
 #     templates/sigstore/fulcio-root-configmap.yaml already lets every ServiceAccount get exactly
 #     that ConfigMap.
@@ -21,6 +22,13 @@
 #     runs.glidepath.hangar.io). Bound cluster-wide to api.operators; an app-scoped grant is a
 #     RoleBinding to it in that app's -cicd namespace, as for the reader. It holds no read: an
 #     operator that should also see runs needs glidepath-api-reader too.
+#   - glidepath-api-releaser: who may PROMOTE and ROLL BACK through the API (verbs promote and rollback on
+#     environments.glidepath.hangar.io, tier T2: both only start the app's release Pipeline, whose PR a
+#     human merges). Bound cluster-wide to api.releasers; app-scoped as for the others. No read.
+#
+# glidepath-api holds no GitHub credential: promote and rollback ask the broker's /github-read-token
+# (templates/broker/interceptor.yaml, githubRead.callers) for a read-only token on one of the app's own
+# repos, per request, authenticated with the projected token mounted below (audience github-read-token).
 {{- if .Values.apiImage }}
 apiVersion: v1
 kind: ServiceAccount
@@ -67,6 +75,11 @@ rules:
   - apiGroups: ["tekton.dev"]
     resources: ["pipelineruns"]
     verbs: ["get", "create", "patch"]
+  # Promote and rollback read the app's promote-release / rollback-release TriggerTemplate (glidepath-app) and
+  # create the PipelineRun it describes, under the same shape policy.
+  - apiGroups: ["triggers.tekton.dev"]
+    resources: ["triggertemplates"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -90,7 +103,7 @@ metadata:
     hangar.io/subcomponent: "glidepath-api"
 rules:
   - apiGroups: ["glidepath.hangar.io"]
-    resources: ["runs", "runs/logs", "releases", "evidence", "tests"]
+    resources: ["runs", "runs/logs", "releases", "evidence", "tests", "environments"]
     verbs: ["get", "list"]
 {{- $readers := .Values.api.readers | default dict }}
 {{- if or $readers.users $readers.groups $readers.serviceAccounts }}
@@ -149,6 +162,40 @@ subjects:
   {{- end }}
 {{- end }}
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: glidepath-api-releaser
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+rules:
+  - apiGroups: ["glidepath.hangar.io"]
+    resources: ["environments"]
+    verbs: ["promote", "rollback"]
+{{- $releasers := .Values.api.releasers | default dict }}
+{{- if or $releasers.users $releasers.groups $releasers.serviceAccounts }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: glidepath-api-releaser
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: glidepath-api-releaser }
+subjects:
+  {{- range $releasers.users }}
+  - { apiGroup: rbac.authorization.k8s.io, kind: User, name: {{ . | quote }} }
+  {{- end }}
+  {{- range $releasers.groups }}
+  - { apiGroup: rbac.authorization.k8s.io, kind: Group, name: {{ . | quote }} }
+  {{- end }}
+  {{- range $releasers.serviceAccounts }}
+  - { kind: ServiceAccount, name: {{ .name | quote }}, namespace: {{ .namespace | quote }} }
+  {{- end }}
+{{- end }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -180,6 +227,13 @@ spec:
               value: {{ join "," (.Values.api.delegates | default list) | quote }}
             - name: PROMOTER_REPO
               value: {{ .Values.api.promoterRepo | default .Values.promoter.dispatchRepo | quote }}
+            # Promote and rollback: the apps' GitHub owner, and the broker that mints per-request read tokens.
+            - name: GITHUB_OWNER
+              value: {{ include "glidepath-control-plane.githubOwner" . | quote }}
+            - name: BROKER_URL
+              value: {{ .Values.api.brokerUrl | default "http://cdevents-broker-auth.platform-system.svc.cluster.local:8080" | quote }}
+            - name: BROKER_TOKEN_PATH
+              value: /var/run/secrets/glidepath/broker/token
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 256Mi }
@@ -191,6 +245,20 @@ spec:
             httpGet: { path: /readyz, port: http }
           livenessProbe:
             httpGet: { path: /healthz, port: http }
+          volumeMounts:
+            - name: broker-token
+              mountPath: /var/run/secrets/glidepath/broker
+              readOnly: true
+      volumes:
+        # Only the broker's /github-read-token accepts this audience; the kubelet rotates it, and the API reads it
+        # from disk on every mint.
+        - name: broker-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: github-read-token
+                  expirationSeconds: 3600
+                  path: token
 ---
 apiVersion: v1
 kind: Service

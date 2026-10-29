@@ -107,6 +107,23 @@ second endpoint, `/github-installation-token`, that:
 
 `catalog/lib/github-app.sh` wraps this call for `open-release-pr.yaml`.
 
+### The GitHub read token
+
+glidepath-api's promote and rollback ([api.md](api.md#promote-and-roll-back)) read GitHub the way Tower's do: the
+app's `cicd.yaml`, a source environment's release file, a commit, and the open release PR. The API holds no GitHub
+credential, so the same broker has another endpoint, `POST /github-read-token` (`githubread.go`):
+
+| | |
+|---|---|
+| Caller | `Authorization: Bearer <projected SA token>`, audience `github-read-token`, checked by TokenReview. Only the usernames in `githubRead.callers` (env `GITHUB_READ_CALLERS`; default `system:serviceaccount:platform-system:glidepath-api`). Anyone else is 403, and an empty list 503. An app pipeline is not on it: it has `/github-installation-token`. |
+| Body | `{"owner": "<owner>", "repo": "<repo>", "app": "<app>"}` |
+| Repo rule | `repo` must be `<app>`, `gitops-<app>` or `gitops-infra-<app>`, and a PaC Repository CR in `app-<app>-cicd` or `infra-<app>-cicd` must map to it (the same name rule as `/github-installation-token`) with a `spec.url` under `owner`. Otherwise 403. |
+| Token | An installation token with `repositories: [<repo>]` and `permissions: {contents: read, pull_requests: read, metadata: read}` (`githubapp.MintRepoReadToken`). It cannot push, open, comment on or merge a PR, or reach another repo. |
+| Answer | `200 {"token": "...", "expiresAt": "..."}`, or `{"error": "..."}` with 400, 401, 403, 502 or 503. The log line names the caller, repo and app, never the token. |
+
+glidepath-api mints one per repo per request and drops it with the request (never cached, logged or returned), the
+same never-persisted shape as the per-request registry credential its evidence reads use.
+
 ### Resilience to transient GitHub errors (2026-09-03)
 
 A GitHub API 503 during `gitops-image-bump` surfaced two gaps, both now fixed across

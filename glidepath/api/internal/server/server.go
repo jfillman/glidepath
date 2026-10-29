@@ -19,6 +19,7 @@ import (
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
+	"github.com/glidepath/api/internal/environments"
 	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
 	"github.com/glidepath/api/internal/pipelineruns"
@@ -36,6 +37,7 @@ type Server struct {
 	Evidence *evidence.Reader
 	Tests    *testkube.Client
 	Runs     *pipelineruns.Client
+	Envs     *environments.Client
 	Contract []byte
 	Known    []explain.KnownFailure // the contract's knownFailures, compiled (explain.Load)
 	Version  int                    // the contract's contractVersion
@@ -72,6 +74,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/apps/{app}/tests/{id}/report", s.wrap(op{"getTestReport", "T0", "tests", "", "get"}, s.getTestReport))
 	mux.Handle("POST /v1/apps/{app}/pipelineruns/{name}/rerun", s.wrap(op{"rerunRun", "T1", "runs", "", "rerun"}, s.rerunRun))
 	mux.Handle("POST /v1/apps/{app}/pipelineruns/{name}/cancel", s.wrap(op{"cancelRun", "T1", "runs", "", "cancel"}, s.cancelRun))
+	mux.Handle("GET /v1/apps/{app}/environments", s.wrap(op{"listEnvironments", "T0", "environments", "", "list"}, s.listEnvironments))
+	mux.Handle("GET /v1/apps/{app}/environments/{env}/rollback-plan", s.wrap(op{"getRollbackPlan", "T0", "environments", "", "get"}, s.getRollbackPlan))
+	mux.Handle("POST /v1/apps/{app}/environments/{env}/promote", s.wrap(op{"promoteEnvironment", "T2", "environments", "", "promote"}, s.promoteEnvironment))
+	mux.Handle("POST /v1/apps/{app}/environments/{env}/rollback", s.wrap(op{"rollbackEnvironment", "T2", "environments", "", "rollback"}, s.rollbackEnvironment))
 	return mux
 }
 
@@ -109,8 +115,14 @@ func classify(err error) (int, apiError) {
 		prInv  pipelineruns.Invalid
 		prConf pipelineruns.Conflict
 		prRef  pipelineruns.Refused
+		envInv environments.Invalid
+		envRef environments.Refused
 	)
 	switch {
+	case errors.As(err, &envInv):
+		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
+	case errors.As(err, &envRef):
+		return http.StatusUnprocessableEntity, apiError{err.Error(), "GP-API-422", envRef.Hint}
 	case errors.As(err, &noLog):
 		return http.StatusNotFound, apiError{err.Error(), "GP-LOG-404", "the run exists; Results stored no log for this TaskRun (docs/admin/tekton-results.md)"}
 	case errors.As(err, &appNF):
@@ -125,7 +137,7 @@ func classify(err error) (int, apiError) {
 		return http.StatusUnprocessableEntity, apiError{err.Error(), "GP-API-422",
 			"an admission policy (tower-pipelinerun-shape) or glidepath-api's own RBAC refused it; retrying won't help"}
 	}
-	return http.StatusBadGateway, apiError{err.Error(), "GP-API-502", "a source Glidepath reads (the API server, Tekton Results, GHCR, Rekor or Testkube) failed; retry"}
+	return http.StatusBadGateway, apiError{err.Error(), "GP-API-502", "a source Glidepath reads (the API server, Tekton Results, GHCR, Rekor, Testkube, GitHub or the token broker) failed; retry"}
 }
 
 type recorder struct {

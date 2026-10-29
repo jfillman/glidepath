@@ -124,6 +124,9 @@ spec:
             # Where /policy-bundle reads each target cluster's admission policies (policybundle.go, ADR-0028).
             - name: POLICY_SOURCES
               value: {{ .Values.policyValidation | toJson | quote }}
+            # /github-read-token (githubread.go): the ServiceAccounts it mints read-only app-repo tokens for (glidepath-api).
+            - name: GITHUB_READ_CALLERS
+              value: {{ join "," (.Values.githubRead.callers | default list) | quote }}
             {{- if .Values.promoter.enabled }}
             # /promoter-token (promoter.go, ADR-0029): the one ServiceAccount it serves and the promote workflow's repo.
             - name: PROMOTER_CALLER

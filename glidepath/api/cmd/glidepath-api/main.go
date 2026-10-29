@@ -4,8 +4,9 @@
 // release records from the app's -cicd namespace, an image's signatures and attestations from GHCR
 // re-verified against the cluster's Fulcio root and Rekor, test runs from Testkube, and the
 // contract. Phase 3's first writes (tier T1) re-run and cancel a PipelineRun in the app's namespace.
-// Every call is authenticated with the cluster's TokenReview and authorized with a
-// SubjectAccessReview in the app's namespace.
+// Phase 4's (tier T2, propose) promote to a Flight environment and roll one back, by starting the
+// app's own release Pipeline, whose PR a human merges. Every call is authenticated with the
+// cluster's TokenReview and authorized with a SubjectAccessReview in the app's namespace.
 //
 // Results is read through glidepath's own tekton-results-relay (charts/glidepath-control-plane),
 // the hop Tower already uses: the relay holds the Results read grant, and this service decides who
@@ -19,6 +20,10 @@
 //	REKOR_URL           Rekor, for evidence (default http://rekor-server.rekor-system.svc.cluster.local)
 //	TESTKUBE_URL        Testkube's agent API (default http://testkube-api-server.testkube.svc.cluster.local:8088)
 //	DELEGATES           comma-separated usernames that may send X-Glidepath-On-Behalf-Of
+//	GITHUB_OWNER        the GitHub owner of the apps' repos, for promote and rollback (the chart's githubOwner)
+//	BROKER_URL          the token broker, for per-request GitHub read tokens (default http://cdevents-broker-auth.platform-system.svc.cluster.local:8080)
+//	BROKER_TOKEN_PATH   this pod's projected ServiceAccount token for the broker, audience github-read-token
+//	                    (default /var/run/secrets/glidepath/broker/token)
 package main
 
 import (
@@ -34,8 +39,10 @@ import (
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
+	"github.com/glidepath/api/internal/environments"
 	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
+	"github.com/glidepath/api/internal/github"
 	"github.com/glidepath/api/internal/pipelineruns"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
@@ -87,6 +94,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("glidepath-api: %v", err)
 	}
+	// The GitHub owner of every app's repos (the chart's githubOwner). Unset: promote and rollback fail at their
+	// first GitHub read; nothing else needs it.
+	githubOwner := os.Getenv("GITHUB_OWNER")
+	broker := &github.Broker{
+		URL:       env("BROKER_URL", "http://cdevents-broker-auth.platform-system.svc.cluster.local:8080"),
+		TokenPath: env("BROKER_TOKEN_PATH", "/var/run/secrets/glidepath/broker/token"),
+		HTTP:      &http.Client{Timeout: 30 * time.Second},
+	}
 	logger := server.NewLogger()
 	s := &server.Server{
 		Auth: &auth.Auth{Reviewer: auth.NewKubeReviewer(cs), Delegates: delegates},
@@ -113,7 +128,18 @@ func main() {
 			HTTP: &http.Client{Timeout: 30 * time.Second},
 			Log:  logger,
 		},
-		Runs:     &pipelineruns.Client{Store: pipelineruns.NewKubeStore(dyn)},
+		Runs: &pipelineruns.Client{Store: pipelineruns.NewKubeStore(dyn)},
+		// Promote and rollback read GitHub with a token the broker mints per request and per repo (read only, that
+		// one repo), and start the app's release Pipeline from its own TriggerTemplate.
+		Envs: &environments.Client{
+			Owner: githubOwner,
+			GitHub: func(app string) environments.GitHub {
+				return broker.Session(app)
+			},
+			Templates: environments.NewKubeTemplates(dyn),
+			Runs:      pipelineruns.NewKubeStore(dyn),
+			Records:   releases.Reader{CS: cs},
+		},
 		Contract: contract,
 		Known:    known,
 		Version:  version,
