@@ -13,10 +13,12 @@ Glidepath is Hangar's CI/CD engine: Tekton and Pipelines-as-Code, driven by one 
    [docs/user/examples/](docs/user/examples/): every field explained, and complete files.
 5. The Glidepath API, `api/openapi.yaml` ([docs/admin/api.md](docs/admin/api.md)): an app's runs, step logs,
    why a run failed (`explain`: a knownFailures id, its hint and the field to change), release records, an
-   image's signatures and attestations re-verified (`evidence`), and test runs with their JUnit reports. Its only
-   writes are re-run and cancel a PipelineRun (tier T1; re-run needs an `Idempotency-Key`, both take
-   `?dryRun=true`). *(planned)* previews and `cicd.yaml` pull requests (phase 3), promotion and rollback
-   (phase 4).
+   image's signatures and attestations re-verified (`evidence`), and test runs with their JUnit reports. Its
+   writes: re-run and cancel a PipelineRun (tier T1), and propose a promotion to, or a rollback of, a Flight
+   environment (tier T2: it starts the app's release Pipeline, whose gitops PR a human merges; you cannot merge
+   it). Re-run, promote and rollback need an `Idempotency-Key`; all take `?dryRun=true`. Read
+   `GET /v1/apps/{app}/environments` (the order) and `.../environments/{env}/rollback-plan` (eligible targets)
+   first. *(planned)* previews and `cicd.yaml` pull requests (phase 3).
 
 ## Changing an app's cicd.yaml
 - Open a pull request. Never push to a default branch.

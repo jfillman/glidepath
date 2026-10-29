@@ -17,6 +17,9 @@
 // every Application namespace would let one compromised Task mint tokens for every
 // other Application's repos. cmd/glidepath-relay shares the same githubapp client
 // for a different reason (see its own header).
+//
+// And /github-read-token (githubread.go): a read-only token on one app's own repo, for glidepath-api's promote and
+// rollback, which read GitHub the way Tower's do and hold no credential of their own.
 package main
 
 import (
@@ -115,6 +118,7 @@ func main() {
 	mux.HandleFunc("/github-installation-token", handleGitHubInstallationToken(clientset, dynClient, appCreds))
 	mux.HandleFunc("/policy-bundle", handlePolicyBundle(clientset, dynClient, appCreds, policySrc))
 	mux.HandleFunc("/promoter-token", handlePromoterToken(clientset, appCreds, loadPromoter()))
+	mux.HandleFunc("/github-read-token", handleGitHubReadToken(clientset, dynClient, appCreds, loadGitHubReadCallers()))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	log.Println("cdevents-broker-auth interceptor listening on :8080 (plain HTTP - see comment above)")

@@ -76,6 +76,15 @@ api:
     users: []
     groups: []
     serviceAccounts: [] # [{name, namespace}]
+  # Who may promote to a Flight environment and roll one back through the API (glidepath-api-releaser, verbs promote
+  # and rollback on environments, tier T2), cluster-wide. Both only start the app's release Pipeline; its PR is merged
+  # by a human. Per cluster; empty binds nobody. A delegate (Tower) listed here must send X-Glidepath-On-Behalf-Of.
+  releasers:
+    users: []
+    groups: []
+    serviceAccounts: [] # [{name, namespace}]
+  # The broker glidepath-api asks for per-request GitHub read tokens (githubRead below). Empty: the in-cluster Service.
+  brokerUrl: ""
   # The Flight promoter repository (<owner>/<repo>) whose promote.yaml on main signs promotion attestations: the
   # only identity a promotion attestation in /evidence verifies with (public Sigstore). Empty: promoter.dispatchRepo;
   # both empty: promotion attestations show, never verified.
@@ -348,6 +357,13 @@ itsm:
     # token (a bearer), or username and password (basic). Keep only the keys the tool uses: a key missing from
     # Infisical fails the whole ExternalSecret.
     keys: [token]
+
+# The broker's /github-read-token (docs/admin/release.md): a read-only token (contents, pull_requests, metadata) on one
+# of an app's own repos, minted per request. callers are the only identities it serves, as TokenReview names them;
+# empty: it answers 503. glidepath-api's promote and rollback need it.
+githubRead:
+  callers:
+    - system:serviceaccount:platform-system:glidepath-api
 
 # The Flight promoter (ADR-0029 phase 2, docs/admin/registries.md). On, the broker's /promoter-token serves exactly one
 # ServiceAccount (glidepath-catalog's promote pipeline): a dispatch token for the promoter App's workflow repo and a

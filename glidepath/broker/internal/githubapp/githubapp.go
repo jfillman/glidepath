@@ -28,10 +28,17 @@ import (
 	"time"
 )
 
-const (
-	appCredsDir   = "/etc/github-app"
-	githubAPIBase = "https://api.github.com"
-)
+const appCredsDir = "/etc/github-app"
+
+// githubAPIBase is a var only so tests can point it at a stub (SetAPIBaseForTest).
+var githubAPIBase = "https://api.github.com"
+
+// SetAPIBaseForTest points every call at base (an httptest server) and returns a func that restores it.
+func SetAPIBaseForTest(base string) func() {
+	old := githubAPIBase
+	githubAPIBase = base
+	return func() { githubAPIBase = old }
+}
 
 type Creds struct {
 	appID      string
@@ -156,6 +163,19 @@ func MintReadOnlyToken(appJWT string, installationID int64, repo string) (token 
 		"repositories": []string{repo},
 		"permissions":  map[string]string{"contents": "read"},
 	})
+}
+
+// RepoReadPermissions are the only permissions MintRepoReadToken asks for: a repo's files and commits (contents), its
+// pull requests, and its metadata, all read. Nothing that writes.
+func RepoReadPermissions() map[string]string {
+	return map[string]string{"contents": "read", "pull_requests": "read", "metadata": "read"}
+}
+
+// MintRepoReadToken is MintInstallationToken narrowed to RepoReadPermissions: for /github-read-token, which hands the
+// token to glidepath-api for one request's reads (cicd.yaml, an environment's release file, a commit, the open release
+// PR). GitHub caps the permissions at what the App holds; it never widens them.
+func MintRepoReadToken(appJWT string, installationID int64, repo string) (token string, expiresAt string, err error) {
+	return MintScopedToken(appJWT, installationID, repo, RepoReadPermissions())
 }
 
 // MintScopedToken is MintInstallationToken narrowed to the given permissions (GitHub caps them at what the App

@@ -54,6 +54,23 @@ func (r Reader) List(ctx context.Context, namespace, app string) ([]Record, erro
 	return out, nil
 }
 
+// ListEnv returns the app's records for one environment and cluster: the query Tower's glidepathRollback.ts
+// readRecords makes (labels hangar.io/env and hangar.io/cluster). env and cluster must be valid label values; the
+// caller checks.
+func (r Reader) ListEnv(ctx context.Context, namespace, app, env, cluster string) ([]Record, error) {
+	list, err := r.CS.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "hangar.io/subcomponent=release-tracking,hangar.io/app=" + app + ",hangar.io/env=" + env + ",hangar.io/cluster=" + cluster,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := []Record{}
+	for _, cm := range list.Items {
+		out = append(out, Record{Name: cm.Name, Data: data(cm.Data)})
+	}
+	return out, nil
+}
+
 // Get returns the record for one chain id.
 func (r Reader) Get(ctx context.Context, namespace, app, chain string) (*Record, error) {
 	if !chainID.MatchString(chain) {

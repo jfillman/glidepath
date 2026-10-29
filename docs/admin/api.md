@@ -2,31 +2,40 @@
 
 `glidepath-api` answers questions about an app's CI/CD for people, Tower and agents: its runs,
 their logs, why a run failed, its release records, the supply-chain evidence on its images, its test
-runs, and Glidepath's [contract](contract.md); and it can [re-run and cancel](#writes) an app's
-PipelineRuns. Phases 1 and 2 of the [Glidepath API spec](https://hangarplatform.dev/library/glidepath-api/)
-are the reads (tier T0). Phase 3 has started with its first writes (tier T1): re-run and cancel. Previews
-and `cicd.yaml` pull requests are still to come in phase 3, promotion and rollback in phase 4. Nothing
-else is written.
+runs, and Glidepath's [contract](contract.md); it can [re-run and cancel](#writes) an app's
+PipelineRuns; and it can [propose a promotion or a rollback](#promote-and-roll-back) of a Flight environment.
+Phases 1 and 2 of the [Glidepath API spec](https://hangarplatform.dev/library/glidepath-api/) are the reads
+(tier T0). Phase 3's first writes (tier T1) are re-run and cancel; previews and `cicd.yaml` pull requests are
+still to come. Phase 4 (tier T2, propose) is promote and roll back: each only starts the app's own `release`
+Pipeline, whose gitops PR a human merges. Nothing else is written.
+
+**Not offered, by design:** promoting to a Ground environment and cloud pins. Both are a commit to a repo
+(Tower's Ground promote commits straight to the app repo's release file; a pin opens a PR itself), so both
+need a GitHub write identity, and the API holds none. They stay in Tower.
 
 The operations are [`api/openapi.yaml`](../../api/openapi.yaml). The contract lists every
 operation with its tier, and [`tools/test_glidepath_validate.py`](../../tools/test_glidepath_validate.py)
 fails if the server's routes and the spec ever differ.
 
-| Call | Needs | Returns |
-|---|---|---|
-| `GET /v1/whoami` | a token | Who the API thinks you are |
-| `GET /v1/contract` | a token | `contract/glidepath-contract.json` |
-| `GET /v1/apps/{app}/runs?sinceHours=&limit=&view=` | `list runs` | Runs newest first; `view=full` adds each PipelineRun and TaskRuns |
-| `GET /v1/apps/{app}/runs/{result}` | `get runs` | One run (the id is the PipelineRun's uid) |
-| `GET /v1/apps/{app}/runs/{result}/logs/{taskRun}` | `get runs/logs` | One TaskRun's step logs, as text |
-| `GET /v1/apps/{app}/runs/{result}/explain` | `get runs/logs` | Each failed TaskRun's failing step, its [known failure](#explain) id, hint and field, and the line that matched |
-| `GET /v1/apps/{app}/releases` | `list releases` | Every `release-tracking-*` record of the app |
-| `GET /v1/apps/{app}/releases/{chainId}` | `get releases` | One record |
-| `GET /v1/apps/{app}/evidence?image=` | `get evidence` | Every signature and attestation on the image, each [re-verified](#evidence) |
-| `GET /v1/apps/{app}/tests?limit=` | `list tests` | The app's [test runs](#tests) from Testkube, newest first |
-| `GET /v1/apps/{app}/tests/{id}/report` | `get tests` | A run's JUnit report, as XML |
-| `POST /v1/apps/{app}/pipelineruns/{name}/rerun` | `rerun runs` | [Re-run](#re-run) a PipelineRun, once per `Idempotency-Key` |
-| `POST /v1/apps/{app}/pipelineruns/{name}/cancel` | `cancel runs` | [Cancel](#cancel) a PipelineRun, or say it already finished |
+| Call | Tier | Needs | Returns |
+|---|---|---|---|
+| `GET /v1/whoami` | T0 | a token | Who the API thinks you are |
+| `GET /v1/contract` | T0 | a token | `contract/glidepath-contract.json` |
+| `GET /v1/apps/{app}/runs?sinceHours=&limit=&view=` | T0 | `list runs` | Runs newest first; `view=full` adds each PipelineRun and TaskRuns |
+| `GET /v1/apps/{app}/runs/{result}` | T0 | `get runs` | One run (the id is the PipelineRun's uid) |
+| `GET /v1/apps/{app}/runs/{result}/logs/{taskRun}` | T0 | `get runs/logs` | One TaskRun's step logs, as text |
+| `GET /v1/apps/{app}/runs/{result}/explain` | T0 | `get runs/logs` | Each failed TaskRun's failing step, its [known failure](#explain) id, hint and field, and the line that matched |
+| `GET /v1/apps/{app}/releases` | T0 | `list releases` | Every `release-tracking-*` record of the app |
+| `GET /v1/apps/{app}/releases/{chainId}` | T0 | `get releases` | One record |
+| `GET /v1/apps/{app}/evidence?image=` | T0 | `get evidence` | Every signature and attestation on the image, each [re-verified](#evidence) |
+| `GET /v1/apps/{app}/tests?limit=` | T0 | `list tests` | The app's [test runs](#tests) from Testkube, newest first |
+| `GET /v1/apps/{app}/tests/{id}/report` | T0 | `get tests` | A run's JUnit report, as XML |
+| `POST /v1/apps/{app}/pipelineruns/{name}/rerun` | T1 | `rerun runs` | [Re-run](#re-run) a PipelineRun, once per `Idempotency-Key` |
+| `POST /v1/apps/{app}/pipelineruns/{name}/cancel` | T1 | `cancel runs` | [Cancel](#cancel) a PipelineRun, or say it already finished |
+| `GET /v1/apps/{app}/environments` | T0 | `list environments` | The app's [release plan](#release-plan): environments, tiers, promotion order |
+| `GET /v1/apps/{app}/environments/{env}/rollback-plan?cluster=` | T0 | `get environments` | The environment's current release and its eligible [rollback targets](#rollback-plan) |
+| `POST /v1/apps/{app}/environments/{env}/promote` | T2 | `promote environments` | [Promote](#promote) to a Flight environment: start the release run, once per `Idempotency-Key` |
+| `POST /v1/apps/{app}/environments/{env}/rollback` | T2 | `rollback environments` | [Roll back](#roll-back) a Flight environment to a plan target, once per `Idempotency-Key` |
 
 Runs come from Tekton Results, so they cover 30 days and never go back past the creation of the
 app's current `-cicd` namespace (an app deleted and recreated under the same name doesn't inherit
@@ -84,8 +93,8 @@ in-cluster ServiceAccount, or a federated identity from another cluster (Tower's
 the prod cluster arrive as `hangar:<cluster>:<serviceaccount>`).
 
 **What you may read** is a SubjectAccessReview in the app's `-cicd` namespace, on a group nothing
-serves: `glidepath.hangar.io`, resources `runs`, `runs/logs`, `releases`, `evidence` and `tests`. RBAC only needs the
-strings, so access is ordinary RBAC:
+serves: `glidepath.hangar.io`, resources `runs`, `runs/logs`, `releases`, `evidence`, `tests` and `environments`. RBAC
+only needs the strings, so access is ordinary RBAC:
 
 - `api.readers` binds the chart's `glidepath-api-reader` ClusterRole cluster-wide (users, groups,
   ServiceAccounts). Empty by default: a fresh install grants nobody.
@@ -102,7 +111,7 @@ the audit line. A delegate's write must name the person ([who may write](#who-ma
 
 ## Writes
 
-Two writes, both on a live PipelineRun in the app's `-cicd` namespace. The namespace always comes from
+The T1 writes, both on a live PipelineRun in the app's `-cicd` namespace. The namespace always comes from
 the app in the path (the same resolver the reads use), never from the request. They replace Tower's
 own Re-run and Cancel (backstage `packages/backend/src/tektonActions.ts`) and build the same objects.
 
@@ -204,6 +213,146 @@ inline spec, no PaC annotations, and an update may change only `spec.status`) mu
 `GP-API-422` and is not worth retrying. That policy today admits only `app-` namespaces; an
 InfraService's `infra-<name>-cicd` run is refused for Tower and would be for the API until it allows
 them.
+
+## Promote and roll back
+
+Tier T2, propose. Both writes do one thing in the cluster: create the app's `release` PipelineRun from the
+TriggerTemplate glidepath-app renders into its `-cicd` namespace (`promote-release` or `rollback-release`), the
+run Tower's Promote and Roll back start today. That pipeline's gates run, its `open-release-pr` opens the gitops PR
+with the platform's GitHub App and writes the release record, and **a human merges the PR**. The API cannot merge,
+push, or open a PR: its GitHub token reads only ([below](#the-github-read-token)). So an agent can propose a
+staging promotion and watch the release record reach `healthy` after a person merges it, and has no way to merge
+it itself.
+
+They port Tower's (backstage `packages/backend/src/glidepathPromote.ts`, `glidepathReleaseRun.ts`,
+`glidepathRollback.ts`, `releasePlan.ts`) so Tower can shadow-compare its answers, with three differences: a
+Ground target is refused, the run's name comes from the `Idempotency-Key`, and a rollback does not wait for its PR.
+
+### Release plan
+
+`GET /v1/apps/{app}/environments` is Tower's `fetchReleasePlan`: the app's `cicd.yaml` read from GitHub (the
+source repo's, or an InfraService's `gitops-infra-<name>`), and the same JSON:
+
+```json
+{"order": ["dev", "staging", "prod"], "orderSource": "promotionOrder", "lower": ["dev"],
+ "upper": [{"name": "staging", "cluster": "hangar-prod"}, {"name": "prod", "cluster": "hangar-prod", "production": true}]}
+```
+
+`order` is `deploy.environments` in order when every entry is Ground or Flight (`promotionOrder`); otherwise the
+order of the deploy/release steps of whichever pipeline has the most of them, the first-defined winning a tie
+(`pipeline-steps`). `lower` is Ground, `upper` Flight. `releaseFile` appears when `deploy.releaseFile` is set. An
+app with no `cicd.yaml` yet gets an empty plan, not an error. A `cicd.yaml` with a duplicate key is refused.
+
+### Rollback plan
+
+`GET /v1/apps/{app}/environments/{env}/rollback-plan?cluster=<cluster>` is Tower's `fetchRollbackPlan`, byte for
+byte: from the release records labelled with this app, environment and cluster, `current` is the newest that ran
+(states progressing, healthy, aborted, degraded, sync-failed; by `prCreatedAt`), and `targets` the newest five that
+reached `healthy` (by `healthyAt`), less records written before ADR-0021 phase 4, the current release, its image,
+and repeats of an image, newest first. This is the window the release gates check.
+
+```json
+{"current": {"releaseId": "rel-3", "image": "ghcr.io/o/shop:1.2.0-3333333", "state": "healthy", "stateAt": "..."},
+ "targets": [{"releaseId": "rel-2", "image": "ghcr.io/o/shop:1.1.0-2222222", "gitRevision": "2222222...",
+              "gitUrl": "https://github.com/o/shop", "healthyAt": "...", "state": "superseded"}]}
+```
+
+`current` is absent when nothing has run there, and a field the record lacks is absent, as in Tower's.
+
+### Promote
+
+`POST /v1/apps/{app}/environments/{env}/promote` with an `Idempotency-Key` and the body Tower's `/promote` takes,
+less what the path says:
+
+```json
+{"cluster": "hangar-prod", "sourceEnv": "dev", "sourceCluster": "hangar-dev"}
+{"cluster": "hangar-prod", "sourceImageRepo": "ghcr.io/o/shop", "sourceImageTag": "1.0.0-abc1234"}
+```
+
+Exactly one source pair, as Tower requires (`GP-API-400` otherwise). Then, in Tower's order:
+
+1. **Order.** The target must be the environment immediately after `sourceEnv` in the release plan (compared
+   case-insensitively), or for a first deploy (the image pair) the app's first environment. Anything else is
+   `GP-API-422`: one stage at a time.
+2. **Flight only.** A Ground target is `GP-API-422`. Tower promotes to Ground with a direct commit to the app repo's
+   `glidepath/envs/<env>.release.yaml`, authored as the deploy bot, which needs a GitHub write identity the API does
+   not hold.
+3. **Source**, resolved server-side exactly as Tower's `resolveSource` does, never from what the client or the
+   cluster says is running. A Ground source: `glidepath/envs/<env>.release.yaml`'s `release.image`, then
+   `glidepath/envs/<env>.yaml`'s `release.image`, then its `rollout.image`, from the app repo; the commit is the
+   tag's trailing sha expanded against the app repo. A Flight source: `<cluster>/<env>/release.yaml` in
+   `gitops-<app>`, then `values.yaml`, each `release.image` falling back to `rollout.image`; the commit is
+   `releaseTracking.gitRevision` when the file still has one, else the tag's sha. A first deploy uses the client's
+   image only once its tag's sha resolves to a real commit of the app repo. Nothing recorded is `GP-API-422`; a
+   file with invalid YAML (a duplicate key) is an error naming the file.
+4. **Dedupe.** If the PR from `release-<env>-<sha8>` (the branch `open-release-pr` uses) is open in `gitops-<app>`,
+   the answer is that PR and nothing starts: `200 {"mode": "pr", "prUrl": "...", "alreadyOpen": true}`.
+5. **Start.** The `promote-release` template's PipelineRun with Tower's params (`env`, `cluster`, `git-url`,
+   `git-revision`, `image-ref`, `initiator`), created in the app's namespace:
+   `201 {"mode": "pipeline", "pipelineRun": "promote-staging-abc1234d-3f9a1c"}`.
+
+`initiator` is the person (`X-Glidepath-On-Behalf-Of`) when a delegate calls, else the caller's username. It lands
+in the run's `hangar.io/initiator` annotation and the release PR, as Tower's does.
+
+### Roll back
+
+`POST /v1/apps/{app}/environments/{env}/rollback` with an `Idempotency-Key` and
+`{"cluster": "...", "targetReleaseId": "...", "reason": "..."}` (`reason` required, trimmed, at most 1024
+characters). Tower's `startRollback`: the rollback plan is computed for the environment and cluster; nothing
+released there yet, or a `targetReleaseId` that is not one of its `targets`, is `GP-API-422`. If the PR from
+`release-rollback-<env>-<sha8>` is open, the answer is it. Otherwise the `rollback-release` template's PipelineRun
+starts with `rollback-of` the current release's id, `rollback-reason`, and `config-revision: main`:
+
+```json
+{"alreadyOpen": false, "pipelineRun": "rollback-prod-2222222b-7c01d2", "target": {...}, "replaces": "rel-3"}
+```
+
+Tower held its request up to 90 s for the run's PR; the API answers as soon as the run exists, and the PR
+appears where Tower's release tracker already follows the run (`GET /release-run` accepts these names).
+
+### Idempotency and dry run
+
+As for a re-run: the run's name is `<promote|rollback>-<env>-<sha8>-` (Tower's `runName`) plus the first 6 hex
+characters of `sha256(app + "/" + op + "/" + env + "/" + cluster + "/" + key)` in place of Tower's 3 random
+bytes, cut at 63 characters, and the run carries `glidepath.hangar.io/idempotency-key-sha256` with the full hash.
+The same key again hits AlreadyExists and answers `200` with `"replayed": true`; a name held by anything else is
+`GP-API-409`. A retry after the PR opened answers the PR. `replayed` and `dryRun` are absent unless true, so the rest
+of the answer compares field for field with Tower's `PromoteResult` and `RollbackResult`.
+
+`?dryRun=true` or `X-Glidepath-Dry-Run: true` does every read and check, then the create as a server-side dry run
+(admission, including `tower-pipelinerun-shape`, runs; nothing is stored), and answers `200` with the run as
+`object`.
+
+### The GitHub read token
+
+The plan, the source and the dedupe read GitHub, and glidepath-api has no GitHub credential. For each request it
+asks the broker (`cdevents-broker-auth`, `POST /github-read-token`, [release.md](release.md#the-github-read-token))
+for a token, once per repo the request reads, authenticating with its own projected ServiceAccount token (audience
+`github-read-token`, mounted at `/var/run/secrets/glidepath/broker/token`, read from disk on every mint). The broker
+serves only the ServiceAccounts in `githubRead.callers` (default glidepath-api's), only for the app's own repos
+(`<app>`, `gitops-<app>`, `gitops-infra-<app>`, each matched to a PaC Repository CR in the app's namespace and its
+owner), and mints an installation token down-scoped to that one repository and to `contents`, `pull_requests` and
+`metadata`, all read. The token lives for the request and is dropped with it: it is never cached, logged, returned,
+or put in an error.
+
+`GITHUB_OWNER` (the chart's `githubOwner`, from `platformCicdRepoUrl`) is the owner of every app repo; the API
+never takes an owner from the request.
+
+### Who may promote
+
+`promote` and `rollback` on `environments.glidepath.hangar.io` in the app's namespace, held by the chart's
+`glidepath-api-releaser` ClusterRole and bound cluster-wide by `api.releasers` (empty by default), or app by app with
+a RoleBinding. It holds no read and no re-run: an operator is not a releaser, and a releaser that should read the
+plans needs `glidepath-api-reader`. As for every write, a delegate must name the person (`GP-AUTH-004`) and the API
+trusts the delegate's own check of them (Tower's owner permission).
+
+glidepath-api's own ServiceAccount needs `get` on `triggertemplates.triggers.tekton.dev` (new) and the `create` on
+`pipelineruns` and `list` on ConfigMaps it already holds. The runs are Glidepath's shape (a cluster-resolver
+`pipelineRef` into `platform-catalog`, SA `pipeline-runner`, an `emptyDir` workspace, a hostAliases-only podTemplate,
+no PaC annotations), so `tower-pipelinerun-shape`, which already matches the API's ServiceAccount for re-run, admits
+them unchanged (checked 2026-10-29 with a server-side dry run on hangar-dev as
+`system:serviceaccount:platform-system:glidepath-api`). It still admits only `app-` namespaces, so an InfraService's
+promote is refused for the API as it is for Tower.
 
 ## Explain
 
@@ -321,12 +470,12 @@ Every refusal or failure is JSON with a stable `rule` and, where there is one, a
 | `GP-AUTH-003` | 403 | On-behalf-of from a caller that isn't a delegate |
 | `GP-AUTH-004` | 400 | A delegate's write must name the person (`X-Glidepath-On-Behalf-Of`) |
 | `GP-AUTHZ-001` | 403 | Not allowed to read or write this in this app's namespace |
-| `GP-API-400` | 400 | A malformed app name, run id, chain id, test run id, PipelineRun name, `Idempotency-Key` or `dryRun`, or an image outside `ghcr.io` |
+| `GP-API-400` | 400 | A malformed app name, run id, chain id, test run id, PipelineRun name, environment or cluster name, `Idempotency-Key`, `dryRun` or write body, or an image outside `ghcr.io` |
 | `GP-API-404` | 404 | No such app, run, PipelineRun, release record, or test report |
-| `GP-API-409` | 409 | The name a re-run's key derives is held by something that isn't that re-run; send a new key |
-| `GP-API-422` | 422 | The cluster refused the write (an admission policy or glidepath-api's RBAC); don't retry |
+| `GP-API-409` | 409 | The name a write's key derives is held by something that isn't that write's run; send a new key |
+| `GP-API-422` | 422 | The write can't be done as asked: out of order, a Ground target, an ineligible rollback target, nothing recorded to promote, no TriggerTemplate, or the cluster refused it (an admission policy or glidepath-api's RBAC). The `hint` says what would work; don't retry as is |
 | `GP-LOG-404` | 404 | The run exists, but Results archived no log for that TaskRun ([tekton-results.md](tekton-results.md#when-a-runs-logs-are-missing)) |
-| `GP-API-502` | 502 | A source failed (the API server, Tekton Results, GHCR, Rekor or Testkube); retry |
+| `GP-API-502` | 502 | A source failed (the API server, Tekton Results, GHCR, Rekor, Testkube, GitHub or the token broker); retry |
 
 ## Audit
 
@@ -334,7 +483,9 @@ Every call writes one JSON line to the pod's stdout: `op`, `tier`, `app`, `calle
 `decision` (`allow` or `deny`), `status`, `ms`, and the error if there was one. A write adds `name` (the
 run in the path) and `dryRun`; a re-run adds `idempotencyKeySha256` (the first 12 hex characters of
 the hash in the run's annotation, never the key), `created` and `replayed`; a cancel adds `result`
-(`cancelled`, `already-cancelled`, `already-finished`).
+(`cancelled`, `already-cancelled`, `already-finished`). A promote adds `env`, `cluster`, `idempotencyKeySha256`,
+`mode`, `created`, `replayed` and `prUrl`; a rollback `env`, `cluster`, `idempotencyKeySha256`, `target`,
+`replaces`, `created`, `replayed` and `prUrl`. No GitHub token is ever in an audit line.
 
 ```shell
 kubectl logs -n platform-system deploy/glidepath-api | grep '"msg":"audit"'

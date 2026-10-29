@@ -1,11 +1,13 @@
 openapi: 3.0.3
 info:
   title: Glidepath API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
     contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec are reads (tier T0); phase 3
-    adds the first writes (tier T1): re-run and cancel a PipelineRun in the app's namespace.
+    adds the first writes (tier T1): re-run and cancel a PipelineRun in the app's namespace. Phase 4 adds
+    tier T2, propose: promote to a Flight environment and roll one back, each only starting the app's
+    release Pipeline, whose gitops PR a human merges.
 
     Every /v1 call needs a bearer token the cluster's TokenReview accepts, in `Authorization`, or in
     `X-Glidepath-Authorization` when the call comes through the API server's service proxy (which
@@ -290,6 +292,114 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/environments:
+    get:
+      operationId: listEnvironments
+      summary: The app's environments, their tiers and their promotion order (Tower's release plan)
+      description: >-
+        Needs `list` on `environments.glidepath.hangar.io` in the app's namespace. Read from the app's cicd.yaml on
+        GitHub (its source repo, or an InfraService's gitops repo) with a read-only token the broker mints for this
+        request: `deploy.environments` in order when every entry is Ground or Flight (orderSource promotionOrder),
+        else the order of the release pipeline's deploy/release steps (pipeline-steps). No cicd.yaml is an empty plan.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The plan, content: { application/json: { schema: { $ref: "#/components/schemas/ReleasePlan" } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/environments/{env}/rollback-plan:
+    get:
+      operationId: getRollbackPlan
+      summary: The environment's current release and the earlier releases it may roll back to
+      description: >-
+        Needs `get` on `environments.glidepath.hangar.io` in the app's namespace. From the release records for this
+        environment and cluster: current is the newest that ran (by prCreatedAt); targets are the newest five that
+        reached healthy, less the current release and image and repeated images, newest first. Tower's RollbackPlan,
+        byte for byte.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/Env" }
+        - { name: cluster, in: query, required: true, schema: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$" } }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The plan, content: { application/json: { schema: { $ref: "#/components/schemas/RollbackPlan" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/environments/{env}/promote:
+    post:
+      operationId: promoteEnvironment
+      summary: Propose a promotion to a Flight environment (start the app's release Pipeline; a human merges its PR)
+      description: >-
+        Needs `promote` on `environments.glidepath.hangar.io` in the app's namespace. Tower's promote, for a Flight
+        target only (a Ground target is 422: that is a direct commit to the app repo, which needs a GitHub write
+        identity). The target must be the environment right after sourceEnv in the app's own order, or for a first
+        deploy (sourceImageRepo+sourceImageTag) its first environment. The image is read from the source
+        environment's release file, never taken from the request (a first deploy's tag must name a real commit of the
+        app repo). If the release PR for that commit (branch release-<env>-<sha8>) is already open, the answer is it
+        (mode pr, alreadyOpen) and nothing starts. Otherwise the promote-release TriggerTemplate's PipelineRun is
+        created, named promote-<env>-<sha8>-<6 hex of sha256(app/promote/env/cluster/Idempotency-Key)>: the same key
+        again answers 200 with replayed true. With dryRun, the create is a server-side dry run and the answer carries
+        the object. A delegate must send X-Glidepath-On-Behalf-Of, who is the run's initiator.
+      x-glidepath-tier: T2
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/Env" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+        - { $ref: "#/components/parameters/DryRun" }
+        - { $ref: "#/components/parameters/DryRunHeader" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/PromoteRequest" } } }
+      responses:
+        "201": { description: The release run started, content: { application/json: { schema: { $ref: "#/components/schemas/PromoteResult" } } } }
+        "200": { description: A replay, a dry run, or the release PR already open, content: { application/json: { schema: { $ref: "#/components/schemas/PromoteResult" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/environments/{env}/rollback:
+    post:
+      operationId: rollbackEnvironment
+      summary: Propose a rollback of a Flight environment to an earlier release (the release Pipeline; a human merges)
+      description: >-
+        Needs `rollback` on `environments.glidepath.hangar.io` in the app's namespace. Tower's rollback: the target must
+        be one of the rollback plan's targets (computed here from the release records, never taken from the request).
+        If the rollback's PR (branch release-rollback-<env>-<sha8>) is already open, the answer is it. Otherwise the
+        rollback-release TriggerTemplate's PipelineRun is created (config-revision main), named
+        rollback-<env>-<sha8>-<6 hex>, idempotent per Idempotency-Key as promote is. Unlike Tower, the answer does not
+        wait for the PR. A delegate must send X-Glidepath-On-Behalf-Of.
+      x-glidepath-tier: T2
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/Env" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+        - { $ref: "#/components/parameters/DryRun" }
+        - { $ref: "#/components/parameters/DryRunHeader" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/RollbackRequest" } } }
+      responses:
+        "201": { description: The rollback release run started, content: { application/json: { schema: { $ref: "#/components/schemas/RollbackResult" } } } }
+        "200": { description: A replay, a dry run, or the rollback PR already open, content: { application/json: { schema: { $ref: "#/components/schemas/RollbackResult" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
 components:
   securitySchemes:
     bearer: { type: http, scheme: bearer }
@@ -298,6 +408,13 @@ components:
     App: { name: app, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,62}$" } }
     Result: { name: result, in: path, required: true, schema: { type: string, pattern: "^[0-9a-f-]{36}$" } }
     RunName: { name: name, in: path, required: true, description: A live PipelineRun's name, schema: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{0,252}$" } }
+    Env: { name: env, in: path, required: true, description: An environment in the app's cicd.yaml, schema: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$" } }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Any string the caller picks for this one write, the same on every retry of it.
+      schema: { type: string, pattern: "^[A-Za-z0-9._:-]{1,128}$" }
     DryRun:
       name: dryRun
       in: query
@@ -329,8 +446,9 @@ components:
           description: >-
             GP-AUTH-001 no token, GP-AUTH-002 token rejected, GP-AUTH-003 on-behalf-of refused, GP-AUTH-004 a delegate's
             write must name the person, GP-AUTHZ-001 not allowed, GP-LOG-404 the run exists but has no archived log for that
-            TaskRun, GP-API-409 a re-run's name is taken by another object, GP-API-422 the cluster refused the write
-            (admission policy or RBAC), GP-API-400/404/502
+            TaskRun, GP-API-409 a write's derived run name is taken by another object, GP-API-422 the write can't be
+            done as asked (out of order, a Ground target, an ineligible rollback target, nothing to promote, or the
+            cluster refused it: admission policy or RBAC), GP-API-400/404/502
         hint: { type: string }
     Explanation:
       type: object
@@ -444,6 +562,88 @@ components:
         status: { type: string, enum: [cancelled, already-cancelled, already-finished] }
         dryRun: { type: boolean }
         patch: { type: object, description: "Dry run only, when a patch would be sent: the JSON merge patch" }
+    ReleasePlan:
+      type: object
+      required: [order, orderSource, lower, upper]
+      properties:
+        order: { type: array, items: { type: string } }
+        orderSource: { type: string, enum: [promotionOrder, pipeline-steps] }
+        lower: { type: array, items: { type: string }, description: Ground environments }
+        upper:
+          type: array
+          description: Flight environments
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: { type: string }
+              cluster: { type: string, description: Absent for a same-cluster Flight environment }
+              production: { type: boolean, description: "Present (true) only on the environment cicd.yaml marks production: true" }
+        releaseFile: { description: "deploy.releaseFile as written, when it is" }
+    RollbackTarget:
+      type: object
+      required: [releaseId, image, gitRevision, gitUrl, healthyAt]
+      properties:
+        releaseId: { type: string }
+        image: { type: string }
+        gitRevision: { type: string }
+        gitUrl: { type: string }
+        healthyAt: { type: string }
+        state: { type: string }
+    RollbackPlan:
+      type: object
+      required: [targets]
+      properties:
+        current:
+          type: object
+          description: The release running now; absent when nothing has run there. A field its record lacks is absent.
+          required: [state]
+          properties:
+            releaseId: { type: string }
+            image: { type: string }
+            state: { type: string }
+            stateAt: { type: string }
+        targets: { type: array, items: { $ref: "#/components/schemas/RollbackTarget" }, description: Newest first }
+    PromoteRequest:
+      type: object
+      description: The target cluster and exactly one source pair.
+      required: [cluster]
+      properties:
+        cluster: { type: string, description: The target environment's cluster }
+        sourceEnv: { type: string }
+        sourceCluster: { type: string }
+        sourceImageRepo: { type: string, description: First deploy only }
+        sourceImageTag: { type: string, description: "First deploy only: its trailing hex must be a commit of the app repo" }
+    PromoteResult:
+      type: object
+      required: [mode]
+      properties:
+        mode: { type: string, enum: [pipeline, pr] }
+        pipelineRun: { type: string, description: "mode pipeline: the release run in the app's -cicd namespace" }
+        prUrl: { type: string, description: "mode pr: the release PR already open for this commit" }
+        alreadyOpen: { type: boolean }
+        replayed: { type: boolean, description: Present (true) when an earlier call with this Idempotency-Key started the run }
+        dryRun: { type: boolean }
+        object: { type: object, description: "Dry run only: the PipelineRun the API creates (or found, on a replay)" }
+    RollbackRequest:
+      type: object
+      required: [cluster, targetReleaseId, reason]
+      properties:
+        cluster: { type: string }
+        targetReleaseId: { type: string, description: One of the rollback plan's targets }
+        reason: { type: string, description: "Why; trimmed, required, at most 1024 characters" }
+    RollbackResult:
+      type: object
+      required: [alreadyOpen, target]
+      properties:
+        prUrl: { type: string, description: The rollback PR already open }
+        alreadyOpen: { type: boolean }
+        pipelineRun: { type: string }
+        target: { $ref: "#/components/schemas/RollbackTarget" }
+        replaces: { type: string, description: The release-id the rollback replaces }
+        replayed: { type: boolean }
+        dryRun: { type: boolean }
+        object: { type: object }
     Caller:
       type: object
       properties:
