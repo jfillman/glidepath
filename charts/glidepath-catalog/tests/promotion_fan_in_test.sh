@@ -3,7 +3,8 @@
 # bash against a fake curl (GitHub + the broker) and kubectl (the release record) and checks when it asks for a
 # promotion: only when every required gate is green on the PR's head commit, counting this gate's own verdict and the
 # gate ledger (two gates finishing together), never twice for one attempt, never for a stale commit, a red gate, a
-# merged PR or a PR without a release file. With releaseGuardrailOverridesByApp (2026-10-28) a gate advisory for one app
+# merged PR or a PR without a release file. A green run past (or within a minute of) its tasks timeout is not taken as
+# green: Tekton ends it timed out (2026-10-29). With releaseGuardrailOverridesByApp (2026-10-28) a gate advisory for one app
 # (backstage: image-scan) does not hold that app's promotion, red or last, and still holds every other app's.
 # Needs helm, yq (mikefarah v4) and jq.
 # Usage: charts/glidepath-catalog/tests/promotion_fan_in_test.sh
@@ -58,6 +59,7 @@ cat > "$work/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   "get configmap"*) cat "$FX/records.json" ;;
+  "get pipelinerun"*) [[ -f "$FX/pipelinerun.json" ]] && cat "$FX/pipelinerun.json" || { echo "not found" >&2; exit 1; } ;;
   "patch configmap"*)
     for a in "$@"; do [[ "$prev" == -p ]] && p="$a"; prev="$a"; done
     echo "$p" >> "$FX/patches"
@@ -199,5 +201,32 @@ expect "app-advisory-sbom-red: says values" "$(grep -c 'values (failure)' "$FX/o
 # without the override (chart default render) backstage is held like any app: the lookup comes from the values.
 scenario app-no-override; scan_red; APP=backstage STEP=step-noapp.sh run
 expect "app-no-override: no event" "$(events)" 0
+
+# the run's tasks timeout: Tekton counts finally against it, so a green run that is past it ends timed out (red).
+GATE_TIMEOUTS='{"tasks":"8m0s","finally":"4m","pipeline":"12m"}'
+started() { # <seconds ago> [timeouts json]: this gate's PipelineRun
+  jq -n --arg s "$(date -u -r $(( $(date -u +%s) - $1 )) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$(( $(date -u +%s) - $1 ))" +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson t "${2:-$GATE_TIMEOUTS}" \
+    '{spec: {timeouts: $t}, status: {startTime: $s}}' > "$FX/pipelinerun.json"
+}
+scenario in-time; started 300; run
+expect "in-time: one event" "$(events)" 1
+expect "in-time: success recorded" "$(jq -r '.data["gate.111111111111.sbom"]' "$FX/patches")" success
+scenario timed-out; started 500; run
+expect "timed-out: no event" "$(events)" 0
+expect "timed-out: failure recorded" "$(jq -r '.data["gate.111111111111.sbom"]' "$FX/patches")" failure
+expect "timed-out: says why" "$(grep -c 'past its tasks timeout' "$FX/out")" 1
+scenario near; started 450; run
+expect "near: no event" "$(events)" 0
+expect "near: no patch" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
+expect "near: exit 0" "$(cat "$FX/rc")" 0
+# no timeouts.tasks: the pipeline timeout is the deadline (1h0m0s parses).
+scenario pipeline-only; started 500 '{"pipeline":"1h0m0s"}'; run
+expect "pipeline-only: one event" "$(events)" 1
+scenario pipeline-only-late; started 3700 '{"pipeline":"1h0m0s"}'; run
+expect "pipeline-only-late: failure recorded" "$(jq -r '.data["gate.111111111111.sbom"]' "$FX/patches")" failure
+# a red verdict is never re-judged: still recorded red, the run is not read.
+scenario late-red; started 500; echo failure > "$FX/gate/verdict"; run
+expect "late-red: failure recorded" "$(jq -r '.data["gate.111111111111.sbom"]' "$FX/patches")" failure
 
 [[ "${fail}" == 0 ]] && echo "PASS promotion_fan_in_test" || exit 1

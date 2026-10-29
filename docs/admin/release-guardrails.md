@@ -112,19 +112,35 @@ regardless of how long the real check tasks take:
 
 ```yaml
 timeouts:
-  tasks: "8m"      # budget for the real check task(s)
-  finally: "2m"    # reserved, separate budget for comment-pr - never starved
-  pipeline: "10m"  # must be >= tasks + finally
+  tasks: "14m"     # the check task(s) AND the finally block - see below
+  finally: "4m"    # reserved, separate budget for comment-pr - never starved
+  pipeline: "18m"  # must be >= tasks + finally
 ```
 
+**`tasks` must cover `finally` too (found live 2026-10-29).** Tekton (v1.15) checks `timeouts.tasks`
+against the time since the run *started*, including the time `finally` takes, when it computes the
+final status. A run whose tasks all succeeded inside the budget still ends `PipelineRunTimeout`, its
+check run red, when its `finally` finishes past `startTime + tasks` (`sbom-rntvj` on
+gitops-backstage#159: every task and `comment-pr` succeeded, message "tasks failed to finish within
+8m0s"). So size `tasks` as what the check needs **plus** the `finally` budget, and `pipeline` as
+`tasks + finally`. The 2026-10-29 defaults: 14m/4m/18m (sast, sbom, itsm, qa, api-compat,
+policy-validation), 19m/4m/23m (image-scan), 17m/4m/21m (provenance), 12m/4m/16m (values), each the
+old `tasks` plus 4m for `finally` plus 2m for a loaded cluster.
+
 A new gate's onboarding template must set all three, not just `pipeline` - copy the
-pattern from `pull-request-sast.yaml` (the default 8m/2m/10m split) or, if the real
-check genuinely needs more room (see `pull-request-image-scan.yaml`'s 13m/2m/15m for
-why Trivy scans got more), size `tasks` to what the check actually needs and keep
-`finally` at 2m. A shape-B gate (one that waits on its siblings) is the exception: its
+pattern from `pull-request-sast.yaml` or, if the real check genuinely needs more room (see
+`pull-request-image-scan.yaml` for why Trivy scans got more), size `tasks` to what the check
+actually needs plus `finally`. A shape-B gate (one that waits on its siblings) is the exception: its
 `tasks` must out-wait `wait-for-release-guardrails`' own timeout, which in turn must
 out-wait the slowest sibling's PipelineRun timeout. `image-promotion` carried those
 larger numbers until ADR-0025 retired it.
+
+Already-onboarded gitops repos keep their old `.tekton` timeouts until their next onboarding
+resync (a `cicd.yaml` push to the app repo).
+
+With promotion on, the promotion fan-in never records a success the run will not keep: a green run
+already past its `tasks` deadline goes into the gate ledger as a failure, and one within a minute of
+it records nothing and does not ask ([registries.md](registries.md)).
 
 ## Required and advisory gates (`required`, 2026-10-19)
 

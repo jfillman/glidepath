@@ -356,6 +356,28 @@ spec:
         verdict="$(cat "${W}/verdict" 2>/dev/null || true)"
         pr_number="$(cat "${W}/pr" 2>/dev/null || true)"
         [[ -n "${verdict}" && "${pr_number}" =~ ^[0-9]+$ ]] || { echo "no verdict or PR for ${GATE_NAME}: nothing to record"; exit 0; }
+        # Tekton (v1.15) measures timeouts.tasks from the run's start to the end of finally, not of the tasks: a run whose
+        # tasks all succeeded still ends PipelineRunTimeout, its check run red, when this finally finishes past
+        # startTime + timeouts.tasks (sbom-rntvj, gitops-backstage#159, 2026-10-29). Past that deadline a success is
+        # recorded as the failure it will be; within a minute of it nothing is recorded or asked (the other gates read this
+        # gate's check run instead, and `/retest` asks again). A run that cannot be read is not judged here: promote's
+        # PROM-03 reads the check runs.
+        if [[ "${verdict}" == success ]]; then
+          left="$(kubectl get pipelinerun "${PIPELINE_RUN_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null | jq -r --argjson now "$(date -u +%s)" '
+            def secs: [scan("([0-9.]+)(h|ms|m|s)")] | map((.[0] | tonumber) * {"h": 3600, "m": 60, "s": 1, "ms": 0.001}[.[1]]) | add // empty;
+            (.spec.timeouts.tasks // .spec.timeouts.pipeline // empty | secs) as $t
+            | (.status.startTime // empty | fromdateiso8601) as $s
+            | if $t > 0 then ($s + $t - $now | floor) else empty end' 2>/dev/null || true)"
+          if [[ "${left}" =~ ^-?[0-9]+$ ]]; then
+            if (( left < 0 )); then
+              echo "${PIPELINE_RUN_NAME} is past its tasks timeout by $(( -left ))s: Tekton ends it timed out, recorded as a failure"
+              verdict=failure
+            elif (( left < 60 )); then
+              echo "${PIPELINE_RUN_NAME} is ${left}s from its tasks timeout and may end timed out: nothing recorded, no promotion asked (\`/retest ${GATE_NAME}-\` asks again)"
+              exit 0
+            fi
+          fi
+        fi
         [[ "${REPO_URL}" =~ ^https://github\.com/([A-Za-z0-9-]+)/gitops-([a-z0-9][a-z0-9-]*)(\.git)?/?$ ]] \
           || { echo "${REPO_URL} is not a gitops-<app> repository: not a release"; exit 0; }
         owner="${BASH_REMATCH[1]}"; app="${BASH_REMATCH[2]}"; repo="gitops-${app}"
