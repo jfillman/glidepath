@@ -53,6 +53,8 @@ type Reader struct {
 	RekorURL    string // http://rekor-server.rekor-system.svc.cluster.local
 	HTTP        *http.Client
 	Log         *slog.Logger
+	// Promotion verifies Flight promotion attestations (promotion.go); nil: they show, unverified.
+	Promotion *PromotionTrust
 
 	once  sync.Once
 	trust *trustSource
@@ -111,7 +113,7 @@ func (r *Reader) Read(ctx context.Context, namespace, image string) (*Provenance
 	}
 
 	f := &fetcher{reg: reg, repo: repo, digest: digest, digestHex: strings.Replace(digest, "sha256:", "", 1), token: token,
-		tm: tm, tmErr: tmErr, rekor: NewRekorLookup(httpGetter(r.HTTP, r.RekorURL))}
+		tm: tm, tmErr: tmErr, rekor: NewRekorLookup(httpGetter(r.HTTP, r.RekorURL)), promotion: r.Promotion}
 	var legacy, newFormat []attestation
 	var legacyErr, newErr error
 	var wg sync.WaitGroup
@@ -125,7 +127,8 @@ func (r *Reader) Read(ctx context.Context, namespace, image string) (*Provenance
 	if newErr != nil {
 		return nil, newErr
 	}
-	// After the attestations: their log indexes are where to look for the signature's own entry.
+	// After the attestations: their log indexes are where to look for the signature's own entry (the
+	// platform Rekor's; a promotion attestation's index is public Rekor's and is not a hint).
 	var hints []float64
 	for _, a := range append(append([]attestation{}, legacy...), newFormat...) {
 		if a.logIndex != nil {
@@ -149,7 +152,7 @@ func ptr[T any](v T) *T { return &v }
 
 type attestation struct {
 	obj      *jsval.Obj
-	logIndex *float64 // transparencyLog.logIndex, when there is a transparencyLog
+	logIndex *float64 // the platform Rekor's transparencyLog.logIndex, when there is one
 }
 
 type fetcher struct {
@@ -159,6 +162,7 @@ type fetcher struct {
 	tm               *trustMaterial
 	tmErr            *string
 	rekor            RekorLookup
+	promotion        *PromotionTrust
 }
 
 // verdict is what the checks concluded about one attestation.
@@ -540,6 +544,9 @@ func (f *fetcher) newFormatOne(ctx context.Context, blob []byte) (attestation, b
 		certPem = derBase64ToPem(s)
 	}
 	tlogEntry := jsval.Index(jsval.Path(raw, "verificationMaterial", "tlogEntries"), 0)
+	if jsval.Get(statement, "predicateType") == any(PromotionPredicate) {
+		return f.promotionOne(raw, statement, certPem, tlogEntry), true
+	}
 	// The bundle's own receipt was signed by the Rekor key of the day; Rekor's current copy of the
 	// same entry (same body) carries one signed by today's key.
 	var fresh *RawTlogEntry
@@ -606,6 +613,39 @@ func (f *fetcher) newFormatOne(ctx context.Context, blob []byte) (attestation, b
 	}
 	a := finish(spread(statement), certPem, tl, v, source, mismatch)
 	return a, true
+}
+
+// promotionOne is a promotion attestation: signed on public Sigstore by the promoter workflow
+// (promotion.go), so its own trust root and identity, and its log index is public Rekor's: the
+// platform Rekor lookup does not apply, and its transparencyLog has no logId.
+func (f *fetcher) promotionOne(raw, statement, certPem, tlogEntry any) attestation {
+	v := verifyPromotionBundle(raw, f.promotion)
+	source := SourceNone
+	if jsval.Truthy(tlogEntry) {
+		source = SourceEmbedded
+	}
+	obj := spread(statement)
+	obj.Set("certificate", certificateValue(certPem))
+	if li := jsval.Get(tlogEntry, "logIndex"); li != jsval.Undefined {
+		tl := jsval.NewObj().Set("logIndex", jsval.Num(jsval.Number(li)))
+		if it := jsval.Get(tlogEntry, "integratedTime"); jsval.Truthy(it) {
+			tl.Set("integratedTime", jsval.Num(jsval.Number(it)))
+		} else {
+			tl.Set("integratedTime", jsval.Undefined)
+		}
+		obj.Set("transparencyLog", tl)
+	} else {
+		obj.Set("transparencyLog", jsval.Undefined)
+	}
+	obj.Set("verified", v.verified)
+	if v.err != nil {
+		obj.Set("verificationError", *v.err)
+	} else {
+		obj.Set("verificationError", jsval.Undefined)
+	}
+	obj.Set("verificationCode", string(classifyVerification(v.verified, v.err, source, false)))
+	obj.Set("logSource", string(source))
+	return attestation{obj: obj}
 }
 
 // signature reads the classic `cosign sign` tag <repo>:sha256-<digest>.sig: a simple-signing
