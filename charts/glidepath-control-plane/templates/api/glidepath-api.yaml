@@ -26,6 +26,13 @@
 #     environments.glidepath.hangar.io, tier T2: both only start the app's release Pipeline, whose PR a
 #     human merges). Bound cluster-wide to api.releasers; app-scoped as for the others. No read.
 #
+# Events (GET /v1/events, docs/admin/api.md#events): the ClusterInterceptor glidepath-api-events and its Trigger
+# below tap the shared broker. The interceptor always answers continue: false, so the Trigger never creates
+# anything; glidepath-api re-checks every event's token itself (the interceptor endpoint is reachable by anything
+# in the cluster) and fans each event out to the other replicas, found from the Service's EndpointSlices
+# (a Role in platform-system: list and watch endpointslices, nothing else) and authenticated with a second
+# projected token (audience glidepath-api-peer) that only the replicas accept.
+#
 # glidepath-api holds no GitHub credential: promote and rollback ask the broker's /github-read-token
 # (templates/broker/interceptor.yaml, githubRead.callers) for a read-only token on one of the app's own
 # repos, per request, authenticated with the projected token mounted below (audience github-read-token).
@@ -94,6 +101,34 @@ subjects:
     name: glidepath-api
     namespace: platform-system
 ---
+# Events fan-out: the other replicas' addresses, in glidepath-api's own namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: glidepath-api-peers
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+rules:
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: glidepath-api-peers
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: glidepath-api-peers }
+subjects:
+  - kind: ServiceAccount
+    name: glidepath-api
+    namespace: platform-system
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -103,7 +138,7 @@ metadata:
     hangar.io/subcomponent: "glidepath-api"
 rules:
   - apiGroups: ["glidepath.hangar.io"]
-    resources: ["runs", "runs/logs", "releases", "evidence", "tests", "environments"]
+    resources: ["runs", "runs/logs", "releases", "evidence", "tests", "environments", "events"]
     verbs: ["get", "list"]
 {{- $readers := .Values.api.readers | default dict }}
 {{- if or $readers.users $readers.groups $readers.serviceAccounts }}
@@ -234,6 +269,22 @@ spec:
               value: {{ .Values.api.brokerUrl | default "http://cdevents-broker-auth.platform-system.svc.cluster.local:8080" | quote }}
             - name: BROKER_TOKEN_PATH
               value: /var/run/secrets/glidepath/broker/token
+            # Events: the buffer's bounds, and this pod for the fan-out to its peers.
+            {{- $events := .Values.api.events | default dict }}
+            - name: EVENTS_MAX
+              value: {{ $events.maxEvents | default 2000 | quote }}
+            - name: EVENTS_MAX_AGE
+              value: {{ $events.maxAge | default "24h" | quote }}
+            - name: EVENTS_MAX_STREAMS
+              value: {{ $events.maxStreams | default 100 | quote }}
+            - name: EVENTS_RELAYS
+              value: "system:serviceaccount:platform-system:glidepath-relay"
+            - name: EVENTS_PEER_TOKEN_PATH
+              value: /var/run/secrets/glidepath/peer/token
+            - name: POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 256Mi }
@@ -249,6 +300,9 @@ spec:
             - name: broker-token
               mountPath: /var/run/secrets/glidepath/broker
               readOnly: true
+            - name: peer-token
+              mountPath: /var/run/secrets/glidepath/peer
+              readOnly: true
       volumes:
         # Only the broker's /github-read-token accepts this audience; the kubelet rotates it, and the API reads it
         # from disk on every mint.
@@ -257,6 +311,14 @@ spec:
             sources:
               - serviceAccountToken:
                   audience: github-read-token
+                  expirationSeconds: 3600
+                  path: token
+        # Events fan-out between replicas: only glidepath-api's peer endpoint accepts this audience.
+        - name: peer-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: glidepath-api-peer
                   expirationSeconds: 3600
                   path: token
 ---
@@ -271,4 +333,53 @@ metadata:
 spec:
   selector: { app: glidepath-api }
   ports: [{ name: http, port: 8080, targetPort: http }]
+---
+# The events tap. The broker (templates/broker/eventlistener.yaml) runs every Trigger in every namespace
+# for every event, so this one sees them all: its only interceptor hands each event, with its
+# Authorization header, to glidepath-api, which always answers continue: false.
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: ClusterInterceptor
+metadata:
+  name: glidepath-api-events
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+spec:
+  clientConfig:
+    service:
+      name: glidepath-api
+      namespace: platform-system
+      path: /internal/events/tap
+      port: 8080
+---
+# A Trigger must name a template with at least one resource. This one is never instantiated: the tap
+# never lets the Trigger continue, and the broker's ServiceAccount can't create ConfigMaps anyway.
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: glidepath-api-events-noop
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+spec:
+  resourcetemplates:
+    - apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        generateName: glidepath-api-events-never-
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: Trigger
+metadata:
+  name: glidepath-api-events
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+spec:
+  interceptors:
+    - ref: { name: glidepath-api-events, kind: ClusterInterceptor }
+  template:
+    ref: glidepath-api-events-noop
 {{- end }}

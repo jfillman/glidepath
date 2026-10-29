@@ -43,6 +43,11 @@ substitute for it - and only works at all if the cluster's CNI actually enforces
 NetworkPolicy (see [installation.md](installation.md) on why Calico is a hard
 prerequisite, not a nice-to-have, in `hack/kind-config.yaml`).
 
+**Observers**: because every Trigger sees every event, glidepath-api taps the broker with one more Trigger in
+`platform-system` (`glidepath-api-events`) whose interceptor records the event and always answers
+`continue: false`, so it never fires. glidepath-api re-verifies each event's token itself before serving it on
+`GET /v1/events` ([api.md](api.md#events)).
+
 **PipelineRun creation identity**: when a `Trigger` fires, Tekton Triggers creates the
 resulting `PipelineRun` using *that Trigger's own* `spec.serviceAccountName` - each
 Application's own least-privilege, namespace-scoped `pipeline-runner` SA (see
