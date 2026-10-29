@@ -203,6 +203,13 @@ provenances belong to `qa`. Its commit-signature half resolves the PR number fro
 `/retest provenance-` run, where PaC hands over the raw `body.pull_request.number` template string, the way the
 other gates' resolve step and PR comment already did ([provenance-policy.md](provenance-policy.md)).
 
+**`pr-number` comes from `{{ pull_request_number }}` (2026-10-28).** The delivered `.tekton/pull-request-*.yaml` files
+used `{{ body.pull_request.number }}`, which reads the raw webhook body: a `/retest` arrives as an `issue_comment`
+whose body has no `pull_request`, so every retest run showed the template string as its `pr-number` input (the gates
+and the `comment-pr` finally task resolved it from the revision, so the result was right, but the input was not). PaC's
+own `pull_request_number` variable is set from the PR for `pull_request`, `/retest` comments and check re-runs alike.
+The tasks' resolve-from-revision fallback stays, for gitops repos still carrying the old files until their next resync.
+
 **`provenance` accepts a GitHub PR merge (2026-10-20).** The commit-signature half has two paths
 ([commit-signing.md](commit-signing.md)): gitsign, always on and final for any gitsign signature; and, only for an app
 whose admin-owned release-signing policy enables it (off by default), a commit GitHub's web-flow key signed as the

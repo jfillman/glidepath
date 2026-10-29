@@ -33,7 +33,7 @@ spec:
   params:
     - { name: repo-url, value: "{{ repo_url }}" }
     - { name: revision, value: "{{ revision }}" }
-    - { name: pr-number, value: "{{ body.pull_request.number }}" }
+    - { name: pr-number, value: "{{ pull_request_number }}" }
   taskRunTemplate:
     serviceAccountName: pipeline-runner
   timeouts:
