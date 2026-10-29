@@ -6,7 +6,7 @@ promoter writes. A release file pins the image by digest and records where it wa
 
 ## What it guarantees
 
-- **An upper cluster runs only promoted images** (once admission is on, phase 4): a Flight-prefix rule plus a
+- **An upper cluster runs only promoted images** (once admission is on, phase 4; see [Admission](#admission-phase-4)): a Flight-prefix rule plus a
   promotion attestation signed by the promoter workflow, verified offline by Kyverno.
 - **The tag cannot change what runs.** With `promotion.pinDigest` on, every release file carries
   `release.image.digest` and airframe-application renders `repository:tag@digest`.
@@ -151,6 +151,34 @@ release:
 4. `promotion.enabled: true` (glidepath with the phase 3 fan-in). From then on a release PR pins the Flight
    repository, `image-promotion` is a required gate, and the fan-in promotes when the last required gate turns green.
    A release PR opened before the switch still pins Ground and is refused (PROM-01): open it again (Tower Promote).
+5. Admission on each upper cluster, in Audit (Apron `admission.flight.enabled`, with `registries.flight` and
+   `promotion.promoter.repo` in that cluster's `cluster.yaml`; see below). Check that a new pod of a promoted app
+   gets no warning and a Ground image does.
+6. Once every app's prod release runs from Flight: `admission.flight.enforce` (Deny, fail closed) and
+   `admission.flight.pullFromFlight` (the tenant pull secret reads Flight; the Ground credential leaves the cluster).
+   Before that, a restart of an app still on Ground would be refused, or could not pull.
+7. Remove every write path to Flight but the workflow's own `GITHUB_TOKEN`: no other collaborator with write access
+   on the promoter repository, no `write:packages` token of the Flight owner anywhere.
+
+## Admission (phase 4)
+
+Apron renders two Kyverno policies on an upper cluster (`30-policy/kyverno-policies/flight-images.yaml`), both on
+Pod CREATE in tenant namespaces (`hangar.io/managed-secrets`):
+
+- `flight-only-images` (ValidatingPolicy): every container and init container image starts with the Flight prefix or
+  one of `admission.flight.allowedPrefixes`, third-party images no Glidepath build produces (CloudNativePG, the OTel
+  auto-instrumentation init image, bitnamilegacy Redis). The message names the images that are not promoted.
+- `flight-images` (ImageValidatingPolicy, Flight images only): the `https://hangar.io/attestations/promotion/v1`
+  attestation verifies keyless against the promoter workflow (`<promoter repo>/.github/workflows/promote.yaml` on
+  `main`, GitHub Actions OIDC, public Sigstore), offline from the bundle's inclusion proof. It reads Flight with
+  `kyverno/flight-registry-read` (Infisical `flight-registry-read-dockerconfigjson`, read-only).
+
+They are two policies because an ImageValidatingPolicy fetches every image it matches with its own credential: a
+Ground image read with the Flight credential is an evaluation error, not a violation. Chains' build provenance is
+not checked at admission: it carries no inclusion proof and lives in the hub's Rekor, which an upper cluster cannot
+reach; the gates verified it before the promotion the attestation records. Audit mode is `[Audit, Warn]` with
+`failurePolicy: Ignore`; the upper clusters run no Kyverno reports controller, so the evidence is the warning
+`kubectl` prints (a server-side dry run of a pod shows it without creating anything).
 
 ## Files
 
