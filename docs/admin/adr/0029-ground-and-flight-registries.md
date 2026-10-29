@@ -3,7 +3,9 @@
 *Status: Accepted (2026-10-27). Supersedes decision 3 of [ADR-0025](0025-retire-image-promotion-stub-check.md).
 Phase 0 (spike) done; phase 1 (configuration and digest pinning) live on hangar-dev 2026-10-27; phase 2 (the
 promoter: Pipeline, StepAction, broker `/promoter-token`) live-verified on hangar-dev 2026-10-28; phase 3 (the
-fan-in, the `image-promotion` registry entry and PR comment) built. Detail: [registries.md](../registries.md).*
+fan-in, the `image-promotion` registry entry and PR comment) live-verified on gitops-gate-api#57 2026-10-29 (hangar-prod
+gate-api runs from Flight); phase 4 (upper-cluster admission, Apron `admission.flight`) built, in Audit on
+hangar-prod. Detail: [registries.md](../registries.md).*
 
 ## Context
 
