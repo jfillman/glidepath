@@ -88,7 +88,7 @@ func buildTrustMaterial(rootPem, rekorPem string) (*trustMaterial, error) {
 	if err != nil {
 		return nil, err
 	}
-	tm := &trustMaterial{root: root}
+	tm := &trustMaterial{cas: []certAuthority{{chain: []*x509.Certificate{root}, start: ms(root.NotBefore), end: ms(root.NotAfter)}}}
 	if rekorPem != "" {
 		kb, _ := pem.Decode([]byte(rekorPem))
 		if kb == nil {
@@ -103,7 +103,7 @@ func buildTrustMaterial(rootPem, rekorPem string) (*trustMaterial, error) {
 			return nil, err
 		}
 		id := sha256.Sum256(der)
-		tm.tlogs = append(tm.tlogs, tlogAuthority{logID: id[:], baseURL: tlogBaseURL, key: key})
+		tm.tlogs = append(tm.tlogs, tlogAuthority{logID: id[:], baseURL: tlogBaseURL, key: key, start: 0, end: endOfTime})
 	}
 	return tm, nil
 }

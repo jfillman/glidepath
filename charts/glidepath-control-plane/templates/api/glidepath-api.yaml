@@ -178,6 +178,8 @@ spec:
           env:
             - name: DELEGATES
               value: {{ join "," (.Values.api.delegates | default list) | quote }}
+            - name: PROMOTER_REPO
+              value: {{ .Values.api.promoterRepo | default .Values.promoter.dispatchRepo | quote }}
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 256Mi }

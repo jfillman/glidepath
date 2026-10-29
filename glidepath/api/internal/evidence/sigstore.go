@@ -8,10 +8,13 @@ package evidence
 // its own words and on its own policy (it wants an observer timestamp, and has no notion of
 // Tower's "Rekor key unavailable: verify without the log" degrade), so it is not used here.
 //
-// What Tower's trust material makes fixed, this fixes too: one certificate authority (the Fulcio
-// root), at most one transparency log (Rekor, valid for all time), no timestamp authorities, no CT
-// logs, no bare public keys, and the Verifier options {tlogThreshold: 0|1, ctlogThreshold: 0}
-// (timestampThreshold stays at its default of 1).
+// Two trust materials go through it. The platform's (Tower's buildTrustMaterial): one certificate
+// authority (the Fulcio root), at most one transparency log (Rekor, valid for all time), no
+// timestamp authorities, no CT logs, with the Verifier options {tlogThreshold: 0|1,
+// ctlogThreshold: 0}. And public Sigstore's (promotion.go, Tower's promotionEvidence.ts): the
+// embedded public-good trusted root, with its CAs, logs, CT logs and timestamp authority, the
+// options {tlogThreshold: 1, ctlogThreshold: 1} and an identity policy. No bare public keys in
+// either; timestampThreshold stays at its default of 1.
 
 import (
 	"bytes"
@@ -47,18 +50,29 @@ const (
 	endOfTime = 8640000000000000.0
 )
 
-// trustMaterial is Tower's buildTrustMaterial: the Fulcio root as the only CA (valid for the
-// root's own lifetime), and Rekor's key as the only log when it could be fetched.
+// trustMaterial is @sigstore/verify's TrustMaterial. Times are milliseconds, as JavaScript Dates.
 type trustMaterial struct {
-	root  *x509.Certificate
-	tlogs []tlogAuthority
+	cas    []certAuthority
+	tlogs  []tlogAuthority
+	ctlogs []tlogAuthority
+	tsas   []certAuthority // timestamp authorities
 }
 
-type tlogAuthority struct {
-	logID   []byte // SHA-256 of the key's DER SubjectPublicKeyInfo, computed, never taken from a bundle
-	baseURL string
-	key     crypto.PublicKey
+type certAuthority struct {
+	chain      []*x509.Certificate
+	start, end float64
 }
+
+func (c certAuthority) validAt(at float64) bool { return c.start <= at && at <= c.end }
+
+type tlogAuthority struct {
+	logID      []byte // the platform's: SHA-256 of the key's DER, computed, never taken from a bundle
+	baseURL    string
+	key        crypto.PublicKey
+	start, end float64
+}
+
+func (l tlogAuthority) validAt(at float64) bool { return l.start <= at && at <= l.end }
 
 // --- the bundle, as @sigstore/protobuf-specs' fromJSON builds it ---
 
@@ -73,7 +87,7 @@ type verificationMaterial struct {
 	content     string   // "publicKey", "x509CertificateChain", "certificate" or ""
 	certs       [][]byte // the chain's certificates, or the one certificate
 	tlogEntries []*tlogEntry
-	tsaCount    int // rfc3161Timestamps
+	tsas        [][]byte // rfc3161Timestamps' signedTimestamp
 }
 
 type tlogEntry struct {
@@ -179,7 +193,9 @@ func bundleFromJSON(obj any) (b *bundle, err error) {
 			b.vm.tlogEntries = append(b.vm.tlogEntries, t)
 		}
 		if tvd := jsval.Get(vm, "timestampVerificationData"); isSet(tvd) {
-			b.vm.tsaCount = len(arr(jsval.Get(tvd, "rfc3161Timestamps")))
+			for _, ts := range arr(jsval.Get(tvd, "rfc3161Timestamps")) {
+				b.vm.tsas = append(b.vm.tsas, b64(jsval.Get(ts, "signedTimestamp")))
+			}
 		}
 	}
 	if ms := jsval.Get(obj, "messageSignature"); isSet(ms) {
@@ -346,15 +362,22 @@ type signedEntity struct {
 	leaf        *x509.Certificate
 	tlogEntries []*tlogEntry
 	timestamps  []*tlogEntry // tlog entries that carry a time
-	tsaCount    int
+	tsas        []*rfc3161Timestamp
 }
 
 func toSignedEntity(b *bundle, artifact []byte) (*signedEntity, error) {
-	e := &signedEntity{tlogEntries: b.vm.tlogEntries, tsaCount: b.vm.tsaCount}
+	e := &signedEntity{tlogEntries: b.vm.tlogEntries}
 	for _, t := range b.vm.tlogEntries {
 		if t.integratedTime != "" && t.integratedTime != "0" {
 			e.timestamps = append(e.timestamps, t)
 		}
+	}
+	for _, der := range b.vm.tsas {
+		ts, err := parseRFC3161(der)
+		if err != nil {
+			return nil, err
+		}
+		e.tsas = append(e.tsas, ts)
 	}
 	if b.msg != nil {
 		e.content = messageContent{b.msg, artifact}
@@ -382,6 +405,16 @@ func (e verifyError) Error() string { return string(e) }
 
 // verifyBundle is Tower's `new Verifier(trustMaterial, {tlogThreshold, ctlogThreshold: 0}).verify(toSignedEntity(bundle, artifact))`.
 func (tm *trustMaterial) verifyBundle(b *bundle, artifact []byte, tlogThreshold int) error {
+	return tm.verify(b, artifact, verifyOptions{tlogThreshold: tlogThreshold})
+}
+
+type verifyOptions struct {
+	tlogThreshold, ctlogThreshold int
+	policy                        *identityPolicy // nil: none
+}
+
+// verify is `new Verifier(trustMaterial, opts).verify(toSignedEntity(bundle, artifact), policy)`.
+func (tm *trustMaterial) verify(b *bundle, artifact []byte, opts verifyOptions) error {
 	e, err := toSignedEntity(b, artifact)
 	if err != nil {
 		return err
@@ -393,19 +426,23 @@ func (tm *trustMaterial) verifyBundle(b *bundle, artifact []byte, tlogThreshold 
 	if e.publicKey {
 		return errors.New("no bare public keys trusted - certificate-based signing only")
 	}
-	if err := tm.verifyCertificate(e.leaf, timestamps); err != nil {
+	if err := tm.verifyCertificate(e.leaf, timestamps, opts.ctlogThreshold); err != nil {
 		return err
 	}
-	if err := tm.verifyTLogs(e, tlogThreshold); err != nil {
+	if err := tm.verifyTLogs(e, opts.tlogThreshold); err != nil {
 		return err
 	}
 	if !e.content.verify(e.leaf.PublicKey) {
 		return verifyError("signature verification failed")
 	}
+	if opts.policy != nil {
+		return opts.policy.verify(e.leaf)
+	}
 	return nil
 }
 
 type timestamp struct {
+	tsa   bool // a timestamp authority's, else a log's
 	logID []byte
 	ms    float64
 }
@@ -414,15 +451,19 @@ func (tm *trustMaterial) verifyTimestamps(e *signedEntity) ([]float64, error) {
 	var ts []timestamp
 	for _, t := range e.timestamps {
 		if t.promise != nil { // only an entry with an inclusion promise gives a time
-			ts = append(ts, timestamp{t.logID, jsval.Number(t.integratedTime) * 1000})
+			ts = append(ts, timestamp{false, t.logID, jsval.Number(t.integratedTime) * 1000})
 		}
 	}
-	if e.tsaCount > 0 { // no timestamp authority is trusted
-		return nil, verifyError("timestamp could not be verified")
+	for _, t := range e.tsas {
+		at, err := tm.verifyRFC3161(t, e.content.signature())
+		if err != nil {
+			return nil, err
+		}
+		ts = append(ts, timestamp{true, t.signerSerial(), ms(at)})
 	}
 	for i := range ts {
 		for j := i + 1; j < len(ts); j++ {
-			if bytes.Equal(ts[i].logID, ts[j].logID) && (ts[i].ms == ts[j].ms || math.IsNaN(ts[i].ms) && math.IsNaN(ts[j].ms)) {
+			if ts[i].tsa == ts[j].tsa && bytes.Equal(ts[i].logID, ts[j].logID) && (ts[i].ms == ts[j].ms || math.IsNaN(ts[i].ms) && math.IsNaN(ts[j].ms)) {
 				return nil, verifyError("duplicate timestamp")
 			}
 		}
@@ -439,7 +480,10 @@ func (tm *trustMaterial) verifyTimestamps(e *signedEntity) ([]float64, error) {
 
 func ms(t time.Time) float64 { return float64(t.UnixMilli()) }
 
-func (tm *trustMaterial) verifyCertificate(leaf *x509.Certificate, timestamps []float64) error {
+// verifyCertificate is verifyCertificate plus Verifier.verifySigningKey's SCT checks: the chain at
+// every timestamp, then the SCTs of the last path's leaf. An SCT that is present must verify even
+// when ctlogThreshold is 0, so with no CT log trusted (the platform's) any SCT fails.
+func (tm *trustMaterial) verifyCertificate(leaf *x509.Certificate, timestamps []float64, ctlogThreshold int) error {
 	var path []*x509.Certificate
 	for _, at := range timestamps {
 		p, err := tm.verifyChain(at, leaf)
@@ -448,38 +492,73 @@ func (tm *trustMaterial) verifyCertificate(leaf *x509.Certificate, timestamps []
 		}
 		path = p
 	}
-	// SCTs: ctlogThreshold is 0, but an SCT that is present must still verify, and no CT log is
-	// trusted, so any SCT fails.
-	if n := sctCount(path[0]); n > 0 {
-		return verifyError("SCT verification failed")
+	scts, err := tm.verifySCTs(path)
+	if err != nil {
+		return err
+	}
+	for i := range scts {
+		for j := i + 1; j < len(scts); j++ {
+			if bytes.Equal(scts[i], scts[j]) {
+				return verifyError("duplicate SCT")
+			}
+		}
+	}
+	if len(scts) < ctlogThreshold {
+		return verifyError(fmt.Sprintf("expected %d SCTs, got %d", ctlogThreshold, len(scts)))
 	}
 	return nil
 }
 
-// verifyChain is verifyCertificateChain for the one CA; every failure reads the same.
+// verifyChain is verifyCertificateChain: the first CA valid at the time whose chain verifies.
+// Every failure reads the same.
 func (tm *trustMaterial) verifyChain(at float64, leaf *x509.Certificate) ([]*x509.Certificate, error) {
-	fail := verifyError("Failed to verify certificate chain")
-	root := tm.root
-	if !(ms(root.NotBefore) <= at && ms(root.NotAfter) >= at) {
-		return nil, fail
+	for _, ca := range tm.cas {
+		if !ca.validAt(at) {
+			continue
+		}
+		if path, err := chainVerify(ca.chain, leaf, at); err == nil {
+			return path, nil
+		}
 	}
-	local := []*x509.Certificate{root}
-	if !bytes.Equal(leaf.Raw, root.Raw) {
-		local = append(local, leaf)
+	return nil, verifyError("Failed to verify certificate chain")
+}
+
+// chainVerify is CertificateChainVerifier.verify: the shortest path from the leaf through the
+// local certificates (the trusted ones and the leaf) that contains a trusted one, then the CA,
+// name chaining, path length and validity checks.
+func chainVerify(trusted []*x509.Certificate, leaf *x509.Certificate, at float64) ([]*x509.Certificate, error) {
+	fail := errors.New("certificate chain does not verify")
+	var local []*x509.Certificate
+	for _, c := range append(append([]*x509.Certificate{}, trusted...), leaf) {
+		dup := false
+		for _, l := range local {
+			if bytes.Equal(l.Raw, c.Raw) {
+				dup = true
+			}
+		}
+		if !dup {
+			local = append(local, c)
+		}
 	}
 	paths, err := buildPaths(leaf, local, 0)
 	if err != nil {
 		return nil, fail
 	}
-	var best []*x509.Certificate
-	for _, p := range paths {
-		trusted := false
-		for _, c := range p {
-			if c == root {
-				trusted = true
+	isTrusted := func(c *x509.Certificate) bool {
+		for _, t := range trusted {
+			if bytes.Equal(t.Raw, c.Raw) {
+				return true
 			}
 		}
-		if trusted && (best == nil || len(p) < len(best)) {
+		return false
+	}
+	var best []*x509.Certificate
+	for _, p := range paths {
+		has := false
+		for _, c := range p {
+			has = has || isTrusted(c)
+		}
+		if has && (best == nil || len(p) < len(best)) {
 			best = p
 		}
 	}
@@ -574,33 +653,6 @@ func isCA(c *x509.Certificate) bool {
 	return ca
 }
 
-var oidSCT = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 11129, 2, 4, 2}
-
-// sctCount is how many SCTs the certificate's SCT extension lists.
-func sctCount(c *x509.Certificate) int {
-	for _, ext := range c.Extensions {
-		if !ext.Id.Equal(oidSCT) {
-			continue
-		}
-		var list []byte
-		if _, err := asn1.Unmarshal(ext.Value, &list); err != nil || len(list) < 2 {
-			return 0
-		}
-		list = list[2:]
-		n := 0
-		for len(list) >= 2 {
-			l := int(list[0])<<8 | int(list[1])
-			if len(list) < 2+l {
-				break
-			}
-			list = list[2+l:]
-			n++
-		}
-		return n
-	}
-	return 0
-}
-
 func (tm *trustMaterial) verifyTLogs(e *signedEntity, threshold int) error {
 	type id struct{ logID, logIndex string }
 	var ids []id
@@ -660,7 +712,7 @@ func (tm *trustMaterial) verifySET(t *tlogEntry) error {
 		base64.StdEncoding.EncodeToString(t.body), jsonNumber(jsval.Number(t.integratedTime)),
 		hex.EncodeToString(t.logID), jsonNumber(jsval.Number(t.logIndex)))
 	for _, log := range tm.tlogs {
-		if !bytes.Equal(log.logID, t.logID) || !(at >= 0 && at <= endOfTime) {
+		if !bytes.Equal(log.logID, t.logID) || !log.validAt(at) {
 			continue
 		}
 		if verifySig([]byte(data), log.key, t.promise, "") {

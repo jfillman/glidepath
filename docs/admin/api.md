@@ -247,6 +247,27 @@ key; a different body at that index is `log-entry-mismatch` and never verifies. 
 carries no receipt (Chains logs it without attaching one), so its entry is found among the entries
 next to the attestations' and kept only if it records exactly this payload hash and signature.
 
+One attestation is the exception: the Flight promotion attestation (predicate
+`https://hangar.io/attestations/promotion/v1`, [registries.md](registries.md)) on an image the
+promoter copied to Flight. The promoter workflow signs it keyless on **public Sigstore**, not on
+this cluster's Fulcio, so it is verified the way an upper cluster's admission does:
+
+- against the Sigstore public-good trusted root built into glidepath-api (TUF target
+  `trusted_root.json`, sha256 `6494e21e…`, the same bytes Tower embeds), so the check is offline;
+- with everything that root requires: the certificate chains to public Fulcio, carries an SCT from a
+  trusted CT log, is dated by Rekor's receipt or the RFC 3161 timestamp, and the entry's inclusion
+  proof reaches a checkpoint public Rekor signed;
+- and only for the exact promoter identity: SAN
+  `https://github.com/<promoterRepo>/.github/workflows/promote.yaml@refs/heads/main` (anchored, so
+  no other branch, repository or workflow) and Fulcio issuer
+  `https://token.actions.githubusercontent.com`.
+
+Its log index belongs to public Rekor, so it is never looked up in this cluster's Rekor, and its
+`transparencyLog` carries no `logId`; `logSource` is `embedded`. The promoter repository is
+`api.promoterRepo` (default: `promoter.dispatchRepo`, the repository the promote pipeline already
+dispatches). With neither set, promotion attestations come back unverified with
+`no promoter configured`.
+
 Act on `verified` and `verificationCode` (`verified`, `no-log-entry`, `log-entry-mismatch`,
 `stale-receipt`, `digest-mismatch`, `signature-invalid`, `trust-root-unavailable`, `incomplete`).
 `verificationError` is the verifier's own message, kept identical to Tower's for the shadow
@@ -262,6 +283,7 @@ Where the inputs come from:
 | Fulcio root | ConfigMap `fulcio-root-ca` (`cert.pem`) in `platform-catalog` | 10 minutes |
 | Rekor's public key | `rekor-server.rekor-system` `/api/v1/log/publicKey` | 10 minutes |
 | Rekor entries | `rekor-server.rekor-system` `/api/v1/log/entries?logIndex=` (GET only) | per request |
+| Public Sigstore root (promotion attestations only) | built into the binary; refresh it with Tower's copy when Sigstore rotates a key | for the build |
 
 The registry credential is read for each request and used only for GHCR's token exchange
 (`/token?scope=repository:<repo>:pull`). It is never cached, logged, returned, or put in an error;

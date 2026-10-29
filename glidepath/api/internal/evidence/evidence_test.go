@@ -665,15 +665,18 @@ func TestSCTWithoutCTLog(t *testing.T) {
 	rootDER, _ := x509.CreateCertificate(rand.Reader, rt, rt, rootPub, rootPriv)
 	root, _ := x509.ParseCertificate(rootDER)
 	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	list, _ := asn1.Marshal([]byte{0, 6, 0, 4, 1, 2, 3, 4}) // one 4-byte SCT
+	// One well-formed SCT: v1, a log ID, a timestamp, no extensions, SHA-256/ECDSA, a 2-byte signature.
+	one := append(append([]byte{0}, make([]byte, 32+8)...), 0, 0, 4, 3, 0, 2, 0xab, 0xcd)
+	list, _ := asn1.Marshal(append([]byte{0, byte(len(one) + 2), 0, byte(len(one))}, one...))
 	for _, withSCT := range []bool{false, true} {
 		lt := &x509.Certificate{SerialNumber: big.NewInt(2), NotBefore: signedAt.Add(-time.Minute), NotAfter: signedAt.Add(time.Minute)}
 		if withSCT {
-			lt.ExtraExtensions = []pkix.Extension{{Id: oidSCT, Value: list}}
+			lt.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 11129, 2, 4, 2}, Value: list}}
 		}
 		der, _ := x509.CreateCertificate(rand.Reader, lt, root, &leafKey.PublicKey, rootPriv)
 		leaf, _ := x509.ParseCertificate(der)
-		err := (&trustMaterial{root: root}).verifyCertificate(leaf, []float64{float64(signedAt.UnixMilli())})
+		tm := &trustMaterial{cas: []certAuthority{{chain: []*x509.Certificate{root}, start: 0, end: endOfTime}}}
+		err := tm.verifyCertificate(leaf, []float64{float64(signedAt.UnixMilli())}, 0)
 		if withSCT && (err == nil || err.Error() != "SCT verification failed") || !withSCT && err != nil {
 			t.Fatalf("sct=%v: %v", withSCT, err)
 		}

@@ -81,6 +81,12 @@ func main() {
 			delegates[d] = true
 		}
 	}
+	// The Flight promoter repository (owner/repo): only its promote.yaml on main signs a promotion
+	// attestation that verifies. Unset: promotion attestations show, never verified.
+	promotion, err := evidence.NewPromotionTrust(os.Getenv("PROMOTER_REPO"))
+	if err != nil {
+		log.Fatalf("glidepath-api: %v", err)
+	}
 	logger := server.NewLogger()
 	s := &server.Server{
 		Auth: &auth.Auth{Reviewer: auth.NewKubeReviewer(cs), Delegates: delegates},
@@ -91,7 +97,8 @@ func main() {
 		},
 		Releases: releases.Reader{CS: cs},
 		// Evidence reads each app's registry-credentials Secret per request (never cached), the Fulcio
-		// root ConfigMap and Rekor (cached 10 minutes, as Tower does).
+		// root ConfigMap and Rekor (cached 10 minutes, as Tower does). Promotion attestations verify
+		// against the embedded public Sigstore root instead.
 		Evidence: &evidence.Reader{
 			CS:          cs,
 			Credentials: evidence.SecretCredentials(cs),
@@ -99,6 +106,7 @@ func main() {
 			RekorURL:    env("REKOR_URL", "http://rekor-server.rekor-system.svc.cluster.local"),
 			HTTP:        &http.Client{Timeout: 30 * time.Second},
 			Log:         logger,
+			Promotion:   promotion,
 		},
 		Tests: &testkube.Client{
 			Base: env("TESTKUBE_URL", "http://testkube-api-server.testkube.svc.cluster.local:8088"),
