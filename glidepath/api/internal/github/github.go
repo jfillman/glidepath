@@ -40,12 +40,29 @@ type Session struct {
 	b      *Broker
 	app    string
 	mu     sync.Mutex
-	tokens map[string]string // owner/repo -> token, for this request only
+	tokens map[string]*mint // owner/repo -> its one mint, for this request only
+}
+
+// mint is one broker call; done closes when t/err are set, so a read that needs the token while a Prefetch is still
+// minting it waits for that call instead of making a second.
+type mint struct {
+	done chan struct{}
+	t    string
+	err  error
 }
 
 // Session opens a request's reads for app.
 func (b *Broker) Session(app string) *Session {
-	return &Session{b: b, app: app, tokens: map[string]string{}}
+	return &Session{b: b, app: app, tokens: map[string]*mint{}}
+}
+
+// Prefetch starts minting the tokens for repos now, in the background, so a request whose later reads depend on
+// earlier ones doesn't pay for each repo's mint in turn. A read already waiting on a failed mint gets its error; a later
+// read mints again.
+func (s *Session) Prefetch(ctx context.Context, owner string, repos ...string) {
+	for _, r := range repos {
+		go s.token(ctx, owner, r)
+	}
 }
 
 func (b *Broker) api() string {
@@ -67,11 +84,32 @@ func (e HTTPError) Error() string { return e.What }
 func (s *Session) token(ctx context.Context, owner, repo string) (string, error) {
 	key := owner + "/" + repo
 	s.mu.Lock()
-	t, ok := s.tokens[key]
-	s.mu.Unlock()
-	if ok {
-		return t, nil
+	m, ok := s.tokens[key]
+	if !ok {
+		m = &mint{done: make(chan struct{})}
+		s.tokens[key] = m
 	}
+	s.mu.Unlock()
+	if !ok {
+		m.t, m.err = s.mint(ctx, owner, repo)
+		if m.err != nil {
+			// Not kept: the session's next read of this repo asks the broker again, as it did before Prefetch.
+			s.mu.Lock()
+			delete(s.tokens, key)
+			s.mu.Unlock()
+		}
+		close(m.done)
+	}
+	select {
+	case <-m.done:
+		return m.t, m.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (s *Session) mint(ctx context.Context, owner, repo string) (string, error) {
+	key := owner + "/" + repo
 	sa, err := os.ReadFile(s.b.TokenPath)
 	if err != nil {
 		return "", fmt.Errorf("reading glidepath-api's broker token: %w", err)
@@ -97,9 +135,6 @@ func (s *Session) token(ctx context.Context, owner, repo string) (string, error)
 		// The broker's error names the rule that refused; it never carries a token.
 		return "", fmt.Errorf("the broker refused a GitHub read token for %s (%d): %s", key, res.StatusCode, out.Error)
 	}
-	s.mu.Lock()
-	s.tokens[key] = out.Token
-	s.mu.Unlock()
 	return out.Token, nil
 }
 

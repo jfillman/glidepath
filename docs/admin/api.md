@@ -339,6 +339,11 @@ owner), and mints an installation token down-scoped to that one repository and t
 `metadata`, all read. The token lives for the request and is dropped with it: it is never cached, logged, returned,
 or put in an error.
 
+Each mint is a broker TokenReview and two GitHub calls. A promotion reads the gitops repo only after the plan and
+the source, so it asks for that token at the start, alongside the plan's read; a rollback asks for it
+while it reads the release records. A read that needs a token still being minted waits for that mint instead of
+asking again, and a failed mint is not kept, so the request's next read of that repo asks again.
+
 `GITHUB_OWNER` (the chart's `githubOwner`, from `platformCicdRepoUrl`) is the owner of every app repo; the API
 never takes an owner from the request.
 

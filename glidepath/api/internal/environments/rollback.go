@@ -137,6 +137,8 @@ func (c *Client) Rollback(ctx context.Context, app *apps.App, env string, req Ro
 	if len(req.Reason) > 1024 || len(req.TargetReleaseID) > 256 {
 		return nil, Invalid{"reason is at most 1024 characters, targetReleaseId 256"}
 	}
+	gh := c.GitHub(app.Name)
+	prefetch(ctx, gh, c.Owner, ReposOf(app).Gitops) // minted while the release records are read
 	plan, err := c.RollbackPlan(ctx, app, env, req.Cluster)
 	if err != nil {
 		return nil, err
@@ -158,7 +160,7 @@ func (c *Client) Rollback(ctx context.Context, app *apps.App, env string, req Ro
 	replaces := plan.Current.ReleaseID
 
 	// The branch open-release-pr uses for a rollback: a repeated rollback finds the open PR instead of a second run.
-	url, err := c.GitHub(app.Name).OpenPR(ctx, c.Owner, ReposOf(app).Gitops, "release-rollback-"+env+"-"+short(target.GitRevision))
+	url, err := gh.OpenPR(ctx, c.Owner, ReposOf(app).Gitops, "release-rollback-"+env+"-"+short(target.GitRevision))
 	if err != nil {
 		return nil, err
 	}

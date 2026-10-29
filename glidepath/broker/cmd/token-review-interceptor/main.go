@@ -91,6 +91,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("loading in-cluster config: %v", err)
 	}
+	// Every interceptor call and every token mint is a TokenReview, so client-go's default 5 QPS / burst 10 queued
+	// them during a pipeline's event burst ("Waited for 1.16s due to client-side throttling", 2026-10-29), in front
+	// of glidepath-api's GitHub read tokens too. A TokenReview is cheap for the API server; priority and fairness
+	// still applies there.
+	cfg.QPS, cfg.Burst = 50, 100
 	clientset, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Fatalf("building clientset: %v", err)
