@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
 	"github.com/glidepath/api/internal/environments"
+	"github.com/glidepath/api/internal/events"
 	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
 	"github.com/glidepath/api/internal/pipelineruns"
@@ -38,11 +40,18 @@ type Server struct {
 	Tests    *testkube.Client
 	Runs     *pipelineruns.Client
 	Envs     *environments.Client
-	Contract []byte
-	Known    []explain.KnownFailure // the contract's knownFailures, compiled (explain.Load)
-	Version  int                    // the contract's contractVersion
-	Log      *slog.Logger
-	Now      func() time.Time
+	Events   *events.Store // nil: no event routes
+	Tap      http.Handler  // the broker's ClusterInterceptor glidepath-api-events (events.Tap)
+	Peer     http.Handler  // the other replicas (events.PeerHandler)
+	// Heartbeat is how often an idle event stream gets a comment line; ResumeGrace how far before a
+	// Last-Event-ID a resume also replays (events.Resume).
+	Heartbeat   time.Duration
+	ResumeGrace time.Duration
+	Contract    []byte
+	Known       []explain.KnownFailure // the contract's knownFailures, compiled (explain.Load)
+	Version     int                    // the contract's contractVersion
+	Log         *slog.Logger
+	Now         func() time.Time
 }
 
 // op describes one operation, for authorization and the audit line.
@@ -52,6 +61,9 @@ type op struct {
 	resource    string // "" = any authenticated caller
 	subresource string
 	verb        string
+	// queryApp: the app is the optional ?app= (GET /v1/events), not a path segment. Without it the
+	// caller is authorized cluster-wide (a SubjectAccessReview with no namespace).
+	queryApp bool
 }
 
 type handler func(ctx context.Context, w http.ResponseWriter, r *http.Request, c *auth.Caller, app *apps.App) error
@@ -61,23 +73,33 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
-	mux.Handle("GET /v1/whoami", s.wrap(op{"whoami", "T0", "", "", ""}, s.whoami))
-	mux.Handle("GET /v1/contract", s.wrap(op{"getContract", "T0", "", "", ""}, s.contract))
-	mux.Handle("GET /v1/apps/{app}/runs", s.wrap(op{"listRuns", "T0", "runs", "", "list"}, s.listRuns))
-	mux.Handle("GET /v1/apps/{app}/runs/{result}", s.wrap(op{"getRun", "T0", "runs", "", "get"}, s.getRun))
-	mux.Handle("GET /v1/apps/{app}/runs/{result}/logs/{taskRun}", s.wrap(op{"getRunLog", "T0", "runs", "logs", "get"}, s.getLog))
-	mux.Handle("GET /v1/apps/{app}/runs/{result}/explain", s.wrap(op{"explainRun", "T0", "runs", "logs", "get"}, s.explainRun))
-	mux.Handle("GET /v1/apps/{app}/releases", s.wrap(op{"listReleases", "T0", "releases", "", "list"}, s.listReleases))
-	mux.Handle("GET /v1/apps/{app}/releases/{chainId}", s.wrap(op{"getRelease", "T0", "releases", "", "get"}, s.getRelease))
-	mux.Handle("GET /v1/apps/{app}/evidence", s.wrap(op{"getEvidence", "T0", "evidence", "", "get"}, s.getEvidence))
-	mux.Handle("GET /v1/apps/{app}/tests", s.wrap(op{"listTests", "T0", "tests", "", "list"}, s.listTests))
-	mux.Handle("GET /v1/apps/{app}/tests/{id}/report", s.wrap(op{"getTestReport", "T0", "tests", "", "get"}, s.getTestReport))
-	mux.Handle("POST /v1/apps/{app}/pipelineruns/{name}/rerun", s.wrap(op{"rerunRun", "T1", "runs", "", "rerun"}, s.rerunRun))
-	mux.Handle("POST /v1/apps/{app}/pipelineruns/{name}/cancel", s.wrap(op{"cancelRun", "T1", "runs", "", "cancel"}, s.cancelRun))
-	mux.Handle("GET /v1/apps/{app}/environments", s.wrap(op{"listEnvironments", "T0", "environments", "", "list"}, s.listEnvironments))
-	mux.Handle("GET /v1/apps/{app}/environments/{env}/rollback-plan", s.wrap(op{"getRollbackPlan", "T0", "environments", "", "get"}, s.getRollbackPlan))
-	mux.Handle("POST /v1/apps/{app}/environments/{env}/promote", s.wrap(op{"promoteEnvironment", "T2", "environments", "", "promote"}, s.promoteEnvironment))
-	mux.Handle("POST /v1/apps/{app}/environments/{env}/rollback", s.wrap(op{"rollbackEnvironment", "T2", "environments", "", "rollback"}, s.rollbackEnvironment))
+	mux.Handle("GET /v1/whoami", s.wrap(op{"whoami", "T0", "", "", "", false}, s.whoami))
+	mux.Handle("GET /v1/contract", s.wrap(op{"getContract", "T0", "", "", "", false}, s.contract))
+	mux.Handle("GET /v1/apps/{app}/runs", s.wrap(op{"listRuns", "T0", "runs", "", "list", false}, s.listRuns))
+	mux.Handle("GET /v1/apps/{app}/runs/{result}", s.wrap(op{"getRun", "T0", "runs", "", "get", false}, s.getRun))
+	mux.Handle("GET /v1/apps/{app}/runs/{result}/logs/{taskRun}", s.wrap(op{"getRunLog", "T0", "runs", "logs", "get", false}, s.getLog))
+	mux.Handle("GET /v1/apps/{app}/runs/{result}/explain", s.wrap(op{"explainRun", "T0", "runs", "logs", "get", false}, s.explainRun))
+	mux.Handle("GET /v1/apps/{app}/releases", s.wrap(op{"listReleases", "T0", "releases", "", "list", false}, s.listReleases))
+	mux.Handle("GET /v1/apps/{app}/releases/{chainId}", s.wrap(op{"getRelease", "T0", "releases", "", "get", false}, s.getRelease))
+	mux.Handle("GET /v1/apps/{app}/evidence", s.wrap(op{"getEvidence", "T0", "evidence", "", "get", false}, s.getEvidence))
+	mux.Handle("GET /v1/apps/{app}/tests", s.wrap(op{"listTests", "T0", "tests", "", "list", false}, s.listTests))
+	mux.Handle("GET /v1/apps/{app}/tests/{id}/report", s.wrap(op{"getTestReport", "T0", "tests", "", "get", false}, s.getTestReport))
+	mux.Handle("POST /v1/apps/{app}/pipelineruns/{name}/rerun", s.wrap(op{"rerunRun", "T1", "runs", "", "rerun", false}, s.rerunRun))
+	mux.Handle("POST /v1/apps/{app}/pipelineruns/{name}/cancel", s.wrap(op{"cancelRun", "T1", "runs", "", "cancel", false}, s.cancelRun))
+	mux.Handle("GET /v1/apps/{app}/environments", s.wrap(op{"listEnvironments", "T0", "environments", "", "list", false}, s.listEnvironments))
+	mux.Handle("GET /v1/apps/{app}/environments/{env}/rollback-plan", s.wrap(op{"getRollbackPlan", "T0", "environments", "", "get", false}, s.getRollbackPlan))
+	mux.Handle("POST /v1/apps/{app}/environments/{env}/promote", s.wrap(op{"promoteEnvironment", "T2", "environments", "", "promote", false}, s.promoteEnvironment))
+	mux.Handle("POST /v1/apps/{app}/environments/{env}/rollback", s.wrap(op{"rollbackEnvironment", "T2", "environments", "", "rollback", false}, s.rollbackEnvironment))
+	mux.Handle("GET /v1/events", s.wrap(op{"streamEvents", "T0", "events", "", "list", true}, s.streamEvents))
+	mux.Handle("GET /v1/events/recent", s.wrap(op{"listRecentEvents", "T0", "events", "", "list", true}, s.listRecentEvents))
+	// Not /v1: the broker's interceptor call and the replicas' fan-out. Each authenticates its caller
+	// itself (internal/events), since anything in the cluster can reach this port.
+	if s.Tap != nil {
+		mux.Handle("POST /internal/events/tap", s.Tap)
+	}
+	if s.Peer != nil {
+		mux.Handle(events.PeerPath, s.Peer)
+	}
 	return mux
 }
 
@@ -117,8 +139,13 @@ func classify(err error) (int, apiError) {
 		prRef  pipelineruns.Refused
 		envInv environments.Invalid
 		envRef environments.Refused
+		evQ    events.Invalid
 	)
 	switch {
+	case errors.Is(err, events.ErrBusy):
+		return http.StatusServiceUnavailable, apiError{err.Error(), "GP-API-503", "this replica serves its maximum number of event streams; retry, or read GET /v1/events/recent"}
+	case errors.As(err, &evQ):
+		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
 	case errors.As(err, &envInv):
 		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
 	case errors.As(err, &envRef):
@@ -155,6 +182,9 @@ func note(w http.ResponseWriter, kv ...any) {
 
 func (r *recorder) WriteHeader(s int) { r.status = s; r.ResponseWriter.WriteHeader(s) }
 
+// Unwrap lets http.ResponseController reach the connection (an event stream flushes).
+func (r *recorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (s *Server) wrap(o op, h handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -163,6 +193,9 @@ func (s *Server) wrap(o op, h handler) http.Handler {
 		var caller *auth.Caller
 		decision := "allow"
 		appName := r.PathValue("app")
+		if o.queryApp {
+			appName = r.URL.Query().Get("app")
+		}
 		err := func() error {
 			c, err := s.Auth.Authenticate(r)
 			if err != nil {
@@ -189,7 +222,15 @@ func (s *Server) wrap(o op, h handler) http.Handler {
 				}
 			}
 			if o.resource != "" {
-				if err := s.Auth.Authorize(r.Context(), c, o.verb, o.resource, o.subresource, app.Namespace, ""); err != nil {
+				ns := ""
+				if app != nil {
+					ns = app.Namespace
+				}
+				if err := s.Auth.Authorize(r.Context(), c, o.verb, o.resource, o.subresource, ns, ""); err != nil {
+					if e, ok := auth.AsError(err); ok && ns == "" {
+						e.Msg = fmt.Sprintf("%s may not %s %s.%s cluster-wide", c.User, o.verb, o.resource, auth.Group)
+						e.Hint = "pass app=<app> to read one app's events, or bind glidepath-api-reader cluster-wide (the chart's api.readers)"
+					}
 					return err
 				}
 			}

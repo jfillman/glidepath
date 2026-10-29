@@ -89,6 +89,12 @@ api:
   # only identity a promotion attestation in /evidence verifies with (public Sigstore). Empty: promoter.dispatchRepo;
   # both empty: promotion attestations show, never verified.
   promoterRepo: ""
+  # GET /v1/events (docs/admin/api.md#events): each replica's in-memory buffer (best-effort, never persisted) and
+  # how many streams one replica serves at once.
+  events:
+    maxEvents: 2000
+    maxAge: 24h
+    maxStreams: 100
 
 # Shared Trivy server (templates/trivy/trivy-server.yaml): holds the vulnerability DB so the catalog's
 # image-scan/generate-sbom pods stop downloading it. Keep the tag equal to TRIVY_VERSION in

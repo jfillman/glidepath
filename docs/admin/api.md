@@ -7,7 +7,8 @@ PipelineRuns; and it can [propose a promotion or a rollback](#promote-and-roll-b
 Phases 1 and 2 of the [Glidepath API spec](https://hangarplatform.dev/library/glidepath-api/) are the reads
 (tier T0). Phase 3's first writes (tier T1) are re-run and cancel; previews and `cicd.yaml` pull requests are
 still to come. Phase 4 (tier T2, propose) is promote and roll back: each only starts the app's own `release`
-Pipeline, whose gitops PR a human merges. Nothing else is written.
+Pipeline, whose gitops PR a human merges. Nothing else is written. Phase 5 starts with the [event stream](#events):
+every CDEvent the shared broker carries, re-verified and served as server-sent events with resume.
 
 **Not offered, by design:** promoting to a Ground environment and cloud pins. Both are a commit to a repo
 (Tower's Ground promote commits straight to the app repo's release file; a pin opens a PR itself), so both
@@ -36,6 +37,8 @@ fails if the server's routes and the spec ever differ.
 | `GET /v1/apps/{app}/environments/{env}/rollback-plan?cluster=` | T0 | `get environments` | The environment's current release and its eligible [rollback targets](#rollback-plan) |
 | `POST /v1/apps/{app}/environments/{env}/promote` | T2 | `promote environments` | [Promote](#promote) to a Flight environment: start the release run, once per `Idempotency-Key` |
 | `POST /v1/apps/{app}/environments/{env}/rollback` | T2 | `rollback environments` | [Roll back](#roll-back) a Flight environment to a plan target, once per `Idempotency-Key` |
+| `GET /v1/events?app=&type=&since=` | T0 | `list events` | The [CDEvents stream](#events), as server-sent events, resumable with `Last-Event-ID` |
+| `GET /v1/events/recent?app=&type=&since=&limit=` | T0 | `list events` | The same events from the buffer, as JSON |
 
 Runs come from Tekton Results, so they cover 30 days and never go back past the creation of the
 app's current `-cicd` namespace (an app deleted and recreated under the same name doesn't inherit
@@ -93,7 +96,8 @@ in-cluster ServiceAccount, or a federated identity from another cluster (Tower's
 the prod cluster arrive as `hangar:<cluster>:<serviceaccount>`).
 
 **What you may read** is a SubjectAccessReview in the app's `-cicd` namespace, on a group nothing
-serves: `glidepath.hangar.io`, resources `runs`, `runs/logs`, `releases`, `evidence`, `tests` and `environments`. RBAC
+serves: `glidepath.hangar.io`, resources `runs`, `runs/logs`, `releases`, `evidence`, `tests`, `environments` and
+`events`. RBAC
 only needs the strings, so access is ordinary RBAC:
 
 - `api.readers` binds the chart's `glidepath-api-reader` ClusterRole cluster-wide (users, groups,
@@ -459,6 +463,100 @@ is shown from its summary. A run the agent reported `aborted` while every step p
 JUnit report the check-ride templates leave (`data/artifacts/junit.xml`), and only for a run tagged
 with this app; Tower's own route doesn't check that.
 
+## Events
+
+`GET /v1/events` streams the CDEvents Glidepath's pipelines and the release relay send to the shared broker
+(`cdevents-broker`, [chaining.md](chaining.md)): builds, tests, deploys, releases, promotion-ready, pipeline runs
+started and finished. Each is one server-sent event:
+
+```text
+id: 1761742812345678-3f2a9c01b7de
+data: {"id":"1761742812345678-3f2a9c01b7de","app":"gate-api","routingKey":"gate-api.pipelinerun.finished","receivedAt":"2026-10-29T12:00:12.345678Z","event":{...the CDEvent...}}
+```
+
+- `app` is the app the sender's verified identity speaks for; `event` is the CDEvent exactly as sent.
+- `routingKey` is `<app>.<subject>.<predicate>` from the CDEvent type, lower case. It has AMQP topic semantics, so
+  `gate-api.pipelinerun.*` or `*.release.#` select events the way Autopilot's event triggers do
+  (`autopilot.triggers.amqp_topic_match`).
+- `app=` keeps one app's events, `type=` a CDEvent type prefix (`dev.cdevents.pipelinerun.`).
+- A comment line (`: ping`) every 15 s keeps an idle stream open through proxies, including the API server's
+  service proxy. A replica serves at most 100 streams (`api.events.maxStreams`); one more is `GP-API-503`.
+
+**Resume.** Ids are the first receiving replica's receive time (unix microseconds) and a hash of the event's
+`context.source` and `context.id`, so they mean the same on every replica. Reconnect with `Last-Event-ID` (what an
+EventSource sends by itself) or `?since=<id>` and the replica first replays what its buffer holds after that id, plus
+anything received up to 10 s before it: replicas add each other's events slightly out of order, and replaying a
+little more is how a resume misses nothing. A subscriber dedupes by `id`. `?since=` also takes an RFC 3339 time. A
+client that falls 256 events behind has its stream ended; it reconnects with `Last-Event-ID`.
+
+**Best-effort, not durable.** Each replica keeps the last 2000 events, none older than 24 h (`api.events.maxEvents`,
+`api.events.maxAge`), in memory. A replica that starts copies its peers' buffers, so a rolling deploy keeps them, but
+when every replica restarts at once the buffer is empty, and a resume from before what the buffer holds silently
+starts at its oldest event. For history, read runs and release records; the stream is for reacting.
+
+`GET /v1/events/recent` answers the same filters from the buffer as JSON (`{"events":[...]}`, oldest first, the
+newest `limit`, default 100): for tests, agents, and callers that poll with `since=` instead of holding a stream.
+
+**Who may read events.** `list` on `events.glidepath.hangar.io` (one verb for both routes; `watch` is not used). With
+`app=` it is checked in that app's `-cicd` namespace like every other read; without `app=` it is checked
+cluster-wide, so a caller with only per-app access must pass `app=` (`GP-AUTHZ-001` says so). `glidepath-api-reader`
+includes `events`, so `api.readers` can read the stream.
+
+**Why SSE and not AMQP.** The Glidepath API spec's phase 5 says "AMQP topics for Autopilot". The platform runs no
+RabbitMQ for Glidepath, and adding one for a single subscriber costs more than it buys, so the API serves SSE with
+resume instead. `routingKey` keeps the topic semantics, so an AMQP bridge (stream in, publish with that key) can be
+added later without any subscriber changing what it matches.
+
+### How events get in
+
+```
+pipeline / glidepath-relay --POST--> el-cdevents-broker (EventListener, every Trigger in every namespace)
+                                         |
+                                         +-- app Triggers: cdevents-broker-auth, then their CEL filters
+                                         +-- Trigger glidepath-api-events (platform-system)
+                                               |  ClusterInterceptor glidepath-api-events
+                                               v
+                                   glidepath-api /internal/events/tap   (always continue: false)
+                                               |  re-verify, store, forward
+                                               v
+                                   the other replicas /internal/events/peer
+```
+
+The tap is a Trigger in `platform-system` whose only interceptor is `glidepath-api-events` (glidepath-api's
+`/internal/events/tap`). The interceptor always answers `continue: false`, so the Trigger never creates anything
+(its TriggerTemplate exists only because a Trigger must name one, and the broker's ServiceAccount couldn't create
+its ConfigMap anyway).
+
+**The tap trusts nobody.** Anything in the cluster can POST to `glidepath-api:8080`, so the tap never assumes the
+broker or `cdevents-broker-auth` ran. It re-checks each event's `Authorization` header the way
+`cdevents-broker-auth` and the app Triggers' filters do together:
+
+- a TokenReview for the broker's audience (`cdevents-broker`; the audience in the interceptor request is ignored),
+  and the identity must be a ServiceAccount;
+- a pipeline's event (`context.source` `/glidepath/<namespace>/<run>`) must come from a ServiceAccount in that same
+  namespace, an app's `<type>-<app>-cicd` namespace; that names the app, and a `subject.content.appName` that says
+  otherwise is refused;
+- only `glidepath-relay` (`system:serviceaccount:platform-system:glidepath-relay`) may speak for any app, as
+  `release-outcome-trigger.yaml` allows: its event's `subject.content.appNamespace` must be the named app's `-cicd`
+  namespace and the source's.
+
+Anything else is dropped and logged (`events.tap drop` with the reason, type, source and event id; never a token or
+a header). An event that passes is logged as `events.tap keep`.
+
+**Fan-out.** The broker's interceptor call reaches one replica. That replica stores the event and posts it to every
+other address in the `glidepath-api` Service's EndpointSlices (a Role in `platform-system`: `list` and `watch` on
+`endpointslices`, nothing else), at `/internal/events/peer`, with a second projected token (audience
+`glidepath-api-peer`). A replica accepts a peer call only when TokenReview says that token is
+`system:serviceaccount:platform-system:glidepath-api` for that audience. Each replica dedupes by `context.source` +
+`context.id`, so a retried send or a peer's copy is kept once.
+
+```shell
+# live, through the service proxy, as a reader
+curl -N --cacert <ca> -H "Authorization: Bearer $TOKEN" -H "X-Glidepath-Authorization: Bearer $TOKEN" \
+  "$APISERVER/api/v1/namespaces/platform-system/services/glidepath-api:8080/proxy/v1/events?app=gate-api"
+kubectl logs -n platform-system deploy/glidepath-api | grep '"msg":"events.tap'
+```
+
 ## Errors
 
 Every refusal or failure is JSON with a stable `rule` and, where there is one, a `hint`:
@@ -470,11 +568,12 @@ Every refusal or failure is JSON with a stable `rule` and, where there is one, a
 | `GP-AUTH-003` | 403 | On-behalf-of from a caller that isn't a delegate |
 | `GP-AUTH-004` | 400 | A delegate's write must name the person (`X-Glidepath-On-Behalf-Of`) |
 | `GP-AUTHZ-001` | 403 | Not allowed to read or write this in this app's namespace |
-| `GP-API-400` | 400 | A malformed app name, run id, chain id, test run id, PipelineRun name, environment or cluster name, `Idempotency-Key`, `dryRun` or write body, or an image outside `ghcr.io` |
+| `GP-API-400` | 400 | A malformed app name, run id, chain id, test run id, PipelineRun name, environment or cluster name, `Idempotency-Key`, `dryRun` or write body, an image outside `ghcr.io`, or an event `since` or `limit` |
 | `GP-API-404` | 404 | No such app, run, PipelineRun, release record, or test report |
 | `GP-API-409` | 409 | The name a write's key derives is held by something that isn't that write's run; send a new key |
 | `GP-API-422` | 422 | The write can't be done as asked: out of order, a Ground target, an ineligible rollback target, nothing recorded to promote, no TriggerTemplate, or the cluster refused it (an admission policy or glidepath-api's RBAC). The `hint` says what would work; don't retry as is |
 | `GP-LOG-404` | 404 | The run exists, but Results archived no log for that TaskRun ([tekton-results.md](tekton-results.md#when-a-runs-logs-are-missing)) |
+| `GP-API-503` | 503 | This replica already serves its maximum number of event streams; retry, or read `GET /v1/events/recent` |
 | `GP-API-502` | 502 | A source failed (the API server, Tekton Results, GHCR, Rekor, Testkube, GitHub or the token broker); retry |
 
 ## Audit
@@ -485,7 +584,8 @@ run in the path) and `dryRun`; a re-run adds `idempotencyKeySha256` (the first 1
 the hash in the run's annotation, never the key), `created` and `replayed`; a cancel adds `result`
 (`cancelled`, `already-cancelled`, `already-finished`). A promote adds `env`, `cluster`, `idempotencyKeySha256`,
 `mode`, `created`, `replayed` and `prUrl`; a rollback `env`, `cluster`, `idempotencyKeySha256`, `target`,
-`replaces`, `created`, `replayed` and `prUrl`. No GitHub token is ever in an audit line.
+`replaces`, `created`, `replayed` and `prUrl`. No GitHub token is ever in an audit line. An event stream writes its
+audit line when it ends, so its `ms` is how long it was open.
 
 ```shell
 kubectl logs -n platform-system deploy/glidepath-api | grep '"msg":"audit"'
