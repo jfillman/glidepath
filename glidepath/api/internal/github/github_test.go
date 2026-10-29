@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // A session mints once per repo and sends the broker exactly {owner, repo, app} with the pod's projected token, read
@@ -87,5 +89,75 @@ func TestErrorsCarryNoToken(t *testing.T) {
 	}
 	if _, err := s.CommitSHA(context.Background(), "o", "shop", "abc1234"); err == nil || strings.Contains(err.Error(), "ghs-") {
 		t.Fatalf("commit: %v", err)
+	}
+}
+
+// Prefetch mints every repo at once, and a read that needs a token still being prefetched waits for that mint rather
+// than asking the broker again.
+func TestPrefetchMintsConcurrentlyOnce(t *testing.T) {
+	var mu sync.Mutex
+	mints := map[string]int{}
+	inflight, maxInflight := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/github-read-token" {
+			var req map[string]string
+			json.NewDecoder(r.Body).Decode(&req)
+			mu.Lock()
+			mints[req["repo"]]++
+			inflight++
+			if inflight > maxInflight {
+				maxInflight = inflight
+			}
+			mu.Unlock()
+			time.Sleep(100 * time.Millisecond)
+			mu.Lock()
+			inflight--
+			mu.Unlock()
+			json.NewEncoder(w).Encode(map[string]string{"token": "ghs-" + req["repo"]})
+			return
+		}
+		io.WriteString(w, `[]`)
+	}))
+	defer srv.Close()
+	tok := filepath.Join(t.TempDir(), "token")
+	os.WriteFile(tok, []byte("sa"), 0o600)
+	s := (&Broker{URL: srv.URL, TokenPath: tok, HTTP: srv.Client(), API: srv.URL}).Session("shop")
+
+	s.Prefetch(context.Background(), "o", "shop", "gitops-shop")
+	for _, repo := range []string{"gitops-shop", "shop"} {
+		if _, err := s.OpenPR(context.Background(), "o", repo, "b"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mints["shop"] != 1 || mints["gitops-shop"] != 1 || maxInflight != 2 {
+		t.Fatalf("mints %v, at most %d at once", mints, maxInflight)
+	}
+}
+
+// A failed mint is not kept: the session's next read of that repo asks the broker again.
+func TestFailedMintIsRetried(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/github-read-token" {
+			calls++
+			if calls == 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				io.WriteString(w, `{"error":"GitHub installation lookup failed"}`)
+				return
+			}
+			io.WriteString(w, `{"token":"ghs-shop"}`)
+			return
+		}
+		io.WriteString(w, `[]`)
+	}))
+	defer srv.Close()
+	tok := filepath.Join(t.TempDir(), "token")
+	os.WriteFile(tok, []byte("sa"), 0o600)
+	s := (&Broker{URL: srv.URL, TokenPath: tok, HTTP: srv.Client(), API: srv.URL}).Session("shop")
+	if _, err := s.OpenPR(context.Background(), "o", "shop", "b"); err == nil || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("first: %v", err)
+	}
+	if _, err := s.OpenPR(context.Background(), "o", "shop", "b"); err != nil || calls != 2 {
+		t.Fatalf("second: %v after %d mints", err, calls)
 	}
 }

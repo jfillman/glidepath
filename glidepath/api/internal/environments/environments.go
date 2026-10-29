@@ -70,6 +70,15 @@ type GitHub interface {
 	OpenPR(ctx context.Context, owner, repo, branch string) (string, error)
 }
 
+// prefetch starts gh minting the tokens for repos, when gh can (internal/github's Session does; test fakes needn't).
+func prefetch(ctx context.Context, gh GitHub, owner string, repos ...string) {
+	if p, ok := gh.(interface {
+		Prefetch(ctx context.Context, owner string, repos ...string)
+	}); ok {
+		p.Prefetch(ctx, owner, repos...)
+	}
+}
+
 // Templates reads a TriggerTemplate; tests swap it.
 type Templates interface {
 	Get(ctx context.Context, namespace, name string) (map[string]any, error)

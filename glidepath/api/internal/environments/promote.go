@@ -65,6 +65,9 @@ func (c *Client) Promote(ctx context.Context, app *apps.App, targetEnv string, r
 	}
 	gh := c.GitHub(app.Name)
 	repos := ReposOf(app)
+	// The gitops token is needed only after the plan and the source are read; minting it alongside saves a broker
+	// round trip on every promotion that gets that far.
+	prefetch(ctx, gh, c.Owner, repos.Gitops)
 	plan, err := fetchPlan(ctx, gh, c.Owner, repos)
 	if err != nil {
 		return nil, err
