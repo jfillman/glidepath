@@ -85,6 +85,7 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         source "${PLATFORM_LIB}/github-app.sh"
+        {{- include "glidepath-catalog.advisoryGatesByApp" . | nindent 8 }}
 
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
@@ -96,7 +97,8 @@ spec:
         # detect-bypass-merge.yaml/open-release-pr.yaml render off.
         sibling_gates=()
         for g in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if .required }}"{{ .name }}" {{ end }}{{ end }}; do
-          [[ "${g}" == "${SELF_GATE}" ]] || sibling_gates+=("${g}")
+          # A gate advisory for this app (catalog releaseGuardrailOverridesByApp) cannot hold it back either.
+          [[ "${g}" == "${SELF_GATE}" ]] || gate_advisory_for_app "${repo#gitops-}" "${g}" || sibling_gates+=("${g}")
         done
 
         echo "Waiting on sibling guardrail checks for ${REVISION}: ${sibling_gates[*]}"

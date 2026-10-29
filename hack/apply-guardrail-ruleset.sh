@@ -8,7 +8,10 @@
 # Only gates with `required: true` (the default) become required status checks; a gate with required: false is
 # advisory (its check is green by construction) and is left out, exactly as detect-bypass-merge leaves it out.
 # -f FILE (repeatable) layers a cluster's catalog values on the chart default - the same releaseGuardrailOverrides
-# map the catalog Application passes - so the ruleset matches what that cluster renders.
+# map the catalog Application passes - so the ruleset matches what that cluster renders. For OWNER/gitops-<app>, a
+# gate that file's releaseGuardrailOverridesByApp makes advisory for <app> (required: false) is left out of that
+# repo's ruleset too: its check still runs and can be red, and the chart does not let it hold that app's release.
+# sast, provenance and image-promotion are never dropped (the chart refuses them there).
 #
 # Options: --approvals N (default 2; 0 for a lab), --bypass-app-id ID (repeatable: a GitHub App allowed to bypass, e.g.
 # the one Crossplane's provider-github writes with), --integration-id ID (default 4461953, the Pipelines as Code app).
@@ -48,7 +51,15 @@ checks="$(jq --argjson id "${integration}" '
       | {context: ("Pipelines as Code CI / " + $g.name + "-"), integration_id: $id}]' <<<"${merged}")"
 bypass_json="$(printf '%s\n' "${bypass[@]:-}" | jq -R 'select(length>0) | {actor_id: (.|tonumber), actor_type: "Integration", bypass_mode: "always"}' | jq -s '.')"
 
-body="$(jq -n --argjson checks "${checks}" --argjson approvals "${approvals}" --argjson bypass "${bypass_json}" '{
+body_for() { # OWNER/REPO -> the ruleset JSON, without that app's per-app advisory gates
+  local app="${1#*/}" repo_checks
+  if [[ "${app}" == gitops-* ]]; then app="${app#gitops-}"; else app=""; fi
+  repo_checks="$(jq --arg app "${app}" --argjson merged "${merged}" '
+    (($merged.releaseGuardrailOverridesByApp // {})[$app] // {}) as $a
+    | [.[] | (.context | sub("^Pipelines as Code CI / "; "") | sub("-$"; "")) as $g
+        | select(($g | IN("sast", "provenance", "image-promotion"))
+                 or (($a[$g] | type) != "object") or ($a[$g].required != false))]' <<<"${checks}")"
+  jq -n --argjson checks "${repo_checks}" --argjson approvals "${approvals}" --argjson bypass "${bypass_json}" '{
   name: "Glidepath Guardrail Checks", target: "branch", enforcement: "active",
   conditions: {ref_name: {include: ["~DEFAULT_BRANCH"], exclude: []}},
   bypass_actors: $bypass,
@@ -59,9 +70,11 @@ body="$(jq -n --argjson checks "${checks}" --argjson approvals "${approvals}" --
       allowed_merge_methods: ["merge","squash","rebase"]}},
     {type: "required_status_checks", parameters: {strict_required_status_checks_policy: false,
       do_not_enforce_on_create: true, required_status_checks: $checks}}
-  ]}')"
+  ]}'
+}
 
 for repo in "${repos[@]}"; do
+  body="$(body_for "${repo}")"
   if [[ ${dry} -eq 1 ]]; then echo "# ${repo}"; echo "${body}" | jq .; continue; fi
   id="$(gh api "repos/${repo}/rulesets" --jq '.[]|select(.name=="Glidepath Guardrail Checks")|.id' 2>/dev/null || true)"
   if [[ -n "${id}" ]]; then gh api -X PUT "repos/${repo}/rulesets/${id}" --input - <<<"${body}" >/dev/null && echo "updated ${repo} (#${id})"

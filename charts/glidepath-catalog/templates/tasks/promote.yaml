@@ -94,6 +94,7 @@ spec:
         W="${PROMOTE_WORK:-/workspace/promote}"
         refuse() { printf '%s' "$1" > "${W}/reason"; echo "error: $1" >&2; exit 1; }
         {{- include "glidepath-catalog.promoterGitHub" . | nindent 8 }}
+        {{- include "glidepath-catalog.advisoryGatesByApp" . | nindent 8 }}
 
         [[ "${REPO_URL}" =~ ^https://github\.com/([A-Za-z0-9-]+)/(gitops-([a-z0-9][a-z0-9-]*))(\.git)?/?$ ]] \
           || refuse "${REPO_URL} is not a gitops-<app> repository"
@@ -136,14 +137,17 @@ spec:
         # PROM-03: every required gate green on the PR's current head commit. A /retest leaves several runs per gate;
         # the newest counts. The fan-in starts this run from the last gate's finally, while that gate's own check run
         # is still in progress, so a gate that is queued or in progress is waited for (GATE_WAIT_SECONDS); a red or
-        # missing one refuses at once.
+        # missing one refuses at once. A gate advisory for this app (catalog releaseGuardrailOverridesByApp) is left
+        # out: its check stays red on the PR, but it does not hold this app's release.
         required_gates="{{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if and .required (ne .name "image-promotion") }}{{ .name }} {{ end }}{{ end }}"
+        [[ -z "$(advisory_gates_for_app "${app}")" ]] || echo "advisory for ${app} (catalog releaseGuardrailOverridesByApp), not required: $(advisory_gates_for_app "${app}")"
         deadline=$(( SECONDS + ${GATE_WAIT_SECONDS:-300} ))
         while :; do
           checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")" \
             || refuse "could not read the gates on ${head_sha}"
           gates=""; red=""; pending=""
           for gate in ${required_gates}; do
+            gate_advisory_for_app "${app}" "${gate}" && continue
             c="$(jq -r --arg n "Pipelines as Code CI / ${gate}-" \
               '[.check_runs[] | select(.name == $n)] | sort_by(.started_at) | last | if . == null then "missing" elif .status != "completed" then .status else .conclusion end' <<<"${checks}")"
             gates="${gates}${gates:+,}${gate}=${c}"

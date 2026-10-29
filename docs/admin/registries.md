@@ -88,6 +88,11 @@ Why it works without a polling pod or a lock:
   start one run. After a refused or failed attempt, the next gate to finish asks again under a new id.
 - **Skipped:** a stale commit (the PR moved on), a merged or closed PR, a branch that is not `release-*`, a PR that
   changes no `<cluster>/<env>/release.yaml` (cloud pin PRs copy at deploy), a commit already promoted or promoting.
+- **A gate advisory for this app only** (catalog `releaseGuardrailOverridesByApp`,
+  [release-guardrails.md](release-guardrails.md#one-app-only-releaseguardrailoverridesbyapp-2026-10-28)) is not part
+  of "every required gate" for that app, here or in `promote`'s PROM-03: its check still runs and can be red, and the
+  release is promoted anyway. When it is the last gate to finish, red, it still asks. Every other app still waits for
+  it.
 - **A lost event** is recovered by the next gate to finish: comment `/retest <gate>-` on any gate. `promote` re-checks
   every rule itself, so an event sent by hand gets nothing the rules forbid.
 

@@ -304,6 +304,18 @@ releaseGuardrails:
 # result (_helpers.tpl, glidepath-catalog.guardrails); hack/apply-guardrail-ruleset.sh takes the same file with -f.
 releaseGuardrailOverrides: {}
 
+# Per-app advisory gates (2026-10-28), admin-owned like the map above - never cicd.yaml, never Tower:
+#   releaseGuardrailOverridesByApp:
+#     backstage:
+#       image-scan: { required: false }   # 85 HIGH trixie base CVEs with no fix yet
+# Narrower than the per-cluster form: the gate still runs as a hard check and posts its real verdict on that app's
+# release PRs (red stays red), but nothing that decides whether the release may go ahead waits on it for that app -
+# the promotion fan-in, promote's PROM-03, detect-bypass-merge, release-log-emit's bypass flag,
+# wait-for-release-guardrails, the PR body's table and hack/apply-guardrail-ruleset.sh. Only `required: false` is
+# accepted; sast, provenance and image-promotion, an unknown gate and a non-plain app name fail the render
+# (_helpers.tpl glidepath-catalog.advisoryGatesByApp, docs/admin/release-guardrails.md).
+releaseGuardrailOverridesByApp: {}
+
 # Ground and Flight registries (ADR-0029). Ground is where builds push and what lower clusters, Testkube and the
 # release gates read. Flight is what a Flight environment's release file pins once promotion is on; only the
 # promoter writes it. Admin-owned: never cicd.yaml, never Tower settings. A namespace of "" means the app's GitHub

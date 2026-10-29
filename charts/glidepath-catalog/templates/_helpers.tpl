@@ -143,6 +143,52 @@ A gate missing from the registry is "true" (nothing has made it advisory).
 {{- end -}}
 
 {{- /*
+glidepath-catalog.advisoryGatesByApp (2026-10-28): bash functions for .Values.releaseGuardrailOverridesByApp, the
+per-app form of releaseGuardrailOverrides ({ <app>: { <gate>: { required: false } } }, admin-owned like the
+per-cluster map). Include it once at the top of a step script; it defines
+  advisory_gates_for_app <app>          prints the gates advisory for that app only, space-separated ("" otherwise)
+  gate_advisory_for_app <app> <gate>    exit 0 when <gate> is advisory for <app>
+Per-app advisory is narrower than per-cluster: the gate still runs as a hard check and posts its real verdict (red
+stays red - the findings are real), it just does not hold that app's release. So it is read only where a
+required-gate set is computed at runtime for a known app (the promotion fan-in, promote PROM-03, the bypass
+detectors, the PR body's table, the ruleset script); the gate Pipelines' hard/advisory variant (gateRequired) is a
+render-time, per-cluster choice and stays as it is. Refusals mirror glidepath-catalog.guardrails: sast and
+provenance (the image's integrity) and image-promotion (the Flight copy is the release) can never be advisory, an
+app is a plain gitops-<app> name, a gate must be in the registry, and only required: false is accepted (a per-app
+override cannot make a gate stricter than its cluster: the hard/advisory variant is chosen per cluster). App and
+gate names are validated here, so they are safe as bare case patterns and words in the rendered bash.
+*/ -}}
+{{- define "glidepath-catalog.advisoryGatesByApp" -}}
+{{- $byApp := .Values.releaseGuardrailOverridesByApp | default dict -}}
+{{- if not (kindIs "map" $byApp) }}{{ fail "releaseGuardrailOverridesByApp must be a map of <app>: { <gate>: { required: false } } (docs/admin/release-guardrails.md)" }}{{ end -}}
+{{- $known := list -}}
+{{- range .Values.releaseGuardrails }}{{ $known = append $known .name }}{{ end -}}
+# releaseGuardrailOverridesByApp (catalog values, _helpers.tpl glidepath-catalog.advisoryGatesByApp): gates that run
+# and report for one app but do not hold its release.
+advisory_gates_for_app() {
+  case "${1:-}" in
+{{- range $app, $gates := $byApp }}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]*$" $app) }}{{ fail (printf "releaseGuardrailOverridesByApp: %q is not an app name (the <app> of gitops-<app>: lowercase letters, digits and dashes) (docs/admin/release-guardrails.md)" $app) }}{{ end -}}
+{{- if not (kindIs "map" $gates) }}{{ fail (printf "releaseGuardrailOverridesByApp.%s must be a map of <gate>: { required: false } (docs/admin/release-guardrails.md)" $app) }}{{ end -}}
+{{- $advisory := list -}}
+{{- range $gate, $o := $gates -}}
+{{- if has $gate (list "sast" "provenance") }}{{ fail (printf "releaseGuardrailOverridesByApp.%s: %s cannot be required: false - it verifies the image's integrity and must enforce, not advise (docs/admin/release-guardrails.md)" $app $gate) }}{{ end -}}
+{{- if eq $gate "image-promotion" }}{{ fail (printf "releaseGuardrailOverridesByApp.%s: image-promotion cannot be required: false - the Flight copy is what the release deploys (docs/admin/registries.md)" $app) }}{{ end -}}
+{{- if not (has $gate $known) }}{{ fail (printf "releaseGuardrailOverridesByApp.%s: %q is not a gate in releaseGuardrails (docs/admin/release-guardrails.md)" $app $gate) }}{{ end -}}
+{{- if not (and (kindIs "map" $o) (hasKey $o "required") (kindIs "bool" (index $o "required")) (not (index $o "required"))) -}}
+{{- fail (printf "releaseGuardrailOverridesByApp.%s.%s: only { required: false } is supported - a per-app override can make a gate advisory for that app, never stricter than its cluster (docs/admin/release-guardrails.md)" $app $gate) -}}
+{{- end -}}
+{{- $advisory = append $advisory $gate -}}
+{{- end }}
+    {{ $app }}) echo "{{ join " " $advisory }}" ;;
+{{- end }}
+    *) echo "" ;;
+  esac
+}
+gate_advisory_for_app() { [[ -n "${2:-}" && " $(advisory_gates_for_app "${1:-}") " == *" ${2} "* ]]; }
+{{- end -}}
+
+{{- /*
 glidepath-catalog.itsmEnabled: "true" when a change-management provider is configured (.Values.itsm.provider is
 servicenow or webhook), else "false". The lifecycle tasks (open-release-pr's change creation, bypass-merge-check's
 itsm-implement, the outcome pipelines' itsm-close) and the real itsm gate render only when true.

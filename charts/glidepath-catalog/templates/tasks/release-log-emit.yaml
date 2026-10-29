@@ -116,6 +116,7 @@ spec:
         set -euo pipefail
         source "${PLATFORM_LIB}/otel.sh"
         source "${PLATFORM_LIB}/github-app.sh"
+        {{- include "glidepath-catalog.advisoryGatesByApp" . | nindent 8 }}
 
         if [[ -z "${PR_URL}" ]]; then
           echo "[release-log-emit] no pr-url (app onboarded before this field existed) - skipping, nothing to enrich" >&2
@@ -157,6 +158,11 @@ spec:
         # Every gate's conclusion is recorded; only a required one (registry `required`, default
         # true - an advisory gate's check is green by construction) can mark the merge a bypass.
         required_gates=" {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if .required }}{{ .name }} {{ end }}{{ end }}"
+        # A gate advisory for this app (catalog releaseGuardrailOverridesByApp) is still recorded with its real
+        # conclusion, but a merge past it is not a bypass. The app is the gitops repo's (gitops-<app>), as the
+        # override is keyed; APP_NAME only when the repo is not named that way.
+        log_app="${APP_NAME}"; [[ "${repo}" == gitops-* ]] && log_app="${repo#gitops-}"
+        for g in $(advisory_gates_for_app "${log_app}"); do required_gates=${required_gates/" ${g} "/" "}; done
         for gate in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ .name }} {{ end }}; do
           # Trailing "-": see wait-for-release-guardrails.yaml's identical match for why -
           # the real check-run name includes generateName's own trailing dash. Without

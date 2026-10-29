@@ -76,3 +76,7 @@ first, so the ruleset matches what the cluster's catalog renders:
 ```bash
 hack/apply-guardrail-ruleset.sh --dry-run -f cluster-catalog-values.yaml <owner>/gitops-<app>   # the values the cluster's catalog Application passes
 ```
+
+The ruleset is built per repository: for `<owner>/gitops-<app>`, a gate that file's `releaseGuardrailOverridesByApp`
+makes advisory for `<app>` is left out of that repo's required status checks and kept for every other repo
+([release-guardrails.md](release-guardrails.md#one-app-only-releaseguardrailoverridesbyapp-2026-10-28)).

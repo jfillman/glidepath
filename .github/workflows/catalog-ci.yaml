@@ -110,6 +110,15 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: charts/glidepath-catalog/tests/promotion_fan_in_test.sh
 
+  # The break-glass detector (detect-bypass-merge): a per-app advisory gate (releaseGuardrailOverridesByApp) merged
+  # past red is not a bypass for that app, and still is for every other.
+  detect-bypass-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: charts/glidepath-catalog/tests/detect_bypass_merge_test.sh
+
   # validate-values and policy-validation-gate on a /retest: pr-number arrives as the unsubstituted PaC template.
   retest-pr-number:
     runs-on: ubuntu-latest
@@ -197,11 +206,13 @@ jobs:
           helm template glidepath-catalog charts/glidepath-catalog \
             -f charts/glidepath-catalog/tests/values.example.yaml \
             --namespace platform-catalog > /tmp/rendered.yaml
-          # With promotion on (ADR-0029 phase 3): the fan-in step and the promote Trigger render too.
+          # With promotion on (ADR-0029 phase 3): the fan-in step and the promote Trigger render too; and a per-app
+          # advisory gate (releaseGuardrailOverridesByApp), so its lookup renders in every consumer.
           helm template glidepath-catalog charts/glidepath-catalog \
             -f charts/glidepath-catalog/tests/values.example.yaml \
             --set promotion.enabled=true --set promotion.pinDigest=true \
             --set registries.flight.namespace=riley-roooo --set promotion.promoter.repo=riley-roooo/flight-promoter \
+            --set-json 'releaseGuardrailOverridesByApp={"backstage":{"image-scan":{"required":false}}}' \
             --namespace platform-catalog > /tmp/rendered-promotion.yaml
 
       - name: Structural sanity check
