@@ -124,6 +124,23 @@ credential, so the same broker has another endpoint, `POST /github-read-token` (
 glidepath-api mints one per repo per request and drops it with the request (never cached, logged or returned), the
 same never-persisted shape as the per-request registry credential its evidence reads use.
 
+### The agent installation token
+
+Clearance's `repo.pr.open` opens PRs as the agents' own GitHub App (`hangar-autopilot-agents`, hangar decision D4), never
+as the platform App, so an agent's PR is attributable to an agent. Clearance holds no GitHub credential and no App key:
+it asks the broker for a token per PR, `POST /agent-installation-token` (`agenttoken.go`):
+
+| | |
+|---|---|
+| Caller | `Authorization: Bearer <projected SA token>`, audience `agent-installation-token`, checked by TokenReview. Only the usernames in `agentToken.callers` (env `AGENT_TOKEN_CALLERS`; default `system:serviceaccount:autopilot-system:clearance`). Anyone else is 403, an empty list 503. |
+| Body | `{"owner": "<owner>", "repo": "<repo>", "app": "<app>"}` |
+| Repo rule | `/github-read-token`'s, exactly: an onboarded app's own repo with a PaC Repository CR mapping to it. A cluster repo (`gitops-hangar-dev`) or a platform repo is 403 even if the App is installed there. Clearance's per-agent `repos.allow` is checked first; this is the second check. |
+| Token | `repositories: [<repo>]`, `permissions: {contents: write, pull_requests: write, metadata: read}`. Never `workflows`: GitHub refuses a push touching `.github/workflows`. No checks, administration or bypass: the App opens PRs a person merges. |
+| Key | The App's id and key from the platform's Infisical project (`agentToken.appIdKey`/`privateKeyKey`, default `agent-app-id`/`agent-app-private-key`), ExternalSecret `agent-app` in `platform-system`, mounted only into the broker at `/etc/agent-app` (optional; until it syncs the endpoint answers 503, and the next request after it syncs loads it). |
+| Answer | `200 {"token": "...", "expiresAt": "..."}`, or `{"error": "..."}` with 400, 401, 403, 502 or 503. The log line names the caller, repo, app and permissions, never the token. |
+
+`agentToken.enabled: false` (the chart default) renders neither the Secret nor the env; the endpoint then answers 503.
+
 ### Resilience to transient GitHub errors (2026-09-03)
 
 A GitHub API 503 during `gitops-image-bump` surfaced two gaps, both now fixed across

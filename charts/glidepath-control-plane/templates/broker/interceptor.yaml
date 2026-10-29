@@ -127,6 +127,11 @@ spec:
             # /github-read-token (githubread.go): the ServiceAccounts it mints read-only app-repo tokens for (glidepath-api).
             - name: GITHUB_READ_CALLERS
               value: {{ join "," (.Values.githubRead.callers | default list) | quote }}
+            {{- if .Values.agentToken.enabled }}
+            # /agent-installation-token (agenttoken.go): the ServiceAccounts it serves (Clearance).
+            - name: AGENT_TOKEN_CALLERS
+              value: {{ join "," (.Values.agentToken.callers | default list) | quote }}
+            {{- end }}
             {{- if .Values.promoter.enabled }}
             # /promoter-token (promoter.go, ADR-0029): the one ServiceAccount it serves and the promote workflow's repo.
             - name: PROMOTER_CALLER
@@ -149,6 +154,11 @@ spec:
               mountPath: /etc/flight-promoter-app
               readOnly: true
             {{- end }}
+            {{- if .Values.agentToken.enabled }}
+            - name: agent-app
+              mountPath: /etc/agent-app
+              readOnly: true
+            {{- end }}
       volumes:
         - name: github-app-creds
           secret:
@@ -158,6 +168,13 @@ spec:
         - name: flight-promoter-app
           secret:
             secretName: flight-promoter-app
+            optional: true
+        {{- end }}
+        {{- if .Values.agentToken.enabled }}
+        # optional: the broker starts without it; /agent-installation-token answers 503 until it syncs.
+        - name: agent-app
+          secret:
+            secretName: agent-app
             optional: true
         {{- end }}
 ---
