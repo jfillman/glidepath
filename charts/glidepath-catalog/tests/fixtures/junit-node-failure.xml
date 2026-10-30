@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+	<testcase name="healthz answers ok" time="0.044071" classname="test"/>
+	<testcase name="whoami identifies the service and the version the image was built from" time="0.008560" classname="test"/>
+	<testcase name="a boarding lookup returns the gate, destination and departure" time="0.104865" classname="test"/>
+	<testcase name="a lookup is case-insensitive on the flight code" time="0.014086" classname="test"/>
+	<testcase name="a malformed flight code is a 400" time="0.003459" classname="test"/>
+	<testcase name="a scan returns the boarded count against the flight capacity" time="0.013765" classname="test" failure="The expression evaluated to a falsy value:  assert.ok(body.capacity >= body.boarded)">
+		<failure type="testCodeFailure" message="The expression evaluated to a falsy value:  assert.ok(body.capacity >= body.boarded)">
+[Error [ERR_TEST_FAILURE]: The expression evaluated to a falsy value:
+
+  assert.ok(body.capacity >= body.boarded)
+] {
+  code: 'ERR_TEST_FAILURE',
+  failureType: 'testCodeFailure',
+  cause: AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+  
+    assert.ok(body.capacity >= body.boarded)
+  
+      at TestContext.&lt;anonymous> (/app/test/integration/boarding.test.js:76:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+      at async Test.run (node:internal/test_runner/test:797:9)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:526:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '=='
+  }
+}
+		</failure>
+	</testcase>
+	<testcase name="serves the gate board" time="0.003942" classname="test"/>
+	<testcase name="an unknown path is a 404" time="0.012974" classname="test"/>
+	<!-- tests 8 -->
+	<!-- suites 0 -->
+	<!-- pass 7 -->
+	<!-- fail 1 -->
+	<!-- cancelled 0 -->
+	<!-- skipped 0 -->
+	<!-- todo 0 -->
+	<!-- duration_ms 266.686333 -->
+</testsuites>

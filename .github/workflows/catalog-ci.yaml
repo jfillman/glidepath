@@ -127,6 +127,14 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: charts/glidepath-catalog/tests/retest_pr_number_test.sh
 
+  # run-testworkflow's failure report: the failed JUnit cases, or the failing step's last output (docs/admin/testing.md).
+  test-failure-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: charts/glidepath-catalog/tests/test_failure_report_test.sh
+
   # The registry's per-gate `required` (docs/admin/release-guardrails.md): which task each gate Pipeline renders
   # (hard + advisory, or advisory alone), the bypass tooling's required set, the ruleset script, and the refusal
   # to make sast/provenance advisory.
