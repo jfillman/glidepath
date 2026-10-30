@@ -1,7 +1,7 @@
 // Package pipelineruns is glidepath-api's first write: re-run and cancel a PipelineRun in the app's
-// -cicd namespace (docs/admin/api.md#writes). It replaces Tower's own (backstage
-// packages/backend/src/tektonActions.ts) and builds the same objects, so Tower can shadow-compare them
-// with a dry run before its writes move here.
+// -cicd namespace (docs/admin/api.md#writes). It replaced Tower's own (backstage
+// packages/backend/src/tektonActions.ts, removed in P6) and builds the same objects; Tower's Re-run
+// and Cancel call it.
 //
 // A re-run is idempotent across retries and replicas without shared memory: the caller sends an
 // Idempotency-Key, and the new run's name is derived from it. A second create with the same key hits

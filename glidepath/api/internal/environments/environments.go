@@ -1,8 +1,8 @@
 // Package environments is glidepath-api's tier T2 writes (docs/admin/api.md#promote-and-roll-back): promote an app's
 // release to its next Flight environment, and roll a Flight environment back to an earlier release, plus the two
-// reads they rest on (the release plan and the rollback plan). It replaces Tower's own (backstage
-// packages/backend/src/glidepathPromote.ts, glidepathReleaseRun.ts, glidepathRollback.ts, releasePlan.ts), ported so
-// Tower can shadow-compare the answers before its Promote and Roll back move here.
+// reads they rest on (the release plan and the rollback plan). It replaced Tower's own (backstage
+// packages/backend/src/glidepathPromote.ts, glidepathReleaseRun.ts, glidepathRollback.ts, releasePlan.ts, removed in
+// P6), ported so the answers stayed the same; Tower's Flight Promote and Roll back call it.
 //
 // Both writes only start the app's own `release` Pipeline, from the promote-release or rollback-release
 // TriggerTemplate glidepath-app renders into the app's -cicd namespace. That pipeline's open-release-pr opens the

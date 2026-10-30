@@ -62,7 +62,7 @@ type basicAuth string
 type CredentialSource func(ctx context.Context, namespace string) (basicAuth, error)
 
 // SecretCredentials reads PullSecret in the app's namespace. A missing Secret, or one without a
-// ghcr.io entry, is anonymous: Tower falls back the same way when it has no token.
+// ghcr.io entry, is anonymous, as Tower's own copy (retired in P6) was when it had no token.
 func SecretCredentials(cs kubernetes.Interface) CredentialSource {
 	return func(ctx context.Context, namespace string) (basicAuth, error) {
 		return readPullSecret(ctx, cs, namespace, PullSecret)

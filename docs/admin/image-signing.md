@@ -162,8 +162,9 @@ could then no longer be checked against the key Rekor publishes, although the en
   embedded copy. Nothing on the platform relies on that copy:
   - `verify-image-provenance` reads each entry from Rekor (`/api/v1/log/entries/<uuid>`), and Rekor re-signs the
     receipt with its current key on every read. Confirmed 2026-10-14: the gate's own script verifies boarding-api 1.1.3.
-  - Tower does the same by log index (backstage `rekorEntries.ts`). The image signature (`.sig`), whose receipt
-    Chains does not attach, is found among the entries next to its attestations.
+  - glidepath-api's evidence read does the same by log index (`internal/evidence/rekor.go`, a port of Tower's
+    `rekorEntries.ts`, which Tower dropped in Glidepath API phase 6, 2026-10-30). The image signature (`.sig`),
+    whose receipt Chains does not attach, is found among the entries next to its attestations.
 - **Rotating deliberately:** delete the `rekor-signer` Secret, sync `glidepath-control-plane` (the hook makes a new
   one), then restart `rekor-server`. Everything above keeps verifying; embedded receipts from before stop verifying
   offline.

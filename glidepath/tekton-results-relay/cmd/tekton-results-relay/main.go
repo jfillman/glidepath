@@ -19,6 +19,10 @@
 // so no authorization is lost, just re-anchored to an identity that can actually reach
 // Results the normal way (this pod and Results run in the same cluster).
 //
+// Since Glidepath API P6 (2026-10-30) Tower no longer comes here: glidepath-api is the
+// caller, in-cluster (its RESULTS_URL), and the reader identity's services/proxy grant on
+// this Service is gone (apron#108).
+//
 // Deliberately plain HTTP on the incoming side (unlike Results' own TLS-only port) -
 // matches the existing Rekor proxy's shape (see the RBAC file's rekor-proxy comment)
 // and avoids relying on the `https:`-scheme-prefix apiserver-proxy mechanic, which was
