@@ -1,0 +1,31 @@
+# BOILERPLATE - the agent gates (glidepath docs/admin/agent-gates.md): agent-identity and agent-scope, one check.
+# On every PR to main, a person's too: an agent PR has to be caught by a check that runs whoever opened it, and a
+# required check that only ran for agents would block every other PR forever. A person's PR passes in seconds as
+# "not an agent PR". Clearance decides the verdicts; the agent-gates-check Pipeline only asks it.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: agent-gates-
+  labels:
+    hangar.io/app: "<APP_NAME>"
+  annotations:
+    # has(body.pull_request): a push webhook (this PR merging) has no pull_request key.
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main"'
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+spec:
+  pipelineRef:
+    resolver: cluster
+    params:
+      - { name: kind, value: pipeline }
+      - { name: name, value: agent-gates-check }
+      - { name: namespace, value: platform-catalog }
+  params:
+    - { name: repo-url, value: "{{ repo_url }}" }
+    - { name: revision, value: "{{ revision }}" }
+    - { name: pr-number, value: "{{ pull_request_number }}" }
+  taskRunTemplate:
+    serviceAccountName: pipeline-runner
+  timeouts:
+    tasks: "5m"
+    finally: "4m"
+    pipeline: "10m"

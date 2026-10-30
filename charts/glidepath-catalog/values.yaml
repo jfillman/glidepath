@@ -161,6 +161,19 @@ apiCompat:
   #   hangar-dev: { url: http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090 }
   usage: {}
 
+# The agent gates (docs/admin/agent-gates.md): every PR to main on an onboarded app or gitops repo is checked against
+# Clearance's record of the PRs its agents opened (POST /v1/provenance): agent-identity (the PR is the one Clearance
+# opened, its head is the agent's own commit) and agent-scope (every changed path is one the agent committed and its
+# definition still admits). One PaC check, `agent-gates-`, reports both. A person's PR passes as "not an agent PR".
+agentGates:
+  # Clearance's in-cluster URL, reached by the gate's pod with a projected token for `audience`. Empty: no Clearance
+  # on this cluster, so a PR that looks like an agent's (authored by agentLogins, or carrying Hangar-* trailers)
+  # fails, and any other PR passes without asking.
+  clearanceUrl: ""
+  audience: clearance
+  # The GitHub logins agents open PRs as (the agents' GitHub App, Hangar D4).
+  agentLogins: ["hangar-autopilot-agents[bot]"]
+
 # Release-signing policy (docs/admin/commit-signing.md): who may sign, and who may merge, the app commit a
 # release promotes - read by the provenance gate (verify-commit-signature.yaml) and passed to Conforma as rule
 # data (verify-image-provenance.yaml). Admin-owned on purpose: it used to be each app's cicd.yaml
