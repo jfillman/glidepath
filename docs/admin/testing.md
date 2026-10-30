@@ -62,6 +62,14 @@ stores the artifact and does not parse it (`reports` is empty on 2.13.1, checked
 so the stage downloads it from the execution's artifacts and counts `<testcase>`,
 `<failure>`+`<error>` and `<skipped>`.
 
+When a run fails, the last thing in the step's log is why: each failed test case from the
+report (its name, the failure message, and the first stack line outside the runtime and
+dependencies), up to 20, or, when there is no report or it has no failed case (the target
+never answered, the workflow crashed before tests ran), the last 25 lines of the first
+Testkube step that did not pass. The full execution record is no longer dumped there; only
+its `status` and per-step results are. Tower's test runs list the same failed cases from the
+report (`tower` plugin).
+
 ## The evidence: provenance from Tekton Chains
 
 Nothing in the test stage signs anything. `test.yaml` carries the same Pipeline-level

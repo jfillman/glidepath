@@ -470,6 +470,46 @@ spec:
         echo -n "${STATUS}" | tee "$(results.outcome.path)"; echo
         echo "${STEP_SUMMARY}" | tee "$(results.step-summary.path)"
 
+        # A failed run's reason: each failed test case from the JUnit report (name, message, and
+        # the first stack line in the team's own code), or, with no report or no failed case in
+        # it (wait-for-target timing out, a crash before tests ran), the last lines of the first
+        # step that did not pass, from Testkube's execution log. That log marks each step's start
+        # with \x01\x05\x06<ref>\x03start\x03.
+        report_failure() {
+          local failures n
+          if [[ -s /tmp/junit.xml ]]; then
+            failures="$(yq -p xml -o json '.' /tmp/junit.xml | jq -c '
+              [.. | objects | .testcase? // empty | if type == "array" then .[] else . end
+                | select(type == "object" and (has("failure") or has("error")))
+                | ((.failure // .error) | if type == "array" then .[0] else . end) as $f
+                | ($f | if type == "string" then {msg: "", body: .} else {msg: (.["+@message"] // ""), body: (.["+content"] // "")} end) as $d
+                | {name: (.["+@name"] // "?"), class: (.["+@classname"] // ""), msg: $d.msg,
+                   at: ([$d.body | splits("\n") | select(test("[^ ():]+:[0-9]+") and (test("node:internal|node_modules|site-packages|/usr/lib/") | not)) | gsub("^\\s+|\\s+$"; "")] | first // ""),
+                   head: ([$d.body | splits("\n") | gsub("^\\s+|\\s+$"; "") | select(. != "")] | .[0:3] | join(" / "))}]' 2>/dev/null || echo '[]')"
+            n="$(jq length <<< "${failures}")"
+            if [[ "${n}" -gt 0 ]]; then
+              echo ""
+              echo "${n} failed test(s) in ${REPORT_PATH}:"
+              jq -r '.[0:20][] | "  ✖ \(.name)\(if .class != "" then " [\(.class)]" else "" end)\n      \(if .msg != "" then .msg else .head end)\(if .at != "" then "\n      \(.at)" else "" end)"' <<< "${failures}"
+              [[ "${n}" -gt 20 ]] && echo "  ... and $(( n - 20 )) more - download the JUnit report from Tower's test runs"
+              return 0
+            fi
+          fi
+          local ref name
+          ref="$(jq -r '[.signature // [] | .. | objects | select(has("ref")) | .ref] as $order | (.result.steps // {}) as $s
+            | [$order[] | select($s[.] and $s[.].status != "passed" and $s[.].status != "skipped")] | first // ""' <<< "${RESULT_JSON}")"
+          [[ -z "${ref}" ]] && return 0
+          name="$(jq -r --arg r "${ref}" '[.signature // [] | .. | objects | select(.ref? == $r) | .name] | first // $r' <<< "${RESULT_JSON}")"
+          echo ""
+          echo "step '${name}' did not pass - its last output (full log: testkube get twe ${EXECUTION_ID} --logs-only):"
+          curl -fsS "${API}/v1/test-workflow-executions/${EXECUTION_ID}/logs" 2>/dev/null \
+            | awk -v start="$(printf '\001\005\006')${ref}$(printf '\003')start" '
+                index($0, start) { on = 1; next }
+                on && index($0, sprintf("%c%c%c", 1, 5, 6)) { exit }
+                on' \
+            | sed -E "s/^[0-9T:.-]+Z //; s/$(printf '\033')\\[[0-9;]*m//g" | grep -v '^$' | tail -n 25 | sed 's/^/  | /'
+        }
+
         # The JUnit report, from the artifacts the workflow left: Testkube CE stores them
         # and does not parse them (execution `reports` is null on 2.13.1, checked live),
         # so the counts are read here. data/artifacts/junit.xml by convention
@@ -502,7 +542,12 @@ spec:
         fi
 
         if [[ "${STATUS}" != "passed" ]]; then
-          echo "${RESULT_JSON}" >&2
+          # Why it failed, last in the log where Tower's step log view lands. This used to dump
+          # the whole execution record (workflow spec included) here, which buried the one line
+          # that mattered; only the result stays, and the failing tests or the failing step's own
+          # output go under it.
+          jq -c '{status: .result.status, steps: .result.steps}' <<< "${RESULT_JSON}" >&2 || true
+          report_failure || true
           if [[ "${REQUIRED}" == "false" ]]; then
             echo "run '${WORKFLOW_NAME}' ${STATUS}, but this step is required: false - recorded as ${STATUS}, the flow continues"
             exit 0
