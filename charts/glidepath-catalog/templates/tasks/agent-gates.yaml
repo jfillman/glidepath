@@ -1,0 +1,142 @@
+# The agent gates (docs/admin/agent-gates.md): asks Clearance whether a PR is the one its agent opened
+# (agent-identity) and whether what it changes is inside that agent's scope (agent-scope), from the PR's head
+# commit, changed paths, author and Hangar-* commit trailers. Clearance decides; the verify step only gathers what
+# GitHub says about the PR and asks. The report step prints the verdicts and exits 1 when either fails, so the PaC
+# check is red. Two steps because a failed step's results are not reported: agent-pr (which the PR comment's `when`
+# reads) comes from verify, which always succeeds once it has an answer.
+#
+# Nothing the PR says is trusted: the trailers and the author are claims Clearance compares with its own receipt
+# (the evidence record of the repo.pr.open call that made the commit). Without Clearance (agentGates.clearanceUrl
+# empty, or unreachable) a PR that looks like an agent's fails and any other passes, unrecorded.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: agent-gates
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+    # Clearance's ingress NetworkPolicy admits pods with this label (apron 55-autopilot/clearance).
+    hangar.io/clearance-client: agent-gates
+spec:
+  description: Checks a PR against Clearance's record of agent PRs - agent-identity and agent-scope.
+  params:
+    - name: repo-url
+      type: string
+    - name: pr-number
+      type: string
+  results:
+    - name: agent-pr
+      description: '"true" when Clearance (or, without it, the PR''s author or trailers) says this is an agent''s PR.'
+    - name: findings-summary
+      description: The two verdicts in one line, for the PR comment on a pass.
+  volumes:
+    - name: work
+      emptyDir: {}
+    - name: tokens
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+          - serviceAccountToken:
+              path: clearance-token
+              audience: {{ .Values.agentGates.audience | quote }}
+              expirationSeconds: 600
+  steps:
+    - name: verify
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: tokens, mountPath: /var/run/secrets/platform, readOnly: true }
+        - { name: work, mountPath: /work }
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - { name: REPO_URL, value: $(params.repo-url) }
+        - { name: PR_NUMBER, value: $(params.pr-number) }
+        - { name: CLEARANCE_URL, value: {{ .Values.agentGates.clearanceUrl | quote }} }
+        - { name: AGENT_LOGINS, value: {{ join "," .Values.agentGates.agentLogins | quote }} }
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        printf false > "$(results.agent-pr.path)"
+
+        owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        case "${PR_NUMBER}" in ''|*[!0-9]*) echo "pr-number '${PR_NUMBER}' is not a PR number: nothing to check"; exit 0 ;; esac
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+        gh() { curl --fail --silent --show-error --max-time 15 --retry 3 --retry-connrefused \
+                 -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" "$@"; }
+        api="https://api.github.com/repos/${owner}/${repo}"
+
+        pr="$(gh "${api}/pulls/${PR_NUMBER}")"
+        head="$(jq -r .head.sha <<<"${pr}")"
+        author="$(jq -r .user.login <<<"${pr}")"
+        # Every changed path, a rename's old name too (GitHub lists at most 3000 files, 100 a page).
+        paths='[]'
+        for page in $(seq 1 30); do
+          batch="$(gh "${api}/pulls/${PR_NUMBER}/files?per_page=100&page=${page}")"
+          paths="$(jq -c --argjson b "${batch}" '. + [$b[] | .filename, (.previous_filename // empty)]' <<<"${paths}")"
+          [ "$(jq length <<<"${batch}")" -lt 100 ] && break
+        done
+        trailers="$(gh "${api}/commits/${head}" | jq -c '[.commit.message | splits("\n")
+          | capture("^Hangar-(?<k>Task|Session|Run|Agent): *(?<v>[^ ]+) *$")? | {key: (.k | ascii_downcase), value: .v}]
+          | from_entries')"
+        looks_agent=false
+        if [ "${trailers}" != "{}" ] || tr ',' '\n' <<<"${AGENT_LOGINS}" | grep -qxF "${author}"; then looks_agent=true; fi
+        echo "PR ${owner}/${repo}#${PR_NUMBER} head ${head} author ${author} paths $(jq length <<<"${paths}") trailers ${trailers}"
+
+        verdict=""
+        if [ -n "${CLEARANCE_URL}" ]; then
+          body="$(jq -nc --arg repo "${owner}/${repo}" --argjson pr "${PR_NUMBER}" --arg head "${head}" \
+                  --arg author "${author}" --argjson paths "${paths}" --argjson trailers "${trailers}" \
+                  '{repo: $repo, pr: $pr, head: $head, author: $author, paths: $paths, trailers: $trailers}')"
+          out="$(curl --silent --show-error --max-time 20 --retry 2 --retry-connrefused -w '\n%{http_code}' \
+                   -H "Authorization: Bearer $(cat /var/run/secrets/platform/clearance-token)" \
+                   -H "Content-Type: application/json" --data "${body}" "${CLEARANCE_URL%/}/v1/provenance" || true)"
+          code="$(tail -n1 <<<"${out}")"
+          if [ "${code}" = 200 ]; then verdict="$(sed '$d' <<<"${out}")"; else
+            echo "Clearance answered ${code:-nothing}: $(sed '$d' <<<"${out}" | head -c 300)"; fi
+        fi
+
+        printf 1 > /work/failed
+        if [ -z "${verdict}" ]; then
+          if [ "${looks_agent}" = true ]; then
+            printf true > "$(results.agent-pr.path)"
+            echo "FAIL: agent-gates - this PR looks like an agent's (author or Hangar-* trailers), and Clearance could not be asked to vouch for it." > /work/report
+          else
+            echo "PASS: not an agent PR (no agents' login, no Hangar-* trailers; Clearance not consulted, nothing recorded)" > /work/report
+            printf 0 > /work/failed
+            printf 'not an agent PR' > "$(results.findings-summary.path)"
+          fi
+          exit 0
+        fi
+
+        jq -r '.agent_pr | tostring' <<<"${verdict}" > "$(results.agent-pr.path)"
+        jq -r '"record: \(.record // "none" | tostring)",
+               ("agent-identity: " + (if .identity.ok then "PASS" else "FAIL" end) + " [\(.identity.status)\(if .identity.rule then " \(.identity.rule)" else "" end)] \(.identity.message)"),
+               (if .identity.ok then empty else "  fix: \(.identity.hint)" end),
+               ("agent-scope: " + (if .scope.ok then "PASS" else "FAIL" end) + " [\(.scope.status)\(if .scope.rule then " \(.scope.rule)" else "" end)] \(.scope.message)"),
+               (.scope.violations // [] | .[] | "  \(.rule) \(.path): \(.message)"),
+               (if .scope.ok then empty else "  fix: \(.scope.hint)" end),
+               "Clearance record of this check: seq \(.audit_seq)"' <<<"${verdict}" > /work/report
+        if jq -e '.identity.ok and .scope.ok' <<<"${verdict}" >/dev/null; then
+          printf 0 > /work/failed
+          jq -j '"agent-identity: \(.identity.message). agent-scope: \(.scope.message)."' <<<"${verdict}" \
+            > "$(results.findings-summary.path)"
+        fi
+    - name: report
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        [ -f /work/report ] && cat /work/report
+        if [ "$(cat /work/failed 2>/dev/null || echo 0)" = 1 ]; then
+          echo "FAIL: agent-gates - see the verdicts above"
+          exit 1
+        fi

@@ -1,0 +1,45 @@
+# The agent gates' Pipeline (docs/admin/agent-gates.md): one PaC check, agent-gates-, on every PR to main of an
+# onboarded repo. The PR comment is posted only for an agent's PR, so a person's PR gets the green check and no
+# comment.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: agent-gates-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: agent-identity and agent-scope - is this PR the one Clearance's agent opened, and inside its scope.
+  params:
+    - { name: repo-url, type: string }
+    - { name: revision, type: string }
+    - { name: pr-number, type: string, default: "" }
+  tasks:
+    - name: agent-gates
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: agent-gates }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: pr-number, value: $(params.pr-number) }
+  finally:
+    - name: comment-pr
+      when:
+        - { input: $(params.pr-number), operator: notin, values: [""] }
+        - { input: $(tasks.agent-gates.results.agent-pr), operator: in, values: ["true"] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: comment-pr-check-result }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: gate-name, value: agent-gates }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: status, value: $(tasks.status) }

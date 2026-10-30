@@ -31,6 +31,7 @@ nav:
       - Release & operations:
           - Release flow: admin/release.md
           - Release guardrails: admin/release-guardrails.md
+          - Agent gates: admin/agent-gates.md
           - API compatibility check: admin/api-compat.md
           - Policy validation check: admin/policy-validation.md
           - Change management: admin/change-management.md
