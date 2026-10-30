@@ -95,7 +95,7 @@ scenario() { # name -> fresh fixture dir in $FX, defaults for a promotable relea
   jq -n --arg sha "$SHA" '{state: "open", merged: false, head: {sha: $sha}}' > "$FX/pr.json"
   echo '[{"filename":"hangar-prod/prod/release.yaml"}]' > "$FX/files.json"
   printf 'release:\n  image:\n    repository: ghcr.io/riley-roooo/boarding-api\n    tag: 2.0.5-832e475\n    digest: %s\n    source: ghcr.io/jfillman/boarding-api\nreleaseTracking:\n  releaseId: r1:hangar-prod/prod\n' "$D" > "$FX/release.yaml"
-  jq -n '{check_runs: [ "sast","image-scan","provenance","sbom","values","itsm","policy-validation"
+  jq -n '{check_runs: [ "sast","image-scan","provenance","sbom","values","itsm","policy-validation","agent-gates"
           | {name: ("Pipelines as Code CI / " + . + "-"), status: "completed", conclusion: "success", started_at: "2026-10-27T10:00:00Z"} ]}' > "$FX/checks.json"
 }
 run_step() { # step-file -> runs it with the fakes; exit code in $rc

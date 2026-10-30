@@ -29,7 +29,6 @@ spec:
     - name: comment-pr
       when:
         - { input: $(params.pr-number), operator: notin, values: [""] }
-        - { input: $(tasks.agent-gates.results.agent-pr), operator: in, values: ["true"] }
       taskRef:
         resolver: cluster
         params:
@@ -43,3 +42,6 @@ spec:
         - { name: gate-name, value: agent-gates }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
         - { name: status, value: $(tasks.status) }
+        # Every PR's verdict reaches the promotion fan-in (agent-gates is a release guardrail); only an agent's PR
+        # gets the comment.
+        - { name: post-comment, value: $(tasks.agent-gates.results.agent-pr) }

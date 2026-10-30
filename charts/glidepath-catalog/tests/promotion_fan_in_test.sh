@@ -80,7 +80,7 @@ scenario() { # <name> [gate]: a promotable release PR whose required gates are g
   echo success > "$FX/gate/verdict"; echo 53 > "$FX/gate/pr"
   jq -n --arg sha "$SHA" --arg u "$URL" '{state: "open", merged: false, html_url: $u, head: {sha: $sha, ref: "release-prod-f54c3652"}}' > "$FX/pr.json"
   echo '[{"filename":"hangar-prod/prod/release.yaml"}]' > "$FX/files.json"
-  jq -n --arg g "$GATE" '{check_runs: [ "sast","image-scan","provenance","sbom","values","itsm","policy-validation","qa"
+  jq -n --arg g "$GATE" '{check_runs: [ "sast","image-scan","provenance","sbom","values","itsm","policy-validation","agent-gates","qa"
           | {name: ("Pipelines as Code CI / " + . + "-"), status: (if . == $g then "in_progress" else "completed" end),
              conclusion: (if . == $g then null else "success" end), started_at: "2026-10-28T10:00:00Z"} ]}' > "$FX/checks.json"
   jq -n --arg u "$URL" '{items: [{metadata: {name: "release-tracking-other", resourceVersion: "7"}, data: {prUrl: "https://github.com/jfillman/gitops-gate-api/pull/1"}},

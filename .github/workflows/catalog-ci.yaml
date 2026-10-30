@@ -110,6 +110,14 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: charts/glidepath-catalog/tests/promotion_fan_in_test.sh
 
+  # comment-pr-check-result's post-comment: "false" records the verdict for the fan-in and posts nothing (agent-gates).
+  post-comment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: charts/glidepath-catalog/tests/post_comment_test.sh
+
   # The break-glass detector (detect-bypass-merge): a per-app advisory gate (releaseGuardrailOverridesByApp) merged
   # past red is not a bypass for that app, and still is for every other.
   detect-bypass-merge:

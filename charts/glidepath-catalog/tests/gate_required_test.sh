@@ -66,13 +66,13 @@ for task in detect-bypass-merge release-log-emit wait-for-release-guardrails ope
   bash -n "${tmp}/${task}.sh" || { echo "FAIL: bash -n ${task}"; fail=1; }
 done
 expect "detect-bypass-merge gate loop (no qa)" "$(grep -o 'for gate in .*; do' "${tmp}/detect-bypass-merge.sh")" \
-  "for gate in sast image-scan provenance sbom values itsm policy-validation ; do"
+  "for gate in sast image-scan provenance sbom values itsm policy-validation agent-gates ; do"
 expect "release-log-emit records every gate" "$(grep -o 'for gate in .*; do' "${tmp}/release-log-emit.sh")" \
-  "for gate in sast image-scan provenance sbom values itsm api-compat qa policy-validation ; do"
+  "for gate in sast image-scan provenance sbom values itsm api-compat qa policy-validation agent-gates ; do"
 expect "release-log-emit bypass set (no qa)" "$(grep -o 'required_gates=".*"' "${tmp}/release-log-emit.sh")" \
-  'required_gates=" sast image-scan provenance sbom values itsm policy-validation "'
+  'required_gates=" sast image-scan provenance sbom values itsm policy-validation agent-gates "'
 expect "wait-for-release-guardrails siblings (no qa)" "$(grep -o 'for g in .*; do' "${tmp}/wait-for-release-guardrails.sh")" \
-  'for g in "sast" "image-scan" "provenance" "sbom" "values" "itsm" "policy-validation" ; do'
+  'for g in "sast" "image-scan" "provenance" "sbom" "values" "itsm" "policy-validation" "agent-gates" ; do'
 grep -q '| `qa` | [^|]* | real, advisory - reports without blocking' "${tmp}/open-release-pr.sh" \
   || { echo "FAIL: the PR body table does not mark qa advisory"; fail=1; }
 grep -q '| `api-compat` | [^|]* | real, advisory - reports without blocking' "${tmp}/open-release-pr.sh" \
@@ -105,17 +105,17 @@ expect "policy-validation-check advisory" "$(tasks policy-validation-check "${tm
 script_of detect-bypass-merge "${tmp}/override.yaml" > "${tmp}/detect-override.sh"
 expect "detect-bypass-merge with overrides (stub itsm stays; sbom/values out; qa in)" \
   "$(grep -o 'for gate in .*; do' "${tmp}/detect-override.sh")" \
-  "for gate in sast image-scan provenance itsm api-compat qa ; do"
+  "for gate in sast image-scan provenance itsm api-compat qa agent-gates ; do"
 
 # ---- the ruleset script applies the same rule
 rs() { hack/apply-guardrail-ruleset.sh --dry-run "$@" x/y | grep -v '^#' \
   | jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context' \
   | sed 's#Pipelines as Code CI / ##' | tr '\n' ' '; }
-expect "ruleset default" "$(rs)" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- "
-expect "ruleset with overrides" "$(rs -f "${tmp}/override-values.yaml")" "sast- image-scan- provenance- itsm- api-compat- qa- "
+expect "ruleset default" "$(rs)" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- agent-gates- "
+expect "ruleset with overrides" "$(rs -f "${tmp}/override-values.yaml")" "sast- image-scan- provenance- itsm- api-compat- qa- agent-gates- "
 printf 'promotion:\n  enabled: true\n  pinDigest: true\n' > "${tmp}/promotion-values.yaml"
 expect "ruleset with promotion on (image-promotion required, as the chart's effective registry)" \
-  "$(rs -f "${tmp}/promotion-values.yaml")" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- image-promotion- "
+  "$(rs -f "${tmp}/promotion-values.yaml")" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- agent-gates- image-promotion- "
 
 # ---- sast and provenance cannot be made advisory
 for locked in sast provenance; do
@@ -142,7 +142,7 @@ for task in detect-bypass-merge release-log-emit wait-for-release-guardrails ope
   grep -q '^    backstage) echo "image-scan" ;;$' "${tmp}/perapp-${task}.sh" || { echo "FAIL: ${task} has no per-app lookup"; fail=1; }
 done
 expect "detect-bypass-merge gate loop unchanged by the per-app map" "$(grep -o 'for gate in .*; do' "${tmp}/perapp-detect-bypass-merge.sh")" \
-  "for gate in sast image-scan provenance sbom values itsm policy-validation ; do"
+  "for gate in sast image-scan provenance sbom values itsm policy-validation agent-gates ; do"
 helpers() { sed -n '/^advisory_gates_for_app() {$/,/^gate_advisory_for_app() /p' "$1"; }
 # release-log-emit's bypass set for backstage and another app: the helper and the two lines that build the set.
 log_set() { # app
@@ -150,8 +150,8 @@ log_set() { # app
     echo 'printf "%s" "${required_gates}"'; } > "${tmp}/log-set.sh"
   APP_NAME=ignored repo="gitops-$1" bash "${tmp}/log-set.sh"
 }
-expect "release-log-emit bypass set, backstage" "$(log_set backstage)" " sast provenance sbom values itsm policy-validation "
-expect "release-log-emit bypass set, gate-api" "$(log_set gate-api)" " sast image-scan provenance sbom values itsm policy-validation "
+expect "release-log-emit bypass set, backstage" "$(log_set backstage)" " sast provenance sbom values itsm policy-validation agent-gates "
+expect "release-log-emit bypass set, gate-api" "$(log_set gate-api)" " sast image-scan provenance sbom values itsm policy-validation agent-gates "
 # open-release-pr's PR body table: the image-scan row says advisory for backstage only.
 table_for() { # app
   { helpers "${tmp}/perapp-open-release-pr.sh"
@@ -171,12 +171,12 @@ expect "PR body table: only the image-scan row differs" "$(diff "${tmp}/table-ba
 rs_repo() { hack/apply-guardrail-ruleset.sh --dry-run -f "${tmp}/perapp-values.yaml" "$1" | grep -v '^#' \
   | jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context' \
   | sed 's#Pipelines as Code CI / ##' | tr '\n' ' '; }
-expect "ruleset gitops-backstage" "$(rs_repo x/gitops-backstage)" "sast- provenance- sbom- values- itsm- policy-validation- "
-expect "ruleset gitops-gate-api" "$(rs_repo x/gitops-gate-api)" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- "
+expect "ruleset gitops-backstage" "$(rs_repo x/gitops-backstage)" "sast- provenance- sbom- values- itsm- policy-validation- agent-gates- "
+expect "ruleset gitops-gate-api" "$(rs_repo x/gitops-gate-api)" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- agent-gates- "
 expect "ruleset gitops-backstage with promotion on keeps image-promotion" \
   "$(hack/apply-guardrail-ruleset.sh --dry-run -f "${tmp}/perapp-values.yaml" -f "${tmp}/promotion-values.yaml" x/gitops-backstage | grep -v '^#' \
      | jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context' \
-     | sed 's#Pipelines as Code CI / ##' | tr '\n' ' ')" "sast- provenance- sbom- values- itsm- policy-validation- image-promotion- "
+     | sed 's#Pipelines as Code CI / ##' | tr '\n' ' ')" "sast- provenance- sbom- values- itsm- policy-validation- agent-gates- image-promotion- "
 
 # ---- per-app refusals: integrity gates, image-promotion, an unknown gate, a non-plain app, anything but required: false
 refuse() { # label want-in-message values-yaml [extra helm args...]

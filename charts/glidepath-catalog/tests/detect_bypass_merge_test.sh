@@ -42,7 +42,7 @@ expect() { # <name> <got> <want>
 scenario() { # <name> <red gate,...>: a merged PR whose head has every registry gate green except the listed ones
   FX="$work/fx-$1"; mkdir -p "$FX"; export FX
   jq -n --arg sha "$SHA" '{head: {sha: $sha}, merged_by: {login: "riley"}, title: "Release", html_url: "https://github.com/x/pull/9"}' > "$FX/pr.json"
-  jq -n --arg red ",$2," '{check_runs: [ "sast","image-scan","provenance","sbom","values","itsm","policy-validation","qa","api-compat"
+  jq -n --arg red ",$2," '{check_runs: [ "sast","image-scan","provenance","sbom","values","itsm","policy-validation","agent-gates","qa","api-compat"
           | . as $g | {name: ("Pipelines as Code CI / " + $g + "-"), status: "completed",
              conclusion: (if ($red | contains("," + $g + ",")) then "failure" else "success" end)} ]}' > "$FX/checks.json"
 }

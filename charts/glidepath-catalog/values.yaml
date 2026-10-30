@@ -307,6 +307,16 @@ releaseGuardrails:
     class: integrity
     required: true
     targets: [k8s-rollout]
+  # The agent gates (docs/admin/agent-gates.md): Clearance's verdict on whether this PR is the one its agent opened
+  # (agent-identity) and inside that agent's scope (agent-scope). Every PR to main gets the check; a person's PR,
+  # and every release PR, is "not-agent" and passes. Required: an agent's propose-only upper PR (repo.pr.open_upper)
+  # that someone pushed onto, or that touches paths its agent may not, must not release. It reads Clearance, so a
+  # Clearance outage holds releases until it is back (or the gate is made advisory per cluster).
+  - name: agent-gates
+    description: "Agent identity and scope - Clearance's record of the PR its agent opened: the same head commit and trailers, and only paths that agent may change (a person's PR passes as not-agent)"
+    status: real
+    class: integrity
+    required: true
 
 # Per-cluster overrides of `required`, keyed by gate name, for a cluster's catalog Application values:
 #   releaseGuardrailOverrides:
