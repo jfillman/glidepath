@@ -65,35 +65,48 @@ type CredentialSource func(ctx context.Context, namespace string) (basicAuth, er
 // ghcr.io entry, is anonymous: Tower falls back the same way when it has no token.
 func SecretCredentials(cs kubernetes.Interface) CredentialSource {
 	return func(ctx context.Context, namespace string) (basicAuth, error) {
-		s, err := cs.CoreV1().Secrets(namespace).Get(ctx, PullSecret, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			return "", nil
-		}
-		if err != nil {
-			// The API server's error names the Secret, never its contents.
-			return "", fmt.Errorf("reading %s/%s: %w", namespace, PullSecret, err)
-		}
-		var cfg struct {
-			Auths map[string]struct {
-				Username string `json:"username"`
-				Password string `json:"password"`
-				Auth     string `json:"auth"`
-			} `json:"auths"`
-		}
-		if json.Unmarshal(s.Data[".dockerconfigjson"], &cfg) != nil {
-			return "", fmt.Errorf("%s/%s is not a dockerconfigjson", namespace, PullSecret)
-		}
-		a, ok := cfg.Auths[Registry]
-		switch {
-		case !ok:
-			return "", nil
-		case a.Username != "" && a.Password != "":
-			return basicAuth("Basic " + base64.StdEncoding.EncodeToString([]byte(a.Username+":"+a.Password))), nil
-		case a.Auth != "":
-			return basicAuth("Basic " + a.Auth), nil
-		}
+		return readPullSecret(ctx, cs, namespace, PullSecret)
+	}
+}
+
+// FixedSecretCredentials reads one dockerconfigjson Secret whatever the app: the Flight registry's
+// read credential (glidepath-control-plane's flight-registry-read in the catalog namespace), since
+// an app's own registry-credentials holds the Ground owner's credential, which Flight refuses.
+func FixedSecretCredentials(cs kubernetes.Interface, namespace, name string) CredentialSource {
+	return func(ctx context.Context, _ string) (basicAuth, error) {
+		return readPullSecret(ctx, cs, namespace, name)
+	}
+}
+
+func readPullSecret(ctx context.Context, cs kubernetes.Interface, namespace, name string) (basicAuth, error) {
+	s, err := cs.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
 		return "", nil
 	}
+	if err != nil {
+		// The API server's error names the Secret, never its contents.
+		return "", fmt.Errorf("reading %s/%s: %w", namespace, name, err)
+	}
+	var cfg struct {
+		Auths map[string]struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+			Auth     string `json:"auth"`
+		} `json:"auths"`
+	}
+	if json.Unmarshal(s.Data[".dockerconfigjson"], &cfg) != nil {
+		return "", fmt.Errorf("%s/%s is not a dockerconfigjson", namespace, name)
+	}
+	a, ok := cfg.Auths[Registry]
+	switch {
+	case !ok:
+		return "", nil
+	case a.Username != "" && a.Password != "":
+		return basicAuth("Basic " + base64.StdEncoding.EncodeToString([]byte(a.Username+":"+a.Password))), nil
+	case a.Auth != "":
+		return basicAuth("Basic " + a.Auth), nil
+	}
+	return "", nil
 }
 
 // registry talks to GHCR's v2 API.

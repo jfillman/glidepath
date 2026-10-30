@@ -136,6 +136,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("glidepath-api: %v", err)
 	}
+	flightOwner, flightCredentials := "", evidence.CredentialSource(nil)
+	if repo := os.Getenv("PROMOTER_REPO"); repo != "" {
+		flightOwner, _, _ = strings.Cut(repo, "/")
+	}
+	if ref := os.Getenv("FLIGHT_PULL_SECRET"); ref != "" {
+		ns, name, ok := strings.Cut(ref, "/")
+		if !ok || ns == "" || name == "" {
+			log.Fatalf("glidepath-api: FLIGHT_PULL_SECRET %q is not <namespace>/<name>", ref)
+		}
+		flightCredentials = evidence.FixedSecretCredentials(cs, ns, name)
+	}
 	// The GitHub owner of every app's repos (the chart's githubOwner). Unset: promote and rollback fail at their
 	// first GitHub read; nothing else needs it.
 	githubOwner := os.Getenv("GITHUB_OWNER")
@@ -187,6 +198,11 @@ func main() {
 			HTTP:        &http.Client{Timeout: 30 * time.Second},
 			Log:         logger,
 			Promotion:   promotion,
+			// Flight images are read with the Flight registry's read credential (the chart's
+			// FLIGHT_PULL_SECRET, <namespace>/<name>); the Flight owner is the promoter repository's
+			// owner, the only account its workflow can push packages to.
+			FlightOwner:       flightOwner,
+			FlightCredentials: flightCredentials,
 		},
 		Tests: &testkube.Client{
 			Base: env("TESTKUBE_URL", "http://testkube-api-server.testkube.svc.cluster.local:8088"),

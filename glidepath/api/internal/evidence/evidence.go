@@ -55,6 +55,11 @@ type Reader struct {
 	Log         *slog.Logger
 	// Promotion verifies Flight promotion attestations (promotion.go); nil: they show, unverified.
 	Promotion *PromotionTrust
+	// FlightOwner is the Flight registry's namespace (ghcr.io/<FlightOwner>/...): an image there is read
+	// with FlightCredentials, not the app's Ground registry-credentials, which Flight refuses (403). Empty
+	// or nil: every image is read with Credentials.
+	FlightOwner       string
+	FlightCredentials CredentialSource
 
 	once  sync.Once
 	trust *trustSource
@@ -76,7 +81,11 @@ func (r *Reader) Read(ctx context.Context, namespace, image string) (*Provenance
 	reg := &registry{base: r.RegistryURL, http: r.HTTP}
 	token, err := func() (string, error) {
 		// The credential lives only inside this closure.
-		auth, err := r.Credentials(ctx, namespace)
+		creds := r.Credentials
+		if r.FlightOwner != "" && r.FlightCredentials != nil && strings.HasPrefix(repo, r.FlightOwner+"/") {
+			creds = r.FlightCredentials
+		}
+		auth, err := creds(ctx, namespace)
 		if err != nil {
 			return "", err
 		}
