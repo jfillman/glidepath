@@ -176,7 +176,7 @@ func classify(err error) (int, apiError) {
 		return http.StatusConflict, apiError{err.Error(), "GP-API-409", "send a new Idempotency-Key"}
 	case errors.As(err, &prRef):
 		return http.StatusUnprocessableEntity, apiError{err.Error(), "GP-API-422",
-			"an admission policy (tower-pipelinerun-shape) or glidepath-api's own RBAC refused it; retrying won't help"}
+			"an admission policy (glidepath-api-pipelinerun-shape) or glidepath-api's own RBAC refused it; retrying won't help"}
 	}
 	return http.StatusBadGateway, apiError{err.Error(), "GP-API-502", "a source Glidepath reads (the API server, Tekton Results, GHCR, Rekor, Testkube, GitHub or the token broker) failed; retry"}
 }
