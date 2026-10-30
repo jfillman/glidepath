@@ -61,6 +61,10 @@ spec:
     - name: status
       type: string
       description: $(tasks.status) from the calling Pipeline's finally block.
+    - name: post-comment
+      type: string
+      default: "true"
+      description: "\"false\" records the verdict (for the promotion fan-in) without posting the PR comment: agent-gates-check sets it from its agent-pr result, so a person's or a release PR gets no comment while its verdict still counts."
   volumes:
     - name: github-token-broker-token
       projected:
@@ -106,6 +110,8 @@ spec:
           value: $(params.status)
         - name: ADVISORY_REASON
           value: $(params.advisory-reason)
+        - name: POST_COMMENT
+          value: $(params.post-comment)
         - name: NAMESPACE
           # $(context.pipelineRun.namespace) does NOT resolve here - that variable is only
           # valid inside a Pipeline's own spec, never inside a Task's field values
@@ -280,6 +286,12 @@ spec:
         # gate this comment belongs to, so a later run can find and edit it in place.
         marker="<!-- glidepath:gate:${GATE_NAME} -->"
         body="${marker}"$'\n'"${body}"
+
+        # The verdict is recorded above; a gate that comments only on some PRs (agent-gates: agent PRs) stops here.
+        if [[ "${POST_COMMENT:-true}" != "true" ]]; then
+          echo "${GATE_NAME}: verdict recorded, no PR comment (post-comment=${POST_COMMENT})"
+          exit 0
+        fi
 
         # Response captured via $(...), not streamed to stdout - GitHub's create-comment
         # response is a full ~4KB comment object; leaving it uncaptured made this step

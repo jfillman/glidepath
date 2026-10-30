@@ -27,7 +27,14 @@ commits added after the agent's (AI003) is not vouched for at all.
   platform's GitHub App token (the broker, as every gate does) and posts to Clearance's `POST /v1/provenance` with a
   projected service-account token for audience `clearance` (`agentGates.audience`). The report step prints both
   verdicts, with each rule, violation and fix hint, and exits 1 if either fails.
-- The PR comment (`comment-pr-check-result`) is posted only on an agent's PR.
+- The PR comment (`comment-pr-check-result`) is posted only on an agent's PR. The finally task runs on every PR
+  with `post-comment` set from the `agent-pr` result, so the verdict still reaches the promotion fan-in.
+- **A release guardrail** (2026-10-30). `agent-gates` is a `releaseGuardrails` entry (class integrity, required), so
+  every consumer of the registry includes it: the ruleset script, the promotion fan-in and PROM-03, the guardrail
+  wait, the bypass detectors, the release log and the release PR's governance table. A release PR is `not-agent`
+  and passes; an agent's propose-only upper PR (`repo.pr.open_upper`) is judged like any agent PR. Because it reads
+  Clearance, a Clearance outage holds releases until Clearance is back, unless a cluster makes it advisory
+  (`releaseGuardrailOverrides: {agent-gates: {required: false}}`).
 - **Without Clearance.** If `agentGates.clearanceUrl` is empty (a cluster with no Clearance) or Clearance doesn't
   answer, a PR that looks like an agent's (authored by an `agentGates.agentLogins` login, or carrying `Hangar-*`
   trailers) fails. Any other PR passes without a verdict, and nothing is recorded.
@@ -49,10 +56,15 @@ labelled `hangar.io/clearance-client: agent-gates` (apron `55-autopilot/clearanc
 
 ## Making it block
 
-The gate only reports. To stop a merge, add the required status check `Pipelines as Code CI / agent-gates-`
-(integration `4461953`, the PaC App) to each repo's ruleset. For gitops repos that is the
-[guardrail ruleset](github-ruleset.md). App repos have no ruleset today, so one is needed there before an agent's PR
-on an app repo can be blocked. Rulesets are a manual GitHub setting.
+A check stops a merge only as a required status check: `Pipelines as Code CI / agent-gates-` (integration `4461953`,
+the PaC App). For gitops repos it is in the [guardrail ruleset](github-ruleset.md), which
+`hack/apply-guardrail-ruleset.sh` builds from `releaseGuardrails`, so re-applying it adds the check. App repos get
+their own ruleset with this one check: `hack/apply-agent-gates-ruleset.sh <owner>/<repo>`.
+
+Rulesets on private repos need a paid GitHub plan; on GitHub Free the API answers 403 (every Hangar lab repo,
+2026-10-30). There a red `agent-gates-` does not stop the merge button. On gitops repos the detective control still
+applies: `detect-bypass-merge` reads the same registry, so a release merged past a red `agent-gates-` is recorded as a
+bypass (the release log's `bypass` flag and the break-glass alert). App repos have no detective check for it.
 
 ## Verify it
 
