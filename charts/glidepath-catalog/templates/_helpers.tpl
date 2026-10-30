@@ -266,3 +266,111 @@ check_run_start() {
   jq -r .id <<<"${out}" > "${W}/check-id"
 }
 {{- end -}}
+
+{{- /*
+glidepath-catalog.flightPrunePlan: the bash of the flight-prune CronJob (retention/flight-prune-cronjob.yaml), after
+promoterGitHub. Kept in one helper so tests/flight_prune_test.sh runs exactly what ships. Reads FLIGHT_READ_CONFIG
+(the read-only docker config) and the env the CronJob sets.
+*/ -}}
+{{- define "glidepath-catalog.flightPrunePlan" -}}
+api=https://api.github.com
+# The read-only Flight credential's token, for the packages API (the registry and the API take the same token).
+flight_api_token() {
+  jq -r --arg h "${FLIGHT_HOST}" '.auths[$h].auth // empty' "${FLIGHT_READ_CONFIG:-/var/run/secrets/flight-read/config.json}" \
+    | base64 -d 2>/dev/null | cut -d: -f2-
+}
+flight_packages() {
+  local t; t="$(flight_api_token)"
+  [[ -n "${t}" ]] || { echo "error: no ${FLIGHT_HOST} credential in flight-registry-read" >&2; return 1; }
+  curl --fail-with-body --silent --show-error --max-time 30 --retry 3 -H "Authorization: Bearer ${t}" \
+    -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+    "${api}/users/${FLIGHT_NAMESPACE}/packages?package_type=container&per_page=100" | jq -r '.[].name'
+}
+raw_() { gh_ -H "Accept: application/vnd.github.raw+json" "${api}/repos/${1}/contents/${2}?ref=${3}"; }
+# The Flight tag and digest a release file pins, if it pins the Flight repository.
+pinned() {
+  yq -o=json '.release.image // {}' "$1" | jq -r --arg flight "$2" 'select(.repository == $flight) | .tag // empty, .digest // empty'
+}
+# Prints the keep list of one gitops repo, one tag or sha256 digest per line. Any read that fails returns 1, so the
+# package is skipped: a list missing what runs now must never reach the workflow.
+keep_list() {
+  local repo="$1" flight="$2" head tree f n sha files pulls
+  head="$(gh_ "${api}/repos/${repo}" | jq -er .default_branch)" || return 1
+  tree="$(gh_ "${api}/repos/${repo}/git/trees/${head}?recursive=1")" || return 1
+  [[ "$(jq -r .truncated <<<"${tree}")" != true ]] || { echo "${repo}: tree truncated" >&2; return 1; }
+  # Release files on the default branch: what runs now.
+  for f in $(jq -r '.tree[].path | select(test("^[^/]+/[^/]+/release\\.yaml$"))' <<<"${tree}"); do
+    raw_ "${repo}" "${f}" "${head}" > /tmp/release.yaml || return 1
+    pinned /tmp/release.yaml "${flight}"
+  done
+  # Release Records: what ran, and what Tower can roll back to. Every digest in a record is kept, not only the image's:
+  # an extra one costs nothing.
+  for f in $(jq -r '.tree[].path | select(test("^releases/[^/]+\\.ya?ml$"))' <<<"${tree}"); do
+    raw_ "${repo}" "${f}" "${head}" > /tmp/record.yaml || return 1
+    yq -r '.imageTag // ""' /tmp/record.yaml
+    grep -oE 'sha256:[0-9a-f]{64}' /tmp/record.yaml || true
+  done
+  # Open release PRs: promoted, or about to be, and not merged yet.
+  pulls="$(gh_ "${api}/repos/${repo}/pulls?state=open&per_page=100")" || return 1
+  while read -r n sha; do
+    [[ -n "${n}" ]] || continue
+    files="$(gh_ "${api}/repos/${repo}/pulls/${n}/files?per_page=100")" || return 1
+    for f in $(jq -r '.[].filename | select(test("^[^/]+/[^/]+/release\\.yaml$"))' <<<"${files}"); do
+      raw_ "${repo}" "${f}" "${sha}" > /tmp/release.yaml || return 1
+      pinned /tmp/release.yaml "${flight}"
+    done
+  done < <(jq -r '.[] | select(.head.ref | startswith("release-")) | select(.head.ref | startswith("release-record-") | not)
+                  | "\(.number) \(.head.sha)"' <<<"${pulls}")
+}
+dispatch_token() {
+  local raw
+  raw="$(curl --silent --show-error --max-time 20 --retry 3 --retry-connrefused -w '\n%{http_code}' -X POST "${PROMOTER_TOKEN_URL}" \
+    -H "Authorization: Bearer $(cat "${PROMOTER_TOKEN_FILE:-/var/run/secrets/promoter/token}")" -H "Content-Type: application/json" \
+    -d '{"purpose":"dispatch"}')" || return 1
+  [[ "${raw##*$'\n'}" == "200" ]] || { echo "promoter-token: ${raw}" >&2; return 1; }
+  token="$(jq -r .token <<<"${raw%$'\n'*}")"
+}
+# Starts the prune workflow for one package and waits for it, like promote-image: the run name ends with the request id.
+prune_package() {
+  local package="$1" keep="$2" rid wf started deadline run=""
+  rid="prune-$(date -u +%Y%m%d%H%M%S)-${package}"
+  dispatch_token || { echo "error: the broker refused a dispatch token" >&2; return 1; }
+  wf="${api}/repos/${PROMOTER_REPO}/actions/workflows/${PRUNE_WORKFLOW}"
+  started="$(date -u -d "@$(( $(date +%s) - 60 ))" +%Y-%m-%dT%H:%M:%SZ)"
+  gh_ -X POST "${wf}/dispatches" -d "$(jq -n --arg ref "${PROMOTER_REF}" --arg p "${package}" --arg k "${keep}" \
+      --arg n "${KEEP_NEWEST}" --arg a "${MIN_AGE_DAYS}" --arg m "${MAX_DELETES}" --arg d "${DRY_RUN}" --arg r "${rid}" \
+      '{ref: $ref, inputs: {package: $p, keep: $k, "keep-newest": $n, "min-age-days": $a, "max-deletes": $m,
+                            "dry-run": $d, "request-id": $r}}')" >/dev/null \
+    || { echo "error: could not start ${PROMOTER_REPO} ${PRUNE_WORKFLOW} for ${package}" >&2; return 1; }
+  deadline=$((SECONDS + RUN_TIMEOUT_MINUTES * 60))
+  while (( SECONDS < deadline )); do
+    run="$(gh_ "${wf}/runs?event=workflow_dispatch&created=>=${started}&per_page=50" 2>/dev/null \
+      | jq -c --arg rid "${rid}" '[.workflow_runs[]? | select(.display_title | endswith(" " + $rid))][0] // empty')"
+    [[ -n "${run}" && "$(jq -r .status <<<"${run}")" == completed ]] && break
+    sleep "${PRUNE_POLL_SECONDS:-15}"
+  done
+  [[ -n "${run}" ]] || { echo "error: the prune run for ${package} (${rid}) never appeared" >&2; return 1; }
+  echo "${package}: $(jq -r '.conclusion // .status' <<<"${run}") $(jq -r .html_url <<<"${run}")"
+  [[ "$(jq -r .conclusion <<<"${run}")" == success ]]
+}
+flight_prune_main() {
+  local packages p keep rc=0
+  packages="$(flight_packages)" || exit 1
+  [[ -n "${packages}" ]] || { echo "no packages in ${FLIGHT_HOST}/${FLIGHT_NAMESPACE}"; exit 0; }
+  echo "Flight retention, dry-run=${DRY_RUN}: keep the ${KEEP_NEWEST} newest, anything under ${MIN_AGE_DAYS} days, and every tag or digest named below"
+  for p in ${packages}; do
+    if ! release_pr_token "${GITOPS_OWNER}" "gitops-${p}" 2>/dev/null || ! keep="$(keep_list "${GITOPS_OWNER}/gitops-${p}" "${FLIGHT_HOST}/${FLIGHT_NAMESPACE}/${p}")"; then
+      echo "${p}: skipped, ${GITOPS_OWNER}/gitops-${p} cannot be read (no gitops repo: nothing is known, so nothing is deleted)"
+      continue
+    fi
+    keep="$(sort -u <<<"${keep}" | grep -v '^$' | tr '\n' ' ' | sed 's/ $//')"
+    if [[ -z "${keep}" ]]; then
+      echo "${p}: skipped, its gitops repo names no image (nothing is known, so nothing is deleted)"
+      continue
+    fi
+    echo "${p}: keep ${keep}"
+    prune_package "${p}" "${keep}" || rc=1
+  done
+  exit "${rc}"
+}
+{{- end -}}

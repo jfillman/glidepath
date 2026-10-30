@@ -2,6 +2,8 @@
 """Per-environment cloud config (ADR-0019, phase 4): resolve-deploy-target merges the deploy step's
 environment's override block over the app-level one, so each environment deploys to its own
 function / service / Container App. Runs the Task's own jq program, extracted from the rendered Task.
+Also runs the whole step (event-chained path) to check PROM-10: with promotion on, a cloud target in a Flight
+environment is refused (ADR-0029 phase 6); with promotion off, or on a cluster, it is not.
 
 Run:  python3 charts/glidepath-catalog/tests/resolve_deploy_target_env_test.py   (needs helm, jq, pyyaml)
 """
@@ -18,12 +20,20 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")
 CATALOG = os.path.join(ROOT, "charts", "glidepath-catalog")
 
 
+def step_script(*sets):
+    args = ["helm", "template", "t", CATALOG, "-f", os.path.join(CATALOG, "tests", "values.example.yaml"), "-s", "templates/tasks/resolve-deploy-target.yaml"]
+    for kv in sets:
+        args += ["--set", kv]
+    out = subprocess.run(args, capture_output=True, text=True, check=True).stdout
+    return yaml.safe_load(out)["spec"]["steps"][0]["script"]
+
+
+PROMOTION_ON = ("promotion.enabled=true", "promotion.pinDigest=true", "registries.flight.namespace=flight",
+                "promotion.promoter.repo=flight/flight-promoter")
+
+
 def program():
-    out = subprocess.run(
-        ["helm", "template", "t", CATALOG, "-f", os.path.join(CATALOG, "tests", "values.example.yaml"), "-s", "templates/tasks/resolve-deploy-target.yaml"],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    script = yaml.safe_load(out)["spec"]["steps"][0]["script"]
+    script = step_script()
     m = re.search(r"<<'JQ_ENV_OVERRIDES'\n(.*?)\nJQ_ENV_OVERRIDES\n", script, re.S)
     assert m, "override program not found in the Task"
     return m.group(1)
@@ -96,6 +106,49 @@ class EnvOverrides(unittest.TestCase):
     def test_the_other_environments_blocks_are_never_applied(self):
         # "dev" has no override: it must not pick up "test"'s function
         self.assertEqual(resolve(LAMBDA, "dev")["deploy"]["lambda"]["functionName"], "app-fn")
+
+
+def run_step(script, config, env):
+    """The whole step, event-chained (config-json is real, so it never reaches the broker). Returns (rc, stderr, target)."""
+    with tempfile.TemporaryDirectory() as d:
+        script = script.replace("$(results.target.path)", os.path.join(d, "target")).replace("$(results.config-json.path)", os.path.join(d, "config"))
+        r = subprocess.run(["bash", "-c", script], env={**os.environ, "CONFIG_JSON": json.dumps(config), "ENV_NAME": env},
+                           capture_output=True, text=True)
+        target = open(os.path.join(d, "target")).read() if os.path.exists(os.path.join(d, "target")) else ""
+        return r.returncode, r.stderr, target
+
+
+def cloud(target, tier):
+    return {"deploy": {"target": target, "environments": [{"name": "dev", "tier": "ground"}, {"name": "prod", "tier": tier}]}}
+
+
+class CloudFlightRefusal(unittest.TestCase):
+    ON = step_script(*PROMOTION_ON)
+    OFF = step_script()
+
+    def test_every_cloud_target_in_a_flight_environment_is_refused_with_promotion_on(self):
+        for target in ("aws-ecs", "aws-lambda", "azure-container-apps"):
+            rc, err, _ = run_step(self.ON, cloud(target, "flight"), "prod")
+            self.assertEqual(rc, 1, target)
+            self.assertIn("PROM-10", err)
+            self.assertIn(target, err)
+
+    def test_a_ground_environment_of_the_same_app_still_deploys(self):
+        rc, err, target = run_step(self.ON, cloud("aws-lambda", "flight"), "dev")
+        self.assertEqual((rc, target), (0, "aws-lambda"), err)
+
+    def test_a_cluster_target_in_a_flight_environment_is_untouched(self):
+        rc, err, target = run_step(self.ON, cloud("k8s-rollout", "flight"), "prod")
+        self.assertEqual((rc, target), (0, "k8s-rollout"), err)
+
+    def test_promotion_off_changes_nothing(self):
+        self.assertNotIn("refused (PROM-10)", self.OFF)
+        rc, err, target = run_step(self.OFF, cloud("aws-ecs", "flight"), "prod")
+        self.assertEqual((rc, target), (0, "aws-ecs"), err)
+
+    def test_an_environment_not_in_the_file_is_not_refused(self):
+        rc, err, _ = run_step(self.ON, cloud("aws-ecs", "flight"), "staging")
+        self.assertEqual(rc, 0, err)
 
 
 if __name__ == "__main__":

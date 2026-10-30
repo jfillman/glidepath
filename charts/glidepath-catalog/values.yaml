@@ -354,3 +354,15 @@ promotion:
     timeoutMinutes: 20
     # The promotion attestation's signer (keyless, public Sigstore): the workflow's own Actions identity.
     issuer: https://token.actions.githubusercontent.com
+  # Flight retention (ADR-0029 phase 6, docs/admin/registries.md "Retention", PROM-09): a CronJob plans which Flight
+  # images must stay (everything a release file, a Release Record or an open release PR names) and starts the
+  # workflow below in promoter.repo, which deletes the rest. Off by default; dryRun only reports.
+  retention:
+    enabled: false
+    schedule: "23 3 * * 0"
+    workflow: prune.yaml
+    gitopsOwner: ""      # owner of the gitops-<app> repos; "" = registries.ground.namespace
+    keepNewest: 10       # newest releases per package kept whatever the keep list says
+    minAgeDays: 30       # releases younger than this are kept
+    maxDeletes: 20       # releases deleted per package per run, at most
+    dryRun: true

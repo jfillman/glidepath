@@ -1,0 +1,110 @@
+{{- if .Values.promotion.retention.enabled }}
+# Flight retention (ADR-0029 phase 6, docs/admin/registries.md "Retention", PROM-09). The platform plans, the promoter
+# deletes: this job works out which Flight images must stay and hands that to the prune workflow in
+# promotion.promoter.repo, whose own GITHUB_TOKEN is the only credential that can delete from Flight, as it is the only
+# one that writes it. Nothing here can delete anything.
+#
+# For each package in the Flight namespace (listed with the read-only flight-registry-read credential) whose gitops
+# repo <gitopsOwner>/gitops-<package> exists, the keep list is every tag and digest that
+#   - a <cluster>/<env>/release.yaml on the default branch pins (what runs now),
+#   - a Release Record (releases/*.yaml) names (what ran, and what Tower can roll back to),
+#   - an open release PR's release.yaml pins (promoted or about to be, not merged yet).
+# A package with no gitops repo, or with an empty keep list, is skipped: nothing is known about it, so nothing is
+# deleted. The workflow keeps the keepNewest newest releases and anything younger than minAgeDays whatever the list
+# says, deletes at most maxDeletes releases per run, and with dryRun only reports what it would delete.
+#
+# Runs as glidepath-promoter (the promote pipeline's identity, no Kubernetes permissions): its projected token is what
+# the broker's /promoter-token trusts for the dispatch token and the read-only gitops tokens.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: flight-prune
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.promotion.retention.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            {{- include "glidepath-catalog.labels" . | nindent 12 }}
+            app.kubernetes.io/component: flight-prune
+        spec:
+          serviceAccountName: glidepath-promoter
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+          volumes:
+            - name: promoter-token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      audience: glidepath-promoter
+                      expirationSeconds: 3600
+            - name: flight-read
+              secret:
+                secretName: flight-registry-read
+                items:
+                  - key: .dockerconfigjson
+                    path: config.json
+          containers:
+            - name: plan
+              image: {{ .Values.toolboxImage }}
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
+              resources:
+                requests: { cpu: 20m, memory: 64Mi }
+                limits: { memory: 256Mi }
+              volumeMounts:
+                - { name: promoter-token, mountPath: /var/run/secrets/promoter, readOnly: true }
+                - { name: flight-read, mountPath: /var/run/secrets/flight-read, readOnly: true }
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: PROMOTER_TOKEN_URL
+                  value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/promoter-token
+                - name: PROMOTER_REPO
+                  value: {{ .Values.promotion.promoter.repo | quote }}
+                - name: PROMOTER_REF
+                  value: {{ .Values.promotion.promoter.ref | quote }}
+                - name: PRUNE_WORKFLOW
+                  value: {{ .Values.promotion.retention.workflow | quote }}
+                - name: FLIGHT_HOST
+                  value: {{ .Values.registries.flight.host | quote }}
+                - name: FLIGHT_NAMESPACE
+                  value: {{ .Values.registries.flight.namespace | quote }}
+                - name: GITOPS_OWNER
+                  value: {{ .Values.promotion.retention.gitopsOwner | default .Values.registries.ground.namespace | quote }}
+                - name: KEEP_NEWEST
+                  value: {{ .Values.promotion.retention.keepNewest | quote }}
+                - name: MIN_AGE_DAYS
+                  value: {{ .Values.promotion.retention.minAgeDays | quote }}
+                - name: MAX_DELETES
+                  value: {{ .Values.promotion.retention.maxDeletes | quote }}
+                - name: DRY_RUN
+                  value: {{ .Values.promotion.retention.dryRun | quote }}
+                - name: RUN_TIMEOUT_MINUTES
+                  value: {{ .Values.promotion.promoter.timeoutMinutes | quote }}
+              command: [bash, -c]
+              args:
+                - |
+                  set -uo pipefail
+                  [[ -n "${PROMOTER_REPO}" ]] || { echo "error: promotion.promoter.repo is not set" >&2; exit 1; }
+                  [[ -n "${FLIGHT_NAMESPACE}" ]] || { echo "error: registries.flight.namespace is not set" >&2; exit 1; }
+                  [[ -n "${GITOPS_OWNER}" ]] || { echo "error: set promotion.retention.gitopsOwner (or registries.ground.namespace)" >&2; exit 1; }
+                  {{- include "glidepath-catalog.promoterGitHub" . | nindent 18 }}
+                  {{- include "glidepath-catalog.flightPrunePlan" . | nindent 18 }}
+                  flight_prune_main
+{{- end }}
