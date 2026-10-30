@@ -57,7 +57,7 @@ tektonResultsRelayImage: ghcr.io/jfillman/glidepath-tekton-results-relay:latest
 
 # templates/api/glidepath-api.yaml (docs/admin/api.md). Empty renders nothing; api-ci.yaml sets it
 # to an immutable sha- tag on main after pushing a multi-arch image.
-apiImage: ghcr.io/jfillman/glidepath-api:sha-5781a97
+apiImage: ghcr.io/jfillman/glidepath-api:sha-be27ccd
 api:
   replicas: 2
   # Usernames (as TokenReview reports them) that may send X-Glidepath-On-Behalf-Of: Tower's
