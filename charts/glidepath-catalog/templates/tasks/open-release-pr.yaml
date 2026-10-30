@@ -284,6 +284,31 @@ spec:
             "hangar.io/env=${ENV}" "hangar.io/cluster=${CLUSTER}" --overwrite
         }
 
+        # An earlier release of this app to the same environment and cluster whose PR was closed without merging stays
+        # "proposed" forever: mark-release-merged runs on the push a merge makes, and a close makes none, so Tower's Ops
+        # Wall counted it as awaiting approval until the sweeper's TTL (2026-10-30: five, from superseded releases).
+        # When a new release PR opens, each such record whose PR GitHub reports closed and unmerged is closed here. A
+        # record still open, merged, or unreadable is left alone. Best-effort: it never fails the release.
+        close_stale_proposals() {
+          local name url number pr
+          for name in $(kubectl get configmap -n "${NAMESPACE}" \
+              -l "hangar.io/subcomponent=release-tracking,hangar.io/app=${APP_NAME},hangar.io/env=${ENV},hangar.io/cluster=${CLUSTER}" \
+              -o jsonpath='{range .items[?(@.data.state=="proposed")]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+            [[ "${name}" == "release-tracking-${CHAIN_ID}" ]] && continue
+            url="$(kubectl get configmap "${name}" -n "${NAMESPACE}" -o jsonpath='{.data.prUrl}' 2>/dev/null)"
+            [[ "${url}" =~ ^https://github\.com/${owner}/${gitops_repo}/pull/([0-9]+)$ ]] || continue
+            number="${BASH_REMATCH[1]}"
+            pr="$(curl --fail --silent --max-time 15 -H "Authorization: Bearer ${token}" \
+              -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${owner}/${gitops_repo}/pulls/${number}")" || continue
+            [[ "$(jq -r '.state' <<<"${pr}")" == closed && "$(jq -r '.merged' <<<"${pr}")" == false ]] || continue
+            kubectl patch configmap "${name}" -n "${NAMESPACE}" --type merge \
+              -p "$(jq -n --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{data: {state: "closed", stateAt: $now}}')" >/dev/null \
+              && echo "${name}: proposed -> closed (#${number} was closed unmerged)"
+          done
+          return 0
+        }
+
         if [[ -z "${CLUSTER}" ]]; then
           echo "error: cluster is required - gitops-${APP_NAME}'s layout is <cluster>/<env>/values.yaml, there's no manifest path to write without one. Set cluster: <cluster-name> on the ${ENV} entry of deploy.environments in this app's cicd.yaml." >&2
           exit 1
@@ -553,6 +578,7 @@ spec:
         # Task's own surrounding YAML.
         if [[ -n "${CHAIN_ID}" ]]; then
           write_release_record "${pr_url}" "${pr_created_at}"
+          close_stale_proposals || true
         else
           echo "warning: no chain-id for this release - pr-url/pr-created-at won't reach release-outcome-notify.yaml (app onboarded before chain-id existed, or a manual/direct invocation)." >&2
         fi

@@ -226,11 +226,16 @@ Moving the events onto the spec's vocabulary
 Tower *Promote full* skipped analysis (Backstage audits and announces it; the fact carries no
 such field yet).
 
-## Known gap: a PR closed without merging
+## A PR closed without merging
 
-`closed` (a PR closed unmerged) is in the state machine but nothing sets it yet. The merge signal is
-the push to main, and an unmerged close produces no push. The record stays `proposed` until
-retention deletes it (14 days). Nothing downstream depends on it.
+The merge signal is the push to main, and an unmerged close produces no push, so `mark-release-merged`
+never sees one. Instead, when `open-release-pr` opens a new release PR, it closes out the earlier
+`proposed` records of the same app, environment and cluster (`close_stale_proposals`): each whose PR
+GitHub reports closed and unmerged becomes `closed`. A record still open, merged, or unreadable is left
+alone, and this never fails the release. That covers the common case, a release replaced by a newer
+one (2026-10-30: five such records made Tower's Ops Wall show releases awaiting approval whose PRs were
+long closed). A PR closed with no later release of that environment still stays `proposed` until
+retention deletes it (14 days).
 
 ## Live verification (2026-10-06)
 
@@ -257,6 +262,6 @@ sweeper CronJob).
 | A namespace the relay has no Role in | synthetic | fact accepted, events still produced, a log line says it did not persist |
 
 Not exercised live: a forward failure and the 502 retry (needs `emit` mode, unit-tested), a
-write conflict between the two relay replicas (unit-tested), and a PR closed unmerged (the
-known gap above). The retention of proposed and state-less legacy records is covered by the
+write conflict between the two relay replicas (unit-tested), and a PR closed unmerged with no later
+release (the gap above; `close_stale_proposals` is covered by its script test). The retention of proposed and state-less legacy records is covered by the
 sweeper's script test, because a record's creation time cannot be back-dated.

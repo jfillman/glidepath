@@ -127,6 +127,14 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: charts/glidepath-catalog/tests/retest_pr_number_test.sh
 
+  # open-release-pr's close_stale_proposals: an earlier proposal whose PR closed unmerged becomes closed (docs/admin/release-state.md).
+  close-stale-proposals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: charts/glidepath-catalog/tests/close_stale_proposals_test.sh
+
   # run-testworkflow's failure report: the failed JUnit cases, or the failing step's last output (docs/admin/testing.md).
   test-failure-report:
     runs-on: ubuntu-latest
