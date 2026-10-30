@@ -195,6 +195,34 @@ reach; the gates verified it before the promotion the attestation records. Audit
 `failurePolicy: Ignore`; the upper clusters run no Kyverno reports controller, so the evidence is the warning
 `kubectl` prints (a server-side dry run of a pod shows it without creating anything).
 
+## Cloud targets (phase 6)
+
+A cloud deploy (`deploy.target` `aws-ecs`, `aws-lambda`, `azure-container-apps`) copies the build from Ground into
+the target's own registry at deploy time; nothing promotes it. With `promotion.enabled`, `resolve-deploy-target`
+therefore refuses a cloud target in a **Flight** environment (PROM-10) before any deploy Task runs, with the reason.
+Ground environments of the same app deploy as before. Cloud promotion (pin PRs through the fan-in, ECR copied from
+Flight) is a follow-up for when a real cloud Flight environment exists; no app has one today.
+
+## Retention (phase 6)
+
+Flight only grows unless `promotion.retention.enabled`. The platform plans, the promoter deletes:
+
+- The `flight-prune` CronJob (catalog namespace, runs as `glidepath-promoter`) lists the Flight packages with the
+  read-only `flight-registry-read` credential and, for each package with a `<gitopsOwner>/gitops-<package>` repo,
+  builds a keep list: every tag and digest a `<cluster>/<env>/release.yaml` on the default branch pins, every
+  Release Record (`releases/*.yaml`) names, and every open release PR pins (PROM-09). Any failed read skips the
+  package; a package with no gitops repo or an empty list is skipped.
+- It dispatches the `prune` workflow (`promotion.retention.workflow`) in `promotion.promoter.repo` once per package
+  and waits for it. The workflow's `GITHUB_TOKEN` deletes; nothing in a cluster can.
+- The workflow keeps the `keepNewest` newest releases and anything younger than `minAgeDays` whatever the list says,
+  deletes at most `maxDeletes` releases per run, refuses an empty keep list, and with `dryRun` (the default) only
+  writes the plan to the run summary. Deleting a release removes, by digest, its index, platform manifests,
+  `.sig`/`.att`/`.sbom` tags, referrers fallback index and the referrers it lists, unless a kept release reaches the
+  same digest.
+
+Not yet verified live: the GitHub packages API with the read credential, and version deletion with the workflow's
+`GITHUB_TOKEN` (GitHub allows it for packages linked to the workflow's repository). Run it in `dryRun` first.
+
 ## Files
 
 - `charts/glidepath-catalog/values.yaml` `registries`, `promotion`

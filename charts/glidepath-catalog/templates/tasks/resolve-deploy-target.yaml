@@ -31,6 +31,11 @@
 # directly instead of this Task's own already-resolved copy. One resolution, reused by
 # every consumer - not re-derived per Task.
 #
+# Refuses a cloud target in a Flight environment while promotion is on (ADR-0029 phase 6, PROM-10): the cloud deploy
+# Tasks copy the build straight from Ground into ECR / Azure, so the image never went through the promoter. Fails
+# here, before any of them runs, rather than in each. Cloud promotion is a recorded follow-up
+# (docs/admin/registries.md, "Cloud targets"). With promotion off, nothing changes.
+#
 # No Pipeline workspace needed for this - mktemp's own ephemeral clone (same approach
 # deploy-manifests.yaml already uses) avoids the optional-workspace admission-webhook
 # restriction entirely, rather than binding deploy.yaml's `source` workspace the way
@@ -122,12 +127,27 @@ spec:
           jq -c --arg env "${ENV_NAME}" -f /tmp/env-overrides.jq <<< "$1" 2>/dev/null || echo -n "$1"
         }
 
+        # PROM-10: see the header. Called with the target and the resolved config just before each exit.
+        refuse_unpromoted_cloud_flight() {
+          {{- if .Values.promotion.enabled }}
+          local tier
+          [[ "$1" == k8s-rollout ]] && return 0
+          tier="$(jq -r --arg env "${ENV_NAME}" '[(.deploy.environments // [])[] | select(.name == $env) | .tier] | first // ""' <<< "$2" 2>/dev/null || true)"
+          if [[ "${tier}" == flight ]]; then
+            echo "error: ${ENV_NAME} is a Flight environment with deploy.target $1. Promotion is on, and a cloud deploy copies the image from Ground without promoting it, so it is refused (PROM-10). Deploy this environment to a cluster, or make it a Ground environment, until cloud promotion exists (docs/admin/registries.md, \"Cloud targets\")." >&2
+            exit 1
+          fi
+          {{- end }}
+          return 0
+        }
+
         # Event-chained (the common case): config-json is already real and
         # already-defaulted - no clone needed, pass it straight through as both results.
         if [[ "${CONFIG_JSON}" != "{}" && -n "${CONFIG_JSON}" ]]; then
           TARGET="$(jq -r '.deploy.target // "k8s-rollout"' <<< "${CONFIG_JSON}" 2>/dev/null || echo "k8s-rollout")"
           printf '%s' "${TARGET}" > "$(results.target.path)"
           echo "target=${TARGET}"
+          refuse_unpromoted_cloud_flight "${TARGET}" "${CONFIG_JSON}"
           with_env_overrides "${CONFIG_JSON}" | tee "$(results.config-json.path)" > /dev/null
           exit 0
         fi
@@ -184,4 +204,5 @@ spec:
         fi
         printf '%s' "${TARGET}" > "$(results.target.path)"
         echo "target=${TARGET}"
+        refuse_unpromoted_cloud_flight "${TARGET}" "${RESOLVED_CONFIG}"
         with_env_overrides "${RESOLVED_CONFIG}" | tee "$(results.config-json.path)" > /dev/null
