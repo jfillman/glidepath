@@ -10,15 +10,17 @@ still to come. Phase 4 (tier T2, propose) is promote and roll back: each only st
 Pipeline, whose gitops PR a human merges. Nothing else is written. Phase 5 starts with the [event stream](#events):
 every CDEvent the shared broker carries, re-verified and served as server-sent events with resume. Phase 6b adds the
 [live reads](#live-and-archived-reads) Tower's views of runs in flight need, so Tower no longer reads Tekton or pod
-logs through its own Kubernetes proxy, and the fleet's run history across every namespace.
+logs through its own Kubernetes proxy, and the fleet's run history across every namespace, and (API 0.6.0) the
+fleet's [release records and release Events](#the-fleets-release-records) for Tower's Ops Wall and drift view.
 
 **Since phase 6 (2026-10-30) this API is Tower's only CI/CD path.** Tower's backend asks it for every run, log,
 app release record, piece of evidence and test run, and sends every re-run, cancel, Flight promote and rollback
 through it, for apps and InfraServices alike. There is no fallback: an API error or timeout goes back to the person
 (a 4xx keeps its status, anything else is a 502). Tower no longer reads Tekton Results, Testkube or Rekor itself,
 verifies no signatures of its own, and its identities can't create or patch a PipelineRun (the cluster refuses it,
-[below](#who-may-write)). Not moved yet: the Ops Wall's fleet release records and release Events, which Tower still
-reads from the `release-tracking` ConfigMaps and Events through its Kubernetes proxy.
+[below](#who-may-write)). The Ops Wall's fleet release records and release Events, the last reads Tower made through
+its Kubernetes proxy, are served from API 0.6.0 (`GET /v1/releases`, `GET /v1/releases/events`); until Tower's
+side ships, Tower still reads the `release-tracking` ConfigMaps and Events itself.
 
 **Not offered, by design:** promoting to a Ground environment and cloud pins. Both are a commit to a repo
 (Tower's Ground promote commits straight to the app repo's release file; a pin opens a PR itself), so both
@@ -41,6 +43,8 @@ fails if the server's routes and the spec ever differ.
 | `GET /v1/runs?app=&sinceHours=&limit=` | T0 | `list runs` (cluster-wide without `app=`) | Finished runs across every namespace, newest first, each with `namespace` and `app` |
 | `GET /v1/live?app=` | T0 | `list runs` (cluster-wide without `app=`) | Every live PipelineRun in the cluster |
 | `GET /v1/live/taskruns?app=&pipelineRuns=` | T0 | `list runs` (cluster-wide without `app=`) | The live TaskRuns of the named PipelineRuns |
+| `GET /v1/releases?app=` | T0 | `list releases` (cluster-wide without `app=`) | Every [release record](#the-fleets-release-records) in the cluster, each with `namespace` and `labels` |
+| `GET /v1/releases/events?app=` | T0 | `list releases` (cluster-wide without `app=`) | The `ReleaseStalled` and `ReleaseDrift` Events about release records |
 | `GET /v1/apps/{app}/releases` | T0 | `list releases` | Every `release-tracking-*` record of the app |
 | `GET /v1/apps/{app}/releases/{chainId}` | T0 | `get releases` | One record |
 | `GET /v1/apps/{app}/evidence?image=` | T0 | `get evidence` | Every signature and attestation on the image, each [re-verified](#evidence) |
@@ -413,6 +417,21 @@ with it. `glidepath-api-reader` bound through `api.readers` is cluster-wide, so 
 **What glidepath-api itself may read for this.** Its ClusterRole adds `list` on `pipelineruns`, `get` and `list` on
 `taskruns`, and `get` on `pods` and `pods/log`, all cluster-wide (apps are onboarded after install). Nothing else:
 no pod list, no exec, no secrets beyond the existing `registry-credentials`.
+
+### The fleet's release records
+
+`GET /v1/releases` is every `release-tracking` ConfigMap (label `hangar.io/subcomponent=release-tracking`) in the
+cluster, each as `{"name", "namespace", "labels", "data"}` (`labels` and `data` are `{}` when empty, never null), so
+Tower's `toReleaseRecord` can fall back to the `hangar.io/app`, `env` and `cluster` labels as it does now.
+`GET /v1/releases/events` is the Events Glidepath's sweeper writes about them: reason `ReleaseStalled` or
+`ReleaseDrift` (one list per reason, by field selector), involvedObject a ConfigMap named `release-tracking-*`, each as
+`{"reason", "namespace", "recordName", "message", "at"}`: `namespace` is the involvedObject's (else the Event's),
+`at` is `lastTimestamp`, else `eventTime`, else `firstTimestamp`, else `creationTimestamp`, in RFC 3339 UTC, and
+absent when none is set. Both take `app=` (that app's namespace; the records also only that app's
+`hangar.io/app`) and are authorized like the other fleet reads: `list releases` cluster-wide without `app=`, in the
+app's namespace with it. Neither is cached (one ConfigMap list, two Event lists). `GET /v1/apps/{app}/releases`
+is unchanged. For this glidepath-api's ClusterRole adds `list` on core `events`, cluster-wide (it already lists
+ConfigMaps for the per-app records).
 
 ## Explain
 

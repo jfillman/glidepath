@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Glidepath API
-  version: 0.5.0
+  version: 0.6.0
   description: |
     Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
     contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec are reads (tier T0); phase 3
@@ -10,7 +10,8 @@ info:
     release Pipeline, whose gitops PR a human merges. Phase 5 adds the CDEvents stream (GET /v1/events):
     every event the shared broker carries, re-verified, as server-sent events with resume. Phase 6b adds the live
     reads Tower's views of runs in flight need (PipelineRuns, TaskRuns and step logs as the cluster holds them now)
-    and the fleet's run history across every namespace.
+    and the fleet's run history across every namespace. 0.6.0 adds the fleet's release records and release Events
+    (GET /v1/releases, GET /v1/releases/events), the last reads Tower's Ops Wall made through its own Kubernetes proxy.
 
     Every /v1 call needs a bearer token the cluster's TokenReview accepts, in `Authorization`, or in
     `X-Glidepath-Authorization` when the call comes through the API server's service proxy (which
@@ -256,6 +257,61 @@ paths:
                 required: [taskRuns]
                 properties:
                   taskRuns: { type: array, items: { $ref: "#/components/schemas/KubeObject" } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/releases:
+    get:
+      operationId: listFleetReleases
+      summary: Every release record in the cluster, with its namespace and labels
+      description: >-
+        Every `release-tracking` ConfigMap (label `hangar.io/subcomponent=release-tracking`) in every namespace, or with
+        `app=` only that app's (label `hangar.io/app`) in its namespace. Needs `list` on `releases.glidepath.hangar.io`:
+        cluster-wide without `app=`, in the app's namespace with it. Each record is the ConfigMap's name, namespace,
+        labels and data (`{}` when it has none, never null). GET /v1/apps/{app}/releases is unchanged. Not cached.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/FleetApp" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200":
+          description: The records
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [releases]
+                properties:
+                  releases: { type: array, items: { $ref: "#/components/schemas/FleetRelease" } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/releases/events:
+    get:
+      operationId: listFleetReleaseEvents
+      summary: The ReleaseStalled and ReleaseDrift Events about release records
+      description: >-
+        The core/v1 Events with reason `ReleaseStalled` or `ReleaseDrift` (one list per reason, by field selector) whose
+        involvedObject is a ConfigMap named `release-tracking-*`, in every namespace or the `app=` one. Same
+        authorization as GET /v1/releases. Stalled ones first, then drift, each in the API server's order. Not cached.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/FleetApp" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200":
+          description: The Events
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events: { type: array, items: { $ref: "#/components/schemas/ReleaseEvent" } }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
@@ -936,3 +992,23 @@ components:
       properties:
         name: { type: string, description: "release-tracking-<chain-id>" }
         data: { type: object, additionalProperties: { type: string } }
+    FleetRelease:
+      type: object
+      required: [name, namespace, labels, data]
+      properties:
+        name: { type: string, description: "release-tracking-<chain-id>" }
+        namespace: { type: string }
+        labels: { type: object, additionalProperties: { type: string }, description: "The ConfigMap's labels (hangar.io/app, env, cluster, ...)" }
+        data: { type: object, additionalProperties: { type: string } }
+    ReleaseEvent:
+      type: object
+      required: [reason, namespace, recordName, message]
+      properties:
+        reason: { type: string, enum: [ReleaseStalled, ReleaseDrift] }
+        namespace: { type: string, description: "The involvedObject's namespace, else the Event's" }
+        recordName: { type: string, description: "The record (ConfigMap) the Event is about: release-tracking-<chain-id>" }
+        message: { type: string }
+        at:
+          type: string
+          format: date-time
+          description: "RFC 3339 UTC: lastTimestamp, else eventTime, else firstTimestamp, else creationTimestamp; absent when none is set"

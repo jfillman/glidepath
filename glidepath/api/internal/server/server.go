@@ -87,6 +87,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/runs", s.wrap(op{"listFleetRuns", "T0", "runs", "", "list", true}, s.listFleetRuns))
 	mux.Handle("GET /v1/live", s.wrap(op{"listFleetLiveRuns", "T0", "runs", "", "list", true}, s.listFleetLiveRuns))
 	mux.Handle("GET /v1/live/taskruns", s.wrap(op{"listFleetLiveTaskRuns", "T0", "runs", "", "list", true}, s.listFleetLiveTaskRuns))
+	mux.Handle("GET /v1/releases", s.wrap(op{"listFleetReleases", "T0", "releases", "", "list", true}, s.listFleetReleases))
+	mux.Handle("GET /v1/releases/events", s.wrap(op{"listFleetReleaseEvents", "T0", "releases", "", "list", true}, s.listFleetReleaseEvents))
 	mux.Handle("GET /v1/apps/{app}/releases", s.wrap(op{"listReleases", "T0", "releases", "", "list", false}, s.listReleases))
 	mux.Handle("GET /v1/apps/{app}/releases/{chainId}", s.wrap(op{"getRelease", "T0", "releases", "", "get", false}, s.getRelease))
 	mux.Handle("GET /v1/apps/{app}/evidence", s.wrap(op{"getEvidence", "T0", "evidence", "", "get", false}, s.getEvidence))
@@ -444,6 +446,32 @@ func (s *Server) listReleases(ctx context.Context, w http.ResponseWriter, _ *htt
 		return err
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"releases": recs})
+	return nil
+}
+
+// listFleetReleases is every release record in the cluster (or the ?app= app's), with its namespace and
+// labels: what Tower's Ops Wall polls. Not cached: one label-selected ConfigMap list.
+func (s *Server) listFleetReleases(ctx context.Context, w http.ResponseWriter, _ *http.Request, _ *auth.Caller, app *apps.App) error {
+	name := ""
+	if app != nil {
+		name = app.Name
+	}
+	recs, err := s.Releases.ListAll(ctx, fleetNamespace(app), name)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"releases": recs})
+	return nil
+}
+
+// listFleetReleaseEvents is the ReleaseStalled and ReleaseDrift Events about release records in the cluster
+// (or the ?app= namespace): Tower's drift view. Not cached.
+func (s *Server) listFleetReleaseEvents(ctx context.Context, w http.ResponseWriter, _ *http.Request, _ *auth.Caller, app *apps.App) error {
+	evs, err := s.Releases.Events(ctx, fleetNamespace(app))
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": evs})
 	return nil
 }
 
