@@ -719,3 +719,27 @@ func TestSignatureReceiptForAnotherSignature(t *testing.T) {
 		t.Fatal(s)
 	}
 }
+
+func TestFlightImagesUseTheFlightCredential(t *testing.T) {
+	c := newChain(t)
+	var logs bytes.Buffer
+	r := c.reader(t, &logs)
+	owner, _, _ := strings.Cut(repo, "/")
+	// The app's own credential is the Ground owner's, which the Flight registry refuses; the Flight
+	// credential (here the same valid Secret, read from its fixed place) is the one that works.
+	r.Credentials = func(context.Context, string) (basicAuth, error) { return "Basic Z3JvdW5kOm5v", nil }
+	r.FlightOwner, r.FlightCredentials = owner, FixedSecretCredentials(r.CS, ns, PullSecret)
+	if _, err := r.Read(context.Background(), ns, "ghcr.io/"+repo+":1.0.0-abc"); err != nil {
+		t.Fatalf("a Flight image read with the Flight credential: %v", err)
+	}
+	// Any other owner's image keeps the app's credential.
+	r.FlightOwner = "someone-else"
+	if _, err := r.Read(context.Background(), ns, "ghcr.io/"+repo+":1.0.0-abc"); err == nil || err.Error() != "GHCR token request failed with 401" {
+		t.Fatalf("a Ground image must use the app's credential: %v", err)
+	}
+	// No Flight credential configured: the app's credential, as before.
+	r.FlightOwner, r.FlightCredentials = owner, nil
+	if _, err := r.Read(context.Background(), ns, "ghcr.io/"+repo+":1.0.0-abc"); err == nil {
+		t.Fatal("without a Flight credential the app's (refused) one must be used")
+	}
+}

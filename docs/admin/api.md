@@ -478,7 +478,7 @@ Where the inputs come from:
 | Input | Source | Kept |
 |---|---|---|
 | The image, its manifests and blobs | GHCR, with a pull token for that one repository | per request |
-| The GHCR credential | the app's own `registry-credentials` Secret (dockerconfigjson, `auths["ghcr.io"]`) in its `-cicd` namespace | per request |
+| The GHCR credential | the app's own `registry-credentials` Secret (dockerconfigjson, `auths["ghcr.io"]`) in its `-cicd` namespace; for a Flight image (`ghcr.io/<promoter repository owner>/...`), the Flight registry's read credential `flight-registry-read` in the catalog namespace (`FLIGHT_PULL_SECRET`, set when the chart's promoter is on) | per request |
 | Fulcio root | ConfigMap `fulcio-root-ca` (`cert.pem`) in `platform-catalog` | 10 minutes |
 | Rekor's public key | `rekor-server.rekor-system` `/api/v1/log/publicKey` | 10 minutes |
 | Rekor entries | `rekor-server.rekor-system` `/api/v1/log/entries?logIndex=` (GET only) | per request |
@@ -489,7 +489,10 @@ The registry credential is read for each request and used only for GHCR's token 
 a refused exchange reports GHCR's status code, never its body. The pull token GHCR returns is not
 cached either. A missing Secret, or one without a `ghcr.io` entry, is an anonymous exchange, which
 only public packages allow. The chart grants glidepath-api `get` on Secrets named
-`registry-credentials`, and nothing else among Secrets; the Fulcio ConfigMap is readable by every
+`registry-credentials`, and on the one Secret `flight-registry-read` in the catalog namespace (Role
+`glidepath-api-flight-read`), and nothing else among Secrets. An app's `registry-credentials` is the
+Ground owner's, which the Flight registry refuses (403) once that owner has no access to the Flight
+account (2026-10-30), hence the separate Flight credential; the Fulcio ConfigMap is readable by every
 ServiceAccount already (`templates/sigstore/fulcio-root-configmap.yaml`).
 
 A Fulcio root that can't be read doesn't fail the call: every attestation comes back unverified with

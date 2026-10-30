@@ -143,6 +143,38 @@ subjects:
     name: glidepath-api
     namespace: platform-system
 ---
+{{- if .Values.promoter.enabled }}
+# The Flight registry's read credential (templates/secretstore/flight-promoter-external-secrets.yaml), for reading a
+# Flight image's evidence (FLIGHT_PULL_SECRET): that one Secret, in the catalog namespace, get only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: glidepath-api-flight-read
+  namespace: {{ .Values.promoter.catalogNamespace }}
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["flight-registry-read"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: glidepath-api-flight-read
+  namespace: {{ .Values.promoter.catalogNamespace }}
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: glidepath-api-flight-read }
+subjects:
+  - kind: ServiceAccount
+    name: glidepath-api
+    namespace: platform-system
+---
+{{- end }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -276,6 +308,13 @@ spec:
               value: {{ join "," (.Values.api.delegates | default list) | quote }}
             - name: PROMOTER_REPO
               value: {{ .Values.api.promoterRepo | default .Values.promoter.dispatchRepo | quote }}
+            {{- if .Values.promoter.enabled }}
+            # Flight images (the promoter repository owner's ghcr.io namespace) are read with the Flight registry's
+            # read credential: an app's registry-credentials is the Ground owner's, which Flight refuses (403,
+            # 2026-10-30, once the Ground owner lost access to the Flight account).
+            - name: FLIGHT_PULL_SECRET
+              value: {{ printf "%s/flight-registry-read" .Values.promoter.catalogNamespace | quote }}
+            {{- end }}
             # Promote and rollback: the apps' GitHub owner, and the broker that mints per-request read tokens.
             - name: GITHUB_OWNER
               value: {{ include "glidepath-control-plane.githubOwner" . | quote }}
