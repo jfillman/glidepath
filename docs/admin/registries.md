@@ -19,6 +19,10 @@ promoter writes. A release file pins the image by digest and records where it wa
   (PROM-08), a release without a digest, a release that pins the Ground repository instead of Flight (PROM-01: the
   merge would deploy the unpromoted copy), a source other than the app's own Ground repository (PROM-06), a required
   gate not green on the PR's head commit (PROM-03), and an image without a Chains signature and attestation.
+- **Flight to Flight is still promoted from Ground.** A release from one Flight environment to another (staging to
+  prod) starts from the Flight copy the source environment runs; `open-release-pr` records the app's Ground repository
+  as its `release.image.source`, since the digest is the same, so PROM-06 holds and the gates read the evidence where
+  it was made. The copy into Flight finds the digest already there.
 - **Promotion starts itself** (phase 3): the moment the last required gate turns green on the release PR's head
   commit, with no polling pod, exactly once per commit and attempt. The PR gets the `image-promotion-` check and a
   comment like every other gate's, and with promotion on `image-promotion` is a required gate: a merge before it is
