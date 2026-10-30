@@ -113,6 +113,9 @@ rs() { hack/apply-guardrail-ruleset.sh --dry-run "$@" x/y | grep -v '^#' \
   | sed 's#Pipelines as Code CI / ##' | tr '\n' ' '; }
 expect "ruleset default" "$(rs)" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- "
 expect "ruleset with overrides" "$(rs -f "${tmp}/override-values.yaml")" "sast- image-scan- provenance- itsm- api-compat- qa- "
+printf 'promotion:\n  enabled: true\n  pinDigest: true\n' > "${tmp}/promotion-values.yaml"
+expect "ruleset with promotion on (image-promotion required, as the chart's effective registry)" \
+  "$(rs -f "${tmp}/promotion-values.yaml")" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- image-promotion- "
 
 # ---- sast and provenance cannot be made advisory
 for locked in sast provenance; do
@@ -170,6 +173,10 @@ rs_repo() { hack/apply-guardrail-ruleset.sh --dry-run -f "${tmp}/perapp-values.y
   | sed 's#Pipelines as Code CI / ##' | tr '\n' ' '; }
 expect "ruleset gitops-backstage" "$(rs_repo x/gitops-backstage)" "sast- provenance- sbom- values- itsm- policy-validation- "
 expect "ruleset gitops-gate-api" "$(rs_repo x/gitops-gate-api)" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- "
+expect "ruleset gitops-backstage with promotion on keeps image-promotion" \
+  "$(hack/apply-guardrail-ruleset.sh --dry-run -f "${tmp}/perapp-values.yaml" -f "${tmp}/promotion-values.yaml" x/gitops-backstage | grep -v '^#' \
+     | jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context' \
+     | sed 's#Pipelines as Code CI / ##' | tr '\n' ' ')" "sast- provenance- sbom- values- itsm- policy-validation- image-promotion- "
 
 # ---- per-app refusals: integrity gates, image-promotion, an unknown gate, a non-plain app, anything but required: false
 refuse() { # label want-in-message values-yaml [extra helm args...]

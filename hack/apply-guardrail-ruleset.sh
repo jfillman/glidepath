@@ -12,6 +12,9 @@
 # gate that file's releaseGuardrailOverridesByApp makes advisory for <app> (required: false) is left out of that
 # repo's ruleset too: its check still runs and can be red, and the chart does not let it hold that app's release.
 # sast, provenance and image-promotion are never dropped (the chart refuses them there).
+# With promotion.enabled in the merged values, image-promotion is required too, as in the chart's effective registry
+# (_helpers.tpl glidepath-catalog.guardrails): it has no releaseGuardrails entry because the fan-in starts it, not a
+# .tekton file (ADR-0029, docs/admin/registries.md).
 #
 # Options: --approvals N (default 2; 0 for a lab), --bypass-app-id ID (repeatable: a GitHub App allowed to bypass, e.g.
 # the one Crossplane's provider-github writes with), --integration-id ID (default 4461953, the Pipelines as Code app).
@@ -48,7 +51,9 @@ checks="$(jq --argjson id "${integration}" '
          elif ($g | has("required")) then $g.required
          else true end) as $required
       | select($required)
-      | {context: ("Pipelines as Code CI / " + $g.name + "-"), integration_id: $id}]' <<<"${merged}")"
+      | {context: ("Pipelines as Code CI / " + $g.name + "-"), integration_id: $id}]
+  + (if .promotion.enabled == true
+     then [{context: "Pipelines as Code CI / image-promotion-", integration_id: $id}] else [] end)' <<<"${merged}")"
 bypass_json="$(printf '%s\n' "${bypass[@]:-}" | jq -R 'select(length>0) | {actor_id: (.|tonumber), actor_type: "Integration", bypass_mode: "always"}' | jq -s '.')"
 
 body_for() { # OWNER/REPO -> the ruleset JSON, without that app's per-app advisory gates

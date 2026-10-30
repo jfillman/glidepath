@@ -4,9 +4,8 @@
 `itsm`, `qa`, `policy-validation`) only report; the ruleset's required-status-checks list is what stops a merge.
 Nothing is blocked without it. (Until 2026-10-09 an `image-promotion` check also waited on its sibling gates; it was
 retired as a stub, ADR-0025, and the audited export below predates that and still lists it. With catalog
-`promotion.enabled` a real `image-promotion` check is back, ADR-0029. `hack/apply-guardrail-ruleset.sh` does not
-require it yet: it reads `releaseGuardrails` from the values, and `image-promotion` is added only by the chart's
-effective registry. Add it by hand to a ruleset applied while promotion is on.)
+`promotion.enabled` a real `image-promotion` check is back, ADR-0029, and `hack/apply-guardrail-ruleset.sh` requires
+it whenever the values it is given (`-f`) turn promotion on, as the chart's effective registry does.)
 
 Reference: [`reference/glidepath-guardrail-checks.ruleset.json`](reference/glidepath-guardrail-checks.ruleset.json), an export of
 the ruleset from `gitops-flight-api` (audited 2026-09-27). Generate and apply it with
