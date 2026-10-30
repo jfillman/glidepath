@@ -8,7 +8,8 @@ image's test provenance, [testing.md](testing.md)). `itsm` is real once the cata
 ([change-management.md](change-management.md), 2026-10-19) and this stub until then;
 `policy-validation` is real since 2026-10-26 (the release rendered and evaluated offline against the target
 cluster's admission policies, [policy-validation.md](policy-validation.md), ADR-0028), so `itsm` without a change
-tool is the only stub left (`image-promotion` was one until ADR-0025 retired it, 2026-10-09; `qa` and
+tool is the only stub left (`image-promotion` was one until ADR-0025 retired it, 2026-10-09, and is real since
+ADR-0029 with catalog `promotion.enabled`; `qa` and
 `policy-validation` were until they graduated) - see
 [release-guardrails.md](release-guardrails.md) for what each is intended to verify and the
 registry (`.Values.releaseGuardrails`) that drives the full current gate list. This doc covers the mechanism that got the first four there,

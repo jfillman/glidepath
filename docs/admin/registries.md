@@ -6,8 +6,9 @@ promoter writes. A release file pins the image by digest and records where it wa
 
 ## What it guarantees
 
-- **An upper cluster runs only promoted images** (once admission is on, phase 4; see [Admission](#admission-phase-4)): a Flight-prefix rule plus a
-  promotion attestation signed by the promoter workflow, verified offline by Kyverno.
+- **An upper cluster runs only promoted images** (admission, phase 4; enforced on hangar-prod since 2026-10-30; see
+  [Admission](#admission-phase-4)): a Flight-prefix rule plus a promotion attestation signed by the promoter
+  workflow, verified offline by Kyverno.
 - **The tag cannot change what runs.** With `promotion.pinDigest` on, every release file carries
   `release.image.digest` and airframe-application renders `repository:tag@digest`.
 - **The gates verify evidence where it was made**: they read `release.image.source` (Ground), not the Flight copy.
@@ -173,7 +174,8 @@ release:
    `admission.flight.pullFromFlight` (the tenant pull secret reads Flight; the Ground credential leaves the cluster).
    Before that, a restart of an app still on Ground would be refused, or could not pull.
 7. Remove every write path to Flight but the workflow's own `GITHUB_TOKEN`: no other collaborator with write access
-   on the promoter repository, no `write:packages` token of the Flight owner anywhere.
+   on the promoter repository, no `write:packages` token of the Flight owner anywhere. (Lab: the Ground owner's
+   write access to the promoter repository was removed 2026-10-30.)
 
 ## Admission (phase 4)
 
@@ -193,7 +195,13 @@ Ground image read with the Flight credential is an evaluation error, not a viola
 not checked at admission: it carries no inclusion proof and lives in the hub's Rekor, which an upper cluster cannot
 reach; the gates verified it before the promotion the attestation records. Audit mode is `[Audit, Warn]` with
 `failurePolicy: Ignore`; the upper clusters run no Kyverno reports controller, so the evidence is the warning
-`kubectl` prints (a server-side dry run of a pod shows it without creating anything).
+`kubectl` prints (a server-side dry run of a pod shows it without creating anything). Enforce is `[Deny]` with
+`failurePolicy: Fail`: a refused pod's error names the images, and while Kyverno's admission controller is down no new
+tenant pod starts.
+
+In the lab: hangar-prod in Audit 2026-10-29, `pullFromFlight` and enforce 2026-10-30 (gitops-hangar-prod#21). Before
+enforce, a server-side dry run of every running tenant pod raised no warning; after it, a Ground image is denied and
+the promoted Flight image admitted.
 
 ## Cloud targets (phase 6)
 

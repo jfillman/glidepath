@@ -3,7 +3,8 @@
 *Status: Accepted (2026-10-09). Built: the check's onboarding template, Pipeline and `releaseGuardrails` entry
 removed; `wait-for-release-guardrails` kept and made generic (`self-gate`); onboarding resync removes a
 platform-generated gate file whose template is gone. Not built: image promotion itself
-([known-gaps.md](../known-gaps.md) #42).*
+([known-gaps.md](../known-gaps.md) #42). Decision 3 superseded by [ADR-0029](0029-ground-and-flight-registries.md)
+(2026-10-27): `image-promotion` is back as a real, required check, started by an event fan-in.*
 
 ## Context
 
