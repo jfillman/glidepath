@@ -78,8 +78,9 @@ rules:
     verbs: ["get"]
   # Re-run (get the source, create the copy) and cancel (merge patch spec.status). Cluster-wide is
   # unavoidable, since apps are onboarded after install, and RBAC can't say "only Glidepath's shape":
-  # the shape lock is the cluster's admission policy (gitops tower-pipelinerun-shape), which must
-  # match system:serviceaccount:platform-system:glidepath-api as it matches Tower's identity.
+  # the shape lock is the cluster's admission policy (gitops glidepath-api-pipelinerun-shape, named
+  # tower-pipelinerun-shape until P6), which matches system:serviceaccount:platform-system:glidepath-api.
+  # Since P6 Tower's identity holds no PipelineRun write and the same policy refuses one from it.
   # list (P6b): Tower's live views moved onto the API (GET /v1/apps/{app}/live, GET /v1/live), so the
   # API lists the runs Tower used to list through its own Kubernetes proxy. Cluster-wide for the fleet view.
   - apiGroups: ["tekton.dev"]

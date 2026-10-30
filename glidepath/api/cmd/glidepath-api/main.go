@@ -9,7 +9,7 @@
 // cluster's TokenReview and authorized with a SubjectAccessReview in the app's namespace.
 //
 // Results is read through glidepath's own tekton-results-relay (charts/glidepath-control-plane),
-// the hop Tower already uses: the relay holds the Results read grant, and this service decides who
+// the hop Tower used itself until P6: the relay holds the Results read grant, and this service decides who
 // may ask before it asks.
 //
 // Configuration, all by environment:

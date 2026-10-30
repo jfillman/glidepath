@@ -123,7 +123,9 @@ promoter:
 
 Secrets, in the platform's Infisical project (never in values): `flight-promoter-app-id` and
 `flight-promoter-private-key` (the promoter App; synced into `platform-system` for the broker only) and
-`flight-registry-read-dockerconfigjson` (a `read:packages` credential for Flight; synced into `platform-catalog`).
+`flight-registry-read-dockerconfigjson` (a `read:packages` credential for Flight; synced into `platform-catalog` as
+`flight-registry-read`, which the `flight-prune` CronJob and glidepath-api's evidence reads of a Flight image use:
+an app's `registry-credentials` holds the Ground owner's credential, which Flight refuses; [api.md](api.md#evidence)).
 
 ### Promote by hand
 
@@ -199,7 +201,8 @@ reach; the gates verified it before the promotion the attestation records. Audit
 `failurePolicy: Fail`: a refused pod's error names the images, and while Kyverno's admission controller is down no new
 tenant pod starts.
 
-In the lab: hangar-prod in Audit 2026-10-29, `pullFromFlight` and enforce 2026-10-30 (gitops-hangar-prod#21). Before
+In the lab: hangar-prod in Audit 2026-10-29, `pullFromFlight` 2026-10-30 (gitops-hangar-prod#20: its tenant
+`registry-credentials` is the Flight read credential) and enforce the same day (gitops-hangar-prod#21). Before
 enforce, a server-side dry run of every running tenant pod raised no warning; after it, a Ground image is denied and
 the promoted Flight image admitted.
 

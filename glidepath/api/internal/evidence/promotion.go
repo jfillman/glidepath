@@ -29,8 +29,8 @@ const githubActionsIssuer = "https://token.actions.githubusercontent.com"
 
 // sigstorePublicGoodRoot is tuf-repo-cdn.sigstore.dev's target trusted_root.json, sha256
 // 6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66 (the hash targets.json v14
-// lists), byte for byte the root Tower embeds (sigstorePublicGoodRoot.ts). Its Fulcio CA and Rekor
-// keys are open-ended; refresh both copies when Sigstore rotates a key (`cosign initialize`, then
+// lists), byte for byte the root Tower embedded until P6 (sigstorePublicGoodRoot.ts). Its Fulcio CA and
+// Rekor keys are open-ended; refresh it when Sigstore rotates a key (`cosign initialize`, then
 // ~/.sigstore/root/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json).
 //
 //go:embed sigstore_public_good_trusted_root.json

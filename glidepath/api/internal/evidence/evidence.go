@@ -3,9 +3,9 @@
 //
 // Ported from Tower's backend (backstage packages/backend/src/glidepathProvenance.ts:
 // readImageProvenance and the three fetchers under it, with rekorEntries.ts and ghcr.ts) with the
-// same reads, the same checks in the same order, and the same answer, so Tower can shadow its own
-// /provenance against GET /v1/apps/{app}/evidence field for field (docs/admin/api.md). Keep the two
-// in step until Tower's copy is retired.
+// same reads, the same checks in the same order, and the same answer, so Tower's views took
+// GET /v1/apps/{app}/evidence unchanged (docs/admin/api.md). Tower's copy was retired in P6; this is
+// the only one.
 //
 // Three places an attestation or signature can live, all read, none dropped:
 //   - the legacy tag <repo>:sha256-<digest>.att: Tekton Chains' SLSA provenance. A DSSE envelope

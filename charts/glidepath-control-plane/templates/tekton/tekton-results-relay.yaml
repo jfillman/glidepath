@@ -9,8 +9,12 @@
 # request to Results using its OWN identity instead - which is what the ClusterRole
 # below actually grants, not a passthrough of whatever RBAC the original caller has.
 #
+# Since Glidepath API P6 (2026-10-30) Tower no longer reads Results through this relay: its
+# caller is glidepath-api, in-cluster (RESULTS_URL), and the reader identity's services/proxy
+# grant on it is gone (apron#108).
+#
 # Cluster-scoped ClusterRole (not namespaced to one app's app-<name>-cicd), same
-# reasoning as backstage-argo-rollouts-viewer/backstage-tekton-rerun in the RBAC repo:
+# reasoning as backstage-argo-rollouts-viewer in the RBAC repo:
 # onboarded apps each get their own -cicd namespace and this identity has no way to
 # know the full set up front. get+list only - this relay only ever reads.
 apiVersion: v1

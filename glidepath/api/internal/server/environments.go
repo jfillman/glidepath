@@ -17,8 +17,8 @@ import (
 	"github.com/glidepath/api/internal/pipelineruns"
 )
 
-// writeTowerJSON writes v as Tower's res.json would: no HTML escaping (JSON.stringify leaves <, > and & alone), so a
-// shadow comparison of the bytes holds.
+// writeTowerJSON writes v as Tower's res.json would: no HTML escaping (JSON.stringify leaves <, > and & alone), so the
+// bytes are what Tower's own routes served (the shadow comparison until P6 checked them byte for byte).
 func writeTowerJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

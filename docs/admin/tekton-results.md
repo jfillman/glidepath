@@ -53,7 +53,8 @@ rationale comments.
   with `timestamps=true`, so every archived line starts with the container runtime's RFC3339
   instant, exactly as a live `kubectl logs --timestamps` does. Tower parses that prefix out of
   archived logs so a finished run's log view has the same time column as a running one's
-  (which it reads live from the Kubernetes API with the same option). Runs archived before
+  (which glidepath-api reads live from the TaskRun's pod with the same option, `getLiveLog`;
+  [api.md](api.md#live-and-archived-reads)). Runs archived before
   the flag took effect have no prefix and still render, just without times.
 
 ## Task log conventions
@@ -88,9 +89,9 @@ itself unhealthy for a stretch), not removed.
 ## When a run's logs are missing
 
 A run can be archived with some of its TaskRuns' logs missing: the Log record exists but its
-`status` reads `isStored: false`, `size: 0`, with no `errorOnStoreMsg`. Tower and glidepath-api
-then answer "Tekton Results archived no logs for this task" (404). The blob was never written, so
-nothing is in the bucket to recover, and no collector ships pod logs to Loki on the dev cluster.
+`status` reads `isStored: false`, `size: 0`, with no `errorOnStoreMsg`. glidepath-api then
+answers "Tekton Results archived no logs for this task" (404, `GP-LOG-404`), and Tower shows that.
+The blob was never written, so nothing is in the bucket to recover, and no collector ships pod logs to Loki on the dev cluster.
 
 Two causes, both in the watcher, both seen on the dev cluster on 2026-10-25 (56 lost logs in 6 h,
 about one TaskRun in ten during release-gate bursts):

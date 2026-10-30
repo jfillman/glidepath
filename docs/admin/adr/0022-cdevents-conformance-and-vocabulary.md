@@ -121,6 +121,8 @@ the flow's config.
    (`service.upgraded` plus links) is free and gives any later consumer the history without
    a new store. Revisit when a second consumer needs replay, or when Autopilot wants to
    subscribe rather than poll.
+   *(2026-10-30: Tower no longer reads PipelineRuns or Results itself; since Glidepath API phase 6 it reads them
+   through glidepath-api ([api.md](../api.md)). It still reads Rollouts directly.)*
 8. **A conformance test.** A CI job renders each event the catalog emits (from fixtures)
    and validates it against the pinned CDEvents JSON schemas. It starts with an explicit
    list of expected failures (rows 1 to 9 above) and shrinks as each is fixed, so the gap

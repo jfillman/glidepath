@@ -277,7 +277,7 @@ func TestPromoteFromGround(t *testing.T) {
 	}
 	for k := range ann {
 		if strings.HasPrefix(k, "pipelinesascode.tekton.dev/") {
-			t.Fatal("tower-pipelinerun-shape refuses PaC annotations")
+			t.Fatal("glidepath-api-pipelinerun-shape refuses PaC annotations")
 		}
 	}
 

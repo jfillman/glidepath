@@ -12,6 +12,14 @@ every CDEvent the shared broker carries, re-verified and served as server-sent e
 [live reads](#live-and-archived-reads) Tower's views of runs in flight need, so Tower no longer reads Tekton or pod
 logs through its own Kubernetes proxy, and the fleet's run history across every namespace.
 
+**Since phase 6 (2026-10-30) this API is Tower's only CI/CD path.** Tower's backend asks it for every run, log,
+app release record, piece of evidence and test run, and sends every re-run, cancel, Flight promote and rollback
+through it, for apps and InfraServices alike. There is no fallback: an API error or timeout goes back to the person
+(a 4xx keeps its status, anything else is a 502). Tower no longer reads Tekton Results, Testkube or Rekor itself,
+verifies no signatures of its own, and its identities can't create or patch a PipelineRun (the cluster refuses it,
+[below](#who-may-write)). Not moved yet: the Ops Wall's fleet release records and release Events, which Tower still
+reads from the `release-tracking` ConfigMaps and Events through its Kubernetes proxy.
+
 **Not offered, by design:** promoting to a Ground environment and cloud pins. Both are a commit to a repo
 (Tower's Ground promote commits straight to the app repo's release file; a pin opens a PR itself), so both
 need a GitHub write identity, and the API holds none. They stay in Tower.
@@ -49,9 +57,9 @@ fails if the server's routes and the spec ever differ.
 
 Runs come from Tekton Results, so they cover 30 days and never go back past the creation of the
 app's current `-cicd` namespace (an app deleted and recreated under the same name doesn't inherit
-the old one's runs). The shapes match what Tower's backend serves (runs since 2026-10-08, evidence
-and tests since 2026-10-28), so Tower can compare its own answers against these field for field
-while it moves over.
+the old one's runs). The shapes are what Tower's backend served itself (runs since 2026-10-08, evidence
+and tests since 2026-10-28), so Tower's views take these answers unchanged; until phase 6 (2026-10-30) Tower
+compared its own answers against these field for field.
 
 ## Where it runs
 
@@ -61,8 +69,8 @@ until `apiImage` is set; `api-ci.yaml` builds a multi-arch image on every merge 
 touches the API or the contract and sets `apiImage` to its `sha-` tag, the same loop the broker
 images use. The contract is baked into the image, so `GET /v1/contract` always matches the code.
 
-Tekton Results is read through `tekton-results-relay`, the hop Tower already uses. The relay holds
-the Results read grant; the API decides who may ask before it asks.
+Tekton Results is read through `tekton-results-relay`, the hop Tower used itself until phase 6 (2026-10-30). The
+relay holds the Results read grant; the API decides who may ask before it asks.
 
 Each replica caches what it reads in memory (nothing persisted; Results stays the record). A
 finished run never changes, so it is kept 7 days; run lists for a minute, step logs for an hour. A
@@ -123,13 +131,14 @@ the audit line. A delegate's write must name the person ([who may write](#who-ma
 ## Writes
 
 The T1 writes, both on a live PipelineRun in the app's `-cicd` namespace. The namespace always comes from
-the app in the path (the same resolver the reads use), never from the request. They replace Tower's
-own Re-run and Cancel (backstage `packages/backend/src/tektonActions.ts`) and build the same objects.
+the app in the path (the same resolver the reads use), never from the request. They replaced Tower's
+own Re-run and Cancel (backstage `packages/backend/src/tektonActions.ts`, removed in phase 6, 2026-10-30) and build
+the same objects; Tower's Re-run and Cancel now call them.
 
 ### Re-run
 
 `POST /v1/apps/{app}/pipelineruns/{name}/rerun` with an `Idempotency-Key` header. It reads the live
-run `name` and creates a copy, exactly as Tower's `rerunBody` does: the same `spec` without
+run `name` and creates a copy, exactly as Tower's `rerunBody` did: the same `spec` without
 `spec.status` (re-running a cancelled run must not start it cancelled), and only the
 `hangar.io/app`/`hangar.io/flow` labels (or the pre-rebrand `platform.io/` pair), so the Pipelines-as-Code
 annotations and trigger label are dropped and PaC never reports a commit status for it. Tekton has no
@@ -165,7 +174,7 @@ same on every retry of one re-run and new for the next. A missing or malformed k
 ### Cancel
 
 `POST /v1/apps/{app}/pipelineruns/{name}/cancel` sends the JSON merge patch
-`{"spec":{"status":"CancelledRunFinally"}}`, the status Tower's Cancel sends: the pipeline's `finally`
+`{"spec":{"status":"CancelledRunFinally"}}`, the status Tower's own Cancel sent: the pipeline's `finally`
 tasks still run (notify-backstage, notify-slack), so a cancel is announced like a failure. It reads the
 run first, and a run that needs nothing is answered, not refused, so a retry is always safe:
 
@@ -183,8 +192,8 @@ read and the patch answers `cancelled`; Tekton ignores the status on a finished 
 
 `?dryRun=true` on either does every read and check, then the create or patch as a Kubernetes
 server-side dry run (`dryRun: All`): admission runs, including the policy below, and nothing is
-stored. The answer is 200 and carries what a real call would write, so Tower can compare its own body
-with the API's before any real write goes through the API:
+stored. The answer is 200 and carries what a real call would write (how Tower compared its own body with the
+API's before its writes moved here):
 
 ```json
 {"name": "ci-0-build-abc-rerun-3f9a1", "replayed": false, "dryRun": true, "object": {"apiVersion": "tekton.dev/v1", "kind": "PipelineRun", "metadata": {...}, "spec": {...}}}
@@ -216,14 +225,15 @@ check.
 
 **The cluster's shape lock.** glidepath-api's own ServiceAccount holds `get`, `create` and `patch` on
 `tekton.dev` `pipelineruns` cluster-wide (apps are onboarded after install), which RBAC can't narrow to
-Glidepath's shape. The admission policy that holds Tower's writes to that shape
-(`tower-pipelinerun-shape`, gitops `30-policy/kyverno-policies/tower-identity-writes.yaml`: an app
-`-cicd` namespace, a cluster-resolver `pipelineRef` into `platform-catalog`, SA `pipeline-runner`, no
-inline spec, no PaC annotations, and an update may change only `spec.status`) must also match
-`system:serviceaccount:platform-system:glidepath-api`. A write the cluster refuses, there or in RBAC, is
-`GP-API-422` and is not worth retrying. That policy today admits only `app-` namespaces; an
-InfraService's `infra-<name>-cicd` run is refused for Tower and would be for the API until it allows
-them.
+Glidepath's shape. The admission policy `glidepath-api-pipelinerun-shape` (`tower-pipelinerun-shape` until phase 6,
+2026-10-30; gitops `30-policy/kyverno-policies/tower-identity-writes.yaml`, rendered by Apron) holds
+`system:serviceaccount:platform-system:glidepath-api` to it: an app's or InfraService's `-cicd` namespace
+(`^(app|infra)-[a-z0-9-]+-cicd$`), a cluster-resolver `pipelineRef` into `platform-catalog`, SA `pipeline-runner`, no
+inline spec, no `taskRunSpecs`, a hostAliases-only podTemplate, `emptyDir` or `volumeClaimTemplate` workspaces, no
+PaC annotations, and an update may only set `spec.status` to `Cancelled`, `CancelledRunFinally` or
+`StoppedRunFinally`. It also matches Tower's writer identity (`tower-actor`), only to refuse any PipelineRun write
+from it: Tower writes PipelineRuns only through this API. A write the cluster refuses, there or in RBAC, is
+`GP-API-422` and is not worth retrying.
 
 ## Promote and roll back
 
@@ -236,8 +246,9 @@ staging promotion and watch the release record reach `healthy` after a person me
 it itself.
 
 They port Tower's (backstage `packages/backend/src/glidepathPromote.ts`, `glidepathReleaseRun.ts`,
-`glidepathRollback.ts`, `releasePlan.ts`) so Tower can shadow-compare its answers, with three differences: a
-Ground target is refused, the run's name comes from the `Idempotency-Key`, and a rollback does not wait for its PR.
+`glidepathRollback.ts`, `releasePlan.ts`; Tower's copies were removed in phase 6, 2026-10-30, and its Promote and
+Roll back to a Flight environment call these), with three differences: a Ground target is refused, the run's name
+comes from the `Idempotency-Key`, and a rollback does not wait for its PR.
 
 ### Release plan
 
@@ -331,7 +342,7 @@ The same key again hits AlreadyExists and answers `200` with `"replayed": true`;
 of the answer compares field for field with Tower's `PromoteResult` and `RollbackResult`.
 
 `?dryRun=true` or `X-Glidepath-Dry-Run: true` does every read and check, then the create as a server-side dry run
-(admission, including `tower-pipelinerun-shape`, runs; nothing is stored), and answers `200` with the run as
+(admission, including `glidepath-api-pipelinerun-shape`, runs; nothing is stored), and answers `200` with the run as
 `object`.
 
 ### The GitHub read token
@@ -365,10 +376,9 @@ trusts the delegate's own check of them (Tower's owner permission).
 glidepath-api's own ServiceAccount needs `get` on `triggertemplates.triggers.tekton.dev` (new) and the `create` on
 `pipelineruns` and `list` on ConfigMaps it already holds. The runs are Glidepath's shape (a cluster-resolver
 `pipelineRef` into `platform-catalog`, SA `pipeline-runner`, an `emptyDir` workspace, a hostAliases-only podTemplate,
-no PaC annotations), so `tower-pipelinerun-shape`, which already matches the API's ServiceAccount for re-run, admits
-them unchanged (checked 2026-10-29 with a server-side dry run on hangar-dev as
-`system:serviceaccount:platform-system:glidepath-api`). It still admits only `app-` namespaces, so an InfraService's
-promote is refused for the API as it is for Tower.
+no PaC annotations), so the [shape policy](#who-may-write) admits them unchanged (checked 2026-10-29 with a
+server-side dry run on hangar-dev as `system:serviceaccount:platform-system:glidepath-api`). Since phase 6 it admits an
+InfraService's `infra-<name>-cicd` namespace as well as an app's.
 
 ## Live and archived reads
 
@@ -436,9 +446,9 @@ in the three places an attestation can live, in this order, and returns all of t
    attestations (the SBOM, the API spec), each a complete sigstore bundle with an inclusion proof;
 3. the signature tag `<repo>:sha256-<digest>.sig`: the image signature itself.
 
-Each one is verified the way Tower's `@sigstore/verify` check does, with the same checks in the same
-order: the statement names this image's digest, the signing certificate chains to the Fulcio root
-and was valid when Rekor logged the entry, the log entry's receipt is signed by Rekor's key (or, for
+Each one is verified the way Tower's `@sigstore/verify` check did until phase 6 (2026-10-30; Tower now
+shows this answer), with the same checks in the same order: the statement names this image's digest,
+the signing certificate chains to the Fulcio root and was valid when Rekor logged the entry, the log entry's receipt is signed by Rekor's key (or, for
 a bundle checked on its own, its Merkle inclusion proof reaches a checkpoint Rekor signed), the
 entry records this signature over this content, and the signature verifies with the certificate's
 key. Each receipt is re-read from Rekor by its log index first, so it is signed by Rekor's current
@@ -452,7 +462,7 @@ promoter copied to Flight. The promoter workflow signs it keyless on **public Si
 this cluster's Fulcio, so it is verified the way an upper cluster's admission does:
 
 - against the Sigstore public-good trusted root built into glidepath-api (TUF target
-  `trusted_root.json`, sha256 `6494e21e…`, the same bytes Tower embeds), so the check is offline;
+  `trusted_root.json`, sha256 `6494e21e…`, the same bytes Tower embedded until phase 6), so the check is offline;
 - with everything that root requires: the certificate chains to public Fulcio, carries an SCT from a
   trusted CT log, is dated by Rekor's receipt or the RFC 3161 timestamp, and the entry's inclusion
   proof reaches a checkpoint public Rekor signed;
@@ -469,8 +479,8 @@ dispatches). With neither set, promotion attestations come back unverified with
 
 Act on `verified` and `verificationCode` (`verified`, `no-log-entry`, `log-entry-mismatch`,
 `stale-receipt`, `digest-mismatch`, `signature-invalid`, `trust-root-unavailable`, `incomplete`).
-`verificationError` is the verifier's own message, kept identical to Tower's for the shadow
-comparison; display it, don't parse it. The certificate's identity is shown, not checked against the
+`verificationError` is the verifier's own message, kept identical to what Tower's own check said (Tower shows
+it); display it, don't parse it. The certificate's identity is shown, not checked against the
 release gate's identity policy: that is the gate's job (`verify-image-provenance`).
 
 Where the inputs come from:
@@ -482,7 +492,7 @@ Where the inputs come from:
 | Fulcio root | ConfigMap `fulcio-root-ca` (`cert.pem`) in `platform-catalog` | 10 minutes |
 | Rekor's public key | `rekor-server.rekor-system` `/api/v1/log/publicKey` | 10 minutes |
 | Rekor entries | `rekor-server.rekor-system` `/api/v1/log/entries?logIndex=` (GET only) | per request |
-| Public Sigstore root (promotion attestations only) | built into the binary; refresh it with Tower's copy when Sigstore rotates a key | for the build |
+| Public Sigstore root (promotion attestations only) | built into the binary; refresh it when Sigstore rotates a key (`cosign initialize`, then `~/.sigstore/root/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json`) | for the build |
 
 The registry credential is read for each request and used only for GHCR's token exchange
 (`/token?scope=repository:<repo>:pull`). It is never cached, logged, returned, or put in an error;
@@ -510,7 +520,7 @@ list returns summaries only, so each run is read in full, four at a time; a run 
 is shown from its summary. A run the agent reported `aborted` while every step passed is counted as
 `passed` and says so in `statusNote` (a known race on short runs). `tests/{id}/report` returns the
 JUnit report the check-ride templates leave (`data/artifacts/junit.xml`), and only for a run tagged
-with this app; Tower's own route doesn't check that.
+with this app (Tower's own route, before phase 6, didn't check that).
 
 ## Events
 
