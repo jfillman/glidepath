@@ -8,7 +8,7 @@ fan-in, the `image-promotion` registry entry and PR comment) live-verified on gi
 closed) on hangar-prod 2026-10-30, after every app's prod release ran from Flight (backstage, boarding-api, flight-api,
 gate-api); phase 5 (Tower: Promoted step, Flight/Ground chips, Release Record fact) live 2026-10-29 (tower v0.104.0; v0.105.0 runs in the lab);
 phase 6: cloud targets in a Flight environment refused while promotion is on (PROM-10, live 2026-10-30) and Flight
-retention built (`promotion.retention`, off; the `prune` workflow is not committed yet). Detail:
+retention built (`promotion.retention`, off; the `prune` workflow is in the promoter repository, not run yet). Detail:
 [registries.md](../registries.md).*
 
 ## Context
@@ -67,7 +67,7 @@ the promoted image and warned on the Ground copy and on an unpromoted Flight ima
 
 - Cloud promotion: a cloud Flight environment is refused (PROM-10) rather than promoted; release pin PRs would need
   the fan-in and the cloud deploy would copy from Flight. No app has one today.
-- Flight retention is off until the `prune` workflow is committed to the promoter repository and run in dry-run.
+- Flight retention is off until `promotion.retention.enabled` is turned on and a dry run checks it.
 - The promote workflow trusts whoever can start it: the attestation proves the copy went through the workflow, not
   that the gates were green. Glidepath starts it only after PROM-03.
 - Admission fails closed, so a Kyverno outage on an upper cluster refuses new tenant pods.
