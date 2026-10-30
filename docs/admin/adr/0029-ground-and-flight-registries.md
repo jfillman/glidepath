@@ -3,9 +3,13 @@
 *Status: Accepted (2026-10-27). Supersedes decision 3 of [ADR-0025](0025-retire-image-promotion-stub-check.md).
 Phase 0 (spike) done; phase 1 (configuration and digest pinning) live on hangar-dev 2026-10-27; phase 2 (the
 promoter: Pipeline, StepAction, broker `/promoter-token`) live-verified on hangar-dev 2026-10-28; phase 3 (the
-fan-in, the `image-promotion` registry entry and PR comment) live-verified on gitops-gate-api#57 2026-10-29 (hangar-prod
-gate-api runs from Flight); phase 4 (upper-cluster admission, Apron `admission.flight`) built, in Audit on
-hangar-prod. Detail: [registries.md](../registries.md).*
+fan-in, the `image-promotion` registry entry and PR comment) live-verified on gitops-gate-api#57 2026-10-29; phase 4
+(upper-cluster admission, Apron `admission.flight`) in Audit 2026-10-29, `pullFromFlight` and **enforce** (Deny, fail
+closed) on hangar-prod 2026-10-30, after every app's prod release ran from Flight (backstage, boarding-api, flight-api,
+gate-api); phase 5 (Tower: Promoted step, Flight/Ground chips, Release Record fact) live 2026-10-29 (tower v0.104.0; v0.105.0 runs in the lab);
+phase 6: cloud targets in a Flight environment refused while promotion is on (PROM-10, live 2026-10-30) and Flight
+retention built (`promotion.retention`, off; the `prune` workflow is not committed yet). Detail:
+[registries.md](../registries.md).*
 
 ## Context
 
@@ -48,8 +52,8 @@ and was copied.
 - The promotion attestation is in the public Rekor log: the Flight repository, digest, source and run URL are
   public; the image is not.
 - Two attestation storage schemes coexist per digest; the copy covers both.
-- airframe-application before v0.3.166 rejects `digest`/`source`, so `promotion.pinDigest` stays off until every
-  cluster's chart pin is at v0.3.166 or later. Tower (tower#143) and Backstage (backstage#198) must parse
+- airframe-application before v0.3.166 rejects `digest`/`source`, so `promotion.pinDigest` stayed off until every
+  cluster's chart pin was at v0.3.166 or later (on in the lab since 2026-10-27). Tower (tower#143) and Backstage (backstage#198) must parse
   `repo:tag@digest` before then too.
 
 ## Phase 0 evidence (2026-10-27)
@@ -58,3 +62,12 @@ boarding-api `2.0.5-832e475` copied to Flight by the workflow: every digest equa
 attestations discoverable through the Flight reference; the promotion attestation verified offline against the
 workflow identity, a wrong identity rejected; Kyverno 1.19 on hangar-prod (Audit+Warn, scratch namespace) admitted
 the promoted image and warned on the Ground copy and on an unpromoted Flight image.
+
+## Open after phase 6
+
+- Cloud promotion: a cloud Flight environment is refused (PROM-10) rather than promoted; release pin PRs would need
+  the fan-in and the cloud deploy would copy from Flight. No app has one today.
+- Flight retention is off until the `prune` workflow is committed to the promoter repository and run in dry-run.
+- The promote workflow trusts whoever can start it: the attestation proves the copy went through the workflow, not
+  that the gates were green. Glidepath starts it only after PROM-03.
+- Admission fails closed, so a Kyverno outage on an upper cluster refuses new tenant pods.

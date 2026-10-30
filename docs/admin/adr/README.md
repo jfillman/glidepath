@@ -35,7 +35,7 @@ distilled from.
 | [0026](0026-buildkit-image-builds.md) | Rootless BuildKit replaces kaniko for image builds; Pod Security `baseline`, not `restricted` |
 | [0027](0027-github-merge-signatures-admin-owned-signing-policy.md) | The provenance gate accepts a GitHub PR merge by an allowed login (off by default, per app); the release-signing policy moves from `cicd.yaml` to admin-owned catalog values |
 | [0028](0028-policy-validation-offline-against-target-cluster-policies.md) | The policy-validation gate renders the release and evaluates it offline (Kyverno CLI) against the target cluster's admission policies from its GitOps repo, served by the broker; only Deny/Enforce findings block |
-| [0029](0029-ground-and-flight-registries.md) | Ground and Flight registries: release files pin a digest and record the source; Flight images are copied by digest (no re-signing) by a GitHub Actions workflow before the release merges; upper clusters admit only images with the promoter's attestation |
+| [0029](0029-ground-and-flight-registries.md) | Ground and Flight registries: release files pin a digest and record the source; Flight images are copied by digest (no re-signing) by a GitHub Actions workflow before the release merges; upper clusters admit only images with the promoter's attestation (enforced on hangar-prod 2026-10-30) |
 
 New decisions get a new numbered file here, not a paragraph buried in an unrelated doc.
 

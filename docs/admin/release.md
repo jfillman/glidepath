@@ -21,7 +21,9 @@ deploy (dev) succeeds
      once a change tool is configured, policy-validation real since 2026-10-26 - see
      [release-guardrails.md](release-guardrails.md)/[governance-stubs.md](governance-stubs.md)),
      each individually re-triggerable and independent of the others (the
-     `image-promotion` check that waited on the rest was retired 2026-10-09, ADR-0025)
+     `image-promotion` check that waited on the rest was retired 2026-10-09, ADR-0025; with
+     catalog `promotion.enabled` a real `image-promotion` check follows the last required gate,
+     ADR-0029, [registries.md](registries.md))
   -> branch protection on the gitops repo requires every one of those checks + N human
      reviewers
 
@@ -315,7 +317,9 @@ fallout note in [provenance-policy.md](provenance-policy.md) for a still-unresol
 case, not a stub), and so is `qa` since 2026-10-19 (a check ride read from the promoted
 image's test provenance, [testing.md](testing.md)); `itsm` is real once a change tool is configured ([change-management.md](change-management.md)) and `policy-validation` is real since 2026-10-26 (the release evaluated offline against the target cluster's admission policies, [policy-validation.md](policy-validation.md)). All run
 independently of each other (`image-promotion`, which waited on the rest, was retired
-2026-10-09 - see that doc's "Two shapes" section and ADR-0025).
+2026-10-09 - see that doc's "Two shapes" section and ADR-0025). With catalog `promotion.enabled`, a real
+`image-promotion` check runs after the last required gate turns green: it copies the image to Flight
+([registries.md](registries.md), ADR-0029).
 
 **Re-running a failed check**: comment `/retest <check-name>-` on the PR (e.g. `/retest
 sast-`; the dash is part of the name - PaC matches the PipelineRun's `generateName`, and

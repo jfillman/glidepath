@@ -75,9 +75,10 @@ A gitops release PR runs eight gate PipelineRuns.
 - **Release Record PRs do not trigger gates.** Tower's `release-record-*` branches only add
   `releases/<app>@<version>.yaml`. They used to match `startsWith("release-")` and made up 135 of 284 failed
   `extract-promoted-image` runs.
-- **There is no `image-promotion` gate.** It was a stub that polled for the others and could not block a
-  merge. [ADR-0025](adr/0025-retire-image-promotion-stub-check.md) retired it and records where a real
-  promotion belongs.
+- **`image-promotion` holds no pod.** The polling stub was retired
+  ([ADR-0025](adr/0025-retire-image-promotion-stub-check.md)); the real check (ADR-0029, catalog
+  `promotion.enabled`) is started by the last required gate's `finally` and runs once, in the catalog namespace
+  ([registries.md](registries.md#the-fan-in-phase-3)).
 
 Details are in [release-guardrails.md](release-guardrails.md).
 
