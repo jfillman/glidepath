@@ -11,7 +11,8 @@
 #     reads it per request to pull the image's attestations from GHCR), PipelineRuns get, create
 #     and patch (re-run and cancel), TriggerTemplates get (promote and rollback fill the app's own
 #     promote-release / rollback-release template), and the live reads Tower's views of runs in flight
-#     moved onto (phase 6b): PipelineRuns and TaskRuns list, TaskRuns and pods get, pods/log get. Tekton Results is read through tekton-results-relay, so no
+#     moved onto (phase 6b): PipelineRuns and TaskRuns list, TaskRuns and pods get, pods/log get, and the
+#     Ops Wall's release Events: events list. Tekton Results is read through tekton-results-relay, so no
 #     Results grant. The Fulcio root (fulcio-root-ca in platform-catalog) needs nothing here:
 #     templates/sigstore/fulcio-root-configmap.yaml already lets every ServiceAccount get exactly
 #     that ConfigMap.
@@ -70,6 +71,12 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list"]
+  # Tower's Ops Wall and drift view moved onto the API (GET /v1/releases/events): the ReleaseStalled and
+  # ReleaseDrift Events Glidepath's sweeper writes about release records, listed by reason (field selector)
+  # across every namespace. list only: no get, no watch, no write.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
   # Evidence: the app's dockerconfigjson for GHCR, in every -cicd namespace (apps are onboarded after
   # install, so cluster-wide), restricted by name. get only: a name-restricted rule can't grant list.
   - apiGroups: [""]
