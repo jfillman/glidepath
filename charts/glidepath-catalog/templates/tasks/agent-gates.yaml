@@ -114,7 +114,7 @@ spec:
           exit 0
         fi
 
-        jq -r '.agent_pr | tostring' <<<"${verdict}" > "$(results.agent-pr.path)"
+        jq -j '.agent_pr | tostring' <<<"${verdict}" > "$(results.agent-pr.path)"
         jq -r '"record: \(.record // "none" | tostring)",
                ("agent-identity: " + (if .identity.ok then "PASS" else "FAIL" end) + " [\(.identity.status)\(if .identity.rule then " \(.identity.rule)" else "" end)] \(.identity.message)"),
                (if .identity.ok then empty else "  fix: \(.identity.hint)" end),
