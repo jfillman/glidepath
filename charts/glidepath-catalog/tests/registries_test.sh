@@ -106,6 +106,15 @@ script_of "$work/orp-fl.yaml" 0 | grep -q 'image_repo="ghcr.io/${flight_ns:-${ow
   || { echo "FAIL: promotion does not pin the Flight repository"; fail=1; }
 script_of "$work/orp-fl.yaml" 0 | grep -q "flight_ns='flight-org'" || { echo "FAIL: flight namespace not rendered"; fail=1; }
 script_of "$work/orp-fl.yaml" 0 | grep -q 'source_repo="${image_repo}"' || { echo "FAIL: source is not taken from the Ground image"; fail=1; }
+# A Flight-to-Flight release (staging -> prod) starts from the Flight copy; its source stays the Ground repository (PROM-06).
+script_of "$work/orp-fl.yaml" 0 | sed -n '/^ *image_repo="\${IMAGE_REF%:\*}"$/,/^ *image_repo="ghcr.io\/\${flight_ns/p' > "$work/source.sh"
+src_of() { ( owner=jfillman APP_NAME=gate-api IMAGE_REF="$1"; source "$work/source.sh"; echo "${source_repo} ${image_repo}" ); }
+[ "$(src_of ghcr.io/jfillman/gate-api:2.0.8-49ccca1)" = "ghcr.io/jfillman/gate-api ghcr.io/flight-org/gate-api" ] \
+  || { echo "FAIL: Ground -> Flight source: $(src_of ghcr.io/jfillman/gate-api:2.0.8-49ccca1)"; fail=1; }
+[ "$(src_of ghcr.io/flight-org/gate-api:2.0.8-49ccca1)" = "ghcr.io/jfillman/gate-api ghcr.io/flight-org/gate-api" ] \
+  || { echo "FAIL: Flight -> Flight source: $(src_of ghcr.io/flight-org/gate-api:2.0.8-49ccca1)"; fail=1; }
+[ "$(src_of ghcr.io/jfillman/gate-api-pr:2.0.8-49ccca1)" = "ghcr.io/jfillman/gate-api-pr ghcr.io/flight-org/gate-api" ] \
+  || { echo "FAIL: a -pr image must stay its own source for PROM-06 to refuse it"; fail=1; }
 
 # --- the gates read evidence from source -------------------------------------------------------------------------
 render "$work/rpi.yaml" stepactions/resolve-promoted-image.yaml

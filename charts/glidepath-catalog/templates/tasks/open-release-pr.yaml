@@ -394,6 +394,14 @@ spec:
 {{- fail "promotion.enabled needs promotion.pinDigest: a Flight release must pin the digest the promoter copied" }}
 {{- end }}
         flight_ns='{{ .Values.registries.flight.namespace }}'
+        ground_ns='{{ .Values.registries.ground.namespace }}'
+        # A Flight-to-Flight release (staging -> prod) starts from the image the source environment runs, which is
+        # already the Flight copy. Its source is still the Ground repository it was built in: the promoter copied it by
+        # digest, the promote pipeline only promotes from Ground (PROM-06), and the gates read the evidence where it was
+        # made. gate-api's staging -> prod release on 2026-10-30 named the Flight repository and image-promotion refused it.
+        if [[ "${source_repo}" == "{{ .Values.registries.flight.host }}/${flight_ns:-${owner}}/${APP_NAME}" ]]; then
+          source_repo="{{ .Values.registries.ground.host }}/${ground_ns:-${owner}}/${APP_NAME}"
+        fi
         image_repo="{{ .Values.registries.flight.host }}/${flight_ns:-${owner}}/${APP_NAME}"
 {{- end }}
 
