@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"github.com/glidepath/api/internal/events"
 	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
+	"github.com/glidepath/api/internal/live"
 	"github.com/glidepath/api/internal/pipelineruns"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
@@ -39,6 +41,7 @@ type Server struct {
 	Evidence *evidence.Reader
 	Tests    *testkube.Client
 	Runs     *pipelineruns.Client
+	Live     *live.Client // PipelineRuns, TaskRuns and step logs as the cluster holds them now
 	Envs     *environments.Client
 	Events   *events.Store // nil: no event routes
 	Tap      http.Handler  // the broker's ClusterInterceptor glidepath-api-events (events.Tap)
@@ -61,8 +64,8 @@ type op struct {
 	resource    string // "" = any authenticated caller
 	subresource string
 	verb        string
-	// queryApp: the app is the optional ?app= (GET /v1/events), not a path segment. Without it the
-	// caller is authorized cluster-wide (a SubjectAccessReview with no namespace).
+	// queryApp: the app is the optional ?app= (GET /v1/events, the fleet reads), not a path segment.
+	// Without it the caller is authorized cluster-wide (a SubjectAccessReview with no namespace).
 	queryApp bool
 }
 
@@ -79,6 +82,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/apps/{app}/runs/{result}", s.wrap(op{"getRun", "T0", "runs", "", "get", false}, s.getRun))
 	mux.Handle("GET /v1/apps/{app}/runs/{result}/logs/{taskRun}", s.wrap(op{"getRunLog", "T0", "runs", "logs", "get", false}, s.getLog))
 	mux.Handle("GET /v1/apps/{app}/runs/{result}/explain", s.wrap(op{"explainRun", "T0", "runs", "logs", "get", false}, s.explainRun))
+	mux.Handle("GET /v1/apps/{app}/live", s.wrap(op{"listLiveRuns", "T0", "runs", "", "list", false}, s.listLiveRuns))
+	mux.Handle("GET /v1/apps/{app}/live/taskruns/{taskRun}/logs/{container}", s.wrap(op{"getLiveLog", "T0", "runs", "logs", "get", false}, s.getLiveLog))
+	mux.Handle("GET /v1/runs", s.wrap(op{"listFleetRuns", "T0", "runs", "", "list", true}, s.listFleetRuns))
+	mux.Handle("GET /v1/live", s.wrap(op{"listFleetLiveRuns", "T0", "runs", "", "list", true}, s.listFleetLiveRuns))
+	mux.Handle("GET /v1/live/taskruns", s.wrap(op{"listFleetLiveTaskRuns", "T0", "runs", "", "list", true}, s.listFleetLiveTaskRuns))
 	mux.Handle("GET /v1/apps/{app}/releases", s.wrap(op{"listReleases", "T0", "releases", "", "list", false}, s.listReleases))
 	mux.Handle("GET /v1/apps/{app}/releases/{chainId}", s.wrap(op{"getRelease", "T0", "releases", "", "get", false}, s.getRelease))
 	mux.Handle("GET /v1/apps/{app}/evidence", s.wrap(op{"getEvidence", "T0", "evidence", "", "get", false}, s.getEvidence))
@@ -140,6 +148,8 @@ func classify(err error) (int, apiError) {
 		envInv environments.Invalid
 		envRef environments.Refused
 		evQ    events.Invalid
+		lvNF   live.NotFound
+		lvInv  live.Invalid
 	)
 	switch {
 	case errors.Is(err, events.ErrBusy):
@@ -150,6 +160,10 @@ func classify(err error) (int, apiError) {
 		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
 	case errors.As(err, &envRef):
 		return http.StatusUnprocessableEntity, apiError{err.Error(), "GP-API-422", envRef.Hint}
+	case errors.As(err, &lvNF):
+		return http.StatusNotFound, apiError{err.Error(), "GP-LIVE-404", "the cluster no longer has (or doesn't have yet) that TaskRun or its pod; a finished run's log is archived: GET /v1/apps/{app}/runs/{result}/logs/{taskRun}"}
+	case errors.As(err, &lvInv):
+		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
 	case errors.As(err, &noLog):
 		return http.StatusNotFound, apiError{err.Error(), "GP-LOG-404", "the run exists; Results stored no log for this TaskRun (docs/admin/tekton-results.md)"}
 	case errors.As(err, &appNF):
@@ -229,7 +243,7 @@ func (s *Server) wrap(o op, h handler) http.Handler {
 				if err := s.Auth.Authorize(r.Context(), c, o.verb, o.resource, o.subresource, ns, ""); err != nil {
 					if e, ok := auth.AsError(err); ok && ns == "" {
 						e.Msg = fmt.Sprintf("%s may not %s %s.%s cluster-wide", c.User, o.verb, o.resource, auth.Group)
-						e.Hint = "pass app=<app> to read one app's events, or bind glidepath-api-reader cluster-wide (the chart's api.readers)"
+						e.Hint = "pass app=<app> to read one app's " + o.resource + ", or bind glidepath-api-reader cluster-wide (the chart's api.readers)"
 					}
 					return err
 				}
@@ -336,6 +350,91 @@ func (s *Server) explainRun(ctx context.Context, w http.ResponseWriter, r *http.
 		return err
 	}
 	writeJSON(w, http.StatusOK, ex)
+	return nil
+}
+
+// listFleetRuns is listRuns across every namespace (or the ?app= one), for Tower's fleet history:
+// summary rows only, each with its namespace and app.
+func (s *Server) listFleetRuns(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
+	since, limit := s.window(r)
+	if app != nil {
+		rows, err := s.Results.List(ctx, app.Namespace, since, app.Created, limit)
+		if err != nil {
+			return err
+		}
+		out := make([]results.FleetRow, len(rows))
+		for i, row := range rows {
+			out[i] = results.FleetRow{Row: row, Namespace: app.Namespace, App: app.Name}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"runs": out})
+		return nil
+	}
+	rows, err := s.Results.ListAll(ctx, since, limit)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": rows})
+	return nil
+}
+
+// listLiveRuns is every PipelineRun and TaskRun in the app's namespace right now: what Tower's CI
+// tab polls while runs are in flight.
+func (s *Server) listLiveRuns(ctx context.Context, w http.ResponseWriter, _ *http.Request, _ *auth.Caller, app *apps.App) error {
+	prs, err := s.Live.PipelineRuns(ctx, app.Namespace)
+	if err != nil {
+		return err
+	}
+	trs, err := s.Live.TaskRuns(ctx, app.Namespace)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pipelineRuns": prs, "taskRuns": trs})
+	return nil
+}
+
+// getLiveLog streams one step container's log from a running TaskRun's pod. Needs what getRunLog
+// needs.
+func (s *Server) getLiveLog(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
+	rc, err := s.Live.Log(ctx, app.Namespace, r.PathValue("taskRun"), r.PathValue("container"))
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	io.Copy(w, rc) // a stream cut short now has already sent its 200; the client sees a short log
+	return nil
+}
+
+// fleetNamespace is the ?app= app's namespace, or "" (every namespace) without one.
+func fleetNamespace(app *apps.App) string {
+	if app == nil {
+		return ""
+	}
+	return app.Namespace
+}
+
+// listFleetLiveRuns is every PipelineRun in the cluster (or the ?app= namespace) right now.
+func (s *Server) listFleetLiveRuns(ctx context.Context, w http.ResponseWriter, _ *http.Request, _ *auth.Caller, app *apps.App) error {
+	prs, err := s.Live.PipelineRuns(ctx, fleetNamespace(app))
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pipelineRuns": prs})
+	return nil
+}
+
+// listFleetLiveTaskRuns is the TaskRuns of the PipelineRuns named in ?pipelineRuns=a,b,c: the fleet
+// view reads TaskRuns only for the runs it shows.
+func (s *Server) listFleetLiveTaskRuns(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
+	names, err := live.ParseNames(r.URL.Query().Get("pipelineRuns"))
+	if err != nil {
+		return err
+	}
+	trs, err := s.Live.TaskRunsOf(ctx, fleetNamespace(app), names)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"taskRuns": trs})
 	return nil
 }
 

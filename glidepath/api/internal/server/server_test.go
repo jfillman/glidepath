@@ -73,6 +73,18 @@ func resultsStub(t *testing.T) *httptest.Server {
 				map[string]any{"name": "app-shop-cicd/results/old", "create_time": now.Add(-48 * time.Hour).Format(time.RFC3339),
 					"summary": map[string]any{"type": "tekton.dev/v1.PipelineRun", "status": "SUCCESS"}},
 			}})
+		case p == "/parents/-/results": // every namespace: GET /v1/runs
+			json.NewEncoder(w).Encode(map[string]any{"results": []any{
+				map[string]any{"name": "app-shop-cicd/results/" + resultID, "create_time": now.Add(-2 * time.Hour).Format(time.RFC3339),
+					"annotations": map[string]string{"object.metadata.name": "shop-push-abc"},
+					"summary":     map[string]any{"type": "tekton.dev/v1.PipelineRun", "status": "FAILURE"}},
+				map[string]any{"name": "infra-queue-cicd/results/r2", "create_time": now.Add(-3 * time.Hour).Format(time.RFC3339),
+					"summary": map[string]any{"type": "tekton.dev/v1.PipelineRun", "status": "SUCCESS"}},
+				map[string]any{"name": "platform-system/results/r3", "create_time": now.Add(-4 * time.Hour).Format(time.RFC3339),
+					"summary": map[string]any{"type": "tekton.dev/v1.PipelineRun", "status": "CANCELLED"}},
+				map[string]any{"name": "app-cart-cicd/results/r4", "create_time": now.Add(-48 * time.Hour).Format(time.RFC3339),
+					"summary": map[string]any{"type": "tekton.dev/v1.PipelineRun", "status": "SUCCESS"}},
+			}})
 		case p == "/parents/app-shop-cicd/results/"+resultID+"/records":
 			pr := map[string]any{"apiVersion": "tekton.dev/v1", "kind": "PipelineRun",
 				"metadata": map[string]any{"name": "shop-push-abc", "namespace": "app-shop-cicd", "uid": resultID, "managedFields": []any{1},

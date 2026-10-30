@@ -1,14 +1,16 @@
 openapi: 3.0.3
 info:
   title: Glidepath API
-  version: 0.4.0
+  version: 0.5.0
   description: |
     Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
     contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec are reads (tier T0); phase 3
     adds the first writes (tier T1): re-run and cancel a PipelineRun in the app's namespace. Phase 4 adds
     tier T2, propose: promote to a Flight environment and roll one back, each only starting the app's
     release Pipeline, whose gitops PR a human merges. Phase 5 adds the CDEvents stream (GET /v1/events):
-    every event the shared broker carries, re-verified, as server-sent events with resume.
+    every event the shared broker carries, re-verified, as server-sent events with resume. Phase 6b adds the live
+    reads Tower's views of runs in flight need (PipelineRuns, TaskRuns and step logs as the cluster holds them now)
+    and the fleet's run history across every namespace.
 
     Every /v1 call needs a bearer token the cluster's TokenReview accepts, in `Authorization`, or in
     `X-Glidepath-Authorization` when the call comes through the API server's service proxy (which
@@ -126,6 +128,134 @@ paths:
         - { $ref: "#/components/parameters/OnBehalfOf" }
       responses:
         "200": { description: The run explained, content: { application/json: { schema: { $ref: "#/components/schemas/Explanation" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/live:
+    get:
+      operationId: listLiveRuns
+      summary: Every PipelineRun and TaskRun in the app's namespace right now, from the cluster
+      description: >-
+        Needs `list` on `runs.glidepath.hangar.io` in the app's namespace. The objects as the API server lists them, with
+        `metadata.managedFields` dropped and nothing else changed: runs in flight, and finished ones until Tekton deletes
+        them (about an hour). Older runs are archived: GET /v1/apps/{app}/runs. Cached at most 2 s.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The live runs, content: { application/json: { schema: { $ref: "#/components/schemas/LiveRuns" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/live/taskruns/{taskRun}/logs/{container}:
+    get:
+      operationId: getLiveLog
+      summary: One container's log from a live TaskRun's pod, as plain text
+      description: >-
+        Needs `get` on `runs/logs`. Reads the TaskRun in the app's namespace, then its pod's (`status.podName`) log for
+        `container` (a step is `step-<name>`), each line prefixed with the container runtime's RFC 3339 timestamp, as
+        `kubectl logs --timestamps`. Never cached. A container the pod doesn't have, or one that hasn't started, is 400;
+        a TaskRun or pod that is gone (or a TaskRun with no pod yet) is 404 `GP-LIVE-404`: a finished run's log is
+        archived (GET /v1/apps/{app}/runs/{result}/logs/{taskRun}).
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { name: taskRun, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$" } }
+        - { name: container, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" } }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The log, content: { text/plain: { schema: { type: string } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/runs:
+    get:
+      operationId: listFleetRuns
+      summary: Finished runs across every app, newest first, from Tekton Results
+      description: >-
+        GET /v1/apps/{app}/runs for the whole fleet (Results' `parents/-`), summary rows only, each with its namespace
+        and app. Needs `list` on `runs.glidepath.hangar.io`: cluster-wide without `app=`, in the app's namespace with
+        it. Same window and limit rules; with `app=`, runs from before the app's namespace was created are not returned.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/FleetApp" }
+        - { name: sinceHours, in: query, schema: { type: integer, minimum: 1, maximum: 744, default: 24 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 100 } }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200":
+          description: The runs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs: { type: array, items: { $ref: "#/components/schemas/FleetRunRow" } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/live:
+    get:
+      operationId: listFleetLiveRuns
+      summary: Every PipelineRun in the cluster right now
+      description: >-
+        Needs `list` on `runs.glidepath.hangar.io`: cluster-wide without `app=`, in the app's namespace with it. Each
+        object as the API server lists it, `metadata.managedFields` dropped. No TaskRuns: ask for the ones of the runs
+        shown with GET /v1/live/taskruns. Cached at most 2 s.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/FleetApp" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200":
+          description: The PipelineRuns
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pipelineRuns]
+                properties:
+                  pipelineRuns: { type: array, items: { $ref: "#/components/schemas/KubeObject" } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/live/taskruns:
+    get:
+      operationId: listFleetLiveTaskRuns
+      summary: The TaskRuns of the named PipelineRuns, right now
+      description: >-
+        The TaskRuns whose `tekton.dev/pipelineRun` label is one of `pipelineRuns`, in every namespace (or the `app=`
+        one). Same authorization as GET /v1/live. No names: `{"taskRuns":[]}`. Cached at most 2 s.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/FleetApp" }
+        - name: pipelineRuns
+          in: query
+          description: Comma-separated PipelineRun names (lower-case DNS names of at most 63 characters), at most 200 distinct
+          schema: { type: string }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200":
+          description: The TaskRuns
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [taskRuns]
+                properties:
+                  taskRuns: { type: array, items: { $ref: "#/components/schemas/KubeObject" } }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
@@ -260,7 +390,7 @@ paths:
           schema: { type: string, pattern: "^[A-Za-z0-9._:-]{1,128}$" }
       responses:
         "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Rerun" } } } }
-        "200": { description: A replay of an earlier call with this key, or a dry run, content: { application/json: { schema: { $ref: "#/components/schemas/Rerun" } } } }
+        "200": { description: "A replay of an earlier call with this key, or a dry run", content: { application/json: { schema: { $ref: "#/components/schemas/Rerun" } } } }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
@@ -361,7 +491,7 @@ paths:
         content: { application/json: { schema: { $ref: "#/components/schemas/PromoteRequest" } } }
       responses:
         "201": { description: The release run started, content: { application/json: { schema: { $ref: "#/components/schemas/PromoteResult" } } } }
-        "200": { description: A replay, a dry run, or the release PR already open, content: { application/json: { schema: { $ref: "#/components/schemas/PromoteResult" } } } }
+        "200": { description: "A replay, a dry run, or the release PR already open", content: { application/json: { schema: { $ref: "#/components/schemas/PromoteResult" } } } }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
@@ -393,7 +523,7 @@ paths:
         content: { application/json: { schema: { $ref: "#/components/schemas/RollbackRequest" } } }
       responses:
         "201": { description: The rollback release run started, content: { application/json: { schema: { $ref: "#/components/schemas/RollbackResult" } } } }
-        "200": { description: A replay, a dry run, or the rollback PR already open, content: { application/json: { schema: { $ref: "#/components/schemas/RollbackResult" } } } }
+        "200": { description: "A replay, a dry run, or the rollback PR already open", content: { application/json: { schema: { $ref: "#/components/schemas/RollbackResult" } } } }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
@@ -478,6 +608,11 @@ components:
     Result: { name: result, in: path, required: true, schema: { type: string, pattern: "^[0-9a-f-]{36}$" } }
     RunName: { name: name, in: path, required: true, description: A live PipelineRun's name, schema: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{0,252}$" } }
     Env: { name: env, in: path, required: true, description: An environment in the app's cicd.yaml, schema: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$" } }
+    FleetApp:
+      name: app
+      in: query
+      description: Only this app's namespace. Required for a caller without cluster-wide access.
+      schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,62}$" }
     EventApp:
       name: app
       in: query
@@ -531,7 +666,7 @@ components:
           description: >-
             When the first replica received it (unix microseconds, 16 digits) and a hash of context.source and
             context.id. Ordered as a string; the same on every replica; what Last-Event-ID and since take.
-        app: { type: string, description: The app the event is about, as the sender's verified identity says }
+        app: { type: string, description: "The app the event is about, as the sender's verified identity says" }
         routingKey:
           type: string
           description: >-
@@ -549,7 +684,7 @@ components:
           description: >-
             GP-AUTH-001 no token, GP-AUTH-002 token rejected, GP-AUTH-003 on-behalf-of refused, GP-AUTH-004 a delegate's
             write must name the person, GP-AUTHZ-001 not allowed, GP-LOG-404 the run exists but has no archived log for that
-            TaskRun, GP-API-409 a write's derived run name is taken by another object, GP-API-422 the write can't be
+            TaskRun, GP-LIVE-404 the live TaskRun or its pod is gone (or has no pod yet), GP-API-409 a write's derived run name is taken by another object, GP-API-422 the write can't be
             done as asked (out of order, a Ground target, an ineligible rollback target, nothing to promote, or the
             cluster refused it: admission policy or RBAC), GP-API-503 this replica serves its maximum number of event
             streams, GP-API-400/404/502
@@ -580,8 +715,8 @@ components:
                 properties:
                   id: { type: string, description: A knownFailures id from the contract }
                   hint: { type: string }
-                  field: { type: string, description: JSON pointer into cicd.yaml, when one field is the fix }
-              evidence: { type: string, description: The matching line, or the failing step's last lines when nothing matched }
+                  field: { type: string, description: "JSON pointer into cicd.yaml, when one field is the fix" }
+              evidence: { type: string, description: "The matching line, or the failing step's last lines when nothing matched" }
               log: { type: string, enum: [archived, missing] }
     Evidence:
       type: object
@@ -614,7 +749,7 @@ components:
           properties:
             subject: { type: string, description: "One RDN per line; absent for an empty name (a Fulcio leaf's)" }
             issuer: { type: string }
-            identity: { type: string, description: The first URI SAN, where Fulcio puts the signer's identity }
+            identity: { type: string, description: "The first URI SAN, where Fulcio puts the signer's identity" }
             validFrom: { type: string, example: "Oct 21 06:12:16 2026 GMT" }
             validTo: { type: string }
         transparencyLog:
@@ -625,7 +760,7 @@ components:
             logId: { type: string, description: hex }
             integratedTime: { type: number, nullable: true, description: Unix seconds }
         verified: { type: boolean }
-        verificationError: { type: string, description: Why it didn't verify, in the verifier's words. Display only. }
+        verificationError: { type: string, description: "Why it didn't verify, in the verifier's words. Display only." }
         verificationCode:
           type: string
           enum: [verified, no-log-entry, log-entry-mismatch, stale-receipt, digest-mismatch, signature-invalid, trust-root-unavailable, incomplete]
@@ -769,6 +904,25 @@ components:
         commit: { type: string }
         eventType: { type: string }
         prNumber: { type: string }
+    FleetRunRow:
+      description: A RunRow from any namespace
+      allOf:
+        - { $ref: "#/components/schemas/RunRow" }
+        - type: object
+          required: [namespace]
+          properties:
+            namespace: { type: string, description: "The Result's parent, the namespace the run ran in" }
+            app: { type: string, description: "The app, when the namespace is app-<app>-cicd or infra-<app>-cicd; absent otherwise" }
+    KubeObject:
+      type: object
+      additionalProperties: true
+      description: A Tekton object as the API server lists it, with metadata.managedFields dropped
+    LiveRuns:
+      type: object
+      required: [pipelineRuns, taskRuns]
+      properties:
+        pipelineRuns: { type: array, items: { $ref: "#/components/schemas/KubeObject" } }
+        taskRuns: { type: array, items: { $ref: "#/components/schemas/KubeObject" } }
     Run:
       type: object
       required: [result, pipelineRun, taskRuns]

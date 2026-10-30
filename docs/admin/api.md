@@ -8,7 +8,9 @@ Phases 1 and 2 of the [Glidepath API spec](https://hangarplatform.dev/library/gl
 (tier T0). Phase 3's first writes (tier T1) are re-run and cancel; previews and `cicd.yaml` pull requests are
 still to come. Phase 4 (tier T2, propose) is promote and roll back: each only starts the app's own `release`
 Pipeline, whose gitops PR a human merges. Nothing else is written. Phase 5 starts with the [event stream](#events):
-every CDEvent the shared broker carries, re-verified and served as server-sent events with resume.
+every CDEvent the shared broker carries, re-verified and served as server-sent events with resume. Phase 6b adds the
+[live reads](#live-and-archived-reads) Tower's views of runs in flight need, so Tower no longer reads Tekton or pod
+logs through its own Kubernetes proxy, and the fleet's run history across every namespace.
 
 **Not offered, by design:** promoting to a Ground environment and cloud pins. Both are a commit to a repo
 (Tower's Ground promote commits straight to the app repo's release file; a pin opens a PR itself), so both
@@ -26,6 +28,11 @@ fails if the server's routes and the spec ever differ.
 | `GET /v1/apps/{app}/runs/{result}` | T0 | `get runs` | One run (the id is the PipelineRun's uid) |
 | `GET /v1/apps/{app}/runs/{result}/logs/{taskRun}` | T0 | `get runs/logs` | One TaskRun's step logs, as text |
 | `GET /v1/apps/{app}/runs/{result}/explain` | T0 | `get runs/logs` | Each failed TaskRun's failing step, its [known failure](#explain) id, hint and field, and the line that matched |
+| `GET /v1/apps/{app}/live` | T0 | `list runs` | Every [live](#live-and-archived-reads) PipelineRun and TaskRun in the app's namespace, as the cluster lists them |
+| `GET /v1/apps/{app}/live/taskruns/{taskRun}/logs/{container}` | T0 | `get runs/logs` | One container's log from a live TaskRun's pod, with timestamps, as text |
+| `GET /v1/runs?app=&sinceHours=&limit=` | T0 | `list runs` (cluster-wide without `app=`) | Finished runs across every namespace, newest first, each with `namespace` and `app` |
+| `GET /v1/live?app=` | T0 | `list runs` (cluster-wide without `app=`) | Every live PipelineRun in the cluster |
+| `GET /v1/live/taskruns?app=&pipelineRuns=` | T0 | `list runs` (cluster-wide without `app=`) | The live TaskRuns of the named PipelineRuns |
 | `GET /v1/apps/{app}/releases` | T0 | `list releases` | Every `release-tracking-*` record of the app |
 | `GET /v1/apps/{app}/releases/{chainId}` | T0 | `get releases` | One record |
 | `GET /v1/apps/{app}/evidence?image=` | T0 | `get evidence` | Every signature and attestation on the image, each [re-verified](#evidence) |
@@ -363,6 +370,40 @@ them unchanged (checked 2026-10-29 with a server-side dry run on hangar-dev as
 `system:serviceaccount:platform-system:glidepath-api`). It still admits only `app-` namespaces, so an InfraService's
 promote is refused for the API as it is for Tower.
 
+## Live and archived reads
+
+A PipelineRun lives in the cluster while it runs and for about an hour after it finishes, until Tekton deletes it;
+Tekton Results archives it for 30 days. The API reads each from where it is:
+
+- **Archived** (`GET /v1/apps/{app}/runs...`, `GET /v1/runs`): Tekton Results, through `tekton-results-relay`.
+  Finished runs only, trimmed to what Tower shows, cached (lists a minute, runs 7 days, logs an hour).
+- **Live** (`GET /v1/apps/{app}/live...`, `GET /v1/live...`): the API server, with glidepath-api's own
+  ServiceAccount. Every PipelineRun and TaskRun as the cluster lists them right now, `metadata.managedFields`
+  dropped and nothing else changed. Lists are cached 2 s at most, so several people watching the same view cost one
+  list; logs are never cached.
+
+A run in flight is only live; a run older than an hour is only archived; for the hour in between it is both, and a
+client that merges the two dedupes by the PipelineRun's uid (the archived run's `result`).
+
+**Live step logs.** `live/taskruns/{taskRun}/logs/{container}` reads the TaskRun in the app's namespace, takes its
+`status.podName`, and returns that pod's log for `container` (a step is `step-<name>`) with the container runtime's
+timestamps, as `kubectl logs --timestamps` does. The namespace always comes from the app; the pod always from the
+TaskRun, never from the request. A container the pod doesn't have, or one that hasn't started yet, is `GP-API-400`.
+A TaskRun or pod that is gone, or a TaskRun with no pod yet, is `GP-LIVE-404`: once the run has finished, read the
+archived log instead.
+
+**The fleet.** `GET /v1/live` is every PipelineRun in the cluster; `GET /v1/live/taskruns?pipelineRuns=a,b` is the
+TaskRuns of just those runs (by their `tekton.dev/pipelineRun` label; at most 200 distinct names, each a lower-case
+DNS name of at most 63 characters; none asked, `{"taskRuns":[]}`). `GET /v1/runs` is `GET /v1/apps/{app}/runs` for
+every namespace at once (Results' `parents/-`), the same rows plus `namespace` (the Result's parent) and `app` (from
+`app-<app>-cicd` or `infra-<app>-cicd`; absent for any other namespace). All three take `app=` to keep to one app's
+namespace, and are authorized like the [events](#events) routes: cluster-wide without `app=`, in the app's namespace
+with it. `glidepath-api-reader` bound through `api.readers` is cluster-wide, so Tower's read identity passes.
+
+**What glidepath-api itself may read for this.** Its ClusterRole adds `list` on `pipelineruns`, `get` and `list` on
+`taskruns`, and `get` on `pods` and `pods/log`, all cluster-wide (apps are onboarded after install). Nothing else:
+no pod list, no exec, no secrets beyond the existing `registry-credentials`.
+
 ## Explain
 
 `explain` reads the run and each failed TaskRun's archived log. For each one, it takes the first step
@@ -573,10 +614,11 @@ Every refusal or failure is JSON with a stable `rule` and, where there is one, a
 | `GP-AUTH-003` | 403 | On-behalf-of from a caller that isn't a delegate |
 | `GP-AUTH-004` | 400 | A delegate's write must name the person (`X-Glidepath-On-Behalf-Of`) |
 | `GP-AUTHZ-001` | 403 | Not allowed to read or write this in this app's namespace |
-| `GP-API-400` | 400 | A malformed app name, run id, chain id, test run id, PipelineRun name, environment or cluster name, `Idempotency-Key`, `dryRun` or write body, an image outside `ghcr.io`, or an event `since` or `limit` |
+| `GP-API-400` | 400 | A malformed app name, run id, chain id, test run id, PipelineRun name, environment or cluster name, `Idempotency-Key`, `dryRun` or write body, an image outside `ghcr.io`, an event `since` or `limit`, a live TaskRun, container or `pipelineRuns` name, or a container the pod doesn't have or that hasn't started |
 | `GP-API-404` | 404 | No such app, run, PipelineRun, release record, or test report |
 | `GP-API-409` | 409 | The name a write's key derives is held by something that isn't that write's run; send a new key |
 | `GP-API-422` | 422 | The write can't be done as asked: out of order, a Ground target, an ineligible rollback target, nothing recorded to promote, no TriggerTemplate, or the cluster refused it (an admission policy or glidepath-api's RBAC). The `hint` says what would work; don't retry as is |
+| `GP-LIVE-404` | 404 | The live TaskRun or its pod is gone (Tekton deleted the finished run), or the TaskRun has no pod yet; read the archived log |
 | `GP-LOG-404` | 404 | The run exists, but Results archived no log for that TaskRun ([tekton-results.md](tekton-results.md#when-a-runs-logs-are-missing)) |
 | `GP-API-503` | 503 | This replica already serves its maximum number of event streams; retry, or read `GET /v1/events/recent` |
 | `GP-API-502` | 502 | A source failed (the API server, Tekton Results, GHCR, Rekor, Testkube, GitHub or the token broker); retry |

@@ -295,11 +295,41 @@ func (c *Client) List(ctx context.Context, parent string, since, appStart time.T
 	if appStart.After(since) {
 		since = appStart
 	}
+	rows, err := c.summaries(ctx, parent, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Row, len(rows))
+	for i, r := range rows {
+		out[i] = r.Row
+	}
+	return out, nil
+}
+
+// FleetRow is a Row from any namespace: the Result's parent, and the app it belongs to when the
+// parent is an app's <type>-<app>-cicd namespace.
+type FleetRow struct {
+	Row
+	Namespace string `json:"namespace"`
+	App       string `json:"app,omitempty"`
+}
+
+var cicdNamespace = regexp.MustCompile(`^(?:app|infra)-([a-z0-9][a-z0-9-]*)-cicd$`)
+
+// ListAll is List across every namespace (Results' parents/-), for the fleet view: no app, so no
+// app start to stop at.
+func (c *Client) ListAll(ctx context.Context, since time.Time, limit int) ([]FleetRow, error) {
+	return c.summaries(ctx, "-", since, limit)
+}
+
+// summaries pages parent's PipelineRun Result summaries newest first until one is older than since
+// or limit are read. Cached per parent, window and limit for listTTL.
+func (c *Client) summaries(ctx context.Context, parent string, since time.Time, limit int) ([]FleetRow, error) {
 	key := fmt.Sprintf("list:%s:%d:%d", parent, since.UnixMilli()/listTTL.Milliseconds(), limit)
 	if v, ok := c.cache.get(key); ok {
-		return v.([]Row), nil
+		return v.([]FleetRow), nil
 	}
-	rows := []Row{}
+	rows := []FleetRow{}
 	token := ""
 	for page := 0; page < maxSummary && len(rows) < limit; page++ {
 		q := url.Values{"page_size": {fmt.Sprint(summaryPage)}, "order_by": {"create_time desc"}, "filter": {fmt.Sprintf(`summary.type=="%s"`, pipelineRun)}}
@@ -321,7 +351,12 @@ func (c *Client) List(ctx context.Context, parent string, since, appStart time.T
 				break
 			}
 			if row, ok := toRow(s); ok {
-				rows = append(rows, row)
+				ns, _, _ := strings.Cut(s.Name, "/") // <parent>/results/<uid>
+				fr := FleetRow{Row: row, Namespace: ns}
+				if m := cicdNamespace.FindStringSubmatch(ns); m != nil {
+					fr.App = m[1]
+				}
+				rows = append(rows, fr)
 			}
 			if len(rows) >= limit {
 				break

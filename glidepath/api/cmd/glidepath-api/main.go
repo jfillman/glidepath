@@ -25,6 +25,9 @@
 //	BROKER_TOKEN_PATH   this pod's projected ServiceAccount token for the broker, audience github-read-token
 //	                    (default /var/run/secrets/glidepath/broker/token)
 //
+// Phase 6b's live reads (internal/live) need no configuration: PipelineRuns, TaskRuns and pod logs as
+// the cluster holds them now, with this pod's own identity, for Tower's views of runs in flight.
+//
 // Phase 5's event stream (GET /v1/events, internal/events):
 //
 //	EVENTS_MAX            events each replica buffers (default 2000)
@@ -59,6 +62,7 @@ import (
 	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
 	"github.com/glidepath/api/internal/github"
+	"github.com/glidepath/api/internal/live"
 	"github.com/glidepath/api/internal/pipelineruns"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
@@ -190,6 +194,9 @@ func main() {
 			Log:  logger,
 		},
 		Runs: &pipelineruns.Client{Store: pipelineruns.NewKubeStore(dyn)},
+		// Live runs, TaskRuns and step logs straight from the API server (phase 6b: Tower's live views moved
+		// here from its own Kubernetes proxy reads). Lists are cached 2 s; logs never.
+		Live: &live.Client{Store: live.NewKubeStore(dyn, cs)},
 		// Promote and rollback read GitHub with a token the broker mints per request and per repo (read only, that
 		// one repo), and start the app's release Pipeline from its own TriggerTemplate.
 		Envs: &environments.Client{
