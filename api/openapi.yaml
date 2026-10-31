@@ -1011,7 +1011,7 @@ components:
             ref: { type: string, description: The ref asked for, or HEAD }
             sha: { type: string, description: The commit that ref resolved to }
             present: { type: boolean, description: false when there was no cicd.yaml at the base }
-        resulting: { type: string, description: The cicd.yaml after the change, as YAML }
+        resulting: { type: string, description: "The cicd.yaml after the change: the file as it was, with only the patched lines changed (comments, order, quoting and blank lines kept); from content, content itself" }
         contractVersion: { type: integer }
     Caller:
       type: object

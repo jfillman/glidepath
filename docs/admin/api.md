@@ -417,8 +417,9 @@ the result and the base to the validator. The answer is 200 whether or not the r
 
 `changes` is every field the change touches, each with the contract's `agentScope`, so a caller can tell a person
 what it is about to propose. A file missing at the base is compared with an empty one (every field counts as
-added). The patch is applied to the parsed file, so `resulting` is canonical YAML without the file's comments; a
-caller that goes on to commit the change applies the same patch to the text itself.
+added). The patch is applied to the file's own text (the YAML edited as a node tree, blank lines put back), so
+`resulting` is the file as it was with only the patched lines changed: comments, key order and quoting stay, a
+removed key goes with its comments, and a new key lands at the end of its mapping. A caller can commit it as it is.
 
 **The validator is a sidecar.** The API image is distroless, and the rules are Python (`tools/glidepath-validate`
 and `tools/cicd_scope.py`, the files Clearance vendors and the PR check runs). The chart runs the
