@@ -1,0 +1,41 @@
+# BOILERPLATE - the deployment gate (Clearance docs/gate.md, decided 2026-10-31; glidepath docs/admin/clearance-gate.md):
+# every release PR to a protected environment (cicd.yaml deploy.environments[].production: true) is registered with
+# Clearance as a change, classified into a tier 0-3 from what its rendered manifests change, and cleared by policy
+# (tiers 0-1, at once) or by named people in Tower (2-3: the app's owner group, and for tier 3 an outside group,
+# never the proposer). The check is green once cleared; while the change holds it is red and the comment names who
+# may clear it (then `/retest clearance-gate-`). An environment that is not protected is skipped.
+#
+# Release branches only, like every release gate. Delivered only to apps whose deploy.target is k8s-rollout (the
+# registry entry's `targets`). app-name picks the app repo's cicd.yaml (the environment's chart, which environments
+# are protected) and the namespace each environment renders into.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: clearance-gate-
+  labels:
+    hangar.io/app: "<APP_NAME>"
+  annotations:
+    # See pull-request-sast.yaml for why this is on-cel-expression (release-branch-only)
+    # and why has() guards the pull_request field.
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main" && body.pull_request.head.ref.startsWith("release-") && !body.pull_request.head.ref.startsWith("release-record-")'
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+spec:
+  pipelineRef:
+    resolver: cluster
+    params:
+      - { name: kind, value: pipeline }
+      - { name: name, value: clearance-gate-check }
+      - { name: namespace, value: platform-catalog }
+  params:
+    - { name: repo-url, value: "{{ repo_url }}" }
+    - { name: revision, value: "{{ revision }}" }
+    - { name: app-name, value: "<APP_NAME>" }
+    - { name: pr-number, value: "{{ pull_request_number }}" }
+  taskRunTemplate:
+    serviceAccountName: pipeline-runner
+  timeouts:
+    # tasks/finally split - see pull-request-sast.yaml's own header (2026-08-23) for
+    # why finally/comment-pr must never share a budget with the real check tasks.
+    tasks: "14m"
+    finally: "4m"
+    pipeline: "18m"

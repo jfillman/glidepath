@@ -1,0 +1,542 @@
+# catalog/tasks/clearance-gate.yaml
+#
+# The deployment gate's check (Clearance docs/gate.md, decided 2026-10-31; ADR to follow): every release PR to a
+# protected environment is registered with Clearance as a *change*, classified into a tier 0-3 from what its
+# rendered diff touches, and cleared by policy (tiers 0-1, at once) or by named people (tiers 2-3, in Tower). This
+# task describes the change; Clearance decides and records (`deploy.request`, `deploy.clear`, `deploy.deny`). Nothing
+# here enforces anything but the check itself: phase 1 is the soft gate (the PaC check, the release guardrail).
+#
+# Four steps:
+#   fetch     (toolbox)          the PR (base, head, author, files with their line counts), the environments it changes
+#                                (policy-validation-gate's rule: <cluster>/<env>/values|release.yaml, or a cluster's
+#                                base.yaml = every environment on it), each environment's chart and whether it is
+#                                protected (cicd.yaml deploy.environments[].production), the repo's clearance.yaml at
+#                                head, the agent gates' verdict on the PR (POST /v1/provenance: who proposed it), the
+#                                head commit's check runs, and a one-commit checkout of base and head
+#   render    (validator image)  `helm template` of base and head per protected environment with the same value files
+#                                and injected values the Flight ApplicationSet layers, then the object diff: each
+#                                added, removed or changed object with the JSON pointers of the fields that changed
+#                                and its new images, each object's digest and the tree's digest (what a grant binds to)
+#   register  (toolbox)          POST /v1/clearances per environment with the verifier token; the answer is the
+#                                change's state: cleared (green), holding (red until people clear it in Tower, then
+#                                /retest clearance-gate-), denied (red, the rule). The report goes to the PR comment.
+#   report    (toolbox)          exits 1 when any environment holds or is denied (a failed step's results are not
+#                                reported, so the verdict is written first)
+#
+# A PaC check is only green or red. "Holding" is red with the people who may clear it named in the comment; once
+# they clear in Tower, `/retest clearance-gate-` re-registers the same head and finds it cleared. A new push is a new
+# change (Clearance supersedes the old one). An unprotected environment (no production: true) is skipped: the gate
+# is for protected environments in phase 1.
+#
+# The full report goes to a ConfigMap owned by the PipelineRun, labelled glidepath.io/gate-report=clearance-gate;
+# comment-pr-check-result posts it (the policy-validation-gate convention).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: clearance-gate
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+    # Clearance's ingress NetworkPolicy admits pods with this label (apron 55-autopilot/clearance).
+    hangar.io/clearance-client: clearance-gate
+spec:
+  description: Registers a gitops release PR's protected environments with Clearance's deployment gate (the rendered diff, classified 0-3) and fails while the change holds for people or is denied.
+  params:
+    - name: repo-url
+      type: string
+      description: The gitops repo's own URL - PaC's repo_url.
+    - name: revision
+      type: string
+      description: The PR head commit - PaC's revision.
+    - name: pr-number
+      type: string
+      default: ""
+      description: PaC's body.pull_request.number. Empty or unsubstituted (a /retest) is resolved from the commit.
+    - name: app-name
+      type: string
+      description: The application's name.
+    - name: pipeline-run-name
+      type: string
+      default: ""
+      description: Owner of the report ConfigMap; empty writes none.
+    - name: validator-image
+      type: string
+      default: {{ .Values.valuesValidatorImage | default (printf "%s:%s" (required "valuesValidatorRepository (or valuesValidatorImage) must be set" .Values.valuesValidatorRepository) (required "defaultChart.targetRevision must be set" .Values.defaultChart.targetRevision)) | quote }}
+      description: The values gate's validator image (helm, python3 + pyyaml, the default chart under /opt/airframe/charts).
+    - name: clearance-url
+      type: string
+      default: {{ .Values.agentGates.clearanceUrl | quote }}
+      description: "Clearance's in-cluster URL (agentGates.clearanceUrl). Empty fails the check - a protected environment's release needs the gate."
+    - name: tower-url
+      type: string
+      default: {{ .Values.clearanceGate.towerUrl | quote }}
+      description: Where people clear a change (Backstage's URL); empty leaves the link out of the comment.
+  results:
+    - name: outcome
+      description: cleared | holding | denied | skipped | fail
+    - name: findings-summary
+      description: One line for the PR comment's headline.
+    - name: change-ids
+      description: The Clearance change ids registered, comma-separated.
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+    - name: clearance-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: clearance-token
+              audience: {{ .Values.agentGates.audience | quote }}
+              expirationSeconds: 1200
+    - name: work
+      emptyDir: {}
+  steps:
+    - name: fetch
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: github-token-broker-token, mountPath: /var/run/secrets/platform, readOnly: true }
+        - { name: clearance-token, mountPath: /var/run/secrets/clearance, readOnly: true }
+        - { name: work, mountPath: /work }
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: REVISION
+          value: $(params.revision)
+        - name: PR_NUMBER
+          value: $(params.pr-number)
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: CLEARANCE_URL
+          value: $(params.clearance-url)
+        - name: AGENT_LOGINS
+          value: {{ join "," .Values.agentGates.agentLogins | quote }}
+        - name: DEFAULT_CHART_REPO_URL
+          value: {{ .Values.defaultChart.repoURL | quote }}
+        - name: DEFAULT_CHART_PATH
+          value: {{ .Values.defaultChart.path | quote }}
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        source "${PLATFORM_LIB}/retry.sh"
+        : > /work/plan.txt
+        owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+        api() {
+          curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"
+        }
+        fetch_repo() { # <repo-url> <revision> <dir>
+          local url="$1" rev="$2" dir="$3" o r t clone_url
+          clone_url="${url%.git}.git"
+          o="$(echo "${url}" | sed -nE 's#https?://github\.com/([^/]+)/.*#\1#p')"
+          r="$(echo "${url}" | sed -nE 's#https?://github\.com/[^/]+/([^/.]+).*#\1#p')"
+          if [[ -n "${o}" ]] && t="$(github_app_installation_token "${o}" "${r}" 2>/dev/null)"; then
+            clone_url="https://x-access-token:${t}@github.com/${o}/${r}.git"
+          fi
+          mkdir -p "${dir}"
+          git -C "${dir}" init --quiet
+          with_retry 3 -- git -C "${dir}" fetch --quiet --depth 1 "${clone_url}" "${rev}"
+          git -C "${dir}" checkout --quiet FETCH_HEAD
+          rm -f "${dir}/.git/config"
+        }
+
+        # The PR. A /retest fires an issue_comment webhook with no pull_request, so PaC leaves the template string:
+        # resolve it from the commit, as the other gates do.
+        if [[ -n "${PR_NUMBER}" ]] && ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+          PR_NUMBER="$(api "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/pulls" | jq -r '.[0].number // empty')"
+        fi
+        if [[ -z "${PR_NUMBER}" ]]; then
+          echo "no pull request for ${REVISION}: nothing to register"
+          jq -nc '{skipped: "no pull request"}' > /work/meta.json
+          exit 0
+        fi
+        pr="$(api "https://api.github.com/repos/${owner}/${repo}/pulls/${PR_NUMBER}")"
+        base_sha="$(jq -r .base.sha <<<"${pr}")"
+        head_sha="$(jq -r .head.sha <<<"${pr}")"
+        author="$(jq -r .user.login <<<"${pr}")"
+        if [[ "${head_sha}" != "${REVISION}" ]]; then
+          echo "the PR's head is ${head_sha}, this run is ${REVISION}: a newer push; registering the head"
+          REVISION="${head_sha}"
+        fi
+        files="$(api "https://api.github.com/repos/${owner}/${repo}/compare/${base_sha}...${REVISION}" | jq -c '[.files[] | {filename, status, additions, deletions, previous_filename}]')"
+        echo "PR ${owner}/${repo}#${PR_NUMBER} base ${base_sha:0:12} head ${REVISION:0:12} author ${author} files $(jq length <<<"${files}")"
+
+        mkdir -p /work/repo && cd /work/repo
+        git init --quiet
+        with_retry 3 -- git fetch --quiet --depth 1 "https://x-access-token:${token}@github.com/${owner}/${repo}.git" "${REVISION}"
+        git checkout --quiet FETCH_HEAD
+        rm -f .git/config
+        fetch_repo "${REPO_URL}" "${base_sha}" /work/base
+
+        # The environments this PR changes (policy-validation-gate's rule).
+        : > /work/envs.txt
+        while IFS= read -r f; do
+          if [[ "${f}" =~ ^([^/]+)/([^/]+)/(values|release)\.yaml$ ]]; then
+            echo "${BASH_REMATCH[1]}|${BASH_REMATCH[2]}" >> /work/envs.txt
+          elif [[ "${f}" =~ ^([^/]+)/base\.yaml$ ]]; then
+            for d in "${BASH_REMATCH[1]}"/*/; do
+              [[ -f "${d}values.yaml" || -f "${d}release.yaml" ]] && echo "${BASH_REMATCH[1]}|$(basename "${d}")" >> /work/envs.txt
+            done
+          fi
+        done < <(jq -r '.[] | .filename' <<<"${files}")
+        sort -u -o /work/envs.txt /work/envs.txt
+
+        # The app's cicd.yaml: the chart, the target, and which environments are protected (production: true).
+        cicd=""
+        if [[ -f cicd.yaml ]]; then
+          cicd="$(cat cicd.yaml)"
+        else
+          app_token="$(github_app_installation_token "${owner}" "${APP_NAME}" 2>/dev/null || true)"
+          cicd="$(curl -fsSL -H "Authorization: Bearer ${app_token}" -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/${owner}/${APP_NAME}/contents/cicd.yaml" 2>/dev/null || true)"
+        fi
+        target="$(echo "${cicd}" | yq '.deploy.target // ""' 2>/dev/null || true)"
+        [[ -z "${target}" || "${target}" == null ]] && target=k8s-rollout
+        if [[ "${target}" != "k8s-rollout" ]]; then
+          echo "deploy.target is ${target}: no Kubernetes manifest to classify."
+          : > /work/envs.txt
+        fi
+        envs_json="$(echo "${cicd}" | yq -o json '.deploy.environments // []' 2>/dev/null || echo '[]')"
+
+        mkdir -p /work/charts
+        n=0
+        while IFS='|' read -r cluster env; do
+          [[ -n "${cluster}" ]] || continue
+          protected="$(jq -r --arg e "${env}" '[.[] | select(.name == $e) | .production // false] | .[0] // false' <<<"${envs_json}")"
+          chart_dir=default
+          resolved="$(echo "${cicd}" | yq -o json "{\"app\": (.deploy.chart // {}), \"env\": ((.deploy.environments // [])[] | select(.name == \"${env}\") | .chart // {})}" 2>/dev/null \
+            | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" '
+                def over($b; $o): if ($o.repoURL // "") != "" then $o
+                  else $b + ($o | with_entries(select(.value != null and .value != "")))
+                    | (if ($o.path // "") != "" then del(.chart) elif ($o.chart // "") != "" then del(.path) else . end) end;
+                over(over({repoURL: $r, path: $p}; .app); .env)' 2>/dev/null || true)"
+          if [[ -n "${resolved}" && "$(echo "${resolved}" | jq -r --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" \
+               '.repoURL != $r or (.chart // "") != "" or .path != $p')" == "true" ]]; then
+            n=$((n + 1))
+            repo_url="$(echo "${resolved}" | jq -r .repoURL)"; rev="$(echo "${resolved}" | jq -r '.targetRevision // "main"')"
+            if [[ "${repo_url}" == oci://* ]]; then
+              with_retry 3 -- oras pull "${repo_url#oci://}/$(echo "${resolved}" | jq -r .chart):${rev}" -o "/work/charts/${n}-oci" >/dev/null
+              mv "$(ls /work/charts/${n}-oci/*.tgz | head -1)" "/work/charts/${n}.tgz"
+              chart_dir="/work/charts/${n}.tgz"
+            else
+              fetch_repo "${repo_url}" "${rev}" "/work/charts/${n}"
+              chart_dir="/work/charts/${n}/$(echo "${resolved}" | jq -r '.path // "."')"
+            fi
+          fi
+          echo "${cluster}|${env}|${chart_dir}|${protected}" >> /work/plan.txt
+          echo "${cluster}/${env}: protected=${protected} chart=${chart_dir}"
+        done < /work/envs.txt
+
+        # The repo's clearance.yaml at head (tighten-only; Clearance validates it), as JSON for the render step.
+        if [[ -f clearance.yaml ]]; then
+          yq -o json '.' clearance.yaml > /work/clearance.json || { echo "clearance.yaml is not valid YAML" >&2; exit 1; }
+        fi
+
+        # Who proposed it: the agent gates' verdict (POST /v1/provenance, the same body agent-gates sends).
+        paths="$(jq -c '[.[] | .filename, (.previous_filename // empty)]' <<<"${files}")"
+        trailers="$(api "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}" | jq -c '[.commit.message | splits("\n")
+          | capture("^Hangar-(?<k>Task|Session|Run|Agent): *(?<v>[^ ]+) *$")? | {key: (.k | ascii_downcase), value: .v}]
+          | from_entries')"
+        looks_agent=false
+        if [[ "${trailers}" != "{}" ]] || tr ',' '\n' <<<"${AGENT_LOGINS}" | grep -qxF "${author}"; then looks_agent=true; fi
+        verdict='null'
+        if [[ -n "${CLEARANCE_URL}" ]]; then
+          body="$(jq -nc --arg repo "${owner}/${repo}" --argjson pr "${PR_NUMBER}" --arg head "${REVISION}" \
+                  --arg author "${author}" --argjson paths "${paths}" --argjson trailers "${trailers}" \
+                  '{repo: $repo, pr: $pr, head: $head, author: $author, paths: $paths, trailers: $trailers}')"
+          out="$(curl --silent --show-error --max-time 20 --retry 2 --retry-connrefused -w '\n%{http_code}' \
+                   -H "Authorization: Bearer $(cat /var/run/secrets/clearance/clearance-token)" \
+                   -H "Content-Type: application/json" --data "${body}" "${CLEARANCE_URL%/}/v1/provenance" || true)"
+          code="$(tail -n1 <<<"${out}")"
+          if [[ "${code}" == 200 ]]; then verdict="$(sed '$d' <<<"${out}")"; else echo "provenance: Clearance answered ${code:-nothing}"; fi
+        fi
+        # The head commit's check runs: CI's state as this change is registered (clearance-gate's own excluded later).
+        checks="$(api "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/check-runs?per_page=100" | jq -c '[.check_runs[] | {name, status, conclusion}]' || echo '[]')"
+        jq -nc --arg owner "${owner}" --arg repo "${repo}" --argjson pr "${PR_NUMBER}" --arg head "${REVISION}" --arg base "${base_sha}" \
+          --arg author "${author}" --argjson files "${files}" --argjson looks_agent "${looks_agent}" --argjson verdict "${verdict}" --argjson checks "${checks}" \
+          '{owner: $owner, repo: $repo, pr: $pr, head: $head, base: $base, author: $author, files: $files, looksAgent: $looks_agent, provenance: $verdict, checkRuns: $checks}' \
+          > /work/meta.json
+        chmod -R a+rwX /work 2>/dev/null || true
+    - name: render
+      image: $(params.validator-image)
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      env:
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: NAMESPACE
+          value: $(context.taskRun.namespace)
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        [[ -s /work/plan.txt ]] || exit 0
+        type="${NAMESPACE%%-*}"
+        mkdir -p /work/eval
+        render() { # <tree dir> <cluster> <env> <chart> <out file> ; exit 2 when the environment does not exist in that tree
+          local dir="$1" cluster="$2" env="$3" chart="$4" out="$5" ns_pattern="" vf=()
+          [[ "${chart}" == default ]] && chart=/opt/airframe/charts/airframe-application && ns_pattern='{type}-{app}-{env}'
+          [[ -f "${dir}/${cluster}/${env}/values.yaml" || -f "${dir}/${cluster}/${env}/release.yaml" ]] || return 2
+          printf 'appName: %s\ncluster: %s\nenvName: %s\nnamespace:\n  labels:\n    hangar.io/managed-secrets: "true"\n' \
+            "${APP_NAME}" "${cluster}" "${env}" > "${out}.injected.yaml"
+          [[ -n "${ns_pattern}" ]] && printf 'serviceNamespacePattern: "%s"\n' "${ns_pattern}" >> "${out}.injected.yaml"
+          for v in "${cluster}/base.yaml" "${cluster}/${env}/values.yaml" "${cluster}/${env}/release.yaml"; do
+            [[ -f "${dir}/${v}" ]] && vf+=(-f "${dir}/${v}")
+          done
+          helm template "${APP_NAME}" "${chart}" --namespace "${type}-${APP_NAME}-${env}" "${vf[@]}" -f "${out}.injected.yaml" > "${out}" 2> "${out}.err"
+        }
+        rc=0
+        while IFS='|' read -r cluster env chart protected; do
+          out="/work/eval/${cluster}__${env}"
+          mkdir -p "${out}"
+          if [[ "${protected}" != "true" ]]; then
+            echo "${cluster}/${env}: not a protected environment (no production: true): skipped"
+            echo skipped > "${out}/status"; continue
+          fi
+          if ! render /work/repo "${cluster}" "${env}" "${chart}" "${out}/head.yaml"; then
+            echo "FAIL ${cluster}/${env}: helm template of the PR head failed"; cat "${out}/head.yaml.err" 2>/dev/null; echo render-failed > "${out}/status"; rc=1; continue
+          fi
+          render /work/base "${cluster}" "${env}" "${chart}" "${out}/base.yaml"
+          case $? in
+            0) ;;
+            2) : > "${out}/base.yaml"; echo "${cluster}/${env}: new in this PR (no base tree)";;
+            *) echo "FAIL ${cluster}/${env}: helm template of the base failed"; cat "${out}/base.yaml.err"; echo render-failed > "${out}/status"; rc=1; continue;;
+          esac
+          echo "${cluster}/${env}: rendered head ($(grep -c '^kind:' "${out}/head.yaml") objects) and base ($(grep -c '^kind:' "${out}/base.yaml") objects) with ${chart}"
+          printf '%s\n%s\n' "${cluster}" "${env}" > "${out}/env"
+        done < /work/plan.txt
+
+        # The object diff and each environment's change request (clearance gate.py ChangeRequest).
+        python3 - <<'PY' || rc=1
+        import glob, hashlib, json, os, re, sys, yaml
+
+        meta = json.load(open("/work/meta.json"))
+        policy = json.load(open("/work/clearance.json")) if os.path.exists("/work/clearance.json") else None
+        IMAGE = re.compile(r"^/spec/(template/spec/|jobTemplate/spec/template/spec/)?(init)?[cC]ontainers/\d+/image$")
+        MAX_FIELDS = 400
+
+        def docs(path):
+            out = []
+            for d in yaml.safe_load_all(open(path)):
+                if isinstance(d, dict) and d.get("kind") and isinstance(d.get("metadata"), dict):
+                    out.append(d)
+            return out
+
+        def key(d):
+            m = d["metadata"]
+            return (d.get("apiVersion", ""), d["kind"], m.get("namespace") or "", m.get("name", ""))
+
+        def digest(d):
+            return hashlib.sha256(json.dumps(d, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+        def esc(k):
+            return str(k).replace("~", "~0").replace("/", "~1")
+
+        def leaves(a, b, ptr, out):
+            if isinstance(a, dict) and isinstance(b, dict):
+                for k in sorted(set(a) | set(b)):
+                    leaves(a.get(k), b.get(k), f"{ptr}/{esc(k)}", out)
+            elif isinstance(a, list) and isinstance(b, list):
+                for i in range(max(len(a), len(b))):
+                    leaves(a[i] if i < len(a) else None, b[i] if i < len(b) else None, f"{ptr}/{i}", out)
+            elif a != b:
+                out.append(ptr or "/")
+
+        def at(d, ptr):
+            cur = d
+            for part in ptr.split("/")[1:]:
+                part = part.replace("~1", "/").replace("~0", "~")
+                if isinstance(cur, list):
+                    cur = cur[int(part)] if part.isdigit() and int(part) < len(cur) else None
+                elif isinstance(cur, dict):
+                    cur = cur.get(part)
+                else:
+                    return None
+            return cur
+
+        # CI's state from the head's check runs, this gate's own runs excluded.
+        runs = [r for r in meta.get("checkRuns", []) if not r["name"].startswith("Pipelines as Code CI / clearance-gate-")]
+        def status_of(names):
+            rs = [r for r in runs if any(r["name"].startswith(n) for n in names)] if names else runs
+            if not rs:
+                return "unknown" if names else "pending"
+            if any(r["status"] != "completed" for r in rs):
+                return "pending"
+            if any(r["conclusion"] in ("failure", "cancelled", "timed_out", "action_required", "startup_failure") for r in rs):
+                return "fail"
+            return "pass"
+        prov = meta.get("provenance") or {}
+        identity = ((prov.get("identity") or {}).get("status")) or ("unknown" if meta.get("looksAgent") else "not-agent")
+        rec = prov.get("record") or {}
+        if identity == "confirmed":
+            kind, agent = "agent", rec.get("agent")
+            proposer = f"autopilot-runs/{agent}" if agent else f"user:{meta['author']}"
+        elif identity == "not-agent":
+            kind, agent, proposer = "person", None, f"user:{meta['author']}"
+        else:
+            kind, agent, proposer = "unknown", rec.get("agent"), f"user:{meta['author']}"
+        checks = {"ci": status_of(None), "provenance": identity, "render": "ok", "admission": status_of(["Pipelines as Code CI / policy-validation-"])}
+        paths = sorted({f["filename"] for f in meta["files"]} | {f["previous_filename"] for f in meta["files"] if f.get("previous_filename")})
+        lines = sum(int(f.get("additions") or 0) + int(f.get("deletions") or 0) for f in meta["files"])
+
+        for out in sorted(glob.glob("/work/eval/*")):
+            if os.path.exists(f"{out}/status") or not os.path.exists(f"{out}/env"):
+                continue
+            cluster, env = open(f"{out}/env").read().split("\n")[:2]
+            head = {key(d): d for d in docs(f"{out}/head.yaml")}
+            base = {key(d): d for d in docs(f"{out}/base.yaml")} if os.path.getsize(f"{out}/base.yaml") else {}
+            objects = []
+            for k in sorted(set(head) | set(base)):
+                h, b = head.get(k), base.get(k)
+                api_version, kind_, ns, name = k
+                if h is not None and b is None:
+                    objects.append({"apiVersion": api_version, "kind": kind_, "namespace": ns, "name": name, "op": "added", "fields": [], "images": [], "digest": digest(h)})
+                elif h is None:
+                    objects.append({"apiVersion": api_version, "kind": kind_, "namespace": ns, "name": name, "op": "removed", "fields": [], "images": [], "digest": ""})
+                else:
+                    dh, db = digest(h), digest(b)
+                    if dh == db:
+                        continue
+                    fields = []
+                    leaves(b, h, "", fields)
+                    images = [at(h, f) for f in fields if IMAGE.match(f)]
+                    objects.append({"apiVersion": api_version, "kind": kind_, "namespace": ns, "name": name, "op": "changed",
+                                    "fields": fields[:MAX_FIELDS], "images": [i for i in images if isinstance(i, str)], "digest": dh})
+            tree = hashlib.sha256("\n".join(sorted(f"{'/'.join(k)}:{digest(d)}" for k, d in head.items())).encode()).hexdigest()
+            change = {"app": os.environ["APP_NAME"], "env": env, "cluster": cluster, "repo": f"{meta['owner']}/{meta['repo']}".lower(),
+                      "pr": meta["pr"], "head": meta["head"], "base": meta["base"], "proposer": proposer, "proposerKind": kind,
+                      "protected": True, "treeDigest": tree, "paths": paths, "linesChanged": lines, "objects": objects,
+                      "checks": checks}
+            if agent:
+                change["agent"] = agent
+            if policy is not None:
+                change["policy"] = policy
+            with open(f"{out}/change.json", "w") as f:
+                json.dump(change, f)
+            print(f"{cluster}/{env}: {len(objects)} object(s) changed of {len(head)}; tree {tree[:12]}; proposer {proposer} ({kind}); checks {checks}")
+        PY
+        chmod -R a+rwX /work/eval 2>/dev/null || true
+        exit "${rc}"
+    - name: register
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: clearance-token, mountPath: /var/run/secrets/clearance, readOnly: true }
+        - { name: work, mountPath: /work }
+      env:
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: CLEARANCE_URL
+          value: $(params.clearance-url)
+        - name: TOWER_URL
+          value: $(params.tower-url)
+        - name: PIPELINE_RUN
+          value: $(params.pipeline-run-name)
+        - name: NAMESPACE
+          value: $(context.taskRun.namespace)
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        report=/work/report.md
+        write_results() { # <outcome> <summary>
+          printf '%s' "$1" > "$(results.outcome.path)"
+          printf '%s' "$2" | head -c 900 > "$(results.findings-summary.path)"
+        }
+        printf '' > "$(results.change-ids.path)"
+        printf 0 > /work/failed
+        if [[ ! -s /work/plan.txt ]] || ! ls /work/eval/*/change.json >/dev/null 2>&1; then
+          if ls /work/eval/*/status >/dev/null 2>&1 && grep -lq render-failed /work/eval/*/status 2>/dev/null; then
+            echo "FAIL: an environment did not render; the gate cannot classify what it cannot see" > /work/report
+            write_results fail "an environment did not render (helm template failed)"; printf 1 > /work/failed; exit 0
+          fi
+          echo "No protected environment changes in this PR: nothing to register."
+          write_results skipped "no protected environment (production: true) changes in this PR"
+          exit 0
+        fi
+        if [[ -z "${CLEARANCE_URL}" ]]; then
+          echo "FAIL: clearance-gate - no Clearance on this cluster (agentGates.clearanceUrl is empty), and this PR changes a protected environment" > /work/report
+          write_results fail "no Clearance to register the change with"; printf 1 > /work/failed; exit 0
+        fi
+        : > /work/rows.jsonl
+        for f in /work/eval/*/change.json; do
+          out="$(curl --silent --show-error --max-time 30 --retry 2 --retry-connrefused -w '\n%{http_code}' \
+                   -H "Authorization: Bearer $(cat /var/run/secrets/clearance/clearance-token)" \
+                   -H "Content-Type: application/json" --data @"${f}" "${CLEARANCE_URL%/}/v1/clearances" || true)"
+          code="$(tail -n1 <<<"${out}")"; body="$(sed '$d' <<<"${out}")"
+          env="$(jq -r '"\(.cluster)/\(.env)"' "${f}")"
+          if [[ "${code}" != 200 ]]; then
+            echo "{\"env\":\"${env}\",\"state\":\"error\",\"detail\":$(jq -Rs . <<<"HTTP ${code:-none}: $(head -c 300 <<<"${body}")")}" >> /work/rows.jsonl
+            continue
+          fi
+          jq -c --arg env "${env}" --arg tower "${TOWER_URL%/}" '{env: $env, id, state, tier, why: ([.reasons[] | select(.tier == (.tier)) | "\(.rule) (\(.subject))"] | unique | join(", ")),
+             requirement: (if .requirement then "\(.requirement.owner) from \(.requirement.ownerGroup)" + (if .requirement.outside > 0 then " and \(.requirement.outside) from \(.requirement.outsideGroups | join(", "))" else "" end) else "none" end),
+             approvals: ([.approvals[] | "\(.person) (\(.role))"] | join(", ")), cleared_by, deny_reason, expires_at,
+             link: (if $tower != "" then "\($tower)/clearance?view=clearances&change=\(.id)" else "" end)}' <<<"${body}" >> /work/rows.jsonl
+        done
+        ids="$(jq -r 'select(.id) | .id' /work/rows.jsonl | paste -sd ',' -)"
+        printf '%s' "${ids}" > "$(results.change-ids.path)"
+        holding="$(jq -s '[.[] | select(.state == "holding")] | length' /work/rows.jsonl)"
+        denied="$(jq -s '[.[] | select(.state == "denied")] | length' /work/rows.jsonl)"
+        errors="$(jq -s '[.[] | select(.state == "error")] | length' /work/rows.jsonl)"
+        cleared="$(jq -s '[.[] | select(.state == "cleared")] | length' /work/rows.jsonl)"
+        total="$(jq -s 'length' /work/rows.jsonl)"
+        if (( errors > 0 )); then outcome=fail; title="### ❌ \`clearance-gate\` could not register ${errors} environment(s) with Clearance"
+        elif (( denied > 0 )); then outcome=denied; title="### ❌ \`clearance-gate\`: ${denied} environment(s) denied"
+        elif (( holding > 0 )); then outcome=holding; title="### ⏳ \`clearance-gate\`: ${holding} environment(s) holding for people"
+        else outcome=cleared; title="### ✅ \`clearance-gate\`: cleared (${cleared} environment(s))"; fi
+        {
+          echo "${title}"
+          echo
+          echo "Clearance's deployment gate classified this release of \`${APP_NAME}\` by what its rendered manifests change (tier 0 nothing a cluster runs, 1 an image bump, 2 runtime shape, 3 secrets, identity and policy). Tiers 0 and 1 clear by policy; 2 and 3 are cleared by people in Tower, never by the proposer."
+          echo
+          echo "| | Environment | Tier | State | Why | Needs | Cleared by |"
+          echo "|---|---|---|---|---|---|---|"
+          jq -r '"| \(if .state == "cleared" then "✅" elif .state == "holding" then "⏳" else "❌" end) | \(.env) | \(.tier // "") | \(.state)\(if .state == "error" then ": " + .detail else "" end) | \((.why // "") | .[0:200]) | \(.requirement // "") | \(if .cleared_by == "policy" then "policy" elif (.approvals // "") != "" then .approvals else "" end)\(if .deny_reason then " · denied: " + .deny_reason else "" end) |"' /work/rows.jsonl
+          links="$(jq -r 'select(.link != "") | "[\(.env)](\(.link))"' /work/rows.jsonl | paste -sd ' ' -)"
+          if (( holding > 0 )); then
+            echo
+            echo "**Holding:** someone the requirement names clears it in Tower${links:+ (${links})}, then comment \`/retest clearance-gate-\` here: the same head is re-registered and found cleared. A new push is a new change. A holding change expires after the gate's TTL (7 days by default)."
+          fi
+          if (( denied > 0 )); then
+            echo
+            echo "**Denied:** the reason is in the row. A \`DG-PROVENANCE\` denial means the PR looks like an agent's and Clearance has no record of opening it; \`DG-POLICY\` means the repo's \`clearance.yaml\` tried to loosen the platform baseline. A person's denial names them and their reason."
+          fi
+          echo
+          echo "Clearance ids: \`${ids:-none}\`. Design: clearance docs/gate.md; the record is in Clearance's evidence (\`deploy.*\`, boundary \`deployment\`)."
+        } > "${report}"
+        cat "${report}"
+        if [[ -n "${PIPELINE_RUN}" ]]; then
+          uid="$(kubectl get pipelinerun "${PIPELINE_RUN}" -n "${NAMESPACE}" -o jsonpath='{.metadata.uid}' 2>/dev/null)"
+          kubectl create configmap "gate-report-${PIPELINE_RUN}" -n "${NAMESPACE}" \
+            --from-file=body="${report}" --from-literal=title="${title}" --dry-run=client -o json \
+            | jq --arg run "${PIPELINE_RUN}" --arg uid "${uid}" \
+                '.metadata.labels = {"glidepath.io/gate-report": "clearance-gate", "tekton.dev/pipelineRun": $run}
+                 | if $uid != "" then .metadata.ownerReferences = [{apiVersion: "tekton.dev/v1", kind: "PipelineRun", name: $run, uid: $uid}] else . end' \
+            | kubectl apply -f - >/dev/null || echo "warning: could not write the report ConfigMap; the PR comment falls back to the summary" >&2
+        fi
+        write_results "${outcome}" "${title#\#\#\# } (${total} environment(s): ${cleared} cleared, ${holding} holding, ${denied} denied, ${errors} error(s))"
+        [[ "${outcome}" == cleared ]] || printf 1 > /work/failed
+        echo "outcome=${outcome}"
+    - name: report
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        [[ -f /work/report ]] && cat /work/report
+        if [[ "$(cat /work/failed 2>/dev/null || echo 0)" == 1 ]]; then
+          echo "FAIL: clearance-gate - see the report above (holding: clear it in Tower, then /retest clearance-gate-)"
+          exit 1
+        fi

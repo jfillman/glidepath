@@ -68,7 +68,7 @@ done
 expect "detect-bypass-merge gate loop (no qa)" "$(grep -o 'for gate in .*; do' "${tmp}/detect-bypass-merge.sh")" \
   "for gate in sast image-scan provenance sbom values itsm policy-validation agent-gates ; do"
 expect "release-log-emit records every gate" "$(grep -o 'for gate in .*; do' "${tmp}/release-log-emit.sh")" \
-  "for gate in sast image-scan provenance sbom values itsm api-compat qa policy-validation agent-gates ; do"
+  "for gate in sast image-scan provenance sbom values itsm api-compat qa policy-validation agent-gates clearance-gate ; do"
 expect "release-log-emit bypass set (no qa)" "$(grep -o 'required_gates=".*"' "${tmp}/release-log-emit.sh")" \
   'required_gates=" sast image-scan provenance sbom values itsm policy-validation agent-gates "'
 expect "wait-for-release-guardrails siblings (no qa)" "$(grep -o 'for g in .*; do' "${tmp}/wait-for-release-guardrails.sh")" \

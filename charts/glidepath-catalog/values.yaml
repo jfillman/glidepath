@@ -170,6 +170,11 @@ apiCompat:
 # Clearance's record of the PRs its agents opened (POST /v1/provenance): agent-identity (the PR is the one Clearance
 # opened, its head is the agent's own commit) and agent-scope (every changed path is one the agent committed and its
 # definition still admits). One PaC check, `agent-gates-`, reports both. A person's PR passes as "not an agent PR".
+clearanceGate:
+  # Where people clear a holding change: Backstage's external URL (the Clearance plugin's Clearances page). Empty
+  # leaves the link out of the PR comment. Clearance's URL and audience are agentGates' (the same Clearance).
+  towerUrl: ""
+
 agentGates:
   # Clearance's in-cluster URL, reached by the gate's pod with a projected token for `audience`. Empty: no Clearance
   # on this cluster, so a PR that looks like an agent's (authored by agentLogins, or carrying Hangar-* trailers)
@@ -322,6 +327,19 @@ releaseGuardrails:
     status: real
     class: integrity
     required: true
+  # The deployment gate (Clearance docs/gate.md, decided 2026-10-31; docs/admin/clearance-gate.md): every release PR
+  # to a protected environment (production: true) is registered with Clearance, classified into a tier 0-3 from what
+  # its rendered manifests change, and cleared by policy (0-1) or by named people in Tower (2-3). The check is green
+  # once cleared, red while holding or denied (clear it in Tower, then /retest clearance-gate-). class process, like
+  # itsm: a decision about the change, not a property of the image. Advisory until every gitops repo has the .tekton
+  # file (release-guardrails.md, the rollout trap), then required, which retires Tower's hangar/release-signoff
+  # (decision 2: the gate replaces Hand-flown's sign-off).
+  - name: clearance-gate
+    description: "Clearance's deployment gate - the release classified by what its rendered manifests change (tier 0-3) and cleared by policy or by the app's owners (and an outside group for tier 3), never the proposer"
+    status: real
+    class: process
+    required: false
+    targets: [k8s-rollout]
 
 # Per-cluster overrides of `required`, keyed by gate name, for a cluster's catalog Application values:
 #   releaseGuardrailOverrides:
