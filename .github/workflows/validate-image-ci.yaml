@@ -1,0 +1,96 @@
+name: validate-image-ci
+# The glidepath-validate image (tools/validate.Containerfile): `glidepath validate` for the cicd-validate check on
+# app-repo pull requests (docs/admin/contract.md). On a pull request: build it and run it against the examples. On
+# main: build and push a multi-arch image, then set cicdValidatorImage in glidepath-catalog's values.yaml to its
+# immutable sha- tag, so the catalog Application's own Argo CD sync rolls it out - the same loop api-ci.yaml uses.
+# After the FIRST push, set the package's visibility to public (GitHub has no API for it): the check's pods pull it
+# without credentials, like the toolbox image.
+on:
+  pull_request:
+    paths:
+      - "tools/glidepath-validate"
+      - "tools/cicd_scope.py"
+      - "tools/validate.Containerfile"
+      - "schemas/cicd.schema.json"
+      - "contract/**"
+      - ".github/workflows/validate-image-ci.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "tools/glidepath-validate"
+      - "tools/cicd_scope.py"
+      - "tools/validate.Containerfile"
+      - "schemas/cicd.schema.json"
+      - "contract/**"
+      - ".github/workflows/validate-image-ci.yaml"
+jobs:
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and run against the examples
+        run: |
+          set -euo pipefail
+          docker buildx build --load -f tools/validate.Containerfile -t glidepath-validate:ci .
+          files="$(cd docs/user/examples && ls *.yaml | sed 's|^|/ex/|' | tr '\n' ' ')"
+          # Every example is valid, and an unchanged file passes the agent rules against itself.
+          docker run --rm -v "$PWD/docs/user/examples:/ex:ro" glidepath-validate:ci ${files}
+          docker run --rm -v "$PWD/docs/user/examples:/ex:ro" glidepath-validate:ci \
+            /ex/02-standard-ci.yaml --agent --base /ex/02-standard-ci.yaml --format json | jq -e '.valid' >/dev/null
+  image:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and push
+        id: image
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/glidepath-validate:sha-$(git rev-parse --short HEAD)"
+          docker buildx build --platform linux/amd64,linux/arm64 --push -f tools/validate.Containerfile -t "${image}" .
+          archs=$(docker buildx imagetools inspect "${image}" --format '{{json .Manifest}}' | jq -r '[.manifests[].platform.architecture | select(. != "unknown")] | sort | join(",")')
+          echo "pushed ${image} for ${archs}"
+          [ "${archs}" = "amd64,arm64" ] || { echo "expected amd64,arm64, got ${archs}"; exit 1; }
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+      # Applied to main as it is now, not to this run's commit, and never backwards: see api-ci.yaml's own step. A
+      # values.yaml without the key (before the check shipped) is left alone.
+      - name: Set cicdValidatorImage in glidepath-catalog's values.yaml
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          set -euo pipefail
+          values=charts/glidepath-catalog/values.yaml
+          mine="$(git rev-parse HEAD)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main
+            git checkout -q -B bump origin/main
+            current="$(sed -n 's|^cicdValidatorImage: .*:sha-||p' "${values}")"
+            if [[ -n "${current}" ]] && git cat-file -e "${current}^{commit}" 2>/dev/null \
+              && ! git merge-base --is-ancestor "${current}" "${mine}"; then
+              echo "main already runs sha-${current}, which this run's commit does not contain; leaving cicdValidatorImage alone"
+              exit 0
+            fi
+            sed -i "s|^cicdValidatorImage: .*|cicdValidatorImage: ${IMAGE}|" "${values}"
+            if git diff --quiet; then
+              echo "cicdValidatorImage is already ${IMAGE}, or values.yaml has no such key yet"
+              exit 0
+            fi
+            git commit -qam "Bump glidepath-validate image to ${IMAGE}"
+            if git push -q origin HEAD:main; then
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "could not push the bump after 5 attempts" >&2
+          exit 1
