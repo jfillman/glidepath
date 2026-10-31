@@ -115,6 +115,7 @@ func (k kubeStore) Log(ctx context.Context, namespace, pod, container string) (i
 // Client reads live runs.
 type Client struct {
 	Store Store
+	TTL   time.Duration // how long a list is reused; 0 = ListTTL
 
 	mu    sync.Mutex
 	cache map[string]cached
@@ -169,7 +170,11 @@ func (c *Client) list(ctx context.Context, gvr schema.GroupVersionResource, name
 			delete(c.cache, k)
 		}
 	}
-	c.cache[key] = cached{out, now.Add(ListTTL)}
+	ttl := c.TTL
+	if ttl <= 0 {
+		ttl = ListTTL
+	}
+	c.cache[key] = cached{out, now.Add(ttl)}
 	c.mu.Unlock()
 	return out, nil
 }
