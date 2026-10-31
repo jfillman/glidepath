@@ -108,6 +108,12 @@ api:
   slo:
     availability: 99.5 # calls that did not answer 5xx
     latency: 95 # non-streaming calls answered within 2.5 s
+  # glidepath-api's traces (docs/admin/api.md#traces): OTLP/HTTP to the cluster's OpenTelemetry collector, which
+  # sends them to Tempo. Empty otlpEndpoint: no traces exported. sampleRatio applies to traces the API starts; a
+  # caller's sampled traceparent is always followed (parentbased_traceidratio).
+  tracing:
+    otlpEndpoint: http://otel-collector-opentelemetry-collector.observability.svc.cluster.local:4318
+    sampleRatio: "1"
 
 # Shared Trivy server (templates/trivy/trivy-server.yaml): holds the vulnerability DB so the catalog's
 # image-scan/generate-sbom pods stop downloading it. Keep the tag equal to TRIVY_VERSION in

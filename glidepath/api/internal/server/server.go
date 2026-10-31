@@ -32,6 +32,10 @@ import (
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
 	"github.com/glidepath/api/internal/testkube"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Server holds the API's dependencies.
@@ -225,6 +229,15 @@ func (s *Server) wrap(o op, h handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		done := s.Metrics.Start(o.id, o.tier, streamOps[o.id])
+		// The call's span (tracing.Handler's) is named for the operation; its trace id goes back to the caller and
+		// into the audit line, the two places someone starts looking from.
+		span := trace.SpanFromContext(r.Context())
+		traceID := ""
+		if sc := span.SpanContext(); sc.IsValid() {
+			traceID = sc.TraceID().String()
+			w.Header().Set("X-Glidepath-Trace-Id", traceID)
+			span.SetName(o.id)
+		}
 		rec := &recorder{ResponseWriter: w, status: http.StatusOK}
 		write := o.tier != "T0"
 		var caller *auth.Caller
@@ -287,8 +300,22 @@ func (s *Server) wrap(o op, h handler) http.Handler {
 			}
 		}
 		done(rec.status, decision)
+		span.SetAttributes(attribute.String("glidepath.op", o.id), attribute.String("glidepath.tier", o.tier),
+			attribute.String("glidepath.app", appName), attribute.String("glidepath.decision", decision))
+		if caller != nil {
+			span.SetAttributes(attribute.String("glidepath.caller", caller.User), attribute.String("glidepath.on_behalf_of", caller.OnBehalfOf))
+		}
+		if err != nil {
+			span.RecordError(err)
+			if rec.status >= 500 {
+				span.SetStatus(codes.Error, err.Error())
+			}
+		}
 		attrs := []any{"op", o.id, "tier", o.tier, "app", appName, "decision", decision, "status", rec.status,
 			"ms", time.Since(start).Milliseconds()}
+		if traceID != "" {
+			attrs = append(attrs, "traceId", traceID)
+		}
 		if caller != nil {
 			attrs = append(attrs, "caller", caller.User, "onBehalfOf", caller.OnBehalfOf)
 		}

@@ -337,6 +337,16 @@ spec:
             # POST /v1/apps/{app}/cicd/validations asks the validator sidecar below, on the pod's loopback.
             - name: VALIDATOR_URL
               value: http://127.0.0.1:8081
+            {{- $tracing := .Values.api.tracing | default dict }}
+            {{- if $tracing.otlpEndpoint }}
+            # Traces (internal/tracing): the standard OpenTelemetry SDK variables.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $tracing.otlpEndpoint | quote }}
+            - name: OTEL_TRACES_SAMPLER
+              value: parentbased_traceidratio
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ $tracing.sampleRatio | default "1" | quote }}
+            {{- end }}
             # Live streams one replica serves (GET /v1/apps/{app}/live/stream).
             - name: LIVE_MAX_STREAMS
               value: {{ .Values.api.liveMaxStreams | default 200 | quote }}
