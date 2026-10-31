@@ -11,7 +11,10 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import yaml
@@ -280,6 +283,75 @@ class Contract(unittest.TestCase):
         names = [g["name"] for g in CONTRACT["gates"]]
         self.assertIn("provenance", names)
         self.assertTrue(all(isinstance(g["required"], bool) for g in CONTRACT["gates"]))
+
+
+class Serve(unittest.TestCase):
+    """--serve: the validator as glidepath-api's sidecar (POST /validate)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import socket
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        cls.url = f"http://127.0.0.1:{port}"
+        cls.proc = subprocess.Popen([sys.executable, str(VALIDATE), "--serve", f"127.0.0.1:{port}"], stderr=subprocess.DEVNULL)
+        for _ in range(200):
+            try:
+                urllib.request.urlopen(cls.url + "/healthz", timeout=1)
+                return
+            except (urllib.error.URLError, ConnectionError):
+                time.sleep(0.05)
+        raise RuntimeError("the validator server did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        cls.proc.wait()
+
+    def post(self, body):
+        req = urllib.request.Request(self.url + "/validate", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+
+    def test_valid_change_lists_what_it_touches(self):
+        head = edit(lambda d: d["build"]["cache"].update(enabled=True))
+        out = self.post({"head": yaml.safe_dump(head), "base": yaml.safe_dump(BASE), "agent": True})
+        self.assertTrue(out["valid"])
+        self.assertEqual(out["problems"], [])
+        self.assertEqual(out["changes"], [{"pointer": "/build/cache/enabled", "change": "changed", "before": False, "after": True, "agentScope": "open"}])
+        self.assertEqual(out["contractVersion"], CONTRACT["contractVersion"])
+
+    def test_agent_loosening_a_gate(self):
+        head = yaml.safe_dump(edit(lambda d: d["governance"].update(sast=False)))
+        out = self.post({"head": head, "base": yaml.safe_dump(BASE), "agent": True})
+        self.assertEqual(([p["rule"] for p in out["problems"]], out["valid"]), (["GP-SCOPE-002"], False))
+        self.assertEqual(out["changes"][0]["agentScope"], "tighten")
+        # The same change by a person: no scope rule, the change still listed.
+        out = self.post({"head": head, "base": yaml.safe_dump(BASE), "agent": False})
+        self.assertEqual((out["problems"], len(out["changes"])), ([], 1))
+
+    def test_no_file_yet(self):
+        out = self.post({"head": yaml.safe_dump(BASE), "base": None, "agent": True})
+        self.assertIn("GP-SCOPE-001", [p["rule"] for p in out["problems"]])  # secrets: a human field, added
+        self.assertTrue(out["changes"] and all(c["change"] == "added" for c in out["changes"]))
+        # No base key at all: nothing to compare with, no changes reported.
+        self.assertEqual(self.post({"head": yaml.safe_dump(BASE)})["changes"], [])
+
+    def test_schema_error(self):
+        out = self.post({"head": yaml.safe_dump(edit(lambda d: d["build"].update(cach={"enabled": True})))})
+        self.assertEqual(([p["rule"] for p in out["problems"]], out["valid"]), (["GP-SCHEMA-001"], False))
+
+    def test_not_yaml_is_a_finding_not_an_error(self):
+        out = self.post({"head": "a: [b", "base": yaml.safe_dump(BASE)})
+        self.assertEqual(([p["rule"] for p in out["problems"]], out["changes"]), (["GP-YAML-001"], []))
+
+    def test_bad_body(self):
+        req = urllib.request.Request(self.url + "/validate", data=b"not json", headers={"Content-Type": "application/json"}, method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(cm.exception.code, 400)
 
 
 if __name__ == "__main__":
