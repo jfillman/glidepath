@@ -51,6 +51,9 @@ pipelines:
       - {stage: gitops-image-bump, gitopsRepo: gitops-x, manifestPath: a/b.yaml}
 """)
 
+# What Airframe's AgentRepository (or any configuration-only repo) writes: no build, so PR checks only.
+CHECKS_ONLY = {"apiVersion": "platform/v1", "kind": "PipelineConfig"}
+
 
 def run(doc, *args, base=None):
     with tempfile.TemporaryDirectory() as d:
@@ -134,6 +137,30 @@ class Conventions(unittest.TestCase):
 
     def test_check_ride_test_name(self):
         self.assertEqual(run(edit(lambda d: d["pipelines"]["ci"]["steps"][3].update(testName="x")))[1], ["GP-PIPE-004"])
+
+
+class ChecksOnly(unittest.TestCase):
+    def test_no_build_is_valid(self):
+        self.assertEqual(run(CHECKS_ONLY)[:2], (0, []))
+
+    def test_governance_notifications_secrets_allowed(self):
+        doc = dict(CHECKS_ONLY, governance={"githubMerge": {"mode": "merger"}}, notifications={"slack": {"channel": "#x"}},
+                   secrets=[{"name": "A", "key": "a"}])
+        self.assertEqual(run(doc)[:2], (0, []))
+
+    def test_build_only_keys_refused(self):
+        build_flow = {"ci": {"trigger": {"source": "git", "event": "push", "branch": "main"}, "steps": [{"stage": "build"}]}}
+        for k, v in (("pipelines", build_flow), ("test", {"enabled": True}), ("deploy", BASE["deploy"]),
+                     ("api", {"spec": "openapi.yaml"}), ("ephemeralEnvironments", {"pullRequest": {"enabled": True}})):
+            with self.subTest(k):
+                code, rules, out = run(dict(CHECKS_ONLY, **{k: v}))
+                self.assertEqual((code, rules), (1, ["GP-CHECKS-001"]))
+                self.assertEqual(out["problems"][0]["pointer"], f"/{k}")
+                self.assertIn("add build", out["problems"][0]["hint"])
+
+    def test_adding_build_is_an_ordinary_change(self):
+        head = dict(CHECKS_ONLY, build={"agent": "go-1.24"}, pipelines={"ci": BASE["pipelines"]["ci"] | {"steps": [{"stage": "build"}]}})
+        self.assertEqual(run(head, base=CHECKS_ONLY)[:2], (0, []))
 
 
 class Scope(unittest.TestCase):

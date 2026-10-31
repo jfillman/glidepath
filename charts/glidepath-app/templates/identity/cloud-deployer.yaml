@@ -8,7 +8,10 @@ AWS account (cloudIdentity.awsAccountId, from clusters.yaml's aws: block).
   bootstrap Job runs as it. No RBAC: it never talks to the Kubernetes API, only to AWS STS with a projected token,
   so its API token is not mounted either.
 - ConfigMap glidepath-cloud-identity: the account id, so deploy-lambda and deploy-ecs can name the role without a cicd.yaml field.
+
+Not rendered for a checks-only repository (no build): it deploys nothing.
 */ -}}
+{{- if ne (include "glidepath-app.checksOnly" .) "true" }}
 {{- with .Values.cloudIdentity.awsAccountId }}
 {{- $appNamespace := include "glidepath-app.namespace" $ }}
 apiVersion: v1
@@ -31,4 +34,5 @@ metadata:
   namespace: {{ $appNamespace }}
 data:
   awsAccountId: {{ toString . | quote }}
+{{- end }}
 {{- end }}

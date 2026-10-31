@@ -9,54 +9,59 @@
 # schemas/cicd.schema.json permits, so validate-cicd-config's additionalProperties:false
 # check rejects any cicd.yaml that tries to define it.
 #
-# Non-platformIdentity defaults below mirror schemas/cicd.schema.json's own defaults, so
+# Non-platformIdentity defaults below (except build) mirror schemas/cicd.schema.json's own defaults, so
 # `helm template`/`helm lint` work standalone without a real cicd.yaml (see
 # docs/admin/catalog-versioning.md's fixture-matrix testing).
 
-build:
-  # Which Tekton buildpack/image family compiles+lints this Application - see
-  # templates/pipelines-as-code catalog wiring for the agent->Task mapping.
-  agent: nodejs-20
-  # Path to a multi-stage Containerfile BuildKit builds directly - only consulted
-  # when build.script is omitted (whole build inside the Containerfile, no
-  # separate build-source stage). "Containerfile" is this platform's
-  # deliberate, vendor-neutral term for the same file Docker calls a
-  # Dockerfile - renamed from `dockerfile:` 2026-09-22, app repos migrate on
-  # their own schedule (each app renames its own Dockerfile -> Containerfile).
-  containerfile: ./Containerfile
-  # Which architecture(s) BuildKit builds+pushes as one
-  # multi-arch manifest (build-image.yaml). Matches cicd.schema.json's own
-  # default - added here 2026-09-22 alongside build-image.yaml's own
-  # containerfile-default fix, since this fixture file had drifted from the
-  # schema (platforms was added in a later schema/pipeline change than this
-  # file's last update, so `helm template`/`helm lint` against this file
-  # alone weren't exercising a real platforms value the way every other
-  # build.* field here is).
-  platforms: [arm64, amd64]
-  unitTest:
-    # Renders the unit-test step in the build stage. Set false for an Application whose
-    # build pipeline shouldn't fail on missing/red unit tests yet (e.g. mid-migration).
-    enabled: true
-    # Command the unit-test step runs inside the agent image.
-    command: ./test.sh
-  # Renders a SonarQube scan step in the build stage. Off by default - requires a real
-  # SonarQube server + token wired up (see docs/admin) before an Application can turn
-  # this on.
-  sonar: false
-  cache:
-    # Enables the per-app dependency-download cache (npm/yarn package cache, Maven local
-    # repository - not node_modules) that build-source and run-tests both mount. The PVC
-    # itself is rendered regardless, see templates/env/build-cache-pvc.yaml.
-    enabled: false
-    # PVC size class for the build cache above - only meaningful when cache.enabled is
-    # true. One of the platform's standard size classes (small/medium/large), same
-    # convention as sourceVolume.size below.
-    size: small
-  sourceVolume:
-    # PVC size class for the workspace that holds the checked-out source across every
-    # step in a PipelineRun. Bump for an Application with a large checkout or big
-    # generated build artifacts that overflow the small default.
-    size: small
+# build: NO default here. An absent build is how the chart knows a repository is checks-only
+# (glidepath-app.checksOnly in templates/_helpers.tpl: no flows, environments, build cache or Argo CD
+# Applications), so a default would make every repository an app. The templates that read build.*
+# default each field themselves. The fields, for reference (schemas/cicd.schema.json is the source):
+#
+# build:
+#   # Which Tekton buildpack/image family compiles+lints this Application - see
+#   # templates/pipelines-as-code catalog wiring for the agent->Task mapping.
+#   agent: nodejs-20
+#   # Path to a multi-stage Containerfile BuildKit builds directly - only consulted
+#   # when build.script is omitted (whole build inside the Containerfile, no
+#   # separate build-source stage). "Containerfile" is this platform's
+#   # deliberate, vendor-neutral term for the same file Docker calls a
+#   # Dockerfile - renamed from `dockerfile:` 2026-09-22, app repos migrate on
+#   # their own schedule (each app renames its own Dockerfile -> Containerfile).
+#   containerfile: ./Containerfile
+#   # Which architecture(s) BuildKit builds+pushes as one
+#   # multi-arch manifest (build-image.yaml). Matches cicd.schema.json's own
+#   # default - added here 2026-09-22 alongside build-image.yaml's own
+#   # containerfile-default fix, since this fixture file had drifted from the
+#   # schema (platforms was added in a later schema/pipeline change than this
+#   # file's last update, so `helm template`/`helm lint` against this file
+#   # alone weren't exercising a real platforms value the way every other
+#   # build.* field here is).
+#   platforms: [arm64, amd64]
+#   unitTest:
+#     # Renders the unit-test step in the build stage. Set false for an Application whose
+#     # build pipeline shouldn't fail on missing/red unit tests yet (e.g. mid-migration).
+#     enabled: true
+#     # Command the unit-test step runs inside the agent image.
+#     command: ./test.sh
+#   # Renders a SonarQube scan step in the build stage. Off by default - requires a real
+#   # SonarQube server + token wired up (see docs/admin) before an Application can turn
+#   # this on.
+#   sonar: false
+#   cache:
+#     # Enables the per-app dependency-download cache (npm/yarn package cache, Maven local
+#     # repository - not node_modules) that build-source and run-tests both mount. The PVC
+#     # itself is rendered regardless, see templates/env/build-cache-pvc.yaml.
+#     enabled: false
+#     # PVC size class for the build cache above - only meaningful when cache.enabled is
+#     # true. One of the platform's standard size classes (small/medium/large), same
+#     # convention as sourceVolume.size below.
+#     size: small
+#   sourceVolume:
+#     # PVC size class for the workspace that holds the checked-out source across every
+#     # step in a PipelineRun. Bump for an Application with a large checkout or big
+#     # generated build artifacts that overflow the small default.
+#     size: small
 
 test:
   # Renders the test stage's Task(s) for this Application.
@@ -288,7 +293,7 @@ idpServiceCatalog:
 # Platform-wide constants every Application install shares (not per-app identity, so
 # kept outside platformIdentity). Defaults to this repo's own published image (real,
 # public, working) - override if you've built and published your own copy.
-toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-26-kyverno
+toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-31-checks-only
 
 # The single shared namespace Testkube CE installs into on this cluster - see
 # templates/testkube/rbac-and-secret.yaml's own header for why this Application

@@ -5,13 +5,21 @@
   "description": "Developer-facing pipeline configuration. This is the only file app teams edit to control their CI/CD pipelines - it never contains Tekton, YAML pipeline steps, or infrastructure details. Validated fail-fast by the validate-cicd-config Task before any other pipeline step runs.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["apiVersion", "kind", "build"],
+  "required": ["apiVersion", "kind"],
+  "dependencies": {
+    "pipelines": ["build"],
+    "test": ["build"],
+    "deploy": ["build"],
+    "api": ["build"],
+    "ephemeralEnvironments": ["build"]
+  },
   "properties": {
     "apiVersion": { "type": "string", "enum": ["platform/v1"] },
     "kind": { "type": "string", "enum": ["PipelineConfig"] },
 
     "build": {
       "type": "object",
+      "description": "How the app builds. Leave it out for a checks-only repository (configuration only: nothing builds, deploys or releases; Glidepath runs only the PR checks every repository gets). Without build, pipelines, test, deploy, api and ephemeralEnvironments are refused (GP-CHECKS-001). Adding build later turns the repository into an ordinary app.",
       "additionalProperties": false,
       "required": ["agent"],
       "properties": {

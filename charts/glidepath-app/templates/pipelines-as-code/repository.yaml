@@ -29,11 +29,12 @@ metadata:
     argocd.argoproj.io/sync-wave: "-1"
 spec:
   url: {{ .Values.platformIdentity.appRepoUrl }}
-{{- if .Values.platformIdentity.gitopsRepoUrl }}
+{{- if and .Values.platformIdentity.gitopsRepoUrl (ne (include "glidepath-app.checksOnly" .) "true") }}
 ---
 # gitops-<app-name>'s own Repository CR, matched via the "gitops-" naming convention
 # (see main.go's verifyAppOwnsRepo). Only rendered when gitopsRepoUrl is set - an app
-# with no release stage has no gitops repo to register.
+# with no release stage has no gitops repo to register - and never for a checks-only
+# repository (no build), which releases nothing.
 apiVersion: pipelinesascode.tekton.dev/v1alpha1
 kind: Repository
 metadata:

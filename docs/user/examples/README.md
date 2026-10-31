@@ -1,6 +1,6 @@
 # Pipeline examples
 
-Twelve complete, schema-valid `cicd.yaml` files, each fully commented, covering the shapes
+Thirteen complete, schema-valid `cicd.yaml` files, each fully commented, covering the shapes
 you're most likely to actually want. Copy whichever is closest to your needs and adjust.
 **Deploying to AWS instead of Kubernetes? Start with 11 (ECS) or 12 (Lambda).**
 
@@ -22,6 +22,7 @@ folder, it works. (Until 2026-10-17 nothing actually checked this, and 05 had st
 | 10 | [10-production-grade.yaml](10-production-grade.yaml) | Everything together - path filters, caching, governance, notifications |
 | 11 | [11-aws-ecs.yaml](11-aws-ecs.yaml) | AWS ECS (Fargate): dev on every push, prod through a release pin; no AWS key |
 | 12 | [12-aws-lambda.yaml](12-aws-lambda.yaml) | AWS Lambda (container image): dev on every push, prod through a release pin; no AWS key |
+| 13 | [13-checks-only.yaml](13-checks-only.yaml) | No `build`: a configuration-only repo that gets the PR checks and nothing else |
 
 ## Quick visual index
 

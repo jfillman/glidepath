@@ -15,6 +15,8 @@
 # 2026-10-09 (`coschedule: disabled`, docs/admin/installation.md). No live
 # resize: the default StorageClass has allowVolumeExpansion: false, so changing
 # build.cache.size later means deleting and recreating this PVC.
+{{- /* Not rendered for a checks-only repository (no build): nothing mounts it. */}}
+{{- if ne (include "glidepath-app.checksOnly" .) "true" }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -27,4 +29,5 @@ spec:
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
-      storage: {{ include "glidepath-app.cacheSize" (dict "size" .Values.build.cache.size) }}
+      storage: {{ include "glidepath-app.cacheSize" (dict "size" ((.Values.build).cache).size) }}
+{{- end }}

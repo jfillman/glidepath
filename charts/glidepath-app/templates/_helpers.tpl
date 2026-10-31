@@ -226,14 +226,24 @@ chart; a different source names its chart by path (git) or chart (registry), not
 {{- end -}}
 
 {{/*
+glidepath-app.checksOnly - "true" when cicd.yaml declares no build: a checks-only repository (configuration only).
+It builds, deploys and releases nothing, so it has no flows, environments, build cache or Argo CD Applications; it
+keeps its registration (namespace, Pipelines-as-Code Repository, pipeline-runner) and the PR checks every repository
+gets (docs/admin/onboarding-mechanics.md). values.yaml has no build default for exactly this reason.
+*/}}
+{{- define "glidepath-app.checksOnly" -}}
+{{- if hasKey .Values "build" -}}false{{- else -}}true{{- end -}}
+{{- end -}}
+
+{{/*
 glidepath-app.isKubernetesTarget - "true" when the app deploys to Kubernetes (deploy.target
 unset or k8s-rollout), "false" for a cloud target (aws-ecs, aws-lambda,
-azure-container-apps). Only a Kubernetes app has a namespace, RBAC and an environments
+azure-container-apps) and for a checks-only repository, which deploys nowhere. Only a Kubernetes app has a namespace, RBAC and an environments
 folder per environment; a cloud environment is a deploy-stage parameter and creates none of
 that (docs/admin/envs-overhaul-requirements.md, R5).
 */}}
 {{- define "glidepath-app.isKubernetesTarget" -}}
-{{- if eq ((.Values.deploy).target | default "k8s-rollout") "k8s-rollout" -}}true{{- else -}}false{{- end -}}
+{{- if and (ne (include "glidepath-app.checksOnly" .) "true") (eq ((.Values.deploy).target | default "k8s-rollout") "k8s-rollout") -}}true{{- else -}}false{{- end -}}
 {{- end -}}
 
 {{/*
@@ -543,6 +553,9 @@ Fails fast with a descriptive message if violated.
 {{- define "glidepath-app.validateFlows" -}}
 {{- $flows := .Values.pipelines | default (dict) -}}
 {{- $defaultTestName := .Values.test.name | default "" -}}
+{{- if and $flows (eq (include "glidepath-app.checksOnly" .) "true") -}}
+  {{- fail "cicd.yaml declares pipelines but no build: a checks-only repository builds nothing (GP-CHECKS-001). Remove pipelines, or add build" -}}
+{{- end -}}
 {{- include "glidepath-app.validateEnvironments" . -}}
 {{- $lowerEnvs := include "glidepath-app.lowerEnvNames" . | fromYamlArray -}}
 {{- /* Flight environment -> cluster ("" = same cluster, docs/multi-cluster.md). */ -}}

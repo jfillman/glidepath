@@ -19,6 +19,7 @@ One pass, three layers:
      GP-PIPE-002 a release step names a Ground environment
      GP-PIPE-003 a flow has more than one check-ride step
      GP-PIPE-004 a check-ride step sets testName
+     GP-CHECKS-001 a checks-only file (no build) sets pipelines, test, deploy, api or ephemeralEnvironments
   3. with --agent and a base: what an agent may change (tools/cicd_scope.py, from the contract):
      GP-SCOPE-001 a human-only field changed, GP-SCOPE-002 a gate loosened,
      GP-SCOPE-003 a Flight environment added, removed or changed, or a tier changed
@@ -80,6 +81,8 @@ def _schema_at(path):
 def schema_problems(doc):
     out = []
     for err in sorted(Draft7Validator(SCHEMA).iter_errors(doc), key=lambda e: list(e.absolute_path)):
+        if err.validator == "dependencies":
+            continue  # GP-CHECKS-001, from the same list, says it with a hint
         if err.validator in ("oneOf", "anyOf") and err.context:
             err = best_match(err.context)
         path = list(err.absolute_path)
@@ -115,6 +118,11 @@ def flows(doc):
 
 def convention_problems(doc):
     out = []
+    if "build" not in doc:
+        for k, needs in SCHEMA.get("dependencies", {}).items():
+            if k in doc and "build" in needs:
+                out.append(problem(f"/{k}", "GP-CHECKS-001", f"{k} is set, but there is no build: this is a checks-only repository",
+                                   f"a checks-only repository builds, deploys and releases nothing; remove {k}, or add build to make it an app"))
     deploy = doc.get("deploy") or {}
     for k in RETIRED_ENV_KEYS:
         if k in deploy:
