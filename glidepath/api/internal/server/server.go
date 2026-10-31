@@ -21,6 +21,7 @@ import (
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
+	"github.com/glidepath/api/internal/cicd"
 	"github.com/glidepath/api/internal/environments"
 	"github.com/glidepath/api/internal/events"
 	"github.com/glidepath/api/internal/evidence"
@@ -43,6 +44,7 @@ type Server struct {
 	Runs     *pipelineruns.Client
 	Live     *live.Client // PipelineRuns, TaskRuns and step logs as the cluster holds them now
 	Envs     *environments.Client
+	Cicd     *cicd.Client  // POST /v1/apps/{app}/cicd/validations
 	Events   *events.Store // nil: no event routes
 	Tap      http.Handler  // the broker's ClusterInterceptor glidepath-api-events (events.Tap)
 	Peer     http.Handler  // the other replicas (events.PeerHandler)
@@ -102,6 +104,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/apps/{app}/environments/{env}/rollback", s.wrap(op{"rollbackEnvironment", "T2", "environments", "", "rollback", false}, s.rollbackEnvironment))
 	mux.Handle("GET /v1/events", s.wrap(op{"streamEvents", "T0", "events", "", "list", true}, s.streamEvents))
 	mux.Handle("GET /v1/events/recent", s.wrap(op{"listRecentEvents", "T0", "events", "", "list", true}, s.listRecentEvents))
+	// A POST that writes nothing: T0, so a delegate needs no on-behalf-of and the audit line has no dryRun.
+	mux.Handle("POST /v1/apps/{app}/cicd/validations", s.wrap(op{"validateCicd", "T0", "cicd", "", "validate", false}, s.validateCicd))
 	// Not /v1: the broker's interceptor call and the replicas' fan-out. Each authenticates its caller
 	// itself (internal/events), since anything in the cluster can reach this port.
 	if s.Tap != nil {
@@ -152,8 +156,11 @@ func classify(err error) (int, apiError) {
 		evQ    events.Invalid
 		lvNF   live.NotFound
 		lvInv  live.Invalid
+		ciInv  cicd.Invalid
 	)
 	switch {
+	case errors.As(err, &ciInv):
+		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
 	case errors.Is(err, events.ErrBusy):
 		return http.StatusServiceUnavailable, apiError{err.Error(), "GP-API-503", "this replica serves its maximum number of event streams; retry, or read GET /v1/events/recent"}
 	case errors.As(err, &evQ):
@@ -267,8 +274,9 @@ func (s *Server) wrap(o op, h handler) http.Handler {
 		if write {
 			dry, _ := dryRun(r)
 			attrs = append(attrs, "name", r.PathValue("name"), "dryRun", dry)
-			attrs = append(attrs, rec.audit...)
 		}
+		// What the handler noted (a write's effect; a validation's verdict), whatever the tier.
+		attrs = append(attrs, rec.audit...)
 		if err != nil {
 			attrs = append(attrs, "error", err.Error())
 		}

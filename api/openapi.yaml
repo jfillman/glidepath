@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Glidepath API
-  version: 0.6.0
+  version: 0.7.0
   description: |
     Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
     contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec are reads (tier T0); phase 3
@@ -12,6 +12,9 @@ info:
     reads Tower's views of runs in flight need (PipelineRuns, TaskRuns and step logs as the cluster holds them now)
     and the fleet's run history across every namespace. 0.6.0 adds the fleet's release records and release Events
     (GET /v1/releases, GET /v1/releases/events), the last reads Tower's Ops Wall made through its own Kubernetes proxy.
+    0.7.0 adds POST /v1/apps/{app}/cicd/validations: what a change to the app's cicd.yaml would mean (the schema, the
+    conventions, an agent's scope, and every field it touches), the verdict the cicd-validate pull-request check will
+    give, before anyone opens the pull request. It writes nothing.
 
     Every /v1 call needs a bearer token the cluster's TokenReview accepts, in `Authorization`, or in
     `X-Glidepath-Authorization` when the call comes through the API server's service proxy (which
@@ -587,6 +590,33 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/cicd/validations:
+    post:
+      operationId: validateCicd
+      summary: What a change to the app's cicd.yaml would mean (writes nothing)
+      description: >-
+        Needs `validate` on `cicd.glidepath.hangar.io` in the app's namespace (the reader role has it). Send a JSON
+        merge patch (RFC 7386) on the file at baseRef (the default branch when unset), or the whole file as content.
+        The API reads cicd.yaml from the app's repo (an InfraService's gitops repo) with the broker's read-only token,
+        applies the patch, and runs `glidepath validate` on the result: the schema, the GP-ENV and GP-PIPE rules and,
+        with agent true, the GP-SCOPE rules against the base, the same checks the cicd-validate pull-request check
+        makes. The answer is 200 whether or not the result is valid: `valid` is the verdict, `problems` the findings,
+        `changes` every field the change touches with its agentScope, `resulting` the file after the change, and
+        `summary` one line of all that. A file missing at the base is compared with an empty one. Nothing is written.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CicdValidationRequest" } } }
+      responses:
+        "200": { description: The verdict on the resulting file, content: { application/json: { schema: { $ref: "#/components/schemas/CicdValidationResult" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
   /v1/events:
     get:
       operationId: streamEvents
@@ -939,6 +969,50 @@ components:
         replayed: { type: boolean }
         dryRun: { type: boolean }
         object: { type: object }
+    CicdValidationRequest:
+      type: object
+      description: Exactly one of patch and content.
+      properties:
+        patch: { type: object, description: "An RFC 7386 JSON merge patch on the file at baseRef: keys to set, null to delete" }
+        content: { type: string, description: The whole cicd.yaml after the change, as YAML }
+        baseRef: { type: string, description: "The branch, tag or commit the file is read at; unset is the default branch", pattern: "^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$" }
+        agent: { type: boolean, default: false, description: Also apply the GP-SCOPE rules (what an agent may change) to the change from the base }
+    CicdProblem:
+      type: object
+      required: [pointer, rule, severity, message]
+      properties:
+        pointer: { type: string, description: A JSON pointer into cicd.yaml }
+        rule: { type: string, description: "GP-YAML-001, GP-SCHEMA-*, GP-ENV-*, GP-PIPE-*, GP-SCOPE-* (docs/admin/contract.md)" }
+        severity: { type: string, enum: [error, warning] }
+        message: { type: string }
+        hint: { type: string }
+    CicdChange:
+      type: object
+      required: [pointer, change, agentScope]
+      properties:
+        pointer: { type: string }
+        change: { type: string, enum: [added, removed, changed] }
+        before: { description: The value before (absent when added) }
+        after: { description: The value after (absent when removed) }
+        agentScope: { type: string, enum: [open, tighten, human], description: The contract's scope for this field }
+    CicdValidationResult:
+      type: object
+      required: [valid, problems, changes, summary, base, resulting, contractVersion]
+      properties:
+        valid: { type: boolean, description: No error-severity problem }
+        problems: { type: array, items: { $ref: "#/components/schemas/CicdProblem" } }
+        changes: { type: array, items: { $ref: "#/components/schemas/CicdChange" } }
+        summary: { type: string, description: "One line: the verdict, then what changed" }
+        base:
+          type: object
+          required: [repo, ref, present]
+          properties:
+            repo: { type: string, description: owner/repo the file was read from }
+            ref: { type: string, description: The ref asked for, or HEAD }
+            sha: { type: string, description: The commit that ref resolved to }
+            present: { type: boolean, description: false when there was no cicd.yaml at the base }
+        resulting: { type: string, description: The cicd.yaml after the change, as YAML }
+        contractVersion: { type: integer }
     Caller:
       type: object
       properties:

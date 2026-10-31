@@ -194,6 +194,10 @@ rules:
   - apiGroups: ["glidepath.hangar.io"]
     resources: ["runs", "runs/logs", "releases", "evidence", "tests", "environments", "events"]
     verbs: ["get", "list"]
+  # POST /v1/apps/{app}/cicd/validations writes nothing: a reader may ask what a cicd.yaml change would mean.
+  - apiGroups: ["glidepath.hangar.io"]
+    resources: ["cicd"]
+    verbs: ["validate"]
 {{- $readers := .Values.api.readers | default dict }}
 {{- if or $readers.users $readers.groups $readers.serviceAccounts }}
 ---
@@ -330,6 +334,9 @@ spec:
               value: {{ .Values.api.brokerUrl | default "http://cdevents-broker-auth.platform-system.svc.cluster.local:8080" | quote }}
             - name: BROKER_TOKEN_PATH
               value: /var/run/secrets/glidepath/broker/token
+            # POST /v1/apps/{app}/cicd/validations asks the validator sidecar below, on the pod's loopback.
+            - name: VALIDATOR_URL
+              value: http://127.0.0.1:8081
             # Events: the buffer's bounds, and this pod for the fan-out to its peers.
             {{- $events := .Values.api.events | default dict }}
             - name: EVENTS_MAX
@@ -364,6 +371,27 @@ spec:
             - name: peer-token
               mountPath: /var/run/secrets/glidepath/peer
               readOnly: true
+        # `glidepath validate --serve`: the validator for POST /v1/apps/{app}/cicd/validations, the same image and
+        # rules the catalog's cicd-validate check runs (docs/admin/api.md#validate-a-cicdyaml-change). Loopback only:
+        # nothing in it authenticates, and the API is its only caller. Python writes no bytecode on a read-only root.
+        - name: validator
+          image: {{ .Values.cicdValidatorImage }}
+          imagePullPolicy: IfNotPresent
+          args: ["--serve", "127.0.0.1:8081"]
+          env:
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+          resources:
+            requests: { cpu: 5m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          # A kubelet httpGet probe would go to the pod IP, which the loopback listener doesn't serve.
+          readinessProbe:
+            exec:
+              command: ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=2)"]
+            periodSeconds: 10
       volumes:
         # Only the broker's /github-read-token accepts this audience; the kubelet rotates it, and the API reads it
         # from disk on every mint.

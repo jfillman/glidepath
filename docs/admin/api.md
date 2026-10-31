@@ -5,7 +5,8 @@ their logs, why a run failed, its release records, the supply-chain evidence on 
 runs, and Glidepath's [contract](contract.md); it can [re-run and cancel](#writes) an app's
 PipelineRuns; and it can [propose a promotion or a rollback](#promote-and-roll-back) of a Flight environment.
 Phases 1 and 2 of the [Glidepath API spec](https://hangarplatform.dev/library/glidepath-api/) are the reads
-(tier T0). Phase 3's first writes (tier T1) are re-run and cancel; previews and `cicd.yaml` pull requests are
+(tier T0). Phase 3's first writes (tier T1) are re-run and cancel; a `cicd.yaml` change is
+[validated](#validate-a-cicdyaml-change) here before anyone opens the pull request (API 0.7.0), and previews are
 still to come. Phase 4 (tier T2, propose) is promote and roll back: each only starts the app's own `release`
 Pipeline, whose gitops PR a human merges. Nothing else is written. Phase 5 starts with the [event stream](#events):
 every CDEvent the shared broker carries, re-verified and served as server-sent events with resume. Phase 6b adds the
@@ -115,8 +116,8 @@ in-cluster ServiceAccount, or a federated identity from another cluster (Tower's
 the prod cluster arrive as `hangar:<cluster>:<serviceaccount>`).
 
 **What you may read** is a SubjectAccessReview in the app's `-cicd` namespace, on a group nothing
-serves: `glidepath.hangar.io`, resources `runs`, `runs/logs`, `releases`, `evidence`, `tests`, `environments` and
-`events`. RBAC
+serves: `glidepath.hangar.io`, resources `runs`, `runs/logs`, `releases`, `evidence`, `tests`, `environments`,
+`events` and `cicd` (verb `validate`). RBAC
 only needs the strings, so access is ordinary RBAC:
 
 - `api.readers` binds the chart's `glidepath-api-reader` ClusterRole cluster-wide (users, groups,
@@ -383,6 +384,51 @@ glidepath-api's own ServiceAccount needs `get` on `triggertemplates.triggers.tek
 no PaC annotations), so the [shape policy](#who-may-write) admits them unchanged (checked 2026-10-29 with a
 server-side dry run on hangar-dev as `system:serviceaccount:platform-system:glidepath-api`). Since phase 6 it admits an
 InfraService's `infra-<name>-cicd` namespace as well as an app's.
+
+## Validate a cicd.yaml change
+
+`POST /v1/apps/{app}/cicd/validations` (API 0.7.0, tier T0) says what a change to the app's `cicd.yaml` would mean,
+before anyone opens the pull request: the verdict the
+[`cicd-validate` check](contract.md#enforced-in-app-pull-requests-the-cicd-validate-check) will give that PR. It
+needs `validate` on `cicd.glidepath.hangar.io` in the app's namespace, which `glidepath-api-reader` grants. It writes
+nothing: a POST only because it carries a body.
+
+Send exactly one of:
+
+- `patch`: an RFC 7386 JSON merge patch on the file as it is (keys to set, `null` to delete), or
+- `content`: the whole file after the change, as YAML text;
+
+with `baseRef` (a branch, tag or commit; unset is the default branch) and `agent` (`true` also applies the
+`GP-SCOPE` rules, what an agent may change). The API reads `cicd.yaml` from the app's repo (an InfraService's
+gitops repo) at that ref with the [broker's read-only token](#the-github-read-token), applies the patch, and hands
+the result and the base to the validator. The answer is 200 whether or not the result is valid:
+
+```json
+{"valid": false,
+ "problems": [{"pointer": "/governance/sast", "rule": "GP-SCOPE-002", "severity": "error",
+               "message": "/governance/sast loosened (true -> false)",
+               "hint": "An agent may turn a gate on or make it stricter, never the other way."}],
+ "changes": [{"pointer": "/governance/sast", "change": "changed", "before": true, "after": false, "agentScope": "tighten"}],
+ "summary": "1 error(s): GP-SCOPE-002; 1 change(s): /governance/sast true -> false",
+ "base": {"repo": "jfillman/gate-api", "ref": "HEAD", "sha": "7f3c…", "present": true},
+ "resulting": "apiVersion: platform/v1\n…",
+ "contractVersion": 1}
+```
+
+`changes` is every field the change touches, each with the contract's `agentScope`, so a caller can tell a person
+what it is about to propose. A file missing at the base is compared with an empty one (every field counts as
+added). The patch is applied to the parsed file, so `resulting` is canonical YAML without the file's comments; a
+caller that goes on to commit the change applies the same patch to the text itself.
+
+**The validator is a sidecar.** The API image is distroless, and the rules are Python (`tools/glidepath-validate`
+and `tools/cicd_scope.py`, the files Clearance vendors and the PR check runs). The chart runs the
+`glidepath-validate` image (`cicdValidatorImage`, kept current by `validate-image-ci`) beside the API as
+`glidepath validate --serve 127.0.0.1:8081`, and the API posts to it on the pod's loopback (`VALIDATOR_URL`). So the
+API carries no second copy of the rules, and a contract change reaches the check and the API in one bump. When the
+sidecar doesn't answer, the call is `GP-API-502`.
+
+Refusals are `GP-API-400`: neither or both of `patch` and `content`, a patch that isn't an object, a `baseRef` that
+isn't a ref of the repo, or a base file a patch can't be applied to (not a YAML mapping).
 
 ## Live and archived reads
 
@@ -663,7 +709,8 @@ run in the path) and `dryRun`; a re-run adds `idempotencyKeySha256` (the first 1
 the hash in the run's annotation, never the key), `created` and `replayed`; a cancel adds `result`
 (`cancelled`, `already-cancelled`, `already-finished`). A promote adds `env`, `cluster`, `idempotencyKeySha256`,
 `mode`, `created`, `replayed` and `prUrl`; a rollback `env`, `cluster`, `idempotencyKeySha256`, `target`,
-`replaces`, `created`, `replayed` and `prUrl`. No GitHub token is ever in an audit line. An event stream writes its
+`replaces`, `created`, `replayed` and `prUrl`; a validation `valid`, `errors`, `changes`, `agent` and `base` (the
+short sha). No GitHub token is ever in an audit line. An event stream writes its
 audit line when it ends, so its `ms` is how long it was open.
 
 ```shell

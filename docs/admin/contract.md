@@ -88,9 +88,14 @@ Environments are compared by name, so reordering them is not a change. Pipeline 
 by content first, so inserting a step doesn't make every later step look changed.
 
 The rules are [`tools/cicd_scope.py`](../../tools/cicd_scope.py), standard library only.
-Autopilot's Clearance vendors that file byte for byte and runs it before an agent opens a pull
-request, so the gate the agent meets and the check in CI are the same code. When you change it,
-copy it to `autopilot/src/clearance/vendor/cicd_scope.py`; a drift test there fails until you do.
+Clearance vendors that file byte for byte and runs it before an agent opens a pull request, so the gate
+the agent meets and the check in CI are the same code. When you change it, copy it to
+`clearance/src/clearance/packs/hangar/vendor/cicd_scope.py` (with the contract); a drift test there fails
+until you do.
+
+The same rules answer `POST /v1/apps/{app}/cicd/validations` on glidepath-api
+([api.md](api.md#validate-a-cicdyaml-change)): a caller sends a patch or the whole file and gets the
+verdict the check will give, plus every field the change touches, before opening the pull request.
 
 ### Enforced in app pull requests: the `cicd-validate` check
 
