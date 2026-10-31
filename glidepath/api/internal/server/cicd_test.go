@@ -160,7 +160,7 @@ func TestValidateCicdNoFileYet(t *testing.T) {
 	if base := out["base"].(map[string]any); base["present"] != false || base["sha"] != devSHA {
 		t.Fatalf("base %v", base)
 	}
-	if out["resulting"] != "apiVersion: platform/v1\nbuild:\n    agent: nodejs-22\n" {
+	if out["resulting"] != "apiVersion: platform/v1\nbuild:\n  agent: nodejs-22\n" {
 		t.Fatalf("resulting %q", out["resulting"])
 	}
 	if req := v.request(); req["base"] != nil {
