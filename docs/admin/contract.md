@@ -56,8 +56,9 @@ tools/glidepath-validate cicd.yaml --agent --base-ref origin/main   # also the G
 | `GP-PIPE-002` | error | A release step names a Ground environment |
 | `GP-PIPE-003` | error | A flow has more than one check-ride step |
 | `GP-PIPE-004` | error | A check-ride step sets `testName` |
+| `GP-CHECKS-001` | error | A checks-only file (no `build`) sets `pipelines`, `test`, `deploy`, `api` or `ephemeralEnvironments` |
 
-The `GP-ENV` and `GP-PIPE` rules are constraints the pipeline already enforces when it runs
+The `GP-ENV`, `GP-PIPE` and `GP-CHECKS` rules are constraints the pipeline already enforces when it runs
 ([cicd-yaml-reference.md](../user/cicd-yaml-reference.md)). Here they fail in seconds instead of
 partway through a flow. Exit 0 means no errors, 1 means at least one, 2 means bad usage. It needs
 python3, pyyaml and jsonschema.

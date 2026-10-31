@@ -8,7 +8,8 @@ owns everything under `.tekton/` (pure boilerplate, generated at onboarding, see
 This doc covers every field. If you just want a working file fast, see
 [quickstart.md](quickstart.md) or copy one of [examples/](examples/) instead: for a cloud app,
 [11-aws-ecs.yaml](examples/11-aws-ecs.yaml) or [12-aws-lambda.yaml](examples/12-aws-lambda.yaml)
-is a complete, commented file to start from.
+is a complete, commented file to start from. A repository that builds nothing (configuration only)
+leaves `build` out: see [Checks-only repositories](#checks-only-repositories).
 
 ![cicd.yaml fields mapped to what actually runs: build/deploy/release blocks each drive one stage, an undeclared stage never runs](diagrams/cicd-yaml-mapping.svg)
 
@@ -23,7 +24,8 @@ required except what's marked `REQUIRED` - most apps use a small fraction of thi
 apiVersion: platform/v1        # REQUIRED. Only one valid value.
 kind: PipelineConfig           # REQUIRED. Only one valid value.
 
-# --- build: REQUIRED block. Only `agent` inside it is required. ---
+# --- build: REQUIRED for an app. Only `agent` inside it is required. Leave the whole block
+# out for a checks-only repository (see "Checks-only repositories" below). ---
 build:
   agent: nodejs-20              # REQUIRED. One of: nodejs-18, nodejs-20, nodejs-22,
                                  # openjdk-17, openjdk-21, python-3.11, go-1.22.
@@ -307,6 +309,33 @@ pipelines:
                                    # exists on every step, testName only matters on a
                                    # test step.
 ```
+
+## Checks-only repositories
+
+A repository that holds configuration and ships nothing itself (a team's Autopilot agent
+definitions, policy, docs) leaves `build` out. This is the whole file:
+
+```yaml
+apiVersion: platform/v1
+kind: PipelineConfig
+# No build: a checks-only repository. Glidepath runs its PR checks and nothing else.
+```
+
+What it gets, the same as every other onboarded repository: its registration (the
+`app-<name>-cicd` namespace, the Pipelines-as-Code `Repository`, `pipeline-runner`), and the
+always-on `.tekton/` files: `onboarding-resync.yaml`, `pull-request-cicd-validate.yaml`,
+`pull-request-agent-gates.yaml`, and `pull-request-agent-definitions.yaml` with
+`push-agent-release.yaml` (each of those two runs only when `agents/` changes,
+[../admin/agent-definitions.md](../admin/agent-definitions.md)).
+
+What it does not get: no `flow-*.yaml`, no build cache, no environments or `glidepath/`
+scaffolding, no gitops repo or release, no Argo CD Applications.
+
+Without `build`, `pipelines`, `test`, `deploy`, `api` and `ephemeralEnvironments` are refused
+(`GP-CHECKS-001`; the schema's `dependencies`, so `stage-preflight` and the chart refuse them
+too). `governance`, `notifications` and `secrets` are allowed. Adding `build` (and a flow under
+`pipelines`) later is an ordinary change: the next resync delivers the flows and the repository
+becomes an app.
 
 ## Check it before you push
 

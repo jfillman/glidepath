@@ -1,0 +1,14 @@
+# Example 13: Checks only - no build, no deploy
+#
+# A repository that holds configuration (Autopilot agent definitions, policy, docs) and
+# ships nothing itself. Leaving `build` out makes it checks-only: Glidepath registers it and
+# runs the pull-request checks every repository gets (cicd-validate, the agent gates, and the
+# agent-definitions check and agent release when agents/ changes), and nothing else. No
+# flows, environments, build cache, gitops repo or release.
+#
+# Without build, pipelines, test, deploy, api and ephemeralEnvironments are refused
+# (GP-CHECKS-001). governance, notifications and secrets are allowed. Adding a build block
+# (and pipelines) later turns the repository into an ordinary app.
+#
+apiVersion: platform/v1
+kind: PipelineConfig

@@ -7,6 +7,18 @@ the operator-facing counterpart to [../user/install-guide.md](../user/install-gu
 for an Application conditionally renders off what `cicd.yaml` declares (see
 `charts/glidepath-app/templates/_helpers.tpl`'s `glidepath-app.hasStage`).
 
+**Checks-only repositories.** A `cicd.yaml` with no `build` is a checks-only repository
+([../user/cicd-yaml-reference.md](../user/cicd-yaml-reference.md#checks-only-repositories)):
+configuration only, such as a team's agent definitions (Airframe's `AgentRepository` writes one).
+It is onboarded exactly like an app (a `tenants/<name>/identity.yaml`, the namespace, the
+Pipelines-as-Code `Repository`, `pipeline-runner`) and receives the always-on `.tekton/` files,
+and nothing else: `glidepath-app.checksOnly` turns off the build cache PVC, the Ground
+`AppProject` and `ApplicationSet`, the promote and rollback templates, the cloud deployer and the
+gitops `Repository`, and `deliver-onboarding-files` generates no flow, scaffolds no `glidepath/`
+files and skips the gitops repo. Because the chart's `values.yaml` has no `build` default, the
+absence of `build` is visible to the templates; every template that reads a `build.*` field
+defaults it itself.
+
 Onboarding is ArgoCD-managed end to end. An `ApplicationSet`
 (`charts/glidepath-control-plane/templates/argocd/tenant-onboarding-applicationset.yaml`)
 generates one `Application` per tenant from a git `files` generator scanning
@@ -148,7 +160,7 @@ live from the app repo, so one push reaches both halves without a manual step.
 
 ### What the resync scaffolds, once
 
-Besides `.tekton/`, the resync creates - only when missing, never overwriting - `glidepath/base.yaml`,
+Never for a checks-only repository (no `build`). Otherwise, besides `.tekton/`, the resync creates - only when missing, never overwriting - `glidepath/base.yaml`,
 `glidepath/pr-env.yaml` and `glidepath/envs/<env>.yaml` for every Ground environment `cicd.yaml` declares
 (known-gap #17). Since 2026-10-12 a Ground environment added *after* the first one also gets
 `glidepath/envs/<env>.release.yaml`, copied from the Ground environment before it in `cicd.yaml`'s order, as its

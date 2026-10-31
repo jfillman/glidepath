@@ -288,7 +288,7 @@ spec:
         workspaces:
           - name: source
             volumeClaimTemplate:
-              spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: {{ include "glidepath-app.sourceVolumeSize" (dict "size" $.Values.build.sourceVolume.size) }} } } }
+              spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: {{ include "glidepath-app.sourceVolumeSize" (dict "size" (($.Values.build).sourceVolume).size) }} } } }
         {{- end }}
         {{- /* Web-identity cloud deploys (templates/identity/cloud-deployer.yaml): only the deploy stage's
         Pipeline has deploy-aws-lambda and deploy-aws-ecs (both always, each gated by a `when` on the target), and

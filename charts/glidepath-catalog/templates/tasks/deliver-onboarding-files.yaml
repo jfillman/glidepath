@@ -185,6 +185,21 @@ spec:
           upper_env_clusters_json="{}"
         fi
 
+        # A checks-only repository (cicd.yaml with no build; docs/admin/onboarding-mechanics.md) builds, deploys and
+        # releases nothing: it gets the always-on PR checks below and no flow, environment file or gitops delivery. The
+        # schema refuses pipelines without build (GP-CHECKS-001); dropping them here too means a file that skipped the
+        # check still starts nothing. No cicd.yaml at all is not checks-only: that stays the pre-cicd.yaml bootstrap.
+        CHECKS_ONLY=false
+        if [[ -f cicd.yaml && "$(yq -r 'has("build")' cicd.yaml)" != "true" ]]; then
+          CHECKS_ONLY=true
+          if [[ "${pipelines_json}" != "{}" ]]; then
+            echo "warn: cicd.yaml declares no build but has pipelines (GP-CHECKS-001) - generating no flows" >&2
+          fi
+          pipelines_json="{}"
+          echo "cicd.yaml declares no build: a checks-only repository (PR checks only; no flows, environments or gitops repo)"
+        fi
+        echo "${CHECKS_ONLY}" > /handoff/checks-only
+
         # gitops-repo-url is optional (see this Task's own param description) so a stale
         # trigger file committed before this fallback existed can still fire this Task
         # and self-heal - same reasoning as APP_TYPE's own derivation above, just for a
@@ -220,8 +235,9 @@ spec:
             echo "gitops-repo-url not supplied but cicd.yaml declares a release stage - derived '${GITOPS_REPO_URL}' from the gitops-<app-name> convention"
           fi
         fi
-        # ...and a URL an older trigger file still carries is dropped from the regenerated one.
-        if [[ -f cicd.yaml && "$(yq -r '.deploy.target // "k8s-rollout"' cicd.yaml)" != "k8s-rollout" ]]; then
+        # ...and a URL an older trigger file still carries is dropped from the regenerated one. A checks-only repository
+        # has no gitops repo either.
+        if [[ "${CHECKS_ONLY}" == "true" ]] || [[ -f cicd.yaml && "$(yq -r '.deploy.target // "k8s-rollout"' cicd.yaml)" != "k8s-rollout" ]]; then
           GITOPS_REPO_URL=""
         fi
 
@@ -270,7 +286,7 @@ spec:
         # ephemeralEnvironments, so the file was never created, and a developer who turns
         # previews on later hit exactly the ComparisonError above. A comment-only file
         # costs nothing when previews are off.
-        if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && ! -f ${ENVS_ROOT}/pr-env.yaml ]]; then
+        if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && "${CHECKS_ONLY}" != "true" && ! -f ${ENVS_ROOT}/pr-env.yaml ]]; then
           mkdir -p "${ENVS_ROOT}"
           cat > ${ENVS_ROOT}/pr-env.yaml <<PRENVEOF
         # ${ENVS_ROOT}/pr-env.yaml
@@ -298,7 +314,7 @@ spec:
         # file in the D9/AF-5 merge order (base < ${ENVS_ROOT}/envs/<env>.yaml < release file,
         # see hangar/docs/autopilot/release-file-split.md). Optional to the ApplicationSets
         # (ignoreMissingValueFiles), scaffolded so the layout is discoverable.
-        if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && ! -f ${ENVS_ROOT}/base.yaml ]]; then
+        if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && "${CHECKS_ONLY}" != "true" && ! -f ${ENVS_ROOT}/base.yaml ]]; then
           mkdir -p "${ENVS_ROOT}"
           cat > ${ENVS_ROOT}/base.yaml <<BASEEOF
         # ${ENVS_ROOT}/base.yaml
@@ -326,7 +342,7 @@ spec:
         # workload until release.image is set, so this is just a namespace until the first
         # build deploys. Never overwritten.
         seeded_release_files=()
-        if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && -f cicd.yaml ]]; then
+        if [[ "${DEPLOY_TARGET}" == "k8s-rollout" && "${CHECKS_ONLY}" != "true" && -f cicd.yaml ]]; then
           while IFS= read -r lower_env; do
             [[ -z "${lower_env}" ]] && continue
             [[ -f "${ENVS_ROOT}/envs/${lower_env}.yaml" ]] && continue
@@ -951,6 +967,10 @@ spec:
 
         if [[ -z "${GITOPS_REPO_URL}" ]]; then
           echo "gitops repo: no gitops-repo-url param given (release stage not declared), skipping"
+          exit 0
+        fi
+        if [[ "$(cat /handoff/checks-only 2>/dev/null || echo false)" == "true" ]]; then
+          echo "gitops repo: checks-only repository (cicd.yaml declares no build), skipping"
           exit 0
         fi
         # A trigger file generated before cloud targets stopped deriving a URL still passes one.

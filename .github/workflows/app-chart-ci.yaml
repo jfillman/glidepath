@@ -133,6 +133,25 @@ jobs:
             --present ConfigMap:fixture-app-policy-config \
             --present PersistentVolumeClaim:build-cache-fixture-app
 
+      - name: 'Fixture: checks-only (no build) - registration and the PR-check templates only: no flows, environments, build cache, gitops Repository, cloud deployer or Argo CD objects'
+        run: |
+          printf '%s\n' 'apiVersion: platform/v1' 'kind: PipelineConfig' > /tmp/fixtures/checks-only.yaml
+          helm template t charts/glidepath-app \
+            -f /tmp/fixtures/checks-only.yaml -f /tmp/fixtures/platform-identity.yaml \
+            --set platformIdentity.registerPipelinesAsCode=true --set cloudIdentity.awsAccountId=012345678901 \
+            > /tmp/rendered-checks-only.yaml
+          python3 hack/ci/assert_app_render.py /tmp/rendered-checks-only.yaml \
+            --absent Trigger TriggerTemplate PersistentVolumeClaim AppProject ApplicationSet Application \
+            --absent Repository:gitops-fixture-app ServiceAccount:glidepath-cloud-deployer \
+            --present Repository:fixture-app ServiceAccount:pipeline-runner \
+            --present ConfigMap:onboarding-templates-app-repo ConfigMap:fixture-app-policy-config
+          # pipelines without build is refused (GP-CHECKS-001), not rendered.
+          printf '%s\n' 'pipelines: { ci: { trigger: { source: git, event: push, branch: main }, steps: [{ stage: build }] } }' > /tmp/fixtures/checks-only-flows.yaml
+          if helm template t charts/glidepath-app -f /tmp/fixtures/checks-only-flows.yaml -f /tmp/fixtures/platform-identity.yaml 2>/tmp/err.txt >/dev/null; then
+            echo "::error::a checks-only cicd.yaml with pipelines rendered"; exit 1
+          fi
+          grep -q GP-CHECKS-001 /tmp/err.txt
+
       - name: 'Fixture: build-test - only the test-stage Trigger present (flow-ci-1-test; Triggers are named <flow>-<step index>-<stage>)'
         run: |
           helm template t charts/glidepath-app \
