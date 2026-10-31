@@ -407,6 +407,13 @@ spec:
           sed -e "s|<APP_NAME>|${APP_NAME}|g" \
             "/opt/platform/onboarding-templates/app-repo/pull-request-cicd-validate.yaml" > ".tekton/pull-request-cicd-validate.yaml"
         fi
+        # The agent-definitions check and the agent release (docs/admin/agent-definitions.md), the same way: every repo
+        # gets them, and each runs only when agents/ changes. Absent from an older app chart's ConfigMap, so only when there.
+        for f in pull-request-agent-definitions.yaml push-agent-release.yaml; do
+          if [[ -f "/opt/platform/onboarding-templates/app-repo/${f}" ]]; then
+            sed -e "s|<APP_NAME>|${APP_NAME}|g" "/opt/platform/onboarding-templates/app-repo/${f}" > ".tekton/${f}"
+          fi
+        done
 
         # Regenerated fresh every run (stale removed first) so a flow deleted from
         # cicd.yaml also disappears.
