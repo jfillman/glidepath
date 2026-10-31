@@ -1,0 +1,30 @@
+# BOILERPLATE - the agent-definitions check (glidepath docs/admin/agent-definitions.md): on a PR to main that changes
+# an agent definition (agents/<name>.yaml), Clearance reviews each one: would it load it, could its agent use what it
+# lists, and what tier its release will be cleared by. Delivered to every app repo whatever cicd.yaml says; it runs
+# only when a definition changes.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: agent-definitions-
+  labels:
+    hangar.io/app: "<APP_NAME>"
+  annotations:
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main" && files.all.exists(f, f.startsWith("agents/"))'
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+spec:
+  pipelineRef:
+    resolver: cluster
+    params:
+      - { name: kind, value: pipeline }
+      - { name: name, value: agent-definitions-check }
+      - { name: namespace, value: platform-catalog }
+  params:
+    - { name: repo-url, value: "{{ repo_url }}" }
+    - { name: revision, value: "{{ revision }}" }
+    - { name: pr-number, value: "{{ pull_request_number }}" }
+  taskRunTemplate:
+    serviceAccountName: pipeline-runner
+  timeouts:
+    tasks: "5m"
+    finally: "4m"
+    pipeline: "10m"

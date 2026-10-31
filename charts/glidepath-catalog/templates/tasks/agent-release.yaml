@@ -1,0 +1,129 @@
+# catalog/tasks/agent-release.yaml
+#
+# The agent release (docs/admin/agent-definitions.md; decided 2026-10-31): a push to main that changes agent
+# definitions (agents/<name>.yaml) releases each one. For every changed definition:
+#   1. Clearance reviews it against its version before the push (POST /v1/definitions/review): would it load it, and
+#      the tier of the change (0 no change in authority, 1 narrows only, 2 spends or runs more, 3 touches more).
+#      A definition with problems is not released (the agent-definitions PR check should have caught it).
+#   2. The broker opens the pin PR on the control-plane tenants repo (POST /agent-pin): the Airframe Agent XR at
+#      tenants/<app>/xr-requests/<name>.yaml naming this commit, or its removal for a deleted definition. This pipeline
+#      holds no token for the tenants repo; the broker writes the PR and returns its number.
+#   3. The change is registered with Clearance's deployment gate (POST /v1/clearances with `definition`): tiers 0 and
+#      1 are cleared by policy at once, 2 and 3 wait for the owner group (and an outside group for 3) on the
+#      Clearances page. Merging the pin PR is the deploy; Clearance records definition.load when it loads it.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: agent-release
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+    hangar.io/clearance-client: agent-release
+spec:
+  description: Releases the agent definitions a push to main changed - Clearance's review, the pin PR on the tenants repo through the broker, and the change registered with the deployment gate.
+  params:
+    - { name: repo-url, type: string }
+    - { name: revision, type: string }
+    - { name: before, type: string, default: "" }
+    - { name: app-name, type: string }
+    - name: clearance-url
+      type: string
+      default: {{ .Values.agentGates.clearanceUrl | quote }}
+    - name: cluster
+      type: string
+      default: {{ .Values.agentRelease.cluster | quote }}
+    - name: tower-url
+      type: string
+      default: {{ .Values.clearanceGate.towerUrl | quote }}
+  volumes:
+    - name: tokens
+      projected:
+        sources:
+          - serviceAccountToken: { path: github-token-broker-token, audience: github-installation-token, expirationSeconds: 600 }
+          - serviceAccountToken: { path: clearance-token, audience: {{ .Values.agentGates.audience | quote }}, expirationSeconds: 600 }
+          - serviceAccountToken: { path: agent-pin-token, audience: agent-pin, expirationSeconds: 600 }
+  steps:
+    - name: release
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: tokens, mountPath: /var/run/secrets/platform, readOnly: true }
+      env:
+        - { name: GITHUB_TOKEN_BROKER_URL, value: "http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token" }
+        - { name: AGENT_PIN_URL, value: "http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/agent-pin" }
+        - { name: REPO_URL, value: $(params.repo-url) }
+        - { name: REVISION, value: $(params.revision) }
+        - { name: BEFORE, value: $(params.before) }
+        - { name: APP_NAME, value: $(params.app-name) }
+        - { name: CLEARANCE_URL, value: $(params.clearance-url) }
+        - { name: CLUSTER, value: $(params.cluster) }
+        - { name: TOWER_URL, value: $(params.tower-url) }
+        - { name: AGENT_LOGINS, value: {{ join "," .Values.agentGates.agentLogins | quote }} }
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+        api="https://api.github.com/repos/${owner}/${repo}"
+        gh() { curl --fail --silent --show-error --max-time 20 --retry 3 --retry-connrefused -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" "$@"; }
+        [[ -n "${CLEARANCE_URL}" ]] || { echo "no Clearance on this cluster: agent definitions are not released here"; exit 0; }
+        # The previous commit: the push's `before`, else the commit's first parent.
+        if ! [[ "${BEFORE}" =~ ^[0-9a-f]{40}$ ]] || [[ "${BEFORE}" =~ ^0+$ ]]; then
+          BEFORE="$(gh "${api}/commits/${REVISION}" | jq -r '.parents[0].sha // empty')"
+        fi
+        files="$(gh "${api}/compare/${BEFORE}...${REVISION}" | jq -c '[.files[] | select(.filename | test("^agents/[a-z0-9-]+\\.ya?ml$")) | select(.filename | test("catalog-info") | not) | {filename, status}]')"
+        [[ "$(jq length <<<"${files}")" != 0 ]] || { echo "no agent definition changed"; exit 0; }
+        # Who proposed it: the PR this commit came from (its author), else the commit's author.
+        pr_author="$(gh "${api}/commits/${REVISION}/pulls" | jq -r '.[0].user.login // empty')"
+        [[ -n "${pr_author}" ]] || pr_author="$(gh "${api}/commits/${REVISION}" | jq -r '.author.login // "unknown"')"
+        kind=person; tr ',' '\n' <<<"${AGENT_LOGINS}" | grep -qxF "${pr_author}" && kind=agent
+        raw() { local out; out="$(curl --silent --max-time 20 -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github.raw+json" -w '\n%{http_code}' "${api}/contents/$1?ref=$2")"
+                [[ "$(tail -n1 <<<"${out}")" == 200 ]] && sed '$d' <<<"${out}" | yq -o json '.' 2>/dev/null || echo null; }
+        ctok() { cat /var/run/secrets/platform/clearance-token; }
+        rc=0
+        while IFS= read -r f; do
+          path="$(jq -r .filename <<<"${f}")"; name="$(basename "${path}" | sed -E 's/\.ya?ml$//')"
+          new=null; [[ "$(jq -r .status <<<"${f}")" != removed ]] && new="$(raw "${path}" "${REVISION}")"
+          old="$(raw "${path}" "${BEFORE}")"
+          group="$(jq -r '.owner // empty' <<<"${new}")"; [[ -n "${group}" ]] || group="$(jq -r '.owner // empty' <<<"${old}")"
+          # 1. review
+          rev="$(curl --silent --max-time 20 -X POST -H "Authorization: Bearer $(ctok)" -H "Content-Type: application/json" \
+                 --data "$(jq -nc --argjson doc "${new}" --argjson old "${old}" --arg path "${path}" --arg name "${name}" '{doc: $doc, old: $old, path: $path, name: $name}')" \
+                 "${CLEARANCE_URL%/}/v1/definitions/review")"
+          if ! jq -e '.ok' <<<"${rev}" >/dev/null 2>&1; then
+            echo "SKIP ${name}: Clearance would not load it: $(jq -r '[.problems[]? | "\(.rule) \(.message)"] | join("; ")' <<<"${rev}" 2>/dev/null || echo "${rev}" | head -c 300)"
+            rc=1; continue
+          fi
+          tier="$(jq -r .tier <<<"${rev}")"
+          changes="$(jq -r '[.changes[] | "- `\(.field)`: \(.change) (tier \(.tier))"] | join("\n")' <<<"${rev}")"
+          desc="$(jq -r '(.metadata.description // .description // "") | tostring | .[0:200] | gsub("[\r\n]"; " ")' <<<"${new}")"
+          link=""; [[ -n "${TOWER_URL}" ]] && link="${TOWER_URL%/}/clearance?view=clearances"
+          body="$(printf 'The agent release of `%s` (%s/%s `%s` at `%s`), opened by Glidepath.\n\n**Tier %s** by what the definition change lets the agent do:\n\n%s\n\nTiers 0 and 1 are cleared by policy; 2 and 3 wait for the owner group (`%s`), and for tier 3 an outside group, in Clearance%s. Merging this PR is the deploy: Clearance loads the pinned commit within a minute.' \
+                 "${name}" "${owner}" "${repo}" "${path}" "${REVISION}" "${tier}" "${changes}" "${group}" "${link:+ ($link)}")"
+          # 2. the pin PR, through the broker
+          remove=false; [[ "${new}" == null ]] && remove=true
+          pin="$(curl --silent --max-time 60 -X POST -H "Authorization: Bearer $(cat /var/run/secrets/platform/agent-pin-token)" -H "Content-Type: application/json" \
+                 --data "$(jq -nc --arg o "${owner}" --arg r "${repo}" --arg n "${name}" --arg p "${path}" --arg c "${REVISION}" --arg g "${group}" --arg d "${desc}" --argjson rm "${remove}" --arg b "${body}" \
+                          '{owner: $o, repo: $r, name: $n, path: $p, commit: $c, group: $g, description: $d, remove: $rm, body: $b}')" "${AGENT_PIN_URL}")"
+          prn="$(jq -r '.pr // empty' <<<"${pin}" 2>/dev/null)"
+          if [[ -z "${prn}" ]]; then echo "FAIL ${name}: the broker did not open the pin PR: $(jq -r '.error // .' <<<"${pin}" 2>/dev/null | head -c 300)"; rc=1; continue; fi
+          tenants="$(jq -r '.url' <<<"${pin}" | sed -E 's#https://github.com/([^/]+/[^/]+)/pull/.*#\1#')"
+          echo "${name}: pin PR ${tenants}#${prn} ($(jq -r .url <<<"${pin}")), tier ${tier}"
+          # 3. the change, with the deployment gate
+          change="$(jq -nc --arg app "${APP_NAME}" --arg cluster "${CLUSTER}" --arg repo "${tenants}" --argjson pr "${prn}" --arg head "$(jq -r .head <<<"${pin}")" \
+                   --arg proposer "user:${pr_author}" --arg kind "${kind}" --arg owner "${group}" --arg file "$(jq -r .file <<<"${pin}")" \
+                   --arg tree "$(jq -cS . <<<"${new}" | sha256sum | cut -d' ' -f1)" --arg name "${name}" --arg path "${path}" --argjson old "${old}" --argjson new "${new}" \
+                   '{app: $app, env: "agents", cluster: $cluster, repo: $repo, pr: $pr, head: $head, proposer: $proposer, proposerKind: $kind, owner: $owner,
+                     treeDigest: $tree, paths: [$file], linesChanged: 0, objects: [], checks: {ci: "pass"},
+                     definition: {name: $name, path: $path, old: $old, new: $new}}')"
+          out="$(curl --silent --max-time 30 -X POST -H "Authorization: Bearer $(ctok)" -H "Content-Type: application/json" --data "${change}" -w '\n%{http_code}' "${CLEARANCE_URL%/}/v1/clearances")"
+          code="$(tail -n1 <<<"${out}")"
+          if [[ "${code}" == 200 ]]; then
+            sed '$d' <<<"${out}" | jq -r --arg n "${name}" '"\($n): Clearance change \(.id): tier \(.tier), \(.state)\(if .requirement then ", needs " + (.requirement.owner|tostring) + " from " + .requirement.ownerGroup + (if .requirement.outside > 0 then " and " + (.requirement.outside|tostring) + " from " + (.requirement.outsideGroups|join(", ")) else "" end) else "" end)"'
+          else
+            echo "FAIL ${name}: Clearance did not register the change (${code}): $(sed '$d' <<<"${out}" | head -c 300)"; rc=1
+          fi
+        done < <(jq -c '.[]' <<<"${files}")
+        exit "${rc}"

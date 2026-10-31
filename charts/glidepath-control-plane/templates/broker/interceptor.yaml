@@ -127,6 +127,9 @@ spec:
             # /github-read-token (githubread.go): the ServiceAccounts it mints read-only app-repo tokens for (glidepath-api).
             - name: GITHUB_READ_CALLERS
               value: {{ join "," (.Values.githubRead.callers | default list) | quote }}
+            # /agent-pin (agentpin.go, the agent release): the tenants repo pin PRs land in, owner/repo from tenantsRepoUrl.
+            - name: AGENT_PIN_TENANTS_REPO
+              value: {{ .Values.tenantsRepoUrl | trimPrefix "https://github.com/" | trimSuffix ".git" | quote }}
             {{- if .Values.agentToken.enabled }}
             # /agent-installation-token (agenttoken.go): the ServiceAccounts it serves (Clearance).
             - name: AGENT_TOKEN_CALLERS

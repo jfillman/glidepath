@@ -1,0 +1,32 @@
+# BOILERPLATE - the agent release (glidepath docs/admin/agent-definitions.md): a push to main that changes an agent
+# definition (agents/<name>.yaml) opens the pin PR on the control-plane tenants repo that makes that commit live
+# (tenants/<APP_NAME>/xr-requests/<name>.yaml, an Airframe Agent XR), and registers the change with Clearance's
+# deployment gate, which tiers it by what the definition change lets the agent do (0-1 cleared by policy, 2-3 by
+# people). Nobody copies a commit SHA; merging the pin PR is the deploy.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: agent-release-
+  labels:
+    hangar.io/app: "<APP_NAME>"
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[push]"
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.ref) && body.ref == "refs/heads/main" && files.all.exists(f, f.startsWith("agents/"))'
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+spec:
+  pipelineRef:
+    resolver: cluster
+    params:
+      - { name: kind, value: pipeline }
+      - { name: name, value: agent-release }
+      - { name: namespace, value: platform-catalog }
+  params:
+    - { name: repo-url, value: "{{ repo_url }}" }
+    - { name: revision, value: "{{ revision }}" }
+    - { name: before, value: "{{ body.before }}" }
+    - { name: app-name, value: "<APP_NAME>" }
+  taskRunTemplate:
+    serviceAccountName: pipeline-runner
+  timeouts:
+    pipeline: "10m"

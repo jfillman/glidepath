@@ -39,6 +39,7 @@ architecture.md wherever relevant.
 - [release-guardrails.md](release-guardrails.md) - adding/removing a release-PR gate; required vs advisory
 - [registries.md](registries.md) - Ground and Flight registries: promotion by digest before the merge, upper-cluster admission, retention (ADR-0029)
 - [agent-gates.md](agent-gates.md) - agent-identity and agent-scope: every PR checked against Clearance's record of agent PRs
+- [agent-definitions.md](agent-definitions.md) - the agent-definitions PR check and the agent release: Clearance reviews each definition, the broker opens its pin PR, the deployment gate tiers it
 - [clearance-gate.md](clearance-gate.md) - the deployment gate: every release PR to a protected environment classified 0-3 by Clearance from its rendered diff and cleared by policy or by the app's owners
 - [change-management.md](change-management.md) - the `itsm` gate as a wrapper over the company's change tool (ServiceNow, or any tool behind a webhook)
 - [catalog-versioning.md](catalog-versioning.md) - promoting shared catalog changes

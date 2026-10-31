@@ -170,6 +170,11 @@ apiCompat:
 # Clearance's record of the PRs its agents opened (POST /v1/provenance): agent-identity (the PR is the one Clearance
 # opened, its head is the agent's own commit) and agent-scope (every changed path is one the agent committed and its
 # definition still admits). One PaC check, `agent-gates-`, reports both. A person's PR passes as "not an agent PR".
+agentRelease:
+  # The control-plane cluster's name, as the deployment gate records an agent release's change (cluster). Clearance's
+  # URL and audience are agentGates'; the tenants repo is the broker's (glidepath-control-plane tenantsRepoUrl).
+  cluster: ""
+
 clearanceGate:
   # Where people clear a holding change: Backstage's external URL (the Clearance plugin's Clearances page). Empty
   # leaves the link out of the PR comment. Clearance's URL and audience are agentGates' (the same Clearance).

@@ -1,0 +1,116 @@
+# catalog/tasks/agent-definitions.yaml
+#
+# The `agent-definitions` PR check (docs/admin/agent-definitions.md; Clearance's definition review, v0.20.0): every
+# agent definition a PR changes (agents/<name>.yaml, any onboarded repo) is sent to Clearance's POST
+# /v1/definitions/review with its version on the PR's base. Clearance answers whether it would load the file and
+# whether its agent could use what it lists (DF-* problems), and how much more the agent may do than on main (the
+# tier 0-3 its release will be cleared by). A problem fails the check; the tier is reported, not judged here (the
+# release's pin PR is where it is cleared). Glidepath decides nothing about agents: Clearance does.
+#
+# Two steps, like agent-gates (a failed step's results are not reported): `review` gathers and asks, always exits 0;
+# `report` exits 1 when a definition has problems.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: agent-definitions
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+    # Clearance's ingress NetworkPolicy admits pods with this label (apron 55-autopilot/clearance).
+    hangar.io/clearance-client: agent-definitions
+spec:
+  description: Sends every agent definition a PR changes to Clearance's definition review; fails on a definition Clearance would not load or whose agent could not use what it lists, and reports each one's tier.
+  params:
+    - { name: repo-url, type: string }
+    - { name: revision, type: string }
+    - { name: pr-number, type: string, default: "" }
+    - name: clearance-url
+      type: string
+      default: {{ .Values.agentGates.clearanceUrl | quote }}
+  results:
+    - { name: findings-summary, description: "One line for the PR comment's headline." }
+  volumes:
+    - name: tokens
+      projected:
+        sources:
+          - serviceAccountToken: { path: github-token-broker-token, audience: github-installation-token, expirationSeconds: 600 }
+          - serviceAccountToken: { path: clearance-token, audience: {{ .Values.agentGates.audience | quote }}, expirationSeconds: 600 }
+    - name: work
+      emptyDir: {}
+  steps:
+    - name: review
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: tokens, mountPath: /var/run/secrets/platform, readOnly: true }
+        - { name: work, mountPath: /work }
+      env:
+        - { name: GITHUB_TOKEN_BROKER_URL, value: "http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token" }
+        - { name: REPO_URL, value: $(params.repo-url) }
+        - { name: REVISION, value: $(params.revision) }
+        - { name: PR_NUMBER, value: $(params.pr-number) }
+        - { name: CLEARANCE_URL, value: $(params.clearance-url) }
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        printf 0 > /work/failed; : > /work/report
+        owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+        gh() { curl --fail --silent --show-error --max-time 20 --retry 3 --retry-connrefused -H "Authorization: Bearer ${token}" -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
+        api="https://api.github.com/repos/${owner}/${repo}"
+        if [[ -n "${PR_NUMBER}" ]] && ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+          PR_NUMBER="$(gh -H "Accept: application/vnd.github+json" "${api}/commits/${REVISION}/pulls" | jq -r '.[0].number // empty')"
+        fi
+        [[ -n "${PR_NUMBER}" ]] || { echo "no PR: nothing to review"; printf 'no pull request' > "$(results.findings-summary.path)"; exit 0; }
+        base="$(gh -H "Accept: application/vnd.github+json" "${api}/pulls/${PR_NUMBER}" | jq -r .base.sha)"
+        files="$(gh -H "Accept: application/vnd.github+json" "${api}/compare/${base}...${REVISION}" \
+          | jq -c '[.files[] | select(.filename | test("^agents/[a-z0-9-]+\\.ya?ml$")) | select(.filename | test("catalog-info") | not) | {filename, status, previous_filename}]')"
+        n="$(jq length <<<"${files}")"
+        if [[ "${n}" == 0 ]]; then echo "no agent definition changed"; printf 'no agent definition changed' > "$(results.findings-summary.path)"; exit 0; fi
+        if [[ -z "${CLEARANCE_URL}" ]]; then
+          echo "FAIL: agent-definitions - no Clearance on this cluster to review ${n} changed definition(s)" > /work/report; printf 1 > /work/failed; exit 0
+        fi
+        raw() { # <path> <ref> -> JSON of the YAML, or null when absent
+          local out; out="$(curl --silent --max-time 20 -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github.raw+json" -w '\n%{http_code}' "${api}/contents/$1?ref=$2")"
+          [[ "$(tail -n1 <<<"${out}")" == 200 ]] && sed '$d' <<<"${out}" | yq -o json '.' 2>/dev/null || echo null
+        }
+        bad=0; summary=()
+        echo "| Definition | Result | Tier | Changes or problems |" > /work/table; echo "|---|---|---|---|" >> /work/table
+        while IFS= read -r f; do
+          path="$(jq -r .filename <<<"${f}")"; status="$(jq -r .status <<<"${f}")"; prev="$(jq -r '.previous_filename // .filename' <<<"${f}")"
+          new=null; [[ "${status}" != removed ]] && new="$(raw "${path}" "${REVISION}")"
+          old="$(raw "${prev}" "${base}")"
+          body="$(jq -nc --argjson doc "${new}" --argjson old "${old}" --arg path "${path}" '{doc: $doc, old: $old, path: $path}')"
+          out="$(curl --silent --show-error --max-time 20 --retry 2 --retry-connrefused -w '\n%{http_code}' -H "Authorization: Bearer $(cat /var/run/secrets/platform/clearance-token)" \
+                 -H "Content-Type: application/json" --data "${body}" "${CLEARANCE_URL%/}/v1/definitions/review" || true)"
+          code="$(tail -n1 <<<"${out}")"; ans="$(sed '$d' <<<"${out}")"
+          if [[ "${code}" != 200 ]]; then
+            echo "| \`${path}\` | ❌ error | | Clearance answered ${code:-nothing}: $(head -c 200 <<<"${ans}") |" >> /work/table; bad=$((bad + 1)); continue
+          fi
+          if jq -e '.ok' <<<"${ans}" >/dev/null; then
+            jq -r --arg p "${path}" '"| `\($p)` | ✅ | \(.tier) | \([.changes[] | "\(.field): \(.change) (T\(.tier))"] | join("; ") | .[0:400]) |"' <<<"${ans}" >> /work/table
+            summary+=("$(basename "${path}" .yaml) T$(jq -r .tier <<<"${ans}")")
+          else
+            jq -r --arg p "${path}" '"| `\($p)` | ❌ | | \([.problems[] | "**\(.rule)** \(.path): \(.message)\(if .hint != "" then " (" + .hint + ")" else "" end)"] | join("<br>") | .[0:600]) |"' <<<"${ans}" >> /work/table
+            bad=$((bad + 1))
+          fi
+        done < <(jq -c '.[]' <<<"${files}")
+        {
+          if (( bad > 0 )); then echo "FAIL: agent-definitions - ${bad} of ${n} definition(s) Clearance would not load or whose agent could not use what it lists"; else echo "PASS: agent-definitions - ${n} definition(s) reviewed"; fi
+          echo; cat /work/table; echo
+          echo "The tier is what the release of this change will be cleared by when its pin moves (0 no change in authority, 1 narrows only: cleared by policy; 2 spends or runs more, 3 touches more: the owner group, and for 3 an outside group)."
+        } > /work/report
+        (( bad > 0 )) && printf 1 > /work/failed
+        printf '%s' "${n} definition(s): ${summary[*]:-none clean}" | head -c 900 > "$(results.findings-summary.path)"
+    - name: report
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        cat /work/report
+        [[ "$(cat /work/failed)" == 1 ]] && exit 1 || exit 0

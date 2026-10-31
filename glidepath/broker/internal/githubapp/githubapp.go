@@ -34,6 +34,9 @@ const appCredsDir = "/etc/github-app"
 var githubAPIBase = "https://api.github.com"
 
 // SetAPIBaseForTest points every call at base (an httptest server) and returns a func that restores it.
+// APIBase is GitHub's REST base (SetAPIBaseForTest moves it), for callers that make their own requests.
+func APIBase() string { return githubAPIBase }
+
 func SetAPIBaseForTest(base string) func() {
 	old := githubAPIBase
 	githubAPIBase = base

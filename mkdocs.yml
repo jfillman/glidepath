@@ -35,6 +35,7 @@ nav:
           - API compatibility check: admin/api-compat.md
           - Policy validation check: admin/policy-validation.md
           - Clearance deployment gate: admin/clearance-gate.md
+          - Agent definitions and releases: admin/agent-definitions.md
           - Change management: admin/change-management.md
           - Catalog versioning: admin/catalog-versioning.md
           - PipelineRun pruner: admin/pipelinerun-pruner.md
