@@ -3,6 +3,7 @@
 
     tools/glidepath-validate FILE [FILE...] [--format text|json]
     tools/glidepath-validate FILE --agent (--base OLD_FILE | --base-ref GIT_REF) [--format text|json]
+    tools/glidepath-validate --serve 127.0.0.1:8081    glidepath-api's validator sidecar (POST /validate; docs/admin/api.md)
 
 One pass, three layers:
   1. the schema (schemas/cicd.schema.json, the same file stage-preflight validates against):
@@ -40,6 +41,7 @@ from jsonschema.exceptions import best_match
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
+import cicd_scope  # noqa: E402
 from cicd_scope import scope_problems  # noqa: E402
 
 SCHEMA = json.loads((ROOT / "schemas" / "cicd.schema.json").read_text())
@@ -180,32 +182,111 @@ def base_text(args, path):
     return res.stdout if res.returncode == 0 else None  # absent at the base: a new file
 
 
-def check(path, args):
-    doc, probs = load(Path(path).read_text(), path)
+def check_texts(text, label, base, agent, contract):
+    """Problems for one cicd.yaml text. base is the file before the change (None: no file yet), read whenever given;
+    agent also applies the GP-SCOPE rules to the change from it. Returns (problems, head doc, base doc)."""
+    doc, probs = load(text, label)
     if doc is None:
-        return probs
+        return probs, None, None
     probs += schema_problems(doc) + convention_problems(doc)
-    if args.agent:
-        text = base_text(args, path)
-        base = None
-        if text is not None:
-            base, bprobs = load(text, "the base")
-            if base is None:
-                return probs + bprobs
-        contract = json.loads(Path(args.contract).read_text())
-        probs += [problem(p["pointer"], p["rule"], p["message"], p["hint"]) for p in scope_problems(base, doc, contract["scope"])]
-    return probs
+    base_doc = None
+    if base is not None:
+        base_doc, bprobs = load(base, "the base")
+        if base_doc is None:
+            return probs + bprobs, doc, None
+    if agent:
+        probs += [problem(p["pointer"], p["rule"], p["message"], p["hint"]) for p in scope_problems(base_doc, doc, contract["scope"])]
+    return probs, doc, base_doc
+
+
+def changes_of(base_doc, head_doc, scope):
+    """Every field the change touches, with the contract's agentScope for it (glidepath-api's effect summary)."""
+    out = []
+    for ptr, b, h in cicd_scope.changes(base_doc if base_doc is not None else {}, head_doc if head_doc is not None else {}):
+        rule = cicd_scope.rule_for(scope["rules"], ptr)
+        c = {"pointer": ptr, "change": "removed" if h is cicd_scope.MISSING else "added" if b is cicd_scope.MISSING else "changed",
+             "agentScope": (rule or {}).get("agentScope", "human")}
+        if b is not cicd_scope.MISSING:
+            c["before"] = b
+        if h is not cicd_scope.MISSING:
+            c["after"] = h
+        out.append(c)
+    return out
+
+
+def check(path, args):
+    base = base_text(args, path) if args.agent else None
+    contract = json.loads(Path(args.contract).read_text()) if args.agent else None
+    return check_texts(Path(path).read_text(), path, base, args.agent, contract)[0]
+
+
+def serve(addr, contract_path):
+    """glidepath-api's validator sidecar: POST /validate {head, base?, agent?} -> {valid, problems, changes,
+    contractVersion}. base null means no file yet (every field counts as added); no base key means no changes are
+    reported. Loopback only in the pod; nothing here authenticates."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    contract = json.loads(Path(contract_path).read_text())
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):   # the API's audit line is the record; the kubelet's probe would fill the log
+            pass
+
+        def answer(self, code, obj):
+            body = json.dumps(obj, default=str).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            self.answer(200, {"ok": True}) if self.path == "/healthz" else self.answer(404, {"error": "not found"})
+
+        def do_POST(self):
+            if self.path != "/validate":
+                return self.answer(404, {"error": "not found"})
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > 1 << 20:
+                return self.answer(413, {"error": "the body is over 1 MiB"})
+            try:
+                req = json.loads(self.rfile.read(n))
+            except ValueError as e:
+                return self.answer(400, {"error": f"the body is not JSON: {e}"})
+            if not isinstance(req, dict) or not isinstance(req.get("head"), str):
+                return self.answer(400, {"error": "the body is an object: head (the cicd.yaml text), base (the text, or null), agent (bool)"})
+            base = req.get("base")
+            if base is not None and not isinstance(base, str):
+                return self.answer(400, {"error": "base is the file's text, or null for no file yet"})
+            probs, head, base_doc = check_texts(req["head"], "cicd.yaml", base, bool(req.get("agent", False)), contract)
+            changes = []
+            if head is not None and "base" in req and (base is None or base_doc is not None):
+                changes = changes_of(base_doc, head, contract["scope"])
+            self.answer(200, {"valid": not any(p["severity"] == "error" for p in probs), "problems": probs,
+                              "changes": changes, "contractVersion": contract["contractVersion"]})
+
+    host, _, port = addr.rpartition(":")
+    httpd = ThreadingHTTPServer((host or "127.0.0.1", int(port)), Handler)
+    print(f"glidepath-validate: serving on {addr} (contract {contract['contractVersion']})", file=sys.stderr, flush=True)
+    httpd.serve_forever()
 
 
 def main():
     ap = argparse.ArgumentParser(description="Check a cicd.yaml: schema, conventions, and (with --agent) what an agent may change.")
-    ap.add_argument("files", nargs="+")
+    ap.add_argument("files", nargs="*")
     ap.add_argument("--format", choices=["text", "json"], default="text")
     ap.add_argument("--agent", action="store_true", help="also apply the GP-SCOPE rules to the change from the base")
     ap.add_argument("--base", help="the file before the change (with --agent)")
     ap.add_argument("--base-ref", help="a git ref holding the file before the change (with --agent)")
     ap.add_argument("--contract", default=str(CONTRACT_PATH))
+    ap.add_argument("--serve", metavar="HOST:PORT", help="run as glidepath-api's validator sidecar instead of checking files")
     args = ap.parse_args()
+    if args.serve:
+        if args.files or args.agent or args.base or args.base_ref:
+            ap.error("--serve takes no files or other flags")
+        serve(args.serve, args.contract)
+        return 0
+    if not args.files:
+        ap.error("a cicd.yaml file is required (or --serve)")
     if args.agent and not (args.base or args.base_ref):
         ap.error("--agent needs --base or --base-ref")
     if args.base and len(args.files) > 1:

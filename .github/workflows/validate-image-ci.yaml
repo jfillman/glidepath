@@ -61,29 +61,32 @@ jobs:
           echo "pushed ${image} for ${archs}"
           [ "${archs}" = "amd64,arm64" ] || { echo "expected amd64,arm64, got ${archs}"; exit 1; }
           echo "image=${image}" >> "$GITHUB_OUTPUT"
-      # Applied to main as it is now, not to this run's commit, and never backwards: see api-ci.yaml's own step. A
-      # values.yaml without the key (before the check shipped) is left alone.
-      - name: Set cicdValidatorImage in glidepath-catalog's values.yaml
+      # Applied to main as it is now, not to this run's commit, and never backwards: see api-ci.yaml's own step. Both
+      # charts run this image (the catalog's cicd-validate check, the control plane's API sidecar); a values.yaml
+      # without the key is left alone.
+      - name: Set cicdValidatorImage in the catalog's and the control plane's values.yaml
         env:
           IMAGE: ${{ steps.image.outputs.image }}
         run: |
           set -euo pipefail
-          values=charts/glidepath-catalog/values.yaml
+          files="charts/glidepath-catalog/values.yaml charts/glidepath-control-plane/values.yaml"
           mine="$(git rev-parse HEAD)"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           for attempt in 1 2 3 4 5; do
             git fetch -q origin main
             git checkout -q -B bump origin/main
-            current="$(sed -n 's|^cicdValidatorImage: .*:sha-||p' "${values}")"
-            if [[ -n "${current}" ]] && git cat-file -e "${current}^{commit}" 2>/dev/null \
-              && ! git merge-base --is-ancestor "${current}" "${mine}"; then
-              echo "main already runs sha-${current}, which this run's commit does not contain; leaving cicdValidatorImage alone"
-              exit 0
-            fi
-            sed -i "s|^cicdValidatorImage: .*|cicdValidatorImage: ${IMAGE}|" "${values}"
+            for values in ${files}; do
+              current="$(sed -n 's|^cicdValidatorImage: .*:sha-||p' "${values}")"
+              if [[ -n "${current}" ]] && git cat-file -e "${current}^{commit}" 2>/dev/null \
+                && ! git merge-base --is-ancestor "${current}" "${mine}"; then
+                echo "${values} already runs sha-${current}, which this run's commit does not contain; leaving it alone"
+                continue
+              fi
+              sed -i "s|^cicdValidatorImage: .*|cicdValidatorImage: ${IMAGE}|" "${values}"
+            done
             if git diff --quiet; then
-              echo "cicdValidatorImage is already ${IMAGE}, or values.yaml has no such key yet"
+              echo "cicdValidatorImage is already ${IMAGE} wherever it is set"
               exit 0
             fi
             git commit -qam "Bump glidepath-validate image to ${IMAGE}"
