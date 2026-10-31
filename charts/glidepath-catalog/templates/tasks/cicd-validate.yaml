@@ -63,7 +63,6 @@ spec:
         set -euo pipefail
         source "${PLATFORM_LIB}/github-app.sh"
         printf false > "$(results.changed.path)"
-        printf 'cicd.yaml unchanged' > "$(results.findings-summary.path)"
 
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
@@ -103,6 +102,9 @@ spec:
         done
         if ! jq -e 'index("cicd.yaml")' <<<"${paths}" >/dev/null; then
           echo "PR #${pr} leaves cicd.yaml unchanged: nothing to validate"
+          # Written here, and only here: this step runs as the toolbox's root, the validate step as the validator
+          # image's own user, which cannot overwrite a result file root created (gate-api#36, 2026-10-31).
+          printf 'cicd.yaml unchanged' > "$(results.findings-summary.path)"
           exit 0
         fi
         printf true > "$(results.changed.path)"
@@ -166,7 +168,10 @@ spec:
             print(f"{p['severity'].upper():7} {p['rule']}  {p['pointer']}: {p['message']}" + (f"\n        fix: {p['hint']}" if p.get("hint") else ""))
         rules = ", ".join(sorted({p["rule"] for p in errors}))
         summary = (f"{len(errors)} error(s): {rules}" if errors else "valid") + (f", {len(warnings)} warning(s)" if warnings else "")
-        Path("$(results.findings-summary.path)").write_text(summary)
+        try:
+            Path("$(results.findings-summary.path)").write_text(summary)
+        except OSError as e:  # the verdict is in the log and the exit code either way
+            print(f"(the findings-summary result could not be written: {e})")
         if errors:
             print(f"FAIL: cicd-validate - {summary}. Fix cicd.yaml and push, or `tools/glidepath-validate cicd.yaml` locally first.")
             sys.exit(1)
