@@ -519,6 +519,25 @@ app's namespace with it. Neither is cached (one ConfigMap list, two Event lists)
 is unchanged. For this glidepath-api's ClusterRole adds `list` on core `events`, cluster-wide (it already lists
 ConfigMaps for the per-app records).
 
+### Paging and ETags
+
+`GET /v1/live`, `GET /v1/releases` and `GET /v1/releases/events` page and carry an ETag (contract 0.9.0).
+
+- **Paging.** Pass `limit` (1 to 1000) to get at most that many items, sorted by namespace and then name. An Event is
+  sorted by everything it says, since it has no name in the answer. When more items follow, the answer has
+  `continue`: pass it back with the same `limit`. The next page starts after the last item served, so items that
+  come or go between pages are neither repeated nor skipped. Without `limit` the list is whole and in its usual order,
+  as before 0.9.0.
+- **ETags.** Every answer has an `ETag`, a hash of its bytes, and `Cache-Control: private, no-cache`. A poller that
+  sends the ETag back in `If-None-Match` gets 304 with no body while the answer is unchanged. The call is still
+  authenticated and authorized first, so a 304 never reaches a caller who may not read the list.
+
+```shell
+# the first 50 release records, then the rest page by page
+curl -s ".../v1/releases?limit=50" | jq -r .continue
+curl -s ".../v1/releases?limit=50&continue=<token>"
+```
+
 ## Explain
 
 `explain` reads the run and each failed TaskRun's archived log. For each one, it takes the first step
