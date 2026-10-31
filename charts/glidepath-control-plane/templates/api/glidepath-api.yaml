@@ -314,7 +314,7 @@ spec:
         - name: api
           image: {{ .Values.apiImage }}
           imagePullPolicy: IfNotPresent
-          ports: [{ containerPort: 8080, name: http }]
+          ports: [{ containerPort: 8080, name: http }, { containerPort: 9090, name: metrics }]
           env:
             - name: DELEGATES
               value: {{ join "," (.Values.api.delegates | default list) | quote }}
@@ -337,6 +337,9 @@ spec:
             # POST /v1/apps/{app}/cicd/validations asks the validator sidecar below, on the pod's loopback.
             - name: VALIDATOR_URL
               value: http://127.0.0.1:8081
+            # Live streams one replica serves (GET /v1/apps/{app}/live/stream).
+            - name: LIVE_MAX_STREAMS
+              value: {{ .Values.api.liveMaxStreams | default 200 | quote }}
             # Events: the buffer's bounds, and this pod for the fan-out to its peers.
             {{- $events := .Values.api.events | default dict }}
             - name: EVENTS_MAX
@@ -421,7 +424,7 @@ metadata:
     hangar.io/subcomponent: "glidepath-api"
 spec:
   selector: { app: glidepath-api }
-  ports: [{ name: http, port: 8080, targetPort: http }]
+  ports: [{ name: http, port: 8080, targetPort: http }, { name: metrics, port: 9090, targetPort: metrics }]
 ---
 # The events tap. The broker (templates/broker/eventlistener.yaml) runs every Trigger in every namespace
 # for every event, so this one sees them all: its only interceptor hands each event, with its

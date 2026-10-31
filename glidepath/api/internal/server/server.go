@@ -27,6 +27,7 @@ import (
 	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
 	"github.com/glidepath/api/internal/live"
+	"github.com/glidepath/api/internal/metrics"
 	"github.com/glidepath/api/internal/pipelineruns"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
@@ -58,7 +59,11 @@ type Server struct {
 	Version     int                    // the contract's contractVersion
 	Log         *slog.Logger
 	Now         func() time.Time
+	Metrics     *metrics.Metrics // nil: none recorded
 }
+
+// streamOps answer for as long as their viewer stays: counted, never timed.
+var streamOps = map[string]bool{"streamLiveRuns": true, "streamEvents": true}
 
 // op describes one operation, for authorization and the audit line.
 type op struct {
@@ -219,6 +224,7 @@ func (r *recorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 func (s *Server) wrap(o op, h handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		done := s.Metrics.Start(o.id, o.tier, streamOps[o.id])
 		rec := &recorder{ResponseWriter: w, status: http.StatusOK}
 		write := o.tier != "T0"
 		var caller *auth.Caller
@@ -272,8 +278,15 @@ func (s *Server) wrap(o op, h handler) http.Handler {
 			if status == http.StatusUnauthorized || status == http.StatusForbidden {
 				decision = "deny"
 			}
-			writeJSON(rec, status, body)
+			if r.Context().Err() != nil {
+				// The caller went away (Tower's poll aborted, a viewer closed the tab): there is no one to answer, and it
+				// is not the API failing.
+				rec.status = metrics.StatusClientClosed
+			} else {
+				writeJSON(rec, status, body)
+			}
 		}
+		done(rec.status, decision)
 		attrs := []any{"op", o.id, "tier", o.tier, "app", appName, "decision", decision, "status", rec.status,
 			"ms", time.Since(start).Milliseconds()}
 		if caller != nil {
