@@ -171,7 +171,10 @@ func classify(err error) (int, apiError) {
 		lvGone live.Gone
 		ciInv  cicd.Invalid
 	)
+	var pgInv pageInvalid
 	switch {
+	case errors.As(err, &pgInv):
+		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", "page with limit, then pass the answer's continue back with the same limit"}
 	case errors.As(err, &ciInv):
 		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
 	case errors.Is(err, live.ErrBusy):
@@ -472,12 +475,17 @@ func fleetNamespace(app *apps.App) string {
 }
 
 // listFleetLiveRuns is every PipelineRun in the cluster (or the ?app= namespace) right now.
-func (s *Server) listFleetLiveRuns(ctx context.Context, w http.ResponseWriter, _ *http.Request, _ *auth.Caller, app *apps.App) error {
+func (s *Server) listFleetLiveRuns(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
+	p, err := readPage(r)
+	if err != nil {
+		return err
+	}
 	prs, err := s.Live.PipelineRuns(ctx, fleetNamespace(app))
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"pipelineRuns": prs})
+	page, next := paginate(prs, objKey, p)
+	writeList(w, r, map[string]any{"pipelineRuns": page}, next)
 	return nil
 }
 
@@ -507,7 +515,11 @@ func (s *Server) listReleases(ctx context.Context, w http.ResponseWriter, _ *htt
 
 // listFleetReleases is every release record in the cluster (or the ?app= app's), with its namespace and
 // labels: what Tower's Ops Wall polls. Not cached: one label-selected ConfigMap list.
-func (s *Server) listFleetReleases(ctx context.Context, w http.ResponseWriter, _ *http.Request, _ *auth.Caller, app *apps.App) error {
+func (s *Server) listFleetReleases(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
+	p, err := readPage(r)
+	if err != nil {
+		return err
+	}
 	name := ""
 	if app != nil {
 		name = app.Name
@@ -516,18 +528,28 @@ func (s *Server) listFleetReleases(ctx context.Context, w http.ResponseWriter, _
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"releases": recs})
+	page, next := paginate(recs, func(r releases.FleetRecord) string { return r.Namespace + "/" + r.Name }, p)
+	writeList(w, r, map[string]any{"releases": page}, next)
 	return nil
 }
 
 // listFleetReleaseEvents is the ReleaseStalled and ReleaseDrift Events about release records in the cluster
 // (or the ?app= namespace): Tower's drift view. Not cached.
-func (s *Server) listFleetReleaseEvents(ctx context.Context, w http.ResponseWriter, _ *http.Request, _ *auth.Caller, app *apps.App) error {
+func (s *Server) listFleetReleaseEvents(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
+	p, err := readPage(r)
+	if err != nil {
+		return err
+	}
 	evs, err := s.Releases.Events(ctx, fleetNamespace(app))
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": evs})
+	// An Event has no name in the answer: its key is everything it says.
+	key := func(e releases.Event) string {
+		return strings.Join([]string{e.Namespace, e.RecordName, e.Reason, e.At, e.Message}, "\x00")
+	}
+	page, next := paginate(evs, key, p)
+	writeList(w, r, map[string]any{"events": page}, next)
 	return nil
 }
 

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Glidepath API
-  version: 0.8.0
+  version: 0.9.0
   description: |
     Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
     contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec are reads (tier T0); phase 3
@@ -244,9 +244,14 @@ paths:
       x-glidepath-tier: T0
       parameters:
         - { $ref: "#/components/parameters/FleetApp" }
+        - { $ref: "#/components/parameters/PageLimit" }
+        - { $ref: "#/components/parameters/PageContinue" }
+        - { $ref: "#/components/parameters/IfNoneMatch" }
         - { $ref: "#/components/parameters/OnBehalfOf" }
       responses:
         "200":
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
           description: The PipelineRuns
           content:
             application/json:
@@ -255,6 +260,8 @@ paths:
                 required: [pipelineRuns]
                 properties:
                   pipelineRuns: { type: array, items: { $ref: "#/components/schemas/KubeObject" } }
+                  continue: { type: string, description: "Present when more items follow: pass it back as continue, with the same limit" }
+        "304": { $ref: "#/components/responses/NotModified" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
@@ -302,9 +309,14 @@ paths:
       x-glidepath-tier: T0
       parameters:
         - { $ref: "#/components/parameters/FleetApp" }
+        - { $ref: "#/components/parameters/PageLimit" }
+        - { $ref: "#/components/parameters/PageContinue" }
+        - { $ref: "#/components/parameters/IfNoneMatch" }
         - { $ref: "#/components/parameters/OnBehalfOf" }
       responses:
         "200":
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
           description: The records
           content:
             application/json:
@@ -313,6 +325,8 @@ paths:
                 required: [releases]
                 properties:
                   releases: { type: array, items: { $ref: "#/components/schemas/FleetRelease" } }
+                  continue: { type: string, description: "Present when more items follow: pass it back as continue, with the same limit" }
+        "304": { $ref: "#/components/responses/NotModified" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
@@ -329,9 +343,14 @@ paths:
       x-glidepath-tier: T0
       parameters:
         - { $ref: "#/components/parameters/FleetApp" }
+        - { $ref: "#/components/parameters/PageLimit" }
+        - { $ref: "#/components/parameters/PageContinue" }
+        - { $ref: "#/components/parameters/IfNoneMatch" }
         - { $ref: "#/components/parameters/OnBehalfOf" }
       responses:
         "200":
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
           description: The Events
           content:
             application/json:
@@ -340,6 +359,8 @@ paths:
                 required: [events]
                 properties:
                   events: { type: array, items: { $ref: "#/components/schemas/ReleaseEvent" } }
+                  continue: { type: string, description: "Present when more items follow: pass it back as continue, with the same limit" }
+        "304": { $ref: "#/components/responses/NotModified" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
@@ -742,6 +763,23 @@ components:
     Result: { name: result, in: path, required: true, schema: { type: string, pattern: "^[0-9a-f-]{36}$" } }
     RunName: { name: name, in: path, required: true, description: A live PipelineRun's name, schema: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{0,252}$" } }
     Env: { name: env, in: path, required: true, description: An environment in the app's cicd.yaml, schema: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$" } }
+    PageLimit:
+      name: limit
+      in: query
+      description: >-
+        Page the list: at most this many items, sorted by namespace then name (an Event by everything it says). Without
+        it the list is whole, in its usual order.
+      schema: { type: integer, minimum: 1, maximum: 1000 }
+    PageContinue:
+      name: continue
+      in: query
+      description: The previous page's continue, with the same limit. The next page starts after the last item served.
+      schema: { type: string }
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      description: The ETag of an answer already held. When the answer would be the same, it is 304 with no body.
+      schema: { type: string }
     FleetApp:
       name: app
       in: query
@@ -784,7 +822,15 @@ components:
       required: false
       description: The person a delegate (Tower) acts for. Refused from anyone not in the chart's api.delegates; required on a delegate's write (GP-AUTH-004). Recorded in the audit line.
       schema: { type: string, maxLength: 256 }
+  headers:
+    ETag:
+      description: A hash of the answer's bytes. Send it back in If-None-Match to get 304 while nothing changed.
+      schema: { type: string }
   responses:
+    NotModified:
+      description: The answer is the one the If-None-Match ETag names; no body
+      headers:
+        ETag: { $ref: "#/components/headers/ETag" }
     Error:
       description: A refusal or failure with a stable rule id
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
