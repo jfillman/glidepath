@@ -240,6 +240,7 @@ change management sets it advisory the same way. Today `qa` and `api-compat` ([a
 | `qa` | A passing, recent check ride from the shared check-rides repository, attested on the promoted image ([testing.md](testing.md)) | real | no (advisory) |
 | `policy-validation` | The release's environments rendered and evaluated offline (Kyverno CLI) against the target cluster's admission policies from its GitOps repo; only Deny/Enforce findings block ([policy-validation.md](policy-validation.md)) | real | yes |
 | `agent-gates` | Agent identity and scope: Clearance's record of the PR its agent opened, the same head and trailers, only paths that agent may change; a person's or release PR passes as not-agent ([agent-gates.md](agent-gates.md)) | real | yes |
+| `clearance-gate` | Clearance's deployment gate: the release classified by what its rendered manifests change (tier 0-3) and cleared by policy or by the app's owners in Tower; red while holding ([clearance-gate.md](clearance-gate.md)) | real | no (advisory until every gitops repo has the check) |
 | `image-promotion` | Only with catalog `promotion.enabled`: the release image copied by digest to the Flight registry with its signatures and attestations, plus a promotion attestation ([registries.md](registries.md)) | real | yes |
 
 **How `qa` judges a release (2026-10-19, phase 3 of [testing.md](testing.md)).** The gate never runs tests. It
