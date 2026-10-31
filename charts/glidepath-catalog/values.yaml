@@ -48,6 +48,11 @@ rbac:
 # 2026-10-24: bumped for oasdiff 1.33.0 (the api-compat release check's OpenAPI diff).
 # 2026-10-26: bumped for the Kyverno CLI 1.19.0 (the policy-validation release check, ADR-0028).
 toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-26-kyverno
+# The image the cicd-validate check (tasks/cicd-validate.yaml, docs/admin/contract.md) runs `glidepath validate`
+# with: tools/validate.Containerfile, carrying the validator, the schema and the contract of one commit of this repo.
+# Public, like the toolbox. validate-image-ci publishes it on every change to those files and sets this line to the
+# new immutable sha- tag (the api-ci loop), so it is not hand-edited.
+cicdValidatorImage: ghcr.io/jfillman/glidepath-validate:sha-ecdf9f1
 # The shared Trivy server image-scan.yaml scans against (glidepath-control-plane's trivyServer). Empty, or a
 # server that does not answer /healthz, means each scan downloads the DB itself (the pre-2026-10-09 behaviour).
 trivyServerUrl: http://trivy-server.platform-system.svc.cluster.local:4954

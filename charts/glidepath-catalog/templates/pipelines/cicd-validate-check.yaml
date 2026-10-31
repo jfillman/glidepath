@@ -1,0 +1,48 @@
+# catalog/pipelines/cicd-validate-check.yaml
+#
+# The cicd-validate check's Pipeline (docs/admin/contract.md): one PaC check, cicd-validate-, on every PR to main of
+# an onboarded app repo (.tekton/pull-request-cicd-validate.yaml). The PR comment is posted only when the PR
+# changes cicd.yaml, so every other PR gets the green check and no comment.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: cicd-validate-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: glidepath validate on the cicd.yaml a pull request changes; an agent's PR also meets the GP-SCOPE rules.
+  params:
+    - { name: repo-url, type: string }
+    - { name: revision, type: string }
+    - { name: pr-number, type: string, default: "" }
+  tasks:
+    - name: cicd-validate
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: cicd-validate }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+  finally:
+    - name: comment-pr
+      when:
+        - { input: $(params.pr-number), operator: notin, values: [""] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: comment-pr-check-result }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: gate-name, value: cicd-validate }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: status, value: $(tasks.status) }
+        - { name: post-comment, value: $(tasks.cicd-validate.results.changed) }
