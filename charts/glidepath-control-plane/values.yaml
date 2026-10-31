@@ -62,7 +62,7 @@ apiImage: ghcr.io/jfillman/glidepath-api:sha-f99adb0
 # 127.0.0.1:8081` for POST /v1/apps/{app}/cicd/validations (docs/admin/api.md#validate-a-cicdyaml-change): the same
 # validator the catalog's cicd-validate check runs, so the API has no second copy of the rules. validate-image-ci sets
 # this line and the catalog's to the same sha- tag; not hand-edited.
-cicdValidatorImage: ghcr.io/jfillman/glidepath-validate:sha-f99adb0
+cicdValidatorImage: ghcr.io/jfillman/glidepath-validate:sha-f4495c5
 api:
   replicas: 2
   # Usernames (as TokenReview reports them) that may send X-Glidepath-On-Behalf-Of: Tower's
