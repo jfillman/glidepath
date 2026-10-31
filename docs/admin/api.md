@@ -669,7 +669,7 @@ includes `events`, so `api.readers` can read the stream.
 **Why SSE and not AMQP.** The Glidepath API spec's phase 5 says "AMQP topics for Autopilot". The platform runs no
 RabbitMQ for Glidepath, and adding one for a single subscriber costs more than it buys, so the API serves SSE with
 resume instead. `routingKey` keeps the topic semantics, so an AMQP bridge (stream in, publish with that key) can be
-added later without any subscriber changing what it matches.
+added later without any subscriber changing what it matches. [ADR-0030](adr/0030-durable-event-fan-out-over-amqp.md) proposes that bridge.
 
 ### How events get in
 
