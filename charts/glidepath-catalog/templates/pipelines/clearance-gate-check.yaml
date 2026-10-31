@@ -1,0 +1,64 @@
+# catalog/pipelines/clearance-gate-check.yaml
+#
+# The `clearance-gate` guardrail's Pipeline (Clearance docs/gate.md, decided 2026-10-31): one task, clearance-gate,
+# registers the release PR's protected environments with Clearance's deployment gate and fails while the change holds
+# for people or is denied; a finally comment-pr block reports either way (the full report travels in the gate-report
+# ConfigMap). class process, like itsm: whether people have cleared a change is a decision, not a property of the
+# image, so a rollback is judged like any release (its tree is a change too); no rollback-advisory copy. The
+# registry's `required` applies: false renders only the -advisory copy (onError: continue).
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: clearance-gate-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Registers a gitops release PR's protected environments with Clearance's deployment gate (tier 0-3 from the rendered diff) and fails while the change holds or is denied.
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+    - name: app-name
+      type: string
+    - name: pr-number
+      type: string
+      default: ""
+      description: "PaC's pull_request.number - the change registered is this PR's head; addresses the finally-block PR comment."
+  tasks:
+    {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "clearance-gate")) "true" }}
+    - name: {{ ternary "register" "register-advisory" $required }}
+      {{- if not $required }}
+      onError: continue
+      {{- end }}
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: clearance-gate }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+  finally:
+    - name: comment-pr
+      when:
+        - { input: $(params.pr-number), operator: notin, values: [""] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: comment-pr-check-result }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: gate-name, value: clearance-gate }
+        - { name: advisory-reason, value: {{ ternary "rollback" "not-required" $required | quote }} }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: status, value: $(tasks.status) }
