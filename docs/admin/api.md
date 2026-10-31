@@ -811,3 +811,24 @@ The PrometheusRule `glidepath-api` holds the alerts an SLO cannot raise. Every r
 sum by (code) (rate(glidepath_api_requests_total[5m]))
 histogram_quantile(0.9, sum by (le, op) (rate(glidepath_api_request_duration_seconds_bucket[5m])))
 ```
+
+### Traces
+
+Each call is a span named for its operation (`whoami`, `listLiveRuns`, `promoteEnvironment`, ...), with the
+attributes `glidepath.op`, `glidepath.tier`, `glidepath.app`, `glidepath.decision`, `glidepath.caller` and
+`glidepath.on_behalf_of`. A caller that sends a W3C `traceparent` gets its trace joined. The calls the API makes for it
+are child spans: the API server, Tekton Results, Testkube, Rekor, the broker, GitHub and the validator sidecar. A
+5xx marks the span as an error; a 4xx records the error without marking it.
+
+The background work is not traced: the live hub's polls and the cache warmers would start a root trace every few
+seconds. The probes (`/healthz`, `/readyz`) are not traced either.
+
+Every answer carries the trace id in `X-Glidepath-Trace-Id`, and the audit line carries it as `traceId`. Look a trace
+up in Grafana's Tempo datasource by that id.
+
+The chart sends spans over OTLP/HTTP to `api.tracing.otlpEndpoint`, the cluster's OpenTelemetry collector by default,
+which exports them to Tempo. `api.tracing.sampleRatio` (default 1) samples the traces the API starts. A caller's
+sampling decision is always followed. An empty `otlpEndpoint` exports nothing, and the `traceparent` is still passed
+on to the calls the API makes.
+
+Backstage does not send a `traceparent` yet, so a Tower call starts its trace in glidepath-api.

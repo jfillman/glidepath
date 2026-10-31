@@ -16,6 +16,8 @@
 //
 //	LISTEN              address to serve on (default :8080)
 //	METRICS_LISTEN      address /metrics is served on, without auth (default :9090)
+//	OTEL_EXPORTER_OTLP_ENDPOINT  OTLP/HTTP collector for traces (unset: none exported); OTEL_TRACES_SAMPLER/_ARG
+//	                    as the SDK reads them (default parentbased_always_on)
 //	LIVE_MAX_STREAMS    live streams (GET /v1/apps/{app}/live/stream) per replica (default 200)
 //	CONTRACT_PATH       contract/glidepath-contract.json, baked into the image (default /contract/glidepath-contract.json)
 //	RESULTS_URL         the Results relay (default http://tekton-results-relay.platform-system.svc.cluster.local:8080)
@@ -72,6 +74,7 @@ import (
 	"github.com/glidepath/api/internal/results"
 	"github.com/glidepath/api/internal/server"
 	"github.com/glidepath/api/internal/testkube"
+	"github.com/glidepath/api/internal/tracing"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -116,10 +119,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("glidepath-api: %v", err)
 	}
+	stopTracing, err := tracing.Setup(context.Background(), "contract-"+strconv.Itoa(version))
+	if err != nil {
+		log.Fatalf("glidepath-api: tracing: %v", err)
+	}
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		log.Fatalf("glidepath-api: in-cluster config: %v", err)
 	}
+	// The API server calls a traced call makes are its child spans.
+	cfg.Wrap(tracing.Transport)
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Fatalf("glidepath-api: kubernetes client: %v", err)
@@ -157,7 +166,7 @@ func main() {
 	broker := &github.Broker{
 		URL:       env("BROKER_URL", "http://cdevents-broker-auth.platform-system.svc.cluster.local:8080"),
 		TokenPath: env("BROKER_TOKEN_PATH", "/var/run/secrets/glidepath/broker/token"),
-		HTTP:      &http.Client{Timeout: 30 * time.Second},
+		HTTP:      tracing.Client(&http.Client{Timeout: 30 * time.Second}),
 	}
 	logger := server.NewLogger()
 	store := &events.Store{
@@ -178,7 +187,7 @@ func main() {
 		peers = &events.Peers{
 			CS: cs, Namespace: podNS, Service: "glidepath-api", Port: 8080, SelfIP: ip,
 			TokenPath: env("EVENTS_PEER_TOKEN_PATH", "/var/run/secrets/glidepath/peer/token"),
-			HTTP:      &http.Client{Timeout: 10 * time.Second},
+			HTTP:      tracing.Client(&http.Client{Timeout: 10 * time.Second}),
 			Log:       logger,
 			TTL:       5 * time.Second,
 		}
@@ -189,7 +198,7 @@ func main() {
 		Apps: &apps.Resolver{CS: cs, TTL: 5 * time.Minute},
 		Results: &results.Client{
 			Base: env("RESULTS_URL", "http://tekton-results-relay.platform-system.svc.cluster.local:8080"),
-			HTTP: &http.Client{Timeout: 30 * time.Second},
+			HTTP: tracing.Client(&http.Client{Timeout: 30 * time.Second}),
 		},
 		Releases: releases.Reader{CS: cs},
 		// Evidence reads each app's registry-credentials Secret per request (never cached), the Fulcio
@@ -200,7 +209,7 @@ func main() {
 			Credentials: evidence.SecretCredentials(cs),
 			RegistryURL: "https://" + evidence.Registry,
 			RekorURL:    env("REKOR_URL", "http://rekor-server.rekor-system.svc.cluster.local"),
-			HTTP:        &http.Client{Timeout: 30 * time.Second},
+			HTTP:        tracing.Client(&http.Client{Timeout: 30 * time.Second}),
 			Log:         logger,
 			Promotion:   promotion,
 			// Flight images are read with the Flight registry's read credential (the chart's
@@ -211,7 +220,7 @@ func main() {
 		},
 		Tests: &testkube.Client{
 			Base: env("TESTKUBE_URL", "http://testkube-api-server.testkube.svc.cluster.local:8088"),
-			HTTP: &http.Client{Timeout: 30 * time.Second},
+			HTTP: tracing.Client(&http.Client{Timeout: 30 * time.Second}),
 			Log:  logger,
 		},
 		Runs: &pipelineruns.Client{Store: pipelineruns.NewKubeStore(dyn)},
@@ -241,7 +250,7 @@ func main() {
 			},
 			Validator: &cicd.Validator{
 				URL:  env("VALIDATOR_URL", "http://127.0.0.1:8081"),
-				HTTP: &http.Client{Timeout: 20 * time.Second},
+				HTTP: tracing.Client(&http.Client{Timeout: 20 * time.Second}),
 			},
 		},
 		Events: store,
@@ -273,7 +282,7 @@ func main() {
 			log.Fatalf("glidepath-api metrics: %v", err)
 		}
 	}()
-	srv := &http.Server{Addr: env("LISTEN", ":8080"), Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: env("LISTEN", ":8080"), Handler: tracing.Handler(s.Handler()), ReadHeaderTimeout: 10 * time.Second}
 	// Event streams never finish on their own; end them when the server stops.
 	srv.RegisterOnShutdown(store.Close)
 	go func() {
@@ -305,4 +314,5 @@ func main() {
 	defer cancel()
 	srv.Shutdown(ctx)
 	msrv.Shutdown(ctx)
+	stopTracing(ctx)
 }
