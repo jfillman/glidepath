@@ -337,6 +337,28 @@ starts with `rollback-of` the current release's id, `rollback-reason`, and `conf
 Tower held its request up to 90 s for the run's PR; the API answers as soon as the run exists, and the PR
 appears where Tower's release tracker already follows the run (`GET /release-run` accepts these names).
 
+### Following a release run
+
+`GET /v1/apps/{app}/releases/runs/{name}` (API 0.8.0, tier T0, `get` on `releases`) is the read that follows the run a
+promote or rollback just started (its `pipelineRun`), from the moment of the click until the PR shows and beyond:
+
+```json
+{"name": "promote-prod-abc1234-0a1b2c", "kind": "release", "env": "prod", "cluster": "hangar-prod",
+ "initiator": "user:default/jfillman", "status": "running", "startTime": "2026-10-31T10:00:00Z",
+ "tasks": [{"name": "preflight", "taskRun": "...-preflight", "status": "succeeded", "startTime": "..."},
+           {"name": "open-release-pr", "taskRun": "...-open-release-pr", "status": "running", "startTime": "..."}],
+ "chainId": "7200a685-...", "prUrl": "", "changeRequest": "", "phase": "running", "record": null}
+```
+
+The run and its TaskRuns come from the cluster (never cached: it is followed one run at a time); the chain id is
+the preflight task's `chain-id` result, the PR and change request open-release-pr's `pr-url` and
+`change-request-number` once it has them, and `record` the release record that chain id names
+(`release-tracking-<chain-id>`). `phase` is the record's `state` as soon as there is one (`proposed`, `merged`,
+`progressing`, `healthy`, ...), else the run's own: `running`, `failed`, `cancelled`, or `finished` (it succeeded
+without writing a record). A PipelineRun that isn't a release run (`hangar.io/stage=release`) is `GP-API-400`. Once
+Tekton has deleted the run, about an hour after it finished, it is `GP-API-404`: the record stays, and `GET
+/v1/apps/{app}/releases` has it.
+
 ### Idempotency and dry run
 
 As for a re-run: the run's name is `<promote|rollback>-<env>-<sha8>-` (Tower's `runName`) plus the first 6 hex
@@ -452,6 +474,21 @@ timestamps, as `kubectl logs --timestamps` does. The namespace always comes from
 TaskRun, never from the request. A container the pod doesn't have, or one that hasn't started yet, is `GP-API-400`.
 A TaskRun or pod that is gone, or a TaskRun with no pod yet, is `GP-LIVE-404`: once the run has finished, read the
 archived log instead.
+
+**Pushed, not polled.** `GET /v1/apps/{app}/live/stream` (API 0.8.0, `list` on `runs`, like `live`) is the same
+answer as server-sent events: `event: snapshot` with every PipelineRun and TaskRun when it opens (the `live`
+shape), then `event: change` for each object that appears or moves, `{"type":"upsert","kind":"TaskRun","name":
+"...","object":{...}}`, or goes, `{"type":"delete","kind":"PipelineRun","name":"..."}`. A comment line every 15 s
+keeps proxies from closing it. There is no resume: a reconnect gets a fresh snapshot, which is the whole state,
+and a viewer that falls behind (256 changes queued) is closed with a `: lagged` comment and reconnects. Until
+2026-10-31 Tower's CI/CD tab polled `live` every 6 s per open tab, about 760 calls an hour each, every one through
+the dev cluster's API server proxy; a stream is one connection.
+
+On each replica one watch per namespace serves every viewer of it: it lists the namespace's PipelineRuns and
+TaskRuns every 2 s (through the same 2 s cache the polling reads use) and diffs by `resourceVersion`. It starts
+with the namespace's first viewer and stops with its last, so a namespace nobody watches costs nothing. A list
+rather than a Kubernetes watch keeps glidepath-api's RBAC as it is. A replica serves at most 200 streams
+(`LIVE_MAX_STREAMS`); one more is `GP-API-503`, and the viewer polls `live` instead.
 
 **The fleet.** `GET /v1/live` is every PipelineRun in the cluster; `GET /v1/live/taskruns?pipelineRuns=a,b` is the
 TaskRuns of just those runs (by their `tekton.dev/pipelineRun` label; at most 200 distinct names, each a lower-case
@@ -699,7 +736,7 @@ Every refusal or failure is JSON with a stable `rule` and, where there is one, a
 | `GP-API-422` | 422 | The write can't be done as asked: out of order, a Ground target, an ineligible rollback target, nothing recorded to promote, no TriggerTemplate, or the cluster refused it (an admission policy or glidepath-api's RBAC). The `hint` says what would work; don't retry as is |
 | `GP-LIVE-404` | 404 | The live TaskRun or its pod is gone (Tekton deleted the finished run), or the TaskRun has no pod yet; read the archived log |
 | `GP-LOG-404` | 404 | The run exists, but Results archived no log for that TaskRun ([tekton-results.md](tekton-results.md#when-a-runs-logs-are-missing)) |
-| `GP-API-503` | 503 | This replica already serves its maximum number of event streams; retry, or read `GET /v1/events/recent` |
+| `GP-API-503` | 503 | This replica already serves its maximum number of event streams (retry, or read `GET /v1/events/recent`) or live streams (poll `GET /v1/apps/{app}/live`) |
 | `GP-API-502` | 502 | A source failed (the API server, Tekton Results, GHCR, Rekor, Testkube, GitHub or the token broker); retry |
 
 ## Audit

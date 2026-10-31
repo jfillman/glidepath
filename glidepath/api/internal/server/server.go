@@ -43,6 +43,7 @@ type Server struct {
 	Tests    *testkube.Client
 	Runs     *pipelineruns.Client
 	Live     *live.Client // PipelineRuns, TaskRuns and step logs as the cluster holds them now
+	LiveHub  *live.Hub    // GET /v1/apps/{app}/live/stream: one watch per namespace, shared by its viewers
 	Envs     *environments.Client
 	Cicd     *cicd.Client  // POST /v1/apps/{app}/cicd/validations
 	Events   *events.Store // nil: no event routes
@@ -85,6 +86,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/apps/{app}/runs/{result}/logs/{taskRun}", s.wrap(op{"getRunLog", "T0", "runs", "logs", "get", false}, s.getLog))
 	mux.Handle("GET /v1/apps/{app}/runs/{result}/explain", s.wrap(op{"explainRun", "T0", "runs", "logs", "get", false}, s.explainRun))
 	mux.Handle("GET /v1/apps/{app}/live", s.wrap(op{"listLiveRuns", "T0", "runs", "", "list", false}, s.listLiveRuns))
+	mux.Handle("GET /v1/apps/{app}/live/stream", s.wrap(op{"streamLiveRuns", "T0", "runs", "", "list", false}, s.streamLiveRuns))
 	mux.Handle("GET /v1/apps/{app}/live/taskruns/{taskRun}/logs/{container}", s.wrap(op{"getLiveLog", "T0", "runs", "logs", "get", false}, s.getLiveLog))
 	mux.Handle("GET /v1/runs", s.wrap(op{"listFleetRuns", "T0", "runs", "", "list", true}, s.listFleetRuns))
 	mux.Handle("GET /v1/live", s.wrap(op{"listFleetLiveRuns", "T0", "runs", "", "list", true}, s.listFleetLiveRuns))
@@ -92,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/releases", s.wrap(op{"listFleetReleases", "T0", "releases", "", "list", true}, s.listFleetReleases))
 	mux.Handle("GET /v1/releases/events", s.wrap(op{"listFleetReleaseEvents", "T0", "releases", "", "list", true}, s.listFleetReleaseEvents))
 	mux.Handle("GET /v1/apps/{app}/releases", s.wrap(op{"listReleases", "T0", "releases", "", "list", false}, s.listReleases))
+	mux.Handle("GET /v1/apps/{app}/releases/runs/{name}", s.wrap(op{"getReleaseRun", "T0", "releases", "", "get", false}, s.getReleaseRun))
 	mux.Handle("GET /v1/apps/{app}/releases/{chainId}", s.wrap(op{"getRelease", "T0", "releases", "", "get", false}, s.getRelease))
 	mux.Handle("GET /v1/apps/{app}/evidence", s.wrap(op{"getEvidence", "T0", "evidence", "", "get", false}, s.getEvidence))
 	mux.Handle("GET /v1/apps/{app}/tests", s.wrap(op{"listTests", "T0", "tests", "", "list", false}, s.listTests))
@@ -156,11 +159,16 @@ func classify(err error) (int, apiError) {
 		evQ    events.Invalid
 		lvNF   live.NotFound
 		lvInv  live.Invalid
+		lvGone live.Gone
 		ciInv  cicd.Invalid
 	)
 	switch {
 	case errors.As(err, &ciInv):
 		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
+	case errors.Is(err, live.ErrBusy):
+		return http.StatusServiceUnavailable, apiError{err.Error(), "GP-API-503", "this replica serves its maximum number of live streams; retry, or poll GET /v1/apps/{app}/live"}
+	case errors.As(err, &lvGone):
+		return http.StatusNotFound, apiError{err.Error(), "GP-API-404", "a finished run's release record stays: GET /v1/apps/{app}/releases"}
 	case errors.Is(err, events.ErrBusy):
 		return http.StatusServiceUnavailable, apiError{err.Error(), "GP-API-503", "this replica serves its maximum number of event streams; retry, or read GET /v1/events/recent"}
 	case errors.As(err, &evQ):

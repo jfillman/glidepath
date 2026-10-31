@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Glidepath API
-  version: 0.7.0
+  version: 0.8.0
   description: |
     Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
     contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec are reads (tier T0); phase 3
@@ -15,6 +15,9 @@ info:
     0.7.0 adds POST /v1/apps/{app}/cicd/validations: what a change to the app's cicd.yaml would mean (the schema, the
     conventions, an agent's scope, and every field it touches), the verdict the cicd-validate pull-request check will
     give, before anyone opens the pull request. It writes nothing.
+    0.8.0 adds GET /v1/apps/{app}/releases/runs/{name} (a release run followed from the moment promote or rollback names
+    it: status, tasks, chain id, PR and change request, the release record) and GET /v1/apps/{app}/live/stream (the app's
+    live runs as server-sent events: a snapshot, then each change).
 
     Every /v1 call needs a bearer token the cluster's TokenReview accepts, in `Authorization`, or in
     `X-Glidepath-Authorization` when the call comes through the API server's service proxy (which
@@ -156,6 +159,28 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/live/stream:
+    get:
+      operationId: streamLiveRuns
+      summary: The app's live runs as server-sent events, instead of polling GET /v1/apps/{app}/live
+      description: >-
+        Needs `list` on `runs.glidepath.hangar.io` in the app's namespace. `event: snapshot` first, with every PipelineRun
+        and TaskRun (the shape of GET /v1/apps/{app}/live), then `event: change` per object that appears or moves (type
+        upsert, with the object) or goes (type delete, its kind and name). A comment line every 15 s keeps the connection
+        open. No resume: a reconnect gets a fresh snapshot. A viewer that falls behind is closed with a `: lagged` comment
+        and reconnects. One list of the namespace every 2 s serves every viewer of it on a replica. 503 (GP-API-503)
+        when the replica serves its maximum of streams: poll GET /v1/apps/{app}/live instead.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: "text/event-stream: snapshot (LiveRuns), then change (LiveChange) events", content: { text/event-stream: { schema: { type: string } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/apps/{app}/live/taskruns/{taskRun}/logs/{container}:
     get:
       operationId: getLiveLog
@@ -335,6 +360,29 @@ paths:
           content:
             application/json:
               schema: { type: object, properties: { releases: { type: array, items: { $ref: "#/components/schemas/Release" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/releases/runs/{name}:
+    get:
+      operationId: getReleaseRun
+      summary: One release run, followed from the moment promote or rollback answers with its name
+      description: >-
+        Needs `get` on `releases.glidepath.hangar.io` in the app's namespace. The run as the cluster holds it (status,
+        tasks in the order they started), the chain id its preflight task minted, the PR and change request once
+        open-release-pr has them, and the release record that chain id names. `phase` is the record's state once there
+        is one (proposed, merged, progressing, healthy, ...), else the run's (running, failed, cancelled, or finished:
+        it succeeded without a record). 404 once Tekton has deleted the run (about an hour after it finished): the
+        record stays, GET /v1/apps/{app}/releases. 400 for a PipelineRun that is not a release run.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/RunName" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The release run, content: { application/json: { schema: { $ref: "#/components/schemas/ReleaseRun" } } } }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
@@ -1047,6 +1095,44 @@ components:
       type: object
       additionalProperties: true
       description: A Tekton object as the API server lists it, with metadata.managedFields dropped
+    LiveChange:
+      type: object
+      required: [type, kind, name]
+      properties:
+        type: { type: string, enum: [upsert, delete] }
+        kind: { type: string, enum: [PipelineRun, TaskRun] }
+        name: { type: string }
+        object: { $ref: "#/components/schemas/KubeObject" }
+    ReleaseRun:
+      type: object
+      required: [name, kind, status, tasks, phase]
+      properties:
+        name: { type: string }
+        kind: { type: string, description: "release, or the run's release-kind (rollback)" }
+        env: { type: string }
+        cluster: { type: string }
+        initiator: { type: string }
+        status: { type: string, enum: [pending, running, succeeded, failed, cancelled] }
+        reason: { type: string }
+        message: { type: string }
+        startTime: { type: string }
+        completionTime: { type: string }
+        tasks:
+          type: array
+          items:
+            type: object
+            required: [name, taskRun, status]
+            properties:
+              name: { type: string, description: The pipeline task }
+              taskRun: { type: string }
+              status: { type: string, enum: [pending, running, succeeded, failed, cancelled] }
+              startTime: { type: string }
+              completionTime: { type: string }
+        chainId: { type: string }
+        prUrl: { type: string }
+        changeRequest: { type: string }
+        phase: { type: string, description: "The record's state once there is one, else the run's (running, failed, cancelled, finished)" }
+        record: { nullable: true, allOf: [{ $ref: "#/components/schemas/Release" }] }
     LiveRuns:
       type: object
       required: [pipelineRuns, taskRuns]

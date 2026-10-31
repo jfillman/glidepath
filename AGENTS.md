@@ -18,7 +18,8 @@ Glidepath is Hangar's CI/CD engine: Tekton and Pipelines-as-Code, driven by one 
    environment (tier T2: it starts the app's release Pipeline, whose gitops PR a human merges; you cannot merge
    it). Re-run, promote and rollback need an `Idempotency-Key`; all take `?dryRun=true`. Read
    `GET /v1/apps/{app}/environments` (the order) and `.../environments/{env}/rollback-plan` (eligible targets)
-   first. `POST /v1/apps/{app}/cicd/validations` (tier T0, writes nothing) tells you what a `cicd.yaml` change
+   first; after a promote or rollback, follow its `pipelineRun` with `GET /v1/apps/{app}/releases/runs/{name}`
+   (status, tasks, PR, the release record and a one-word `phase`). `POST /v1/apps/{app}/cicd/validations` (tier T0, writes nothing) tells you what a `cicd.yaml` change
    would mean before you open its pull request: send `{"patch": {...}, "agent": true}` and read `valid`,
    `problems` and `changes`. *(planned)* previews and `cicd.yaml` pull requests opened for you (phase 3).
 

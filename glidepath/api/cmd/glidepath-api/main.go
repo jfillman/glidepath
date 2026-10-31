@@ -180,6 +180,7 @@ func main() {
 			TTL:       5 * time.Second,
 		}
 	}
+	liveRuns := &live.Client{Store: live.NewKubeStore(dyn, cs)}
 	s := &server.Server{
 		Auth: &auth.Auth{Reviewer: auth.NewKubeReviewer(cs), Delegates: delegates},
 		Apps: &apps.Resolver{CS: cs, TTL: 5 * time.Minute},
@@ -213,7 +214,10 @@ func main() {
 		Runs: &pipelineruns.Client{Store: pipelineruns.NewKubeStore(dyn)},
 		// Live runs, TaskRuns and step logs straight from the API server (phase 6b: Tower's live views moved
 		// here from its own Kubernetes proxy reads). Lists are cached 2 s; logs never.
-		Live: &live.Client{Store: live.NewKubeStore(dyn, cs)},
+		Live: liveRuns,
+		// GET /v1/apps/{app}/live/stream: one list per watched namespace every 2 s (through Live's cache), shared by
+		// every viewer of it on this replica.
+		LiveHub: &live.Hub{Client: liveRuns, MaxStreams: envInt("LIVE_MAX_STREAMS", 200), Log: logger},
 		// Promote and rollback read GitHub with a token the broker mints per request and per repo (read only, that
 		// one repo), and start the app's release Pipeline from its own TriggerTemplate.
 		Envs: &environments.Client{
