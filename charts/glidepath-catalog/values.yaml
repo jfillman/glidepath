@@ -52,7 +52,7 @@ toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-26-kyverno
 # with: tools/validate.Containerfile, carrying the validator, the schema and the contract of one commit of this repo.
 # Public, like the toolbox. validate-image-ci publishes it on every change to those files and sets this line to the
 # new immutable sha- tag (the api-ci loop), so it is not hand-edited.
-cicdValidatorImage: ghcr.io/jfillman/glidepath-validate:sha-ecdf9f1
+cicdValidatorImage: ghcr.io/jfillman/glidepath-validate:sha-c589add
 # The shared Trivy server image-scan.yaml scans against (glidepath-control-plane's trivyServer). Empty, or a
 # server that does not answer /healthz, means each scan downloads the DB itself (the pre-2026-10-09 behaviour).
 trivyServerUrl: http://trivy-server.platform-system.svc.cluster.local:4954
