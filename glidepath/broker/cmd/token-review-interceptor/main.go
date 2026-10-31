@@ -125,6 +125,7 @@ func main() {
 	mux.HandleFunc("/promoter-token", handlePromoterToken(clientset, appCreds, loadPromoter()))
 	mux.HandleFunc("/github-read-token", handleGitHubReadToken(clientset, dynClient, appCreds, loadGitHubReadCallers()))
 	mux.HandleFunc("/agent-installation-token", handleAgentInstallationToken(clientset, dynClient, loadAgentTokenCallers()))
+	mux.HandleFunc("/agent-pin", handleAgentPin(clientset, dynClient, appCreds))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	log.Println("cdevents-broker-auth interceptor listening on :8080 (plain HTTP - see comment above)")

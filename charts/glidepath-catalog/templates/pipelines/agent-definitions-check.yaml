@@ -1,0 +1,47 @@
+# catalog/pipelines/agent-definitions-check.yaml
+#
+# The `agent-definitions` PR check's Pipeline (docs/admin/agent-definitions.md): one task, agent-definitions, and the
+# PR comment. Delivered to every onboarded app repo; it runs only on a PR that changes agents/*.yaml (the onboarding
+# template's CEL), so a repo without agents never sees it.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: agent-definitions-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Reviews every agent definition a PR changes with Clearance.
+  params:
+    - { name: repo-url, type: string }
+    - { name: revision, type: string }
+    - { name: pr-number, type: string, default: "" }
+  tasks:
+    - name: review
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: agent-definitions }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+  finally:
+    - name: comment-pr
+      when:
+        - { input: $(params.pr-number), operator: notin, values: [""] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: comment-pr-check-result }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: gate-name, value: agent-definitions }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: status, value: $(tasks.status) }

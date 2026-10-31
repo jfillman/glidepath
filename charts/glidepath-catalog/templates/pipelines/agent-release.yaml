@@ -1,0 +1,29 @@
+# catalog/pipelines/agent-release.yaml: the agent release's Pipeline (tasks/agent-release.yaml), run on a push to
+# main that changes agents/*.yaml (the app-repo onboarding template push-agent-release.yaml).
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: agent-release
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Releases the agent definitions a push to main changed (Clearance's review, the pin PR, the deployment gate).
+  params:
+    - { name: repo-url, type: string }
+    - { name: revision, type: string }
+    - { name: before, type: string, default: "" }
+    - { name: app-name, type: string }
+  tasks:
+    - name: release
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: agent-release }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: before, value: $(params.before) }
+        - { name: app-name, value: $(params.app-name) }
