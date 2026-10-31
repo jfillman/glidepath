@@ -15,6 +15,8 @@
 // Configuration, all by environment:
 //
 //	LISTEN              address to serve on (default :8080)
+//	METRICS_LISTEN      address /metrics is served on, without auth (default :9090)
+//	LIVE_MAX_STREAMS    live streams (GET /v1/apps/{app}/live/stream) per replica (default 200)
 //	CONTRACT_PATH       contract/glidepath-contract.json, baked into the image (default /contract/glidepath-contract.json)
 //	RESULTS_URL         the Results relay (default http://tekton-results-relay.platform-system.svc.cluster.local:8080)
 //	REKOR_URL           Rekor, for evidence (default http://rekor-server.rekor-system.svc.cluster.local)
@@ -64,6 +66,7 @@ import (
 	"github.com/glidepath/api/internal/explain"
 	"github.com/glidepath/api/internal/github"
 	"github.com/glidepath/api/internal/live"
+	"github.com/glidepath/api/internal/metrics"
 	"github.com/glidepath/api/internal/pipelineruns"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
@@ -259,6 +262,17 @@ func main() {
 		Log:         logger,
 		Now:         time.Now,
 	}
+	s.Metrics = metrics.New(version, metrics.Gauges{
+		LiveWatches:  func() float64 { n, _ := s.LiveHub.Watching(); return float64(n) },
+		EventStreams: func() float64 { return float64(store.Streams()) },
+	})
+	// /metrics on its own port: a scrape needs no token, and nothing on it reaches a /v1 route.
+	msrv := &http.Server{Addr: env("METRICS_LISTEN", ":9090"), Handler: s.Metrics.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		if err := msrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("glidepath-api metrics: %v", err)
+		}
+	}()
 	srv := &http.Server{Addr: env("LISTEN", ":8080"), Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	// Event streams never finish on their own; end them when the server stops.
 	srv.RegisterOnShutdown(store.Close)
@@ -290,4 +304,5 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)
+	msrv.Shutdown(ctx)
 }

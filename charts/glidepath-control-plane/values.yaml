@@ -100,6 +100,14 @@ api:
     maxEvents: 2000
     maxAge: 24h
     maxStreams: 100
+  # GET /v1/apps/{app}/live/stream: how many live streams one replica serves at once (a full replica answers 503 and
+  # Tower polls instead). GlidepathApiLiveStreamsNearLimit fires at 90%.
+  liveMaxStreams: 200
+  # glidepath-api's own SLOs (templates/api/monitoring.yaml; docs/admin/api.md#observability), percent over Sloth's 30
+  # days. Rendered only where Sloth's PrometheusServiceLevel CRD is installed.
+  slo:
+    availability: 99.5 # calls that did not answer 5xx
+    latency: 95 # non-streaming calls answered within 2.5 s
 
 # Shared Trivy server (templates/trivy/trivy-server.yaml): holds the vulnerability DB so the catalog's
 # image-scan/generate-sbom pods stop downloading it. Keep the tag equal to TRIVY_VERSION in

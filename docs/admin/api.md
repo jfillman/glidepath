@@ -756,3 +756,58 @@ audit line when it ends, so its `ms` is how long it was open.
 ```shell
 kubectl logs -n platform-system deploy/glidepath-api | grep '"msg":"audit"'
 ```
+A call whose caller went away before it answered (Tower aborting a poll, a viewer closing the tab) is recorded with
+`status` 499 and is not answered: until 2026-10-31 it read as a 502.
+
+## Observability
+
+Each replica serves Prometheus metrics on its `metrics` port (9090, `METRICS_LISTEN`), with no token and nothing
+else on that listener, so a scrape never reaches a `/v1` route. The chart's ServiceMonitor `glidepath-api` scrapes
+it every 30 s.
+
+| Metric | Labels | What it counts |
+| --- | --- | --- |
+| `glidepath_api_requests_total` | `op`, `tier`, `code`, `decision` | Calls answered, labelled as the audit line is. `op` is the contract's operationId. |
+| `glidepath_api_request_duration_seconds` | `op`, `tier` | Time to answer a non-streaming call. Live and event streams are counted but not timed. |
+| `glidepath_api_in_flight_requests` | `op` | Calls being answered now. For `streamLiveRuns` and `streamEvents`, the open streams. |
+| `glidepath_api_live_watches` | | Namespaces the replica's live hub polls. |
+| `glidepath_api_event_streams` | | Event streams the replica serves. |
+| `glidepath_api_contract_info` | `contract_version` | Always 1: the contract the replica serves. |
+
+The Go runtime and process metrics are on the same endpoint.
+
+### SLOs
+
+Where Sloth is installed, the chart renders the PrometheusServiceLevel `glidepath-api` with two SLOs over 30 days.
+Sloth turns it into recording rules and multi-window burn-rate alerts: a page at `severity: critical` and a ticket at
+`severity: warning`.
+
+| SLO | Objective (`api.slo`) | Good event |
+| --- | --- | --- |
+| `availability` | 99.5% | A call that did not answer 5xx. |
+| `latency` | 95% | A non-streaming call answered within 2.5 s. |
+
+A 499 counts against neither. A 5xx caused by something the API reads (the API server, Tekton Results, GitHub through
+the broker, the validator sidecar) counts against availability: the caller saw the API fail.
+
+The latency SLO starts out burning on hangar-dev. On 2026-10-31, about 9% of `listLiveRuns` calls took longer than
+2.5 s, because the cluster's API server answered TaskRun lists slowly. That is a burn rate near 1.8, enough for the
+ticket alert. The objective was not loosened to hide it.
+
+### Alerts
+
+The PrometheusRule `glidepath-api` holds the alerts an SLO cannot raise. Every rule carries
+`release: kube-prometheus-stack`, the cluster Prometheus's rule selector.
+
+| Alert | Fires when |
+| --- | --- |
+| `GlidepathApiDown` | No replica has been scraped for 5 minutes. No SLO burns while nothing is scraped. |
+| `GlidepathApiReplicaDown` | Fewer than `api.replicas` replicas have been scraped for 15 minutes. |
+| `GlidepathApiLiveStreamsNearLimit` | A replica has served at least 90% of `api.liveMaxStreams` live streams for 10 minutes. A full replica answers 503 and Tower polls instead. |
+| `GlidepathApiEventStreamsNearLimit` | The same, for event streams and `api.events.maxStreams`. |
+
+```shell
+# the SLIs, in the cluster's Prometheus
+sum by (code) (rate(glidepath_api_requests_total[5m]))
+histogram_quantile(0.9, sum by (le, op) (rate(glidepath_api_request_duration_seconds_bucket[5m])))
+```

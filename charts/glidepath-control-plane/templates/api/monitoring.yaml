@@ -1,0 +1,120 @@
+# glidepath-api's own health (docs/admin/api.md#observability): its /metrics (the metrics port, no token), scraped
+# like dora-exporter's (the cluster's Prometheus selects every ServiceMonitor); two SLOs, which Sloth turns into
+# recording rules and multi-window burn-rate alerts; and the alerts an SLO cannot raise (no replica scraped, a
+# replica at its stream limit). Every rule carries release: kube-prometheus-stack, the Prometheus ruleSelector.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: glidepath-api
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+spec:
+  selector:
+    matchLabels: { hangar.io/subcomponent: glidepath-api }
+  namespaceSelector:
+    matchNames: [platform-system]
+  endpoints:
+    - port: metrics
+      interval: 30s
+{{- if .Capabilities.APIVersions.Has "sloth.slok.dev/v1/PrometheusServiceLevel" }}
+{{- $slo := .Values.api.slo }}
+---
+apiVersion: sloth.slok.dev/v1
+kind: PrometheusServiceLevel
+metadata:
+  name: glidepath-api
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+    release: kube-prometheus-stack
+spec:
+  service: glidepath-api
+  labels:
+    team: platform
+  slos:
+    # A call that answered 5xx: the API failed, or something it reads (the API server, Tekton Results, GitHub through
+    # the broker, the validator sidecar) did. 499 (the caller left) counts against nothing.
+    - name: availability
+      objective: {{ $slo.availability }}
+      description: "glidepath-api calls that did not answer 5xx."
+      sli:
+        events:
+          errorQuery: (sum(rate(glidepath_api_requests_total{job="glidepath-api",code=~"5.."}[{{ "{{.window}}" }}])) or vector(0))
+          totalQuery: sum(rate(glidepath_api_requests_total{job="glidepath-api",code!="499"}[{{ "{{.window}}" }}]))
+      alerting:
+        name: GlidepathApiAvailability
+        labels: { category: availability }
+        annotations:
+          summary: "glidepath-api is answering 5xx faster than its {{ $slo.availability }}% SLO allows"
+          runbook: "docs/admin/api.md#observability"
+        pageAlert: { labels: { severity: critical } }
+        ticketAlert: { labels: { severity: warning } }
+    # A non-streaming call slower than 2.5 s (metrics.LatencyThreshold, one of the histogram's buckets). Streams are
+    # not timed.
+    - name: latency
+      objective: {{ $slo.latency }}
+      description: "glidepath-api non-streaming calls answered within 2.5 s."
+      sli:
+        events:
+          errorQuery: >-
+            (sum(rate(glidepath_api_request_duration_seconds_count{job="glidepath-api"}[{{ "{{.window}}" }}]))
+            - sum(rate(glidepath_api_request_duration_seconds_bucket{job="glidepath-api",le="2.5"}[{{ "{{.window}}" }}])))
+            or vector(0)
+          totalQuery: sum(rate(glidepath_api_request_duration_seconds_count{job="glidepath-api"}[{{ "{{.window}}" }}]))
+      alerting:
+        name: GlidepathApiLatency
+        labels: { category: latency }
+        annotations:
+          summary: "glidepath-api is slower than its {{ $slo.latency }}% within 2.5 s SLO allows"
+          runbook: "docs/admin/api.md#observability"
+        pageAlert: { labels: { severity: critical } }
+        ticketAlert: { labels: { severity: warning } }
+{{- end }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: glidepath-api
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "glidepath-api"
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: glidepath-api
+      rules:
+        # No SLO burns while nothing is scraped: this is the alert for that.
+        - alert: GlidepathApiDown
+          expr: sum(up{job="glidepath-api",namespace="platform-system"}) < 1 or absent(up{job="glidepath-api",namespace="platform-system"})
+          for: 5m
+          labels: { severity: critical, service: glidepath-api }
+          annotations:
+            summary: "No glidepath-api replica has been scraped for 5 minutes"
+            description: "Tower, Clearance and the agents read and write CI/CD through glidepath-api; with no replica up they cannot."
+            runbook: "docs/admin/api.md#observability"
+        - alert: GlidepathApiReplicaDown
+          expr: sum(up{job="glidepath-api",namespace="platform-system"}) < {{ .Values.api.replicas | default 2 }}
+          for: 15m
+          labels: { severity: warning, service: glidepath-api }
+          annotations:
+            summary: "{{ "{{ $value }}" }} of {{ .Values.api.replicas | default 2 }} glidepath-api replicas scraped for 15 minutes"
+            runbook: "docs/admin/api.md#observability"
+        # A replica at LIVE_MAX_STREAMS answers new live streams 503 (Tower falls back to polling).
+        - alert: GlidepathApiLiveStreamsNearLimit
+          expr: max by (pod) (glidepath_api_in_flight_requests{job="glidepath-api",op="streamLiveRuns"}) >= 0.9 * {{ .Values.api.liveMaxStreams | default 200 }}
+          for: 10m
+          labels: { severity: warning, service: glidepath-api }
+          annotations:
+            summary: "{{ "{{ $labels.pod }}" }} serves {{ "{{ $value }}" }} live streams, near its limit of {{ .Values.api.liveMaxStreams | default 200 }}"
+            runbook: "docs/admin/api.md#observability"
+        - alert: GlidepathApiEventStreamsNearLimit
+          expr: max by (pod) (glidepath_api_event_streams{job="glidepath-api"}) >= 0.9 * {{ .Values.api.events.maxStreams | default 100 }}
+          for: 10m
+          labels: { severity: warning, service: glidepath-api }
+          annotations:
+            summary: "{{ "{{ $labels.pod }}" }} serves {{ "{{ $value }}" }} event streams, near its limit of {{ .Values.api.events.maxStreams | default 100 }}"
+            runbook: "docs/admin/api.md#observability"
