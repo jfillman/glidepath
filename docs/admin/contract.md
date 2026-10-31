@@ -92,9 +92,34 @@ Autopilot's Clearance vendors that file byte for byte and runs it before an agen
 request, so the gate the agent meets and the check in CI are the same code. When you change it,
 copy it to `autopilot/src/clearance/vendor/cicd_scope.py`; a drift test there fails until you do.
 
-### Not enforced in app pull requests yet
+### Enforced in app pull requests: the `cicd-validate` check
 
-`glidepath validate --agent` is not wired into the pipeline's own pull-request checks yet. That check
-has to know which pull requests an agent opened, and the GitHub identity agents will use isn't
-decided (the spec's open decision). Until then the scope is enforced by Clearance before the pull
-request exists, and a human merges every pull request either way.
+Since 2026-10-31 every onboarded app repo runs `glidepath validate` as a pull-request check,
+**`Pipelines as Code CI / cicd-validate-`** (`.tekton/pull-request-cicd-validate.yaml`, delivered by
+onboarding like the agent gates' file; Pipeline `cicd-validate-check`, Task `cicd-validate`). Before it,
+a broken `cicd.yaml` was only caught by `stage-preflight`, on the first build after the merge.
+
+- It runs on every PR to `main`, a person's too, because a required check that only ran when
+  `cicd.yaml` changed would block every other PR. A PR that leaves `cicd.yaml` alone passes in seconds
+  as "unchanged", with no comment.
+- When the PR changes `cicd.yaml`, the check reads the file at the PR head through the platform's
+  GitHub App token and runs the schema, `GP-ENV` and `GP-PIPE` rules. It fails on any error and posts
+  the findings as a PR comment, each with its rule, field and fix.
+- An agent's PR (authored by an `agentGates.agentLogins` login, or carrying `Hangar-*` commit
+  trailers) also meets the `GP-SCOPE` rules, against the file at the PR's merge base (not the base
+  branch's tip, so `main` moving on is not read as the agent's change). A PR that adds the first
+  `cicd.yaml` is compared with an empty file, so every field counts as added. Whether the PR really is
+  the agent's is the [agent gates'](agent-gates.md) question; this check applies the stricter rules to
+  either claim.
+- A PR that removes `cicd.yaml` fails: every app repo needs one at its root.
+
+The validator runs from the `glidepath-validate` image (`tools/validate.Containerfile`: the validator,
+`cicd_scope.py`, the schema and the contract of one commit; `validate-image-ci` publishes
+`ghcr.io/<owner>/glidepath-validate:sha-<short>` on every change and sets `cicdValidatorImage` in the
+catalog values). The toolbox image stays bash-only. The check blocks a merge only as a required status
+check: `hack/apply-agent-gates-ruleset.sh <owner>/<repo>` adds it to the app repo's ruleset, once the
+repo has the `.tekton` file (a required check nothing reports would block every PR).
+
+Clearance still runs the scope rules before an agent opens the PR (R021), so the agent learns of a
+refusal before anything exists on GitHub; the check is what holds whoever opened the PR, however they
+opened it.

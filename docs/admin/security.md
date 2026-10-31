@@ -78,6 +78,11 @@ which case your cluster is in before treating it as a security reference; see
   cluster, in the cluster repo), never in the app's `cicd.yaml`, which the gated team
   controls. `cicd.yaml` can only tighten (strict mode, more approvals). Before 2026-10-20
   the signer list was in `cicd.yaml`, so a team could add itself to the list that gated it.
+- **An agent's `cicd.yaml` change is held to the contract in CI, not only by the agent's own gate**
+  (`cicd-validate`, 2026-10-31): every app-repo PR that changes `cicd.yaml` runs `glidepath validate`
+  before it merges, and a PR by the agents' App also meets the `GP-SCOPE` rules (no human-only field,
+  no gate loosened, no Flight environment touched) against the merge base. Clearance decides the same
+  rules before the PR exists; the check is what holds whoever opened it. See [contract.md](contract.md).
 - **Governance gates are real, not theater**: `sast` (Semgrep), `imageScan` (Trivy),
   `policyCheck` (gitsign), `sbom` (cosign attestation) all do genuine enforcement
   today, and any gate still awaiting a real backend is structurally marked as a stub -

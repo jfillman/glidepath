@@ -260,6 +260,9 @@ spec:
             agent-gates)
               recommendation="This PR was checked against Clearance's record of the PRs its agents opened (docs/admin/agent-gates.md). The \`FAIL\` lines name the rule: **AI*** rules mean the PR is not, or is no longer, exactly what the agent committed (commits added after it, edited or forged trailers, or an agents'-App PR Clearance never opened) - review it as a person's change or close it; **AS*** rules mean a path the agent may not change - revert it, or have a person make that change in their own PR. Re-running this check does not change Clearance's record."
               ;;
+            cicd-validate)
+              recommendation="The lines above are \`glidepath validate\`'s findings on this PR's cicd.yaml (docs/admin/contract.md, docs/user/cicd-yaml-reference.md): each names the rule, the field and the fix. Run \`tools/glidepath-validate cicd.yaml\` from a Glidepath checkout to see them locally. **GP-SCOPE** rules apply to an agent's PR only: the field is one an agent may not change, or may only tighten - have a person make that change in their own PR."
+              ;;
             *)
               recommendation="See the log excerpt above for detail."
               ;;

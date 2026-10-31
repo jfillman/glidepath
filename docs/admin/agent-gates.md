@@ -59,7 +59,8 @@ labelled `hangar.io/clearance-client: agent-gates` (apron `55-autopilot/clearanc
 A check stops a merge only as a required status check: `Pipelines as Code CI / agent-gates-` (integration `4461953`,
 the PaC App). For gitops repos it is in the [guardrail ruleset](github-ruleset.md), which
 `hack/apply-guardrail-ruleset.sh` builds from `releaseGuardrails`, so re-applying it adds the check. App repos get
-their own ruleset with this one check: `hack/apply-agent-gates-ruleset.sh <owner>/<repo>`.
+their own ruleset, "Glidepath App Checks", with this check and `cicd-validate-` ([contract.md](contract.md)):
+`hack/apply-agent-gates-ruleset.sh <owner>/<repo>`.
 
 Rulesets on private repos need a paid GitHub plan; on GitHub Free the API answers 403 (every Hangar lab repo,
 2026-10-30). There a red `agent-gates-` does not stop the merge button. On gitops repos the detective control still

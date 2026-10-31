@@ -1,0 +1,174 @@
+# catalog/tasks/cicd-validate.yaml
+#
+# The cicd-validate check (docs/admin/contract.md): `glidepath validate` on the cicd.yaml a pull request changes,
+# before it merges. Until 2026-10-31 a broken cicd.yaml was only caught by stage-preflight, on the first build
+# after the merge. On an agent's PR the GP-SCOPE rules run too, against the file at the PR's merge base: the same
+# cicd_scope.py Clearance ran before the agent opened the PR, now also met in CI, whoever opened the PR.
+#
+# Two steps, because a failed step's results are not reported: fetch (the toolbox) reads the PR through the
+# platform's GitHub App token and always succeeds once it has an answer, so `changed` (which the PR comment's
+# post-comment reads) is reported even when validate fails. validate runs the glidepath-validate image
+# (.Values.cicdValidatorImage, python; tools/validate.Containerfile), which has no bash, so that step is Python.
+# A PR that leaves cicd.yaml alone passes in fetch with "unchanged" and validate does nothing: the check runs on
+# every PR to main (a required check that only ran for some PRs would block the others), so it has to be cheap.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: cicd-validate
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Validates the cicd.yaml a pull request changes (schema, conventions; an agent's PR also the GP-SCOPE rules against the merge base).
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+      description: The PR head commit - PaC's revision. Finds the PR when pr-number arrives unsubstituted (a /retest comment).
+    - name: pr-number
+      type: string
+      default: ""
+  results:
+    - name: changed
+      description: '"true" when this PR changes cicd.yaml (the PR comment is posted only then).'
+    - name: findings-summary
+      description: One line for the PR comment on a pass.
+  volumes:
+    - name: work
+      emptyDir: {}
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+  steps:
+    - name: fetch
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: github-token-broker-token, mountPath: /var/run/secrets/platform, readOnly: true }
+        - { name: work, mountPath: /work }
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - { name: REPO_URL, value: $(params.repo-url) }
+        - { name: REVISION, value: $(params.revision) }
+        - { name: PR_NUMBER, value: $(params.pr-number) }
+        - { name: AGENT_LOGINS, value: {{ join "," .Values.agentGates.agentLogins | quote }} }
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        printf false > "$(results.changed.path)"
+        printf 'cicd.yaml unchanged' > "$(results.findings-summary.path)"
+
+        owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+        gh() { curl --fail --silent --show-error --max-time 15 --retry 3 --retry-connrefused \
+                 -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" "$@"; }
+        # The file itself, not the API's base64 JSON. Fails (22) on a 404.
+        raw() { curl --fail --silent --max-time 15 --retry 3 --retry-connrefused \
+                  -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github.raw+json" "$@"; }
+        api="https://api.github.com/repos/${owner}/${repo}"
+
+        # A `/retest` comment fires an issue_comment webhook, so PaC leaves pull_request_number unsubstituted
+        # (comment-pr-check-result.yaml has the history): find the PR from the commit instead.
+        pr="${PR_NUMBER}"
+        if ! [[ "${pr}" =~ ^[0-9]+$ ]] && [[ -n "${REVISION}" ]]; then
+          pr="$(gh "${api}/commits/${REVISION}/pulls" | jq -r '[.[] | select(.state == "open")][0].number // .[0].number // empty')"
+        fi
+        if ! [[ "${pr}" =~ ^[0-9]+$ ]]; then
+          # No PR (a manual run): validate the revision's cicd.yaml, without the agent rules.
+          printf true > "$(results.changed.path)"
+          raw "${api}/contents/cicd.yaml?ref=${REVISION}" > /work/head.yaml || rm -f /work/head.yaml
+          jq -nc --arg head "${REVISION}" '{pr: "", head: $head, agent: false, base: false}' > /work/meta.json
+          echo "no PR for ${REVISION:0:7}: validating its cicd.yaml as it is"
+          exit 0
+        fi
+
+        pr_json="$(gh "${api}/pulls/${pr}")"
+        head="$(jq -r .head.sha <<<"${pr_json}")"
+        base="$(jq -r .base.sha <<<"${pr_json}")"
+        author="$(jq -r .user.login <<<"${pr_json}")"
+        # Every changed path, a rename's old name too (GitHub lists at most 3000 files, 100 a page).
+        paths='[]'
+        for page in $(seq 1 30); do
+          batch="$(gh "${api}/pulls/${pr}/files?per_page=100&page=${page}")"
+          paths="$(jq -c --argjson b "${batch}" '. + [$b[] | .filename, (.previous_filename // empty)]' <<<"${paths}")"
+          [ "$(jq length <<<"${batch}")" -lt 100 ] && break
+        done
+        if ! jq -e 'index("cicd.yaml")' <<<"${paths}" >/dev/null; then
+          echo "PR #${pr} leaves cicd.yaml unchanged: nothing to validate"
+          exit 0
+        fi
+        printf true > "$(results.changed.path)"
+
+        # The file before the change is the one at the merge base, not the base branch's tip: main moving on after
+        # the branch was cut must not read as this PR's own change.
+        merge_base="$(gh "${api}/compare/${base}...${head}" | jq -r .merge_base_commit.sha)"
+        raw "${api}/contents/cicd.yaml?ref=${head}" > /work/head.yaml || rm -f /work/head.yaml
+        has_base=true
+        # An empty mapping stands for "no file yet": cicd_scope.py reads both as nothing to compare with.
+        raw "${api}/contents/cicd.yaml?ref=${merge_base}" > /work/base.yaml || { has_base=false; printf '{}\n' > /work/base.yaml; }
+
+        # An agent's PR gets the GP-SCOPE rules: authored by the agents' App (agentGates.agentLogins) or carrying
+        # Hangar-* trailers. Either claim applies the stricter rules; agent-gates, not this check, decides whether
+        # the claim is true.
+        trailers="$(gh "${api}/commits/${head}" | jq -r '[.commit.message | splits("\n")
+          | select(test("^Hangar-(Task|Session|Run|Agent): *[^ ]+ *$"))] | length')"
+        agent=false
+        if [ "${trailers}" != "0" ] || tr ',' '\n' <<<"${AGENT_LOGINS}" | grep -qxF "${author}"; then agent=true; fi
+        jq -nc --arg pr "${pr}" --arg head "${head}" --arg mb "${merge_base}" --arg author "${author}" \
+          --argjson agent "${agent}" --argjson base "${has_base}" \
+          '{pr: $pr, head: $head, mergeBase: $mb, author: $author, agent: $agent, base: $base}' > /work/meta.json
+        echo "PR #${pr} changes cicd.yaml: head ${head:0:7}, merge base ${merge_base:0:7}, author ${author}, agent PR: ${agent}, cicd.yaml at the base: ${has_base}"
+        chmod -R a+rwX /work
+    - name: validate
+      image: {{ .Values.cicdValidatorImage | quote }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      script: |
+        #!/usr/bin/env python3
+        import json, subprocess, sys
+        from pathlib import Path
+
+        work = Path("/work")
+        if not (work / "meta.json").exists():
+            print("cicd.yaml unchanged: nothing to validate")
+            sys.exit(0)
+        meta = json.loads((work / "meta.json").read_text())
+        where = f"PR #{meta['pr']}" if meta.get("pr") else f"commit {meta['head'][:7]}"
+        if not (work / "head.yaml").exists():
+            print(f"FAIL: cicd-validate - {where} leaves the repository without a cicd.yaml. Every app repo needs one at its root"
+                  " (docs/user/cicd-yaml-reference.md); a flow's first build fails in stage-preflight without it.")
+            sys.exit(1)
+
+        args = ["glidepath-validate", str(work / "head.yaml"), "--format", "json"]
+        if meta.get("agent"):
+            args += ["--agent", "--base", str(work / "base.yaml")]
+        run = subprocess.run(args, capture_output=True, text=True)
+        if run.returncode not in (0, 1) or not run.stdout.strip():
+            print(f"FAIL: cicd-validate - glidepath validate did not answer (exit {run.returncode}):\n{run.stderr.strip()}")
+            sys.exit(1)
+        result = json.loads(run.stdout)
+        problems = result["problems"]
+        errors = [p for p in problems if p["severity"] == "error"]
+        warnings = [p for p in problems if p["severity"] != "error"]
+
+        print(f"cicd.yaml at {meta['head'][:7]} ({where}): schema and convention rules" +
+              (f"; agent rules against the merge base {meta['mergeBase'][:7]}" +
+               ("" if meta.get("base") else " (no cicd.yaml there: every field counts as added)") if meta.get("agent") else ""))
+        for p in problems:
+            print(f"{p['severity'].upper():7} {p['rule']}  {p['pointer']}: {p['message']}" + (f"\n        fix: {p['hint']}" if p.get("hint") else ""))
+        rules = ", ".join(sorted({p["rule"] for p in errors}))
+        summary = (f"{len(errors)} error(s): {rules}" if errors else "valid") + (f", {len(warnings)} warning(s)" if warnings else "")
+        Path("$(results.findings-summary.path)").write_text(summary)
+        if errors:
+            print(f"FAIL: cicd-validate - {summary}. Fix cicd.yaml and push, or `tools/glidepath-validate cicd.yaml` locally first.")
+            sys.exit(1)
+        print(f"PASS: cicd-validate - {summary}")
