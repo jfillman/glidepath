@@ -126,7 +126,6 @@ spec:
           --argjson agent "${agent}" --argjson base "${has_base}" \
           '{pr: $pr, head: $head, mergeBase: $mb, author: $author, agent: $agent, base: $base}' > /work/meta.json
         echo "PR #${pr} changes cicd.yaml: head ${head:0:7}, merge base ${merge_base:0:7}, author ${author}, agent PR: ${agent}, cicd.yaml at the base: ${has_base}"
-        chmod -R a+rwX /work
     - name: validate
       image: {{ .Values.cicdValidatorImage | quote }}
       imagePullPolicy: IfNotPresent
