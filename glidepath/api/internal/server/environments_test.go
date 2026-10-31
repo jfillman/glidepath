@@ -89,6 +89,10 @@ func (g *ghStub) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(content)), "encoding": "base64", "sha": "s"})
 	case "commits":
+		if parts[3] == "HEAD" { // the default branch's tip, as a validation with no baseRef reads it
+			json.NewEncoder(w).Encode(map[string]string{"sha": devSHA})
+			return
+		}
 		for _, full := range []string{devSHA, stagingSHA} {
 			if strings.HasPrefix(full, parts[3]) {
 				json.NewEncoder(w).Encode(map[string]string{"sha": full})

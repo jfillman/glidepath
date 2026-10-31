@@ -18,12 +18,15 @@ Glidepath is Hangar's CI/CD engine: Tekton and Pipelines-as-Code, driven by one 
    environment (tier T2: it starts the app's release Pipeline, whose gitops PR a human merges; you cannot merge
    it). Re-run, promote and rollback need an `Idempotency-Key`; all take `?dryRun=true`. Read
    `GET /v1/apps/{app}/environments` (the order) and `.../environments/{env}/rollback-plan` (eligible targets)
-   first. *(planned)* previews and `cicd.yaml` pull requests (phase 3).
+   first. `POST /v1/apps/{app}/cicd/validations` (tier T0, writes nothing) tells you what a `cicd.yaml` change
+   would mean before you open its pull request: send `{"patch": {...}, "agent": true}` and read `valid`,
+   `problems` and `changes`. *(planned)* previews and `cicd.yaml` pull requests opened for you (phase 3).
 
 ## Changing an app's cicd.yaml
 - Open a pull request. Never push to a default branch.
 - Run `tools/glidepath-validate cicd.yaml --agent --base-ref origin/main` (from this repo, pointed at
-  the app's file) before you open it. Fix every error; read every warning.
+  the app's file), or `POST /v1/apps/{app}/cicd/validations` with your patch and `agent: true`, before you
+  open it. Fix every error; read every warning.
 - Change only fields whose `agentScope` is `open`. A `tighten` field may only move the strict way
   (turn a gate on, never off). A `human` field you leave as it is, and you ask a human.
 - Never add, remove or change a Flight environment, or change any environment's tier.

@@ -192,7 +192,16 @@ func (s *Session) Contents(ctx context.Context, owner, repo, path string) (strin
 // Raw is releasePlan.ts's fetchCicdYaml read: the file's raw bytes (Accept: application/vnd.github.raw+json). A 404
 // is an HTTPError with Status 404, which that caller treats as "no file".
 func (s *Session) Raw(ctx context.Context, owner, repo, path string) (string, error) {
-	res, err := s.get(ctx, owner, repo, fmt.Sprintf("%s/repos/%s/%s/contents/%s", s.b.api(), owner, repo, escapePath(path)), "application/vnd.github.raw+json")
+	return s.RawAt(ctx, owner, repo, path, "")
+}
+
+// RawAt is Raw at a branch, tag or commit; "" is the default branch.
+func (s *Session) RawAt(ctx context.Context, owner, repo, path, ref string) (string, error) {
+	u := fmt.Sprintf("%s/repos/%s/%s/contents/%s", s.b.api(), owner, repo, escapePath(path))
+	if ref != "" {
+		u += "?ref=" + url.QueryEscape(ref)
+	}
+	res, err := s.get(ctx, owner, repo, u, "application/vnd.github.raw+json")
 	if err != nil {
 		return "", err
 	}

@@ -57,6 +57,7 @@ import (
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
+	"github.com/glidepath/api/internal/cicd"
 	"github.com/glidepath/api/internal/environments"
 	"github.com/glidepath/api/internal/events"
 	"github.com/glidepath/api/internal/evidence"
@@ -223,6 +224,18 @@ func main() {
 			Templates: environments.NewKubeTemplates(dyn),
 			Runs:      pipelineruns.NewKubeStore(dyn),
 			Records:   releases.Reader{CS: cs},
+		},
+		// A cicd.yaml change, validated by the glidepath-validate sidecar (`glidepath validate --serve`, the chart's
+		// cicdValidatorImage) on the pod's loopback: one copy of the rules, the one the PR check runs.
+		Cicd: &cicd.Client{
+			Owner: githubOwner,
+			GitHub: func(app string) cicd.Source {
+				return broker.Session(app)
+			},
+			Validator: &cicd.Validator{
+				URL:  env("VALIDATOR_URL", "http://127.0.0.1:8081"),
+				HTTP: &http.Client{Timeout: 20 * time.Second},
+			},
 		},
 		Events: store,
 		Tap: &events.Tap{
