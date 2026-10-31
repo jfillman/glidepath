@@ -40,7 +40,10 @@ type ReleaseRun struct {
 	Message        string    `json:"message,omitempty"`
 	StartTime      string    `json:"startTime,omitempty"`
 	CompletionTime string    `json:"completionTime,omitempty"`
-	Tasks          []RunTask `json:"tasks"`
+	Tasks          []RunTask `json:"tasks"` // every task of the Pipeline in its order, then its finally tasks
+	// Params: the run's string params (env, cluster, image-ref, git-url, git-revision, initiator, ...): what Tower's
+	// promotion notification reads. Pipeline params carry no secret.
+	Params map[string]string `json:"params"`
 	ChainID        string    `json:"chainId,omitempty"`
 	PRURL          string    `json:"prUrl,omitempty"`
 	ChangeRequest  string    `json:"changeRequest,omitempty"`
@@ -123,7 +126,7 @@ func (c *Client) ReleaseRun(ctx context.Context, namespace, name string) (*Relea
 		return nil, Invalid{fmt.Sprintf("PipelineRun '%s' is not a release run", name)}
 	}
 	p := params(pr)
-	out := &ReleaseRun{Name: name, Kind: "release", Env: p["env"], Cluster: p["cluster"], Initiator: p["initiator"], Tasks: []RunTask{}}
+	out := &ReleaseRun{Name: name, Kind: "release", Env: p["env"], Cluster: p["cluster"], Initiator: p["initiator"], Tasks: []RunTask{}, Params: p}
 	if p["release-kind"] != "" {
 		out.Kind = p["release-kind"]
 	}
@@ -135,13 +138,19 @@ func (c *Client) ReleaseRun(ctx context.Context, namespace, name string) (*Relea
 	if err != nil {
 		return nil, err
 	}
+	byTask := map[string]RunTask{}
+	var extra []RunTask
 	for _, tr := range trs {
 		tm := mapOf(tr["metadata"])
 		task := str(mapOf(tm["labels"]), "tekton.dev/pipelineTask")
 		ts, _, _ := statusOf(tr)
-		trs := mapOf(tr["status"])
-		out.Tasks = append(out.Tasks, RunTask{Name: task, TaskRun: str(tm, "name"), Status: ts,
-			StartTime: str(trs, "startTime"), CompletionTime: str(trs, "completionTime")})
+		trst := mapOf(tr["status"])
+		rt := RunTask{Name: task, TaskRun: str(tm, "name"), Status: ts, StartTime: str(trst, "startTime"), CompletionTime: str(trst, "completionTime")}
+		if _, dup := byTask[task]; dup || task == "" {
+			extra = append(extra, rt)
+		} else {
+			byTask[task] = rt
+		}
 		r := results(tr)
 		switch task {
 		case "preflight":
@@ -150,9 +159,26 @@ func (c *Client) ReleaseRun(ctx context.Context, namespace, name string) (*Relea
 			out.PRURL, out.ChangeRequest = r["pr-url"], r["change-request-number"]
 		}
 	}
-	// In the order they started; not started yet last.
-	sort.Slice(out.Tasks, func(i, j int) bool {
-		a, b := out.Tasks[i], out.Tasks[j]
+	// The Pipeline's own order (status.pipelineSpec: its tasks, then its finally tasks), so a task not started yet
+	// shows as pending where it will run; a TaskRun the spec doesn't name (none, normally) goes after.
+	spec := mapOf(st["pipelineSpec"])
+	for _, key := range []string{"tasks", "finally"} {
+		ts, _ := spec[key].([]any)
+		for _, t := range ts {
+			n := str(mapOf(t), "name")
+			if rt, ok := byTask[n]; ok {
+				out.Tasks = append(out.Tasks, rt)
+				delete(byTask, n)
+			} else if n != "" {
+				out.Tasks = append(out.Tasks, RunTask{Name: n, Status: "pending"})
+			}
+		}
+	}
+	for _, rt := range byTask {
+		extra = append(extra, rt)
+	}
+	sort.Slice(extra, func(i, j int) bool {
+		a, b := extra[i], extra[j]
 		if (a.StartTime == "") != (b.StartTime == "") {
 			return b.StartTime == ""
 		}
@@ -161,6 +187,7 @@ func (c *Client) ReleaseRun(ctx context.Context, namespace, name string) (*Relea
 		}
 		return a.Name < b.Name
 	})
+	out.Tasks = append(out.Tasks, extra...)
 	if out.ChainID == "" {
 		out.ChainID = p["chain-id"]
 	}

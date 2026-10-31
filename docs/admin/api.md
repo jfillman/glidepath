@@ -350,7 +350,9 @@ promote or rollback just started (its `pipelineRun`), from the moment of the cli
  "chainId": "7200a685-...", "prUrl": "", "changeRequest": "", "phase": "running", "record": null}
 ```
 
-The run and its TaskRuns come from the cluster (never cached: it is followed one run at a time); the chain id is
+`tasks` is every task of the Pipeline in its own order (`status.pipelineSpec`), then its finally tasks, so one not
+started yet is `pending` where it will run; `params` are the run's string params (`image-ref`, `git-url`,
+`git-revision`, ...). The run and its TaskRuns come from the cluster (never cached: it is followed one run at a time); the chain id is
 the preflight task's `chain-id` result, the PR and change request open-release-pr's `pr-url` and
 `change-request-number` once it has them, and `record` the release record that chain id names
 (`release-tracking-<chain-id>`). `phase` is the record's `state` as soon as there is one (`proposed`, `merged`,

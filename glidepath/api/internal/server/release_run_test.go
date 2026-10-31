@@ -28,7 +28,10 @@ func withReleaseRun(s *Server, prOpened bool) *fakeLive {
 	pr := liveObj("PipelineRun", "app-shop-cicd", "promote-prod-abc1234-0a1b2c",
 		map[string]any{"hangar.io/app": "shop", "hangar.io/stage": "release", "tekton.dev/pipeline": "release"},
 		map[string]any{"startTime": "2026-10-31T10:00:00Z", "conditions": []any{
-			map[string]any{"type": "Succeeded", "status": "Unknown", "reason": "Running"}}})
+			map[string]any{"type": "Succeeded", "status": "Unknown", "reason": "Running"}},
+			"pipelineSpec": map[string]any{
+				"tasks":   []any{map[string]any{"name": "preflight"}, map[string]any{"name": "gates"}, map[string]any{"name": "open-release-pr"}, map[string]any{"name": "mark-release-pending"}},
+				"finally": []any{map[string]any{"name": "debrief"}}}})
 	pr["spec"] = map[string]any{"params": []any{
 		map[string]any{"name": "env", "value": "prod"}, map[string]any{"name": "cluster", "value": "hangar-prod"},
 		map[string]any{"name": "initiator", "value": "user:default/jfillman"}}}
@@ -79,6 +82,9 @@ func TestReleaseRunBeforeThePR(t *testing.T) {
 	if out["phase"] != "running" || out["status"] != "running" || out["chainId"] != chain || out["prUrl"] != nil || out["record"] != nil {
 		t.Fatalf("%v", out)
 	}
+	if out["params"].(map[string]any)["env"] != "prod" {
+		t.Fatalf("params %v", out["params"])
+	}
 	if out["env"] != "prod" || out["cluster"] != "hangar-prod" || out["kind"] != "release" || out["initiator"] != "user:default/jfillman" {
 		t.Fatalf("%v", out)
 	}
@@ -88,7 +94,7 @@ func TestReleaseRunBeforeThePR(t *testing.T) {
 		m := tk.(map[string]any)
 		got = append(got, m["name"].(string)+":"+m["status"].(string))
 	}
-	if strings.Join(got, ",") != "preflight:succeeded,gates:succeeded,open-release-pr:running" {
+	if strings.Join(got, ",") != "preflight:succeeded,gates:succeeded,open-release-pr:running,mark-release-pending:pending,debrief:pending" {
 		t.Fatalf("tasks %v", got)
 	}
 }

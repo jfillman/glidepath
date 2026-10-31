@@ -371,7 +371,7 @@ paths:
       summary: One release run, followed from the moment promote or rollback answers with its name
       description: >-
         Needs `get` on `releases.glidepath.hangar.io` in the app's namespace. The run as the cluster holds it (status,
-        tasks in the order they started), the chain id its preflight task minted, the PR and change request once
+        every task of the Pipeline in order, pending ones included, and its params), the chain id its preflight task minted, the PR and change request once
         open-release-pr has them, and the release record that chain id names. `phase` is the record's state once there
         is one (proposed, merged, progressing, healthy, ...), else the run's (running, failed, cancelled, or finished:
         it succeeded without a record). 404 once Tekton has deleted the run (about an hour after it finished): the
@@ -1119,15 +1119,17 @@ components:
         completionTime: { type: string }
         tasks:
           type: array
+          description: "Every task of the Pipeline in its order (status.pipelineSpec), then its finally tasks; one not started yet is pending with no taskRun"
           items:
             type: object
-            required: [name, taskRun, status]
+            required: [name, status]
             properties:
               name: { type: string, description: The pipeline task }
               taskRun: { type: string }
               status: { type: string, enum: [pending, running, succeeded, failed, cancelled] }
               startTime: { type: string }
               completionTime: { type: string }
+        params: { type: object, additionalProperties: { type: string }, description: "The run's string params (env, cluster, image-ref, git-url, git-revision, ...)" }
         chainId: { type: string }
         prUrl: { type: string }
         changeRequest: { type: string }
