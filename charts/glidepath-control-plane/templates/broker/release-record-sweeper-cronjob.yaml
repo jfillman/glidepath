@@ -93,6 +93,8 @@ spec:
                   value: "14"
                 - name: KEEP_HEALTHY
                   value: "5"
+              volumeMounts:
+                - { name: tmp, mountPath: /tmp }
               command: ["/bin/bash", "-c"]
               args:
                 - |
@@ -156,3 +158,9 @@ spec:
                       fi
                     done
                   done
+          volumes:
+            # bash keeps a here-string (`<<<"${records}"`) in a temp file once it is larger than the pipe buffer (64
+            # KiB); on 2026-10-30 the records JSON grew past that, and with no writable /tmp on the read-only root
+            # every run since failed ("cannot create temp file for here-document"), and the control-plane
+            # Application read Degraded. The same emptyDir the onboarding-resync bootstrap Job mounts.
+            - { name: tmp, emptyDir: {} }
