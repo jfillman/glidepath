@@ -796,7 +796,8 @@ ticket alert. The objective was not loosened to hide it.
 
 ### Alerts
 
-The PrometheusRule `glidepath-api` holds the alerts an SLO cannot raise. Every rule carries
+The PrometheusRule `glidepath-api-alerts` holds the alerts an SLO cannot raise. Sloth writes the SLOs' own rules to
+the PrometheusRule `glidepath-api`. Every rule carries
 `release: kube-prometheus-stack`, the cluster Prometheus's rule selector.
 
 | Alert | Fires when |

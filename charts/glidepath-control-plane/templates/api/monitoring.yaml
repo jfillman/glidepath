@@ -77,7 +77,9 @@ spec:
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: glidepath-api
+  # Not glidepath-api: Sloth writes the SLO's generated rules to a PrometheusRule named for the PrometheusServiceLevel,
+  # and two owners of one object overwrite each other on every sync.
+  name: glidepath-api-alerts
   namespace: platform-system
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
