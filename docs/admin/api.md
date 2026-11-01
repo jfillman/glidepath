@@ -795,6 +795,22 @@ it every 30 s.
 
 The Go runtime and process metrics are on the same endpoint.
 
+### Dashboard
+
+Grafana's **Glidepath API - Health & SLOs** (uid `glidepath-api`,
+`charts/glidepath-control-plane/files/dashboards/glidepath-api.json`) shows:
+- both SLOs over 30 days, their error budget left, burn rates against Sloth's alert thresholds, and the alerts now;
+- requests by operation and status, 5xx ratio, denials and writes;
+- latency percentiles and the share within 2.5 s per operation;
+- live and event streams per replica against their limits;
+- Tower's calls as Tower measures them (prod Backstage's span metrics, through Thanos), beside glidepath-api's own
+  latency, so the gap is the cross-cluster path;
+- traces of Tower's calls and of failed or slow calls (Tempo);
+- what glidepath-api calls, from its child spans, and the Go runtime.
+
+PipelineRuns are on **CI/CD Platform - Pipelines Overview**: Tekton's run and task metrics, runs waiting on
+resolution, pod start latency, and the pipelines' traces (failed stages, stages over 10 minutes).
+
 ### SLOs
 
 Where Sloth is installed, the chart renders the PrometheusServiceLevel `glidepath-api` with two SLOs over 30 days.

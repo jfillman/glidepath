@@ -144,7 +144,7 @@
       "id": 3,
       "type": "stat",
       "title": "Workqueue depth (all reconcilers)",
-      "description": "Sum of tekton_pipelines_controller_workqueue_depth across every reconciler queue. Sustained non-zero means the controller is falling behind.",
+      "description": "Sum of kn_workqueue_depth (Tekton controller) across every reconciler queue. Sustained non-zero means the controller is falling behind.",
       "gridPos": {
         "x": 12,
         "y": 1,
@@ -178,14 +178,14 @@
       },
       "targets": [
         {
-          "expr": "sum(tekton_pipelines_controller_workqueue_depth)"
+          "expr": "sum(kn_workqueue_depth{job=\"tekton-pipelines-controller\"})"
         }
       ]
     },
     {
       "id": 4,
       "type": "stat",
-      "title": "Reconcile error rate (5m)",
+      "title": "Reconcile retry ratio (5m)",
       "description": "Share of controller reconcile loops (pipelinerun/taskrun/resolutionrequest) that ended success=\"false\" in the last 5 minutes.",
       "gridPos": {
         "x": 18,
@@ -220,7 +220,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(tekton_pipelines_controller_reconcile_count{success=\"false\"}[5m])) / sum(increase(tekton_pipelines_controller_reconcile_count[5m]))"
+          "expr": "sum(increase(kn_workqueue_retries_total{job=\"tekton-pipelines-controller\"}[5m])) / sum(increase(kn_workqueue_adds_total{job=\"tekton-pipelines-controller\"}[5m]))"
         }
       ]
     },
@@ -715,7 +715,7 @@
       },
       "targets": [
         {
-          "expr": "topk(10, histogram_quantile(0.95, sum by (le, task) (rate(tekton_pipelines_controller_taskrun_duration_seconds_bucket{exported_namespace=~\"$app_namespace\"}[1h]))))",
+          "expr": "topk(10, histogram_quantile(0.95, sum by (le, task) (rate(tekton_pipelines_controller_pipelinerun_taskrun_duration_seconds_bucket{exported_namespace=~\"$app_namespace\"}[1h]))))",
           "legendFormat": "{{task}}"
         }
       ]
@@ -790,7 +790,7 @@
     {
       "id": 9,
       "type": "timeseries",
-      "title": "Reconcile p99 latency by reconciler",
+      "title": "Reconcile p99 (workqueue process time) by reconciler",
       "gridPos": {
         "x": 0,
         "y": 79,
@@ -808,8 +808,8 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum by (le, reconciler) (rate(tekton_pipelines_controller_reconcile_latency_bucket[5m])))",
-          "legendFormat": "{{reconciler}}"
+          "expr": "histogram_quantile(0.99, sum by (le, name) (rate(kn_workqueue_process_duration_seconds_bucket{job=\"tekton-pipelines-controller\"}[5m])))",
+          "legendFormat": "{{name}}"
         }
       ]
     },
@@ -834,7 +834,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (name) (tekton_pipelines_controller_workqueue_depth)",
+          "expr": "sum by (name) (kn_workqueue_depth{job=\"tekton-pipelines-controller\"})",
           "legendFormat": "{{name}}"
         }
       ]
