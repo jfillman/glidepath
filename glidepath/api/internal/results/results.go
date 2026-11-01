@@ -79,6 +79,46 @@ type Run struct {
 	PipelineRun Obj    `json:"pipelineRun"`
 	TaskRuns    []Obj  `json:"taskRuns"`
 	logs        map[string]string
+	// raw is the run as JSON, set on the cached copy instead of PipelineRun and TaskRuns. Decoded, a run is a tree
+	// of maps several times its JSON size: 7 days of every app held that way was ~150 MB of heap on 2026-11-01, and
+	// one more cold read of a busy app's 30 days ran both replicas out of their 256 Mi.
+	raw []byte
+}
+
+type runJSON struct {
+	Result      string `json:"result"`
+	PipelineRun Obj    `json:"pipelineRun"`
+	TaskRuns    []Obj  `json:"taskRuns"`
+}
+
+// MarshalJSON writes a cached run's JSON as it is, so serving a list of them decodes nothing.
+func (r *Run) MarshalJSON() ([]byte, error) {
+	if r.raw != nil {
+		return r.raw, nil
+	}
+	return json.Marshal(runJSON{r.Result, r.PipelineRun, r.TaskRuns})
+}
+
+// pack is the copy the cache keeps: the JSON and the log pointers.
+func pack(r *Run) (*Run, error) {
+	b, err := json.Marshal(runJSON{r.Result, r.PipelineRun, r.TaskRuns})
+	if err != nil {
+		return nil, err
+	}
+	return &Run{Result: r.Result, logs: r.logs, raw: b}, nil
+}
+
+// unpack is a run with its fields decoded, for a caller that reads them (explain). A run that isn't packed is
+// returned as it is.
+func unpack(r *Run) (*Run, error) {
+	if r.raw == nil {
+		return r, nil
+	}
+	var v runJSON
+	if err := json.Unmarshal(r.raw, &v); err != nil {
+		return nil, err
+	}
+	return &Run{Result: v.Result, PipelineRun: v.PipelineRun, TaskRuns: v.TaskRuns, logs: r.logs}, nil
 }
 
 // Client talks to the Results API: through tekton-results-relay, which adds its own identity, or
@@ -373,12 +413,18 @@ func (c *Client) summaries(ctx context.Context, parent string, since time.Time, 
 
 func runKey(parent, result string) string { return "run:" + parent + ":" + result }
 
-func (c *Client) cacheRun(parent string, r *Run) {
+// cacheRun keeps the run packed and returns the packed copy, so a caller that only serves it lets the decoded one go.
+func (c *Client) cacheRun(parent string, r *Run) *Run {
 	ttl := listTTL
 	if m(r.PipelineRun["status"])["completionTime"] != nil {
 		ttl = runTTL // a finished run never changes
 	}
-	c.cache.set(runKey(parent, r.Result), r, ttl)
+	p, err := pack(r)
+	if err != nil {
+		return r // not cached: an unencodable run would fail the response too, where the error is seen
+	}
+	c.cache.set(runKey(parent, r.Result), p, ttl)
+	return p
 }
 
 func (c *Client) cachedRun(ctx context.Context, parent, result string, needLogs bool) (*Run, error) {
@@ -440,13 +486,16 @@ func (c *Client) readRun(ctx context.Context, parent, result string) (*Run, erro
 	if run.PipelineRun == nil {
 		return nil, NotFound{fmt.Sprintf("no PipelineRun record in result %s", result)}
 	}
-	c.cacheRun(parent, run)
-	return run, nil
+	return c.cacheRun(parent, run), nil
 }
 
-// Get returns one run, PipelineRun and TaskRuns.
+// Get returns one run, PipelineRun and TaskRuns, decoded.
 func (c *Client) Get(ctx context.Context, parent, result string) (*Run, error) {
-	return c.cachedRun(ctx, parent, result, false)
+	r, err := c.cachedRun(ctx, parent, result, false)
+	if err != nil {
+		return nil, err
+	}
+	return unpack(r)
 }
 
 func (c *Client) bulk(ctx context.Context, parent string, since time.Time, limit int) ([]*Run, error) {
@@ -499,9 +548,8 @@ func (c *Client) bulk(ctx context.Context, parent string, since time.Time, limit
 	out := []*Run{}
 	for _, id := range order {
 		if e := runs[id]; e.pr != nil {
-			r := &Run{Result: id, PipelineRun: e.pr, TaskRuns: e.trs}
-			c.cacheRun(parent, r)
-			out = append(out, r)
+			out = append(out, c.cacheRun(parent, &Run{Result: id, PipelineRun: e.pr, TaskRuns: e.trs}))
+			delete(runs, id)
 		}
 	}
 	return out, nil
