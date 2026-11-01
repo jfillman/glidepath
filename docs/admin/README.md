@@ -37,6 +37,7 @@ architecture.md wherever relevant.
 - [release.md](release.md) - the GitOps promotion flow, step by step
 - [release-state.md](release-state.md) - the release record and state machine: how a prod-side fact becomes a release event (ADR-0021)
 - [release-guardrails.md](release-guardrails.md) - adding/removing a release-PR gate; required vs advisory
+- [github-app.md](github-app.md) - the PaC GitHub App: the check-run name (`pipelinesAsCode.applicationName`) and the App slug Tower trusts (`gateCommentApps`)
 - [registries.md](registries.md) - Ground and Flight registries: promotion by digest before the merge, upper-cluster admission, retention (ADR-0029)
 - [agent-gates.md](agent-gates.md) - agent-identity and agent-scope: every PR checked against Clearance's record of agent PRs
 - [agent-definitions.md](agent-definitions.md) - the agent-definitions PR check and the agent release: Clearance reviews each definition, the broker opens its pin PR, the deployment gate tiers it

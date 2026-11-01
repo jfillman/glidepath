@@ -163,13 +163,15 @@ spec:
         # override is keyed; APP_NAME only when the repo is not named that way.
         log_app="${APP_NAME}"; [[ "${repo}" == gitops-* ]] && log_app="${repo#gitops-}"
         for g in $(advisory_gates_for_app "${log_app}"); do required_gates=${required_gates/" ${g} "/" "}; done
+        # "<PaC application name> / <gate>-", under the current name or an earlier one (catalog pipelinesAsCode).
+        pac_apps={{ include "glidepath-catalog.pacAppNames" . | squote }}
         for gate in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ .name }} {{ end }}; do
           # Trailing "-": see wait-for-release-guardrails.yaml's identical match for why -
           # the real check-run name includes generateName's own trailing dash. Without
           # this every gate reads back "missing" and bypass="true" fires on every merge -
           # confirmed live 2026-09-06 this was silently broken since 9706649 the day before.
-          conclusion="$(jq -r --arg name "Pipelines as Code CI / ${gate}-" \
-            '[.check_runs[] | select(.name == $name)][0].conclusion // "missing"' <<<"${checks_json}")"
+          conclusion="$(jq -r --argjson apps "${pac_apps}" --arg g "${gate}" \
+            '[.check_runs[] | select(.name as $x | any($apps[]; . + " / " + $g + "-" == $x))][0].conclusion // "missing"' <<<"${checks_json}")"
           gate_key="gate_$(echo "${gate}" | tr '-' '_')"
           gates_json="$(jq -nc --argjson gates "${gates_json}" --arg k "${gate_key}" --arg v "${conclusion}" \
             '$gates + {($k): $v}')"

@@ -365,7 +365,12 @@ spec:
             return cur
 
         # CI's state from the head's check runs, this gate's own runs excluded.
-        runs = [r for r in meta.get("checkRuns", []) if not r["name"].startswith("Pipelines as Code CI / clearance-gate-")]
+        # A gate's check is "<PaC application name> / <gate>-", under the current name or an earlier one (catalog
+        # pipelinesAsCode).
+        pac_apps = {{ include "glidepath-catalog.pacAppNames" . }}
+        def checks_named(gate):
+            return [f"{a} / {gate}-" for a in pac_apps]
+        runs = [r for r in meta.get("checkRuns", []) if not any(r["name"].startswith(n) for n in checks_named("clearance-gate"))]
         def status_of(names):
             rs = [r for r in runs if any(r["name"].startswith(n) for n in names)] if names else runs
             if not rs:
@@ -385,7 +390,7 @@ spec:
             kind, agent, proposer = "person", None, f"user:{meta['author']}"
         else:
             kind, agent, proposer = "unknown", rec.get("agent"), f"user:{meta['author']}"
-        checks = {"ci": status_of(None), "provenance": identity, "render": "ok", "admission": status_of(["Pipelines as Code CI / policy-validation-"])}
+        checks = {"ci": status_of(None), "provenance": identity, "render": "ok", "admission": status_of(checks_named("policy-validation"))}
         paths = sorted({f["filename"] for f in meta["files"]} | {f["previous_filename"] for f in meta["files"] if f.get("previous_filename")})
         lines = sum(int(f.get("additions") or 0) + int(f.get("deletions") or 0) for f in meta["files"])
 

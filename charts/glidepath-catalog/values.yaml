@@ -251,7 +251,17 @@ itsm:
     # The adapter endpoint. The lab runs hack/lab/itsm_mock_server.py behind it (an Argo CD Application over hack/lab).
     url: ""
 
-# Each entry: name (= the PipelineRun generateName prefix, so the check is "Pipelines as Code CI / <name>-"),
+# Pipelines-as-Code's application-name: the first half of every check run it posts, "<applicationName> / <gate>-".
+# It is set in PaC's own `pipelines-as-code` ConfigMap (the cluster's PaC install owns it; Apron sets it from
+# cluster.yaml pipelinesAsCode.applicationName), and this value must equal it: the gate tasks find a gate's check by
+# that name, and promote posts its image-promotion check under it. legacyApplicationNames: earlier values, still
+# matched when reading checks, so checks posted before a rename (open PRs, sealed releases) keep counting. Unrelated
+# to the GitHub App's own name, which only labels who posted the check (docs/admin/github-app.md).
+pipelinesAsCode:
+  applicationName: Glidepath
+  legacyApplicationNames: ["Pipelines as Code CI"]
+
+# Each entry: name (= the PipelineRun generateName prefix, so the check is "<pipelinesAsCode.applicationName> / <name>-"),
 # description, status (real | stub), class (content | process | integrity | approval), optional targets, and
 # `required` (default true). required: false makes a real gate ADVISORY on every release PR: its Pipeline renders
 # only the -advisory copy of its check (onError: continue, docs/admin/release-guardrails.md), so the check run is
@@ -283,7 +293,7 @@ releaseGuardrails:
     class: content
     required: true
   # name must equal the PipelineRun generateName prefix (values-): wait-for-release-guardrails looks up the check
-  # "Pipelines as Code CI / <name>-".
+  # "<pipelinesAsCode.applicationName> / <name>-".
   - name: values
     description: Values-file validation (strict keys, component XRD specs, helm template) by the validator image
     status: real

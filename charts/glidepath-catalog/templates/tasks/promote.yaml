@@ -16,7 +16,7 @@
 #   report   concludes the check run with the outcome, leaves the gate's PR comment (what was promoted, or why not),
 #            and fails the TaskRun when the promotion did not happen.
 #
-# The check run is named exactly as Pipelines as Code names a gate's ("Pipelines as Code CI / <gate>-") and posted by
+# The check run is named exactly as Pipelines as Code names a gate's ("<pipelinesAsCode.applicationName> / <gate>-") and posted by
 # the same App, so the guardrail registry, detect-bypass-merge and the PR's gate table read it like any other gate.
 apiVersion: tekton.dev/v1
 kind: Task
@@ -141,6 +141,8 @@ spec:
         # out: its check stays red on the PR, but it does not hold this app's release.
         required_gates="{{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if and .required (ne .name "image-promotion") }}{{ .name }} {{ end }}{{ end }}"
         [[ -z "$(advisory_gates_for_app "${app}")" ]] || echo "advisory for ${app} (catalog releaseGuardrailOverridesByApp), not required: $(advisory_gates_for_app "${app}")"
+        # "<PaC application name> / <gate>-", under the current name or an earlier one (catalog pipelinesAsCode).
+        pac_apps={{ include "glidepath-catalog.pacAppNames" . | squote }}
         deadline=$(( SECONDS + ${GATE_WAIT_SECONDS:-300} ))
         while :; do
           checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")" \
@@ -148,8 +150,8 @@ spec:
           gates=""; red=""; pending=""
           for gate in ${required_gates}; do
             gate_advisory_for_app "${app}" "${gate}" && continue
-            c="$(jq -r --arg n "Pipelines as Code CI / ${gate}-" \
-              '[.check_runs[] | select(.name == $n)] | sort_by(.started_at) | last | if . == null then "missing" elif .status != "completed" then .status else .conclusion end' <<<"${checks}")"
+            c="$(jq -r --argjson apps "${pac_apps}" --arg g "${gate}" \
+              '[.check_runs[] | select(.name as $x | any($apps[]; . + " / " + $g + "-" == $x))] | sort_by(.started_at) | last | if . == null then "missing" elif .status != "completed" then .status else .conclusion end' <<<"${checks}")"
             gates="${gates}${gates:+,}${gate}=${c}"
             case "${c}" in
               success) ;;

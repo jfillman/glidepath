@@ -22,6 +22,7 @@ Read in this order for a cold start.
 - [docs/admin/release.md](docs/admin/release.md): how a release becomes a gitops pull request
 - [docs/admin/release-state.md](docs/admin/release-state.md): the release record and its state machine
 - [docs/admin/release-guardrails.md](docs/admin/release-guardrails.md): the release gates
+- [docs/admin/github-app.md](docs/admin/github-app.md): the PaC GitHub App, its check-run name and its slug
 - [docs/admin/registries.md](docs/admin/registries.md): Ground and Flight registries, image promotion and upper-cluster admission
 - [docs/admin/testing.md](docs/admin/testing.md): test steps, the check ride and the qa gate
 

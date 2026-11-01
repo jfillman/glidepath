@@ -234,7 +234,7 @@ change management sets it advisory the same way. Today `qa` and `api-compat` ([a
 | `image-scan` | Vulnerability scan (Trivy) of the promoted image | real | yes |
 | `provenance` | Commit signature (gitsign, or a GitHub PR merge by an allowed login) + SLSA provenance (Conforma) | real | yes (locked) |
 | `sbom` | Software bill of materials | real | yes |
-| `values` | Values-file validation by the validator image (Airframe's by default); check `Pipelines as Code CI / values-` | real | yes |
+| `values` | Values-file validation by the validator image (Airframe's by default); check `Glidepath / values-` | real | yes |
 | `itsm` | An approved or scheduled change request for the release in the change tool ([change-management.md](change-management.md)) | stub until `itsm.provider` is set, then real | yes once real |
 | `api-compat` | The promoted image's signed API spec diffed against the target environment's, with the operations each breaking change touches and whether they are in use ([api-compat.md](api-compat.md)) | real | no (advisory) |
 | `qa` | A passing, recent check ride from the shared check-rides repository, attested on the promoted image ([testing.md](testing.md)) | real | no (advisory) |
@@ -334,12 +334,12 @@ Pieces: Task `validate-values`, Pipeline `values-check`, onboarding template
 check as required on every merge, so:
 1. Publish the validator image and make its package public.
 2. Let the onboarding-resync PR (which adds `.tekton/pull-request-values.yaml`) merge in every gitops repo.
-3. Only then add `values` to `releaseGuardrails` (status `real`; the name must match the PipelineRun's `generateName` prefix, `values-`, because `detect-bypass-merge` looks up the check `Pipelines as Code CI / values-`). From then on a merge
+3. Only then add `values` to `releaseGuardrails` (status `real`; the name must match the PipelineRun's `generateName` prefix, `values-`, because `detect-bypass-merge` looks up the check `Glidepath / values-`). From then on a merge
    with that check red is reported as a bypass. (Since 2026-10-19 the registry entry can also be added early
    with `required: false`: the gate then reports without blocking, the `validate-advisory` task in place of
    `validate`, and flipping it to `true` later is a one-line change.) It does **not** make the check required on other PRs
    (a human's or an agent's hand edit to a `values.yaml`): that is the GitHub ruleset's required-status-checks list,
-   a separate setting kept in sync by hand (see "Branch protection" below). Add `Pipelines as Code CI / values-` there.
+   a separate setting kept in sync by hand (see "Branch protection" below). Add `Glidepath / values-` there.
 Before step 3 the check runs and reports but does not block.
 
 ## Removing a gate

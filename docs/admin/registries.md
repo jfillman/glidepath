@@ -52,7 +52,7 @@ Never in `cicd.yaml` or Tower settings. With the defaults, every release renders
 
 | Piece | Where | Does |
 |---|---|---|
-| `promote` Pipeline + Task | glidepath-catalog, run in `platform-catalog` as `glidepath-promoter` | reads the PR and release file, applies the rules, opens and concludes the `Pipelines as Code CI / image-promotion-` check run |
+| `promote` Pipeline + Task | glidepath-catalog, run in `platform-catalog` as `glidepath-promoter` | reads the PR and release file, applies the rules, opens and concludes the `Glidepath / image-promotion-` check run |
 | `promote-image` StepAction | glidepath-catalog | starts the workflow, finds its run by request id, waits, verifies Flight (digest, `.sig`, `.att`, and a promotion attestation for this request signed by the workflow identity) |
 | `/promoter-token` | the broker (`cdevents-broker-auth`, `promoter.go`) | for `glidepath-promoter` only: `dispatch` = the promoter App, `actions: write` on the promoter repo; `release-pr` = the platform App, `checks: write` + `pull_requests: write` (the PR comment) + `contents: read` on a `gitops-<app>` repo |
 | `promote.yaml` workflow | the promoter repo (lab: `riley-roooo/flight-promoter`) | checks the source is signed and attested, copies by digest with every referrer, keeps Flight's own referrers, signs the promotion attestation |

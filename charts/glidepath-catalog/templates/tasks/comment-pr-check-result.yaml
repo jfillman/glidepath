@@ -448,8 +448,11 @@ spec:
           || { echo "${GATE_NAME} is not green: no promotion"; exit 0; }
 
         checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")" || exit 0
-        newest() { jq -r --arg n "Pipelines as Code CI / $1-" \
-          '[.check_runs[] | select(.name == $n)] | sort_by(.started_at) | last | if . == null then "missing" elif .status != "completed" then .status else .conclusion end' <<<"${checks}"; }
+        # A gate's check is "<PaC application name> / <gate>-", under the current name or an earlier one (catalog
+        # pipelinesAsCode).
+        pac_apps={{ include "glidepath-catalog.pacAppNames" . | squote }}
+        newest() { jq -r --argjson apps "${pac_apps}" --arg g "$1" \
+          '[.check_runs[] | select(.name as $x | any($apps[]; . + " / " + $g + "-" == $x))] | sort_by(.started_at) | last | if . == null then "missing" elif .status != "completed" then .status else .conclusion end' <<<"${checks}"; }
         waiting=""
         for gate in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if and .required (ne .name "image-promotion") }}{{ .name }} {{ end }}{{ end }}; do
           gate_advisory_for_app "${app}" "${gate}" && continue
@@ -467,7 +470,7 @@ spec:
         # One event id per commit and attempt: two gates that both see the set complete send the same id, and the
         # Trigger names the PipelineRun after it, so only one runs; after a refused or failed promotion the next
         # attempt (a new image-promotion check run) gets a new id.
-        attempts="$(jq -r '[.check_runs[] | select(.name == "Pipelines as Code CI / image-promotion-")] | length' <<<"${checks}")"
+        attempts="$(jq -r --argjson apps "${pac_apps}" --arg g image-promotion '[.check_runs[] | select(.name as $x | any($apps[]; . + " / " + $g + "-" == $x))] | length' <<<"${checks}")"
         id="$(printf '%s' "${owner}/${repo}#${pr_number}@${head_sha}#${attempts}" | sha256sum | cut -c1-20)"
         event="$(jq -nc --arg id "${id}" --arg ns "${NAMESPACE}" --arg pr "${PIPELINE_RUN_NAME}" --arg app "${app}" \
           --arg url "https://github.com/${owner}/${repo}" --arg n "${pr_number}" --arg sha "${head_sha}" --arg g "${GATE_NAME}" \

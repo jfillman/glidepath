@@ -110,7 +110,7 @@ expect "detect-bypass-merge with overrides (stub itsm stays; sbom/values out; qa
 # ---- the ruleset script applies the same rule
 rs() { hack/apply-guardrail-ruleset.sh --dry-run "$@" x/y | grep -v '^#' \
   | jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context' \
-  | sed 's#Pipelines as Code CI / ##' | tr '\n' ' '; }
+  | sed 's#Glidepath / ##' | tr '\n' ' '; }
 expect "ruleset default" "$(rs)" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- agent-gates- "
 expect "ruleset with overrides" "$(rs -f "${tmp}/override-values.yaml")" "sast- image-scan- provenance- itsm- api-compat- qa- agent-gates- "
 printf 'promotion:\n  enabled: true\n  pinDigest: true\n' > "${tmp}/promotion-values.yaml"
@@ -170,13 +170,13 @@ expect "PR body table: only the image-scan row differs" "$(diff "${tmp}/table-ba
 # the ruleset for gitops-backstage leaves image-scan out; for any other repo it stays.
 rs_repo() { hack/apply-guardrail-ruleset.sh --dry-run -f "${tmp}/perapp-values.yaml" "$1" | grep -v '^#' \
   | jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context' \
-  | sed 's#Pipelines as Code CI / ##' | tr '\n' ' '; }
+  | sed 's#Glidepath / ##' | tr '\n' ' '; }
 expect "ruleset gitops-backstage" "$(rs_repo x/gitops-backstage)" "sast- provenance- sbom- values- itsm- policy-validation- agent-gates- "
 expect "ruleset gitops-gate-api" "$(rs_repo x/gitops-gate-api)" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- agent-gates- "
 expect "ruleset gitops-backstage with promotion on keeps image-promotion" \
   "$(hack/apply-guardrail-ruleset.sh --dry-run -f "${tmp}/perapp-values.yaml" -f "${tmp}/promotion-values.yaml" x/gitops-backstage | grep -v '^#' \
      | jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context' \
-     | sed 's#Pipelines as Code CI / ##' | tr '\n' ' ')" "sast- provenance- sbom- values- itsm- policy-validation- agent-gates- image-promotion- "
+     | sed 's#Glidepath / ##' | tr '\n' ' ')" "sast- provenance- sbom- values- itsm- policy-validation- agent-gates- image-promotion- "
 
 # ---- per-app refusals: integrity gates, image-promotion, an unknown gate, a non-plain app, anything but required: false
 refuse() { # label want-in-message values-yaml [extra helm args...]

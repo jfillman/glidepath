@@ -53,6 +53,14 @@ run() { # <repo> [step]
 }
 bypass() { grep -o 'BYPASS DETECTED.*' "$FX/out" | sed 's/.*despite: //'; }
 
+# Checks under the current PaC application name (catalog pipelinesAsCode.applicationName) read the same as the legacy one.
+scenario renamed ""; jq '.check_runs |= map(.name |= sub("^Pipelines as Code CI"; "Glidepath"))' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+run gitops-gate-api
+expect "renamed checks, all green: no bypass" "$(bypass)" ""
+scenario renamed-red sast; jq '.check_runs |= map(.name |= sub("^Pipelines as Code CI"; "Glidepath"))' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+run gitops-gate-api
+expect "renamed checks, sast red: bypass" "$(bypass)" "sast (failure)"
+
 scenario backstage-scan image-scan; run gitops-backstage
 expect "backstage, image-scan red: exit 0" "$(cat "$FX/rc")" 0
 expect "backstage, image-scan red: no bypass" "$(bypass)" ""
