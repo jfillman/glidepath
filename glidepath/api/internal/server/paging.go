@@ -97,10 +97,13 @@ func writeList(w http.ResponseWriter, r *http.Request, body map[string]any, next
 	w.Write(buf.Bytes())
 }
 
+// matches reads If-None-Match leniently: weak (W/) and unquoted values count, since a hand-typed header (curl) or a
+// client that strips quotes means the same answer.
 func matches(inm, etag string) bool {
+	bare := strings.Trim(etag, `"`)
 	for _, t := range strings.Split(inm, ",") {
-		t = strings.TrimPrefix(strings.TrimSpace(t), "W/")
-		if t == etag || t == "*" {
+		t = strings.Trim(strings.TrimPrefix(strings.TrimSpace(t), "W/"), `"`)
+		if t == bare || t == "*" {
 			return true
 		}
 	}

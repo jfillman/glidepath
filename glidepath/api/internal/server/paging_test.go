@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -71,6 +72,13 @@ func TestFleetReleasesPagedWithETag(t *testing.T) {
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotModified || rec.Body.Len() != 0 || rec.Header().Get("ETag") != etag {
 		t.Fatalf("revalidation: %d %q", rec.Code, rec.Body.String())
+	}
+	// Unquoted, as typed by hand, means the same.
+	req.Header.Set("If-None-Match", strings.Trim(etag, `"`))
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("unquoted revalidation: %d", rec.Code)
 	}
 	// A caller who may not see the list gets no 304, whatever it sends.
 	req.Header.Set("Authorization", "Bearer t-agent")
