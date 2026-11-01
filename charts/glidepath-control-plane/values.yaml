@@ -57,7 +57,7 @@ tektonResultsRelayImage: ghcr.io/jfillman/glidepath-tekton-results-relay:latest
 
 # templates/api/glidepath-api.yaml (docs/admin/api.md). Empty renders nothing; api-ci.yaml sets it
 # to an immutable sha- tag on main after pushing a multi-arch image.
-apiImage: ghcr.io/jfillman/glidepath-api:sha-f99adb0
+apiImage: ghcr.io/jfillman/glidepath-api:sha-efb12b2
 # The glidepath-validate image (tools/validate.Containerfile), run beside the API as `glidepath validate --serve
 # 127.0.0.1:8081` for POST /v1/apps/{app}/cicd/validations (docs/admin/api.md#validate-a-cicdyaml-change): the same
 # validator the catalog's cicd-validate check runs, so the API has no second copy of the rules. validate-image-ci sets
