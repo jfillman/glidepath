@@ -851,4 +851,7 @@ which exports them to Tempo. `api.tracing.sampleRatio` (default 1) samples the t
 sampling decision is always followed. An empty `otlpEndpoint` exports nothing, and the `traceparent` is still passed
 on to the calls the API makes.
 
-Backstage does not send a `traceparent` yet, so a Tower call starts its trace in glidepath-api.
+Tower's calls join Tower's own traces. On hangar-prod Backstage runs the OpenTelemetry Node.js auto-instrumentation,
+which sends each call's `traceparent`, so a Tower call's spans are in hangar-prod's Tempo and glidepath-api's are in
+hangar-dev's, under one trace id. A failed call's warning in Tower's log ends with `(trace <id>)`. That id is the
+audit line's `traceId`.
