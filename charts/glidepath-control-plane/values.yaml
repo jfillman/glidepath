@@ -103,6 +103,14 @@ api:
   # GET /v1/apps/{app}/live/stream: how many live streams one replica serves at once (a full replica answers 503 and
   # Tower polls instead). GlidepathApiLiveStreamsNearLimit fires at 90%.
   liveMaxStreams: 200
+  # The API container. Its memory is mostly the run cache (every app's last 7 days, kept as JSON) plus one cold bulk
+  # read of Tekton Results at a time per app. 256Mi was too little on 2026-11-01: both replicas were OOM-killed when
+  # Tower asked for backstage's 30 days (~700 runs a week). goMemLimit (GOMEMLIMIT) makes the Go GC work harder before
+  # the limit instead of after it; keep it about 80% of the limit.
+  resources:
+    requests: { cpu: 10m, memory: 128Mi }
+    limits: { memory: 512Mi }
+  goMemLimit: 400MiB
   # glidepath-api's own SLOs (templates/api/monitoring.yaml; docs/admin/api.md#observability), percent over Sloth's 30
   # days. Rendered only where Sloth's PrometheusServiceLevel CRD is installed.
   slo:

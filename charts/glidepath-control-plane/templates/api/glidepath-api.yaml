@@ -399,9 +399,12 @@ spec:
               valueFrom: { fieldRef: { fieldPath: status.podIP } }
             - name: POD_NAMESPACE
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            {{- with .Values.api.goMemLimit }}
+            - name: GOMEMLIMIT
+              value: {{ . | quote }}
+            {{- end }}
           resources:
-            requests: { cpu: 10m, memory: 32Mi }
-            limits: { memory: 256Mi }
+            {{- toYaml .Values.api.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

@@ -86,6 +86,13 @@ asking for the same thing share one read. At start-up each replica reads every a
 background, one app at a time (`cmd/glidepath-api/warm.go`; it needs `list` on namespaces to find them), so its first
 answers after a restart or a deploy are cached ones.
 
+A cached run is kept as its JSON, not as decoded objects, and a list of runs is served from that JSON as it is; only a
+caller that reads the fields (`explain`) decodes one. Decoded, 7 days of every app was about 150 MB of heap on the dev
+cluster on 2026-11-01, and a cold read of backstage's 30 days (Tower's Releases view asks for 720 hours) on top of it
+OOM-killed both replicas at their old 256 Mi limit: Tower showed `Archived runs unavailable: ... 502`. The container's
+memory is `api.resources` (limit 512 Mi) with `api.goMemLimit` (`GOMEMLIMIT`, 400 MiB), so the Go GC works harder as
+the cache fills instead of the kernel killing the pod.
+
 ## Calling it
 
 In the cluster, send a ServiceAccount token:
