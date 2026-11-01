@@ -130,6 +130,15 @@ off no PR would ever get the check and every merge would read as a bypass. */ -}
 {{- end -}}
 
 {{- /*
+glidepath-catalog.pacAppNames: the Pipelines-as-Code application names a gate's check run may carry, as a JSON array
+of strings: pipelinesAsCode.applicationName (what PaC posts under now) first, then legacyApplicationNames. A gate's
+check is "<name> / <gate>-"; readers match any of these, writers use only the first.
+*/ -}}
+{{- define "glidepath-catalog.pacAppNames" -}}
+{{- prepend (.Values.pipelinesAsCode.legacyApplicationNames | default list) .Values.pipelinesAsCode.applicationName | uniq | toJson -}}
+{{- end -}}
+
+{{- /*
 glidepath-catalog.gateRequired: "true" or "false" for one gate, from the effective registry above.
 Usage: {{ $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "qa")) "true" }}
 A gate missing from the registry is "true" (nothing has made it advisory).
@@ -260,8 +269,8 @@ gh_() {
 check_run_start() {
   local out
   out="$(gh_ -X POST "https://api.github.com/repos/$1/$2/check-runs" \
-    -d "$(jq -n --arg sha "$3" --arg id "${RUN_NAME}" \
-      '{name: "Pipelines as Code CI / image-promotion-", head_sha: $sha, external_id: $id, status: "in_progress",
+    -d "$(jq -n --arg sha "$3" --arg id "${RUN_NAME}" --arg n {{ printf "%s / image-promotion-" .Values.pipelinesAsCode.applicationName | squote }} \
+      '{name: $n, head_sha: $sha, external_id: $id, status: "in_progress",
         output: {title: "Promoting to Flight", summary: "Copying the release image to Flight and verifying it."}}')")" || return 1
   jq -r .id <<<"${out}" > "${W}/check-id"
 }

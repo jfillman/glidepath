@@ -47,6 +47,7 @@ the required ones fails with a message naming the value.
 | `glidepath-catalog` | `defaultChart.repoURL`, `defaultChart.targetRevision` | yes | `cluster-defaults.yaml` as a value file |
 | `glidepath-catalog` | `valuesValidatorRepository` (or `valuesValidatorImage`) | yes | where the fleet's Airframe publishes `airframe-validate` |
 | `glidepath-catalog` | `backstageBaseUrl`, `backstageHostAliasIP` | no | same values as the control plane's |
+| `glidepath-catalog` | `pipelinesAsCode.applicationName` | no (default `Glidepath`) | must equal the cluster's PaC ConfigMap `application-name`: the first half of every gate's check name ([github-app.md](github-app.md)) |
 
 The control plane forwards `platformCicdRepoUrl`, `defaultChart`, the Backstage alias and
 `clusterTaxonomy` (whose `self` is `clusterName`: the dev cluster) to every app's
@@ -80,6 +81,10 @@ platform's PaaS/RBAC posture.
   actual trust boundary (see [chaining.md](chaining.md)); NetworkPolicy is
   defense-in-depth on top of it. Pin a Calico/Cilium-class CNI for anything beyond a
   shared dev cluster.
+- **Two names on every check.** PaC's `application-name` (`Glidepath`) names the check runs and must match the
+  catalog's `pipelinesAsCode.applicationName`; the GitHub App's own name is free, but Backstage's
+  `glidepath.gateCommentApps` must list its slug or Tower shows no signature evidence. See
+  [github-app.md](github-app.md).
 - **The GitHub App needs a public endpoint.** Pipelines-as-Code's webhook delivery
   can't reach a local/private cluster directly - front the PaC controller with a
   tunnel (`cloudflared`, `ngrok`) for local dev, or real ingress/DNS for anything else.

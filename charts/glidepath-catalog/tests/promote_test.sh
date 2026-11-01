@@ -125,9 +125,21 @@ else
       || { echo "FAIL: happy release.env: $(cat "$FX/w/release.env")"; exit 1; }
     [[ "$GATES" == *itsm=success* && "$GATES" != *image-promotion* ]] || { echo "FAIL: gates snapshot: $GATES"; exit 1; } ) || fail=1
   [[ "$(cat "$FX/w/check-id")" == 42 ]] || { echo "FAIL: the check run was not opened"; fail=1; }
-  grep 'POST .*/check-runs' "$FX/calls" | grep -qF '"name":"Pipelines as Code CI / image-promotion-"' \
-    || { echo "FAIL: check run not named like a PaC gate: $(grep check-runs "$FX/calls")"; fail=1; }
+  grep 'POST .*/check-runs' "$FX/calls" | grep -qF '"name":"Glidepath / image-promotion-"' \
+    || { echo "FAIL: check run not named like a PaC gate (pipelinesAsCode.applicationName): $(grep check-runs "$FX/calls")"; fail=1; }
 fi
+
+# The gates' checks under the current PaC application name (catalog pipelinesAsCode.applicationName), some still under
+# the legacy one (posted before the rename): both count. A check under any other name does not.
+scenario renamed
+jq '.check_runs |= map(if (.name | test("/ (sast|sbom|itsm)-$")) then .name |= sub("^Pipelines as Code CI"; "Glidepath") else . end)' \
+  "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+run_step release.sh
+(( rc == 0 )) || { echo "FAIL: renamed: checks under the current and legacy names refused: $(cat "$FX/w/reason" 2>/dev/null)"; fail=1; }
+scenario other-name
+jq '.check_runs |= map(if .name == "Pipelines as Code CI / sbom-" then .name = "Some Other CI / sbom-" else . end)' \
+  "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+expect_refusal other-name "sbom (missing)"
 
 scenario merged; jq '.merged = true | .state = "closed"' "$FX/pr.json" > "$FX/x" && mv "$FX/x" "$FX/pr.json"
 expect_refusal merged "PROM-08"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The "Glidepath App Checks" GitHub ruleset for an app repo: the required status checks on its default branch,
-# `Pipelines as Code CI / agent-gates-` (docs/admin/agent-gates.md) and `Pipelines as Code CI / cicd-validate-`
+# `Glidepath / agent-gates-` (docs/admin/agent-gates.md) and `Glidepath / cicd-validate-`
 # (docs/admin/contract.md). Gitops repos carry agent-gates- in their guardrail ruleset instead
 # (hack/apply-guardrail-ruleset.sh builds it from releaseGuardrails), so this script is for app repos only and refuses
 # a gitops-* name.
@@ -14,28 +14,30 @@
 # block every PR. agent-gates- is required; without cicd-validate's file the script says so and leaves that check out,
 # so re-run it after the repo's next onboarding resync.
 # Until 2026-10-31 the ruleset was named "Glidepath Agent Gates" (one check); that name is updated in place.
-# Options: --integration-id ID (default 4461953, the Pipelines as Code app). Needs gh (admin on the repo) and jq.
+# Options: --integration-id ID (default 4461953, the Pipelines as Code app), --app-name NAME (default Glidepath: the
+# cluster's PaC application-name, catalog pipelinesAsCode.applicationName). Needs gh (admin on the repo) and jq.
 set -euo pipefail
-integration=4461953; dry=0; repos=()
+integration=4461953; app_name=Glidepath; dry=0; repos=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) dry=1;;
     --integration-id) integration="$2"; shift;;
+    --app-name) app_name="$2"; shift;;
     *) repos+=("$1");;
   esac; shift
 done
-[[ ${#repos[@]} -gt 0 ]] || { echo "usage: $0 [--dry-run] [--integration-id ID] OWNER/REPO..." >&2; exit 2; }
+[[ ${#repos[@]} -gt 0 ]] || { echo "usage: $0 [--dry-run] [--integration-id ID] [--app-name NAME] OWNER/REPO..." >&2; exit 2; }
 NAME="Glidepath App Checks"
 OLD_NAME="Glidepath Agent Gates"
 # ruleset_body <check>... : the ruleset JSON with these PaC checks required.
 ruleset_body() {
-  jq -n --arg name "${NAME}" --argjson id "${integration}" --args '{
+  jq -n --arg name "${NAME}" --arg p "${app_name} / " --argjson id "${integration}" --args '{
     name: $name, target: "branch", enforcement: "active",
     conditions: {ref_name: {include: ["~DEFAULT_BRANCH"], exclude: []}},
     bypass_actors: [],
     rules: [{type: "required_status_checks", parameters: {strict_required_status_checks_policy: false,
       do_not_enforce_on_create: true,
-      required_status_checks: [$ARGS.positional[] | {context: ("Pipelines as Code CI / " + . + "-"), integration_id: $id}]}}]}' "$@"
+      required_status_checks: [$ARGS.positional[] | {context: ($p + . + "-"), integration_id: $id}]}}]}' "$@"
 }
 for repo in "${repos[@]}"; do
   [[ "${repo#*/}" != gitops-* ]] || { echo "${repo}: a gitops repo gets agent-gates- from its guardrail ruleset (hack/apply-guardrail-ruleset.sh)" >&2; exit 2; }

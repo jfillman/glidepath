@@ -56,7 +56,7 @@ labelled `hangar.io/clearance-client: agent-gates` (apron `55-autopilot/clearanc
 
 ## Making it block
 
-A check stops a merge only as a required status check: `Pipelines as Code CI / agent-gates-` (integration `4461953`,
+A check stops a merge only as a required status check: `Glidepath / agent-gates-` (integration `4461953`,
 the PaC App). For gitops repos it is in the [guardrail ruleset](github-ruleset.md), which
 `hack/apply-guardrail-ruleset.sh` builds from `releaseGuardrails`, so re-applying it adds the check. App repos get
 their own ruleset, "Glidepath App Checks", with this check and `cicd-validate-` ([contract.md](contract.md)):

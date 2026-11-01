@@ -36,14 +36,16 @@ while [[ $# -gt 0 ]]; do
 done
 [[ ${#repos[@]} -gt 0 ]] || { echo "usage: $0 [--dry-run] [-f VALUES]... [--approvals N] [--bypass-app-id ID]... OWNER/REPO..." >&2; exit 2; }
 
-# Check names are "Pipelines as Code CI / <gate>-": PaC names the check-run after the PipelineRun generateName, and
-# every gate's generateName is "<gate>-" (see wait-for-release-guardrails.yaml). The required set is the chart's
+# Check names are "<pipelinesAsCode.applicationName> / <gate>-": PaC names the check-run after its application-name
+# (the merged values' pipelinesAsCode.applicationName must equal the cluster's PaC ConfigMap) and the PipelineRun
+# generateName, and every gate's generateName is "<gate>-" (see wait-for-release-guardrails.yaml). The required set is the chart's
 # own rule (_helpers.tpl glidepath-catalog.guardrails): entry.required, default true, overridden by
 # releaseGuardrailOverrides.<name>.required; a stub is always required (its check is always green).
 # yq's `*` merge deep-merges maps and replaces lists, the same as Helm's values merge.
 merged="$(yq -o=json ea '. as $item ireduce ({}; . * $item)' "${values}" ${extra_values[@]+"${extra_values[@]}"})"
 checks="$(jq --argjson id "${integration}" '
-  (.releaseGuardrailOverrides // {}) as $o
+  ((.pipelinesAsCode.applicationName // "Glidepath") + " / ") as $p
+  | (.releaseGuardrailOverrides // {}) as $o
   | [.releaseGuardrails[]
       | . as $g
       | (if ($g.status // "real") == "stub" then true
@@ -51,9 +53,9 @@ checks="$(jq --argjson id "${integration}" '
          elif ($g | has("required")) then $g.required
          else true end) as $required
       | select($required)
-      | {context: ("Pipelines as Code CI / " + $g.name + "-"), integration_id: $id}]
+      | {context: ($p + $g.name + "-"), integration_id: $id}]
   + (if .promotion.enabled == true
-     then [{context: "Pipelines as Code CI / image-promotion-", integration_id: $id}] else [] end)' <<<"${merged}")"
+     then [{context: ($p + "image-promotion-"), integration_id: $id}] else [] end)' <<<"${merged}")"
 bypass_json="$(printf '%s\n' "${bypass[@]:-}" | jq -R 'select(length>0) | {actor_id: (.|tonumber), actor_type: "Integration", bypass_mode: "always"}' | jq -s '.')"
 
 body_for() { # OWNER/REPO -> the ruleset JSON, without that app's per-app advisory gates
@@ -61,7 +63,7 @@ body_for() { # OWNER/REPO -> the ruleset JSON, without that app's per-app adviso
   if [[ "${app}" == gitops-* ]]; then app="${app#gitops-}"; else app=""; fi
   repo_checks="$(jq --arg app "${app}" --argjson merged "${merged}" '
     (($merged.releaseGuardrailOverridesByApp // {})[$app] // {}) as $a
-    | [.[] | (.context | sub("^Pipelines as Code CI / "; "") | sub("-$"; "")) as $g
+    | [.[] | (.context | sub("^.* / "; "") | sub("-$"; "")) as $g
         | select(($g | IN("sast", "provenance", "image-promotion"))
                  or (($a[$g] | type) != "object") or ($a[$g].required != false))]' <<<"${checks}")"
   jq -n --argjson checks "${repo_checks}" --argjson approvals "${approvals}" --argjson bypass "${bypass_json}" '{

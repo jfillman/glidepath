@@ -110,6 +110,7 @@ spec:
             "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/check-runs")"
 
           pending=()
+          pac_apps={{ include "glidepath-catalog.pacAppNames" . | squote }}
           for gate in "${sibling_gates[@]}"; do
             # Sorted by most recently started, not just the first match - a gate can have
             # multiple check-runs on the same commit after a `/retest`, and only the
@@ -119,12 +120,13 @@ spec:
             # the GitHub check-run after that raw generateName value verbatim (the
             # "original-prname" annotation captures it before Kubernetes appends its own
             # random suffix) - the check-run itself is literally
-            # "Pipelines as Code CI / sast-", not "... / sast". Confirmed live 2026-09-06:
+            # "<PaC application name> / sast-", not "... / sast". Confirmed live 2026-09-06:
             # without this, every gate always reads back "missing" and this Task polls
             # until timeout regardless of real outcome, even though every sibling gate
-            # had genuinely already succeeded.
-            run_json="$(jq -c --arg name "Pipelines as Code CI / ${gate}-" \
-              '[.check_runs[] | select(.name == $name)] | sort_by(.started_at) | last // {}' <<<"${checks_json}")"
+            # had genuinely already succeeded. The application name is the current one or an earlier one (catalog
+            # pipelinesAsCode), so a check posted before a rename still counts.
+            run_json="$(jq -c --argjson apps "${pac_apps}" --arg g "${gate}" \
+              '[.check_runs[] | select(.name as $x | any($apps[]; . + " / " + $g + "-" == $x))] | sort_by(.started_at) | last // {}' <<<"${checks_json}")"
             status="$(jq -r '.status // "missing"' <<<"${run_json}")"
             conclusion="$(jq -r '.conclusion // empty' <<<"${run_json}")"
 

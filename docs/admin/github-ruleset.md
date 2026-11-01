@@ -8,7 +8,8 @@ retired as a stub, ADR-0025, and the audited export below predates that and stil
 it whenever the values it is given (`-f`) turn promotion on, as the chart's effective registry does.)
 
 Reference: [`reference/glidepath-guardrail-checks.ruleset.json`](reference/glidepath-guardrail-checks.ruleset.json), an export of
-the ruleset from `gitops-flight-api` (audited 2026-09-27). Generate and apply it with
+the ruleset from `gitops-flight-api` (audited 2026-09-27, so its checks carry PaC's default application name,
+`Pipelines as Code CI`; Hangar's is now `Glidepath`, [github-app.md](github-app.md)). Generate and apply it with
 [`hack/apply-guardrail-ruleset.sh`](../../hack/apply-guardrail-ruleset.sh), which builds the check list from
 `releaseGuardrails` so the two cannot drift.
 
@@ -20,8 +21,8 @@ use one ruleset for `gitops-*`).
 
 | Setting | Reference value | Why |
 |---|---|---|
-| Required status checks | one per `releaseGuardrails` entry, named `Pipelines as Code CI / <gate>-` | PaC names the check after the PipelineRun `generateName`, which is `<gate>-` (see `wait-for-release-guardrails`) |
-| Check's `integration_id` | `4461953` (the Pipelines as Code GitHub App) | only that app's check counts; a look-alike status from anything else is ignored |
+| Required status checks | one per `releaseGuardrails` entry, named `<pipelinesAsCode.applicationName> / <gate>-` (`Glidepath / <gate>-`) | PaC names the check after its `application-name` and the PipelineRun `generateName`, which is `<gate>-` (see `wait-for-release-guardrails` and [github-app.md](github-app.md)) |
+| Check's `integration_id` | `4461953` (the lab's Pipelines as Code GitHub App; `--integration-id` for another install's) | only that app's check counts; a look-alike status from anything else is ignored |
 | Require a pull request | yes; **2 approvals normally**, 0 in the lab | the human gate. `require_last_push_approval` only matters when approvals > 0 |
 | `strict_required_status_checks_policy` | `false` | the gates run on the PR head commit; the branch need not be up to date |
 | `do_not_enforce_on_create` | `true` | a brand-new branch is not blocked before its first checks |

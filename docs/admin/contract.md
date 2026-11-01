@@ -101,7 +101,7 @@ verdict the check will give, plus every field the change touches, before opening
 ### Enforced in app pull requests: the `cicd-validate` check
 
 Since 2026-10-31 every onboarded app repo runs `glidepath validate` as a pull-request check,
-**`Pipelines as Code CI / cicd-validate-`** (`.tekton/pull-request-cicd-validate.yaml`, delivered by
+**`Glidepath / cicd-validate-`** (`.tekton/pull-request-cicd-validate.yaml`, delivered by
 onboarding like the agent gates' file; Pipeline `cicd-validate-check`, Task `cicd-validate`). Before it,
 a broken `cicd.yaml` was only caught by `stage-preflight`, on the first build after the merge.
 
