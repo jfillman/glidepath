@@ -346,6 +346,21 @@ spec:
             # POST /v1/apps/{app}/cicd/validations asks the validator sidecar below, on the pod's loopback.
             - name: VALIDATOR_URL
               value: http://127.0.0.1:8081
+            {{- $oidc := .Values.api.oidc | default dict }}
+            {{- if $oidc.issuer }}
+            {{- if not $oidc.allowedUsers }}{{ fail "api.oidc.allowedUsers is required with api.oidc.issuer: the issuer signs in any GitHub user" }}{{ end }}
+            # People's ID tokens (auth/oidc.go).
+            - name: OIDC_ISSUER
+              value: {{ $oidc.issuer | quote }}
+            {{- with $oidc.jwksUrl }}
+            - name: OIDC_JWKS_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: OIDC_AUDIENCE
+              value: {{ $oidc.audience | default "glidepath-api" | quote }}
+            - name: OIDC_ALLOWED_USERS
+              value: {{ join "," $oidc.allowedUsers | quote }}
+            {{- end }}
             {{- $tracing := .Values.api.tracing | default dict }}
             {{- if $tracing.otlpEndpoint }}
             # Traces (internal/tracing): the standard OpenTelemetry SDK variables.

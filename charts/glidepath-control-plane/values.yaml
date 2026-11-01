@@ -108,6 +108,19 @@ api:
   slo:
     availability: 99.5 # calls that did not answer 5xx
     latency: 95 # non-streaming calls answered within 2.5 s
+  # People calling glidepath-api directly with a people-dex ID token (docs/admin/api.md#people-over-the-gateway-route).
+  # Empty issuer: off, TokenReview only. allowedUsers (GitHub logins) is required with an issuer: Dex signs in any
+  # GitHub user. A person is people:<login> to RBAC; bind them under readers/operators/releasers.users.
+  oidc:
+    issuer: ""
+    jwksUrl: "" # in-cluster URL of the issuer's keys; empty = <issuer>/keys
+    audience: glidepath-api # glidepath-api's client id at the issuer
+    allowedUsers: []
+  # An HTTPRoute on the cluster's Gateway, so people (api.oidc) and anything else can call glidepath-api without the
+  # API server's proxy. Empty hostname: no route.
+  route:
+    hostname: ""
+    gateway: { name: hangar, namespace: hangar-gateway }
   # glidepath-api's traces (docs/admin/api.md#traces): OTLP/HTTP to the cluster's OpenTelemetry collector, which
   # sends them to Tempo. Empty otlpEndpoint: no traces exported. sampleRatio applies to traces the API starts; a
   # caller's sampled traceparent is always followed (parentbased_traceidratio).
