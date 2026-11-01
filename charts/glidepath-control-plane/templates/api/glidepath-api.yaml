@@ -208,7 +208,13 @@ rules:
     resources: ["cicd"]
     verbs: ["validate"]
 {{- $readers := .Values.api.readers | default dict }}
-{{- if or $readers.users $readers.groups $readers.serviceAccounts }}
+{{- /* api.oidc.bindReaders: every allowed person (people:<login>) reads, as the readers do. Writes stay explicit. */ -}}
+{{- $oidcR := .Values.api.oidc | default dict }}
+{{- $people := list }}
+{{- if and $oidcR.issuer (ne (toString $oidcR.bindReaders) "false") }}
+{{- range $oidcR.allowedUsers }}{{ $people = append $people (printf "people:%s" .) }}{{ end }}
+{{- end }}
+{{- if or $readers.users $readers.groups $readers.serviceAccounts $people }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -220,6 +226,9 @@ metadata:
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: glidepath-api-reader }
 subjects:
   {{- range $readers.users }}
+  - { apiGroup: rbac.authorization.k8s.io, kind: User, name: {{ . | quote }} }
+  {{- end }}
+  {{- range $people }}
   - { apiGroup: rbac.authorization.k8s.io, kind: User, name: {{ . | quote }} }
   {{- end }}
   {{- range $readers.groups }}

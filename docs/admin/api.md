@@ -120,8 +120,9 @@ trusts. The API server and its proxy are not in the path.
   `api.oidc.audience`, so a token minted for Clearance is refused here), and `exp`. Every other token still goes to
   TokenReview, so ServiceAccounts and Tower's federated identities work over the route too.
 - **Who it is.** The person is `people:<GitHub login>` (from `preferred_username`), authorized by the same
-  SubjectAccessReview as every caller. What a person may do is RBAC on that user name: list them under
-  `api.readers.users` (or operators, releasers) like any other identity.
+  SubjectAccessReview as every caller. What a person may do is RBAC on that user name. With `api.oidc.bindReaders`
+  (the default) every allowed person is bound to `glidepath-api-reader`; writes need the name under
+  `api.operators.users` or `api.releasers.users`, like any other identity.
 - **Who may sign in.** Dex signs in any GitHub user, so only `api.oidc.allowedUsers` get in (`GP-AUTH-005`); the
   chart refuses `api.oidc` without the list. A person is never a delegate and may not send `X-Glidepath-On-Behalf-Of`
   (`GP-AUTH-003`).
