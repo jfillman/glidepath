@@ -1,6 +1,7 @@
 // Package auth decides who a caller is and what it may read (docs/admin/api.md).
 //
-// Who: a bearer token, checked with the cluster's own TokenReview, so anything the API server
+// Who: a bearer token. A people-dex ID token (a person over the Gateway route) is verified here (oidc.go); any other is
+// checked with the cluster's own TokenReview, so anything the API server
 // trusts works here unchanged: an in-cluster ServiceAccount, and a federated identity from another
 // cluster (Tower's backstage-ingestor and tower-actor from the prod cluster). The token comes in
 // Authorization, or in X-Glidepath-Authorization when the call came through the API server's
@@ -92,6 +93,7 @@ func (k kubeReviewer) AccessReview(ctx context.Context, c *Caller, attrs authori
 type Auth struct {
 	Reviewer  Reviewer
 	Delegates map[string]bool // usernames allowed to send X-Glidepath-On-Behalf-Of
+	OIDC      *OIDC           // people-dex ID tokens (oidc.go); nil: TokenReview only
 }
 
 func bearer(v string) string {
@@ -111,14 +113,24 @@ func (a *Auth) Authenticate(r *http.Request) (*Caller, error) {
 		return nil, &Error{http.StatusUnauthorized, "GP-AUTH-001", "no bearer token",
 			"send Authorization: Bearer <token>, or " + HeaderProxied + " when calling through the API server's service proxy"}
 	}
-	st, err := a.Reviewer.TokenReview(r.Context(), token)
-	if err != nil {
-		return nil, fmt.Errorf("token review: %w", err)
+	var c *Caller
+	if a.OIDC.Mine(token) {
+		// A person's ID token: verified here, never a delegate (oidc.go).
+		p, err := a.OIDC.Verify(r.Context(), token)
+		if err != nil {
+			return nil, err
+		}
+		c = p
+	} else {
+		st, err := a.Reviewer.TokenReview(r.Context(), token)
+		if err != nil {
+			return nil, fmt.Errorf("token review: %w", err)
+		}
+		if !st.Authenticated {
+			return nil, &Error{http.StatusUnauthorized, "GP-AUTH-002", "token not accepted by the cluster", st.Error}
+		}
+		c = &Caller{User: st.User.Username, UID: st.User.UID, Groups: st.User.Groups, Delegate: a.Delegates[st.User.Username]}
 	}
-	if !st.Authenticated {
-		return nil, &Error{http.StatusUnauthorized, "GP-AUTH-002", "token not accepted by the cluster", st.Error}
-	}
-	c := &Caller{User: st.User.Username, UID: st.User.UID, Groups: st.User.Groups, Delegate: a.Delegates[st.User.Username]}
 	if obo := strings.TrimSpace(r.Header.Get(HeaderOnBehalf)); obo != "" {
 		if !c.Delegate {
 			return nil, &Error{http.StatusForbidden, "GP-AUTH-003", c.User + " may not act on behalf of anyone",

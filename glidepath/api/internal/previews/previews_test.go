@@ -41,9 +41,9 @@ func TestList(t *testing.T) {
 	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{GVRApplications: "ApplicationList"},
 		app("app-shop-cicd", "shop", 12, nil, healthy),
-		app("app-shop-cicd", "shop", 55, nil, nil), // just generated: no status yet
+		app("app-shop-cicd", "shop", 55, nil, nil),                                                                // just generated: no status yet
 		app("app-shop-cicd", "shop", 7, map[string]any{"hangar.io/app": "shop", "hangar.io/env": "dev"}, healthy), // not a preview
-		app("app-cart-cicd", "cart", 3, nil, healthy), // another app
+		app("app-cart-cicd", "cart", 3, nil, healthy),                                                             // another app
 	)
 	cs := fake.NewSimpleClientset(&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: "app-shop-pr-12"},
 		Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 8080}}}})

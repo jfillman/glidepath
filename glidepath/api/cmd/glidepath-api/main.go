@@ -16,6 +16,9 @@
 //
 //	LISTEN              address to serve on (default :8080)
 //	METRICS_LISTEN      address /metrics is served on, without auth (default :9090)
+//	OIDC_ISSUER         people-dex's issuer: its ID tokens are verified here (unset: TokenReview only)
+//	OIDC_JWKS_URL       where its keys are read in cluster (default <issuer>/keys); OIDC_AUDIENCE glidepath-api's
+//	                    client id there (default glidepath-api); OIDC_ALLOWED_USERS comma-separated GitHub logins (required)
 //	OTEL_EXPORTER_OTLP_ENDPOINT  OTLP/HTTP collector for traces (unset: none exported); OTEL_TRACES_SAMPLER/_ARG
 //	                    as the SDK reads them (default parentbased_always_on)
 //	LIVE_MAX_STREAMS    live streams (GET /v1/apps/{app}/live/stream) per replica (default 200)
@@ -170,6 +173,16 @@ func main() {
 		HTTP:      tracing.Client(&http.Client{Timeout: 30 * time.Second}),
 	}
 	logger := server.NewLogger()
+	// People's ID tokens from people-dex, for calls over the Gateway route (auth/oidc.go). Off without OIDC_ISSUER.
+	var people *auth.OIDC
+	if iss := os.Getenv("OIDC_ISSUER"); iss != "" {
+		people, err = auth.NewOIDC(iss, env("OIDC_JWKS_URL", strings.TrimSuffix(iss, "/")+"/keys"), env("OIDC_AUDIENCE", "glidepath-api"),
+			strings.Split(os.Getenv("OIDC_ALLOWED_USERS"), ","), tracing.Client(&http.Client{Timeout: 10 * time.Second}))
+		if err != nil {
+			log.Fatalf("glidepath-api: %v", err)
+		}
+		logger.Info("oidc", "issuer", iss, "allowedUsers", len(people.AllowedUsers))
+	}
 	store := &events.Store{
 		Max:        envInt("EVENTS_MAX", 2000),
 		MaxAge:     envDuration("EVENTS_MAX_AGE", 24*time.Hour),
@@ -195,7 +208,7 @@ func main() {
 	}
 	liveRuns := &live.Client{Store: live.NewKubeStore(dyn, cs)}
 	s := &server.Server{
-		Auth: &auth.Auth{Reviewer: auth.NewKubeReviewer(cs), Delegates: delegates},
+		Auth: &auth.Auth{Reviewer: auth.NewKubeReviewer(cs), Delegates: delegates, OIDC: people},
 		Apps: &apps.Resolver{CS: cs, TTL: 5 * time.Minute},
 		Results: &results.Client{
 			Base: env("RESULTS_URL", "http://tekton-results-relay.platform-system.svc.cluster.local:8080"),

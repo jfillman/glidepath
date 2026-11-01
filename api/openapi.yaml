@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Glidepath API
-  version: 0.10.0
+  version: 0.11.0
   description: |
     Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
     contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec are reads (tier T0); phase 3
@@ -907,7 +907,7 @@ components:
           type: string
           description: >-
             GP-AUTH-001 no token, GP-AUTH-002 token rejected, GP-AUTH-003 on-behalf-of refused, GP-AUTH-004 a delegate's
-            write must name the person, GP-AUTHZ-001 not allowed, GP-LOG-404 the run exists but has no archived log for that
+            write must name the person, GP-AUTH-005 a person's sign-in not on the allowlist, GP-AUTHZ-001 not allowed, GP-LOG-404 the run exists but has no archived log for that
             TaskRun, GP-LIVE-404 the live TaskRun or its pod is gone (or has no pod yet), GP-API-409 a write's derived run name is taken by another object, GP-API-422 the write can't be
             done as asked (out of order, a Ground target, an ineligible rollback target, nothing to promote, or the
             cluster refused it: admission policy or RBAC), GP-API-503 this replica serves its maximum number of event

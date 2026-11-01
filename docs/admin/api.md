@@ -109,6 +109,33 @@ curl --cacert <the cluster's CA file> -H "Authorization: Bearer $TOKEN" -H "X-Gl
 The caller needs `services/proxy` on `glidepath-api` for that path, and the API then checks the
 token itself, so the proxy grant alone reads nothing.
 
+### People, over the Gateway route
+
+Where the chart's `api.oidc` and `api.route` are set (API 0.11.0), a person calls glidepath-api directly at
+`http://glidepath-api.<domain>` with an ID token from people-dex, the same Dex in front of GitHub that Clearance
+trusts. The API server and its proxy are not in the path.
+
+- **Which tokens.** A bearer token whose `iss` is `api.oidc.issuer` is verified by glidepath-api itself: the
+  signature against Dex's keys (read in cluster, `api.oidc.jwksUrl`), `iss`, `aud` (glidepath-api's own client id,
+  `api.oidc.audience`, so a token minted for Clearance is refused here), and `exp`. Every other token still goes to
+  TokenReview, so ServiceAccounts and Tower's federated identities work over the route too.
+- **Who it is.** The person is `people:<GitHub login>` (from `preferred_username`), authorized by the same
+  SubjectAccessReview as every caller. What a person may do is RBAC on that user name. With `api.oidc.bindReaders`
+  (the default) every allowed person is bound to `glidepath-api-reader`; writes need the name under
+  `api.operators.users` or `api.releasers.users`, like any other identity.
+- **Who may sign in.** Dex signs in any GitHub user, so only `api.oidc.allowedUsers` get in (`GP-AUTH-005`); the
+  chart refuses `api.oidc` without the list. A person is never a delegate and may not send `X-Glidepath-On-Behalf-Of`
+  (`GP-AUTH-003`).
+- **Getting a token.** Dex's static public client `glidepath-api` (device flow), the way `hangar_login.py` signs in
+  to Clearance. ID tokens last an hour; there is no refresh.
+
+```shell
+curl -H "Authorization: Bearer $ID_TOKEN" http://glidepath-api.hangar-dev.local/v1/whoami
+```
+
+The lab's Gateway listener is plain HTTP, as Clearance's and Dex's routes are: the token crosses the LAN in the
+clear. Use it on a trusted network only, or put TLS on the Gateway first.
+
 ## Who may read what
 
 **Who you are** is a TokenReview by the cluster, so anything the API server trusts works: an
@@ -758,9 +785,10 @@ Every refusal or failure is JSON with a stable `rule` and, where there is one, a
 | Rule | Status | Meaning |
 |---|---|---|
 | `GP-AUTH-001` | 401 | No bearer token |
-| `GP-AUTH-002` | 401 | The cluster didn't accept the token |
+| `GP-AUTH-002` | 401 | The cluster didn't accept the token, or a person's ID token failed verification (signature, issuer, audience, expiry, username) |
 | `GP-AUTH-003` | 403 | On-behalf-of from a caller that isn't a delegate |
 | `GP-AUTH-004` | 400 | A delegate's write must name the person (`X-Glidepath-On-Behalf-Of`) |
+| `GP-AUTH-005` | 403 | A person signed in, but their GitHub login isn't in `api.oidc.allowedUsers` |
 | `GP-AUTHZ-001` | 403 | Not allowed to read or write this in this app's namespace |
 | `GP-API-400` | 400 | A malformed app name, run id, chain id, test run id, PipelineRun name, environment or cluster name, `Idempotency-Key`, `dryRun` or write body, an image outside `ghcr.io`, an event `since` or `limit`, a live TaskRun, container or `pipelineRuns` name, or a container the pod doesn't have or that hasn't started |
 | `GP-API-404` | 404 | No such app, run, PipelineRun, release record, or test report |
