@@ -369,6 +369,10 @@ per environment, it deploys the same fixed name into a different namespace each 
 kubectl port-forward -n app-nodejs-demo-app-pr-<number> svc/nodejs-demo-app 8080:80
 ```
 
+`GET /v1/apps/{app}/previews` on glidepath-api ([api.md#previews](api.md#previews)) lists an app's previews with
+their PR, image, Argo CD sync and health, and the exact port-forward for each, for Tower and agents. It is read
+only: the label is still the only way to start or end a preview.
+
 ## Verification
 
 - Label a real PR `preview` on `nodejs-demo-app`. Within ~180s (the generator's

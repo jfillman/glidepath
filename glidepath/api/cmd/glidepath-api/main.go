@@ -70,6 +70,7 @@ import (
 	"github.com/glidepath/api/internal/live"
 	"github.com/glidepath/api/internal/metrics"
 	"github.com/glidepath/api/internal/pipelineruns"
+	"github.com/glidepath/api/internal/previews"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
 	"github.com/glidepath/api/internal/server"
@@ -224,6 +225,8 @@ func main() {
 			Log:  logger,
 		},
 		Runs: &pipelineruns.Client{Store: pipelineruns.NewKubeStore(dyn)},
+		// Preview environments: the Argo CD Applications each app's pr-envs ApplicationSet generates (read only).
+		Previews: &previews.Client{Dyn: dyn, CS: cs, Owner: githubOwner},
 		// Live runs, TaskRuns and step logs straight from the API server (phase 6b: Tower's live views moved
 		// here from its own Kubernetes proxy reads). Lists are cached 2 s; logs never.
 		Live: liveRuns,
