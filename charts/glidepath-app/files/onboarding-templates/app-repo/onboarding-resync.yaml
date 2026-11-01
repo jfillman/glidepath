@@ -11,7 +11,7 @@
 # resync-88ggt fired off a `pull_request` synchronize event on a preview PR's feature
 # branch, not a push to main) - on-event/on-target-branch above are decorative once
 # on-cel-expression is set (PaC uses the CEL as the sole match authority, same as every
-# release-guardrail gate's own `has(body.pull_request)` guard - see flow-ci.yaml's own
+# release-guardrail gate's own `event == "pull_request"` guard - see flow-ci.yaml's own
 # push CEL for the same pattern in the opposite direction). pathChanged() alone matches
 # any event carrying a cicd.yaml diff, pull_request included, so a plain path check was
 # never enough to keep this push-only.

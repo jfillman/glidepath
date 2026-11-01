@@ -326,7 +326,13 @@ sast-`; the dash is part of the name - PaC matches the PipelineRun's `generateNa
 `/retest sast` answers "cannot find the targeted pipelinerun", confirmed live 2026-10-19)
 to re-run just that one, or `/retest` alone to re-run every gate in
 `.Values.releaseGuardrails` - PaC's own native comment mechanism, no platform code
-involved. Fix the underlying issue first if the failure is real; re-running only
+involved. A bare `/retest` works only on repos re-synced after 2026-11-01: until then each
+check's `on-cel-expression` began `has(body.pull_request)`, which a `/retest` comment (an
+`issue_comment` webhook, no `pull_request` key) never satisfies, so PaC skipped every check.
+The templates now match on PaC's `event`, `target_branch` and `source_branch`, which PaC
+fills from the PR for a comment too. A named `/retest <check>-` never evaluates the CEL, so
+it always worked. A webhook that arrives while the PaC controller is down is lost: GitHub
+does not redeliver it, so comment again once the controller is Running. Fix the underlying issue first if the failure is real; re-running only
 re-evaluates the check, it does not bypass it.
 
 **Each check also posts its own real PR comment** on top of the GitHub Check PaC already

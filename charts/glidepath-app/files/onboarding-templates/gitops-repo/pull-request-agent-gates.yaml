@@ -9,8 +9,10 @@ metadata:
   labels:
     hangar.io/app: "<APP_NAME>"
   annotations:
-    # has(body.pull_request): a push webhook (this PR merging) has no pull_request key.
-    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main"'
+    # event and the branches are PaC's own variables, not the webhook body: a push (this PR merging) is not
+    # "pull_request", and a /retest comment, whose issue_comment body has no pull_request key, still matches (PaC
+    # reads the PR's branches for it). has(body.pull_request) skipped every check on a bare /retest (2026-11-01).
+    pipelinesascode.tekton.dev/on-cel-expression: 'event == "pull_request" && target_branch == "main"'
     pipelinesascode.tekton.dev/max-keep-runs: "5"
 spec:
   pipelineRef:

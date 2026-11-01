@@ -38,16 +38,19 @@ metadata:
     # comment-pr-check-result.yaml now edits its own prior comment on the PR in place
     # (via a hidden marker) rather than always appending a new one.
     #
-    # has(body.pull_request) guards against a push webhook (e.g. this same PR merging)
-    # hitting the same CEL expression - a push event has no pull_request key, which
-    # without the guard raised a CEL "no such key" error and posted a false-alarm bot
-    # comment even though the real check had already passed.
+    # event == "pull_request" guards against a push webhook (e.g. this same PR merging)
+    # hitting the same CEL expression: a push event has no pull_request key, and reading
+    # body.pull_request on one raised a CEL "no such key" error and posted a false-alarm bot
+    # comment even though the real check had already passed. PaC's event, target_branch and
+    # source_branch replace the body fields (2026-11-01): a /retest comment's issue_comment
+    # body has no pull_request key either, so has(body.pull_request) skipped every check on a
+    # bare /retest; PaC fills the branches from the PR for a comment.
     # `!startsWith("release-record-")` (2026-10-09): Tower's Release Record poller opens
     # PRs on this repo from release-record-<app>-<hash> branches that only add
     # releases/<app>@<version>.yaml - no image is promoted, so every image-centric gate
     # failed on them ("no release.yaml changed"), 135 of 284 historical
     # extract-promoted-image runs. Those PRs are not releases; the gates don't apply.
-    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.pull_request) && body.pull_request.base.ref == "main" && body.pull_request.head.ref.startsWith("release-") && !body.pull_request.head.ref.startsWith("release-record-")'
+    pipelinesascode.tekton.dev/on-cel-expression: 'event == "pull_request" && target_branch == "main" && source_branch.startsWith("release-") && !source_branch.startsWith("release-record-")'
     pipelinesascode.tekton.dev/max-keep-runs: "5"
 spec:
   pipelineRef:

@@ -856,14 +856,14 @@ spec:
         if [[ "${DEPLOY_TARGET}" != "k8s-rollout" ]] && jq -e '[.[] | select(.pinFile)] | length > 0' <<<"${pipelines_json}" >/dev/null; then
           while IFS= read -r gate; do
             tmpl="/opt/platform/onboarding-templates/gitops-repo/pull-request-${gate}.yaml"
-            if [[ ! -f "${tmpl}" ]] || ! grep -q 'head.ref.startsWith("release-")' "${tmpl}"; then
+            if [[ ! -f "${tmpl}" ]] || ! grep -q 'source_branch.startsWith("release-")' "${tmpl}"; then
               echo "warn: gate ${gate} has no gitops PR template with a release- branch trigger - not delivered for pin PRs" >&2
               continue
             fi
             sed \
               -e "s|<APP_NAMESPACE>|${APP_NAMESPACE}|g" \
               -e "s|<APP_NAME>|${APP_NAME}|g" \
-              -e 's|body.pull_request.head.ref.startsWith("release-")|body.pull_request.head.ref.startsWith("glidepath-release-") \&\& files.all.all(f, f.startsWith("glidepath/releases/"))|' \
+              -e 's|source_branch.startsWith("release-")|source_branch.startsWith("glidepath-release-") \&\& files.all.all(f, f.startsWith("glidepath/releases/"))|' \
               "${tmpl}" > ".tekton/pin-gate-${gate}.yaml"
             if [[ "${gate}" == "provenance" ]]; then
               yq -i '.spec.params += [{"name": "commit-signature", "value": "false"}]' ".tekton/pin-gate-${gate}.yaml"
