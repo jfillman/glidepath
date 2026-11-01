@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Glidepath API
-  version: 0.9.0
+  version: 0.10.0
   description: |
     Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
     contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec are reads (tier T0); phase 3
@@ -551,6 +551,33 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/previews:
+    get:
+      operationId: listPreviews
+      summary: The app's preview environments, as Argo CD has them now
+      description: >-
+        One per PR labelled `preview` (docs/admin/ephemeral-environments.md): the Argo CD Applications the app's
+        `<app>-pr-envs` ApplicationSet generates in its `-cicd` namespace (labels `hangar.io/ephemeral-env=true`,
+        `hangar.io/app`), newest PR first. Read only: a preview starts and ends with the label. Needs `list` on
+        `environments.glidepath.hangar.io` in the app's namespace, as GET /v1/apps/{app}/environments does. Not cached.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200":
+          description: The previews (an empty list when the app has none, or previews are off)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [previews]
+                properties:
+                  previews: { type: array, items: { $ref: "#/components/schemas/Preview" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
   /v1/apps/{app}/environments:
     get:
       operationId: listEnvironments
@@ -835,6 +862,23 @@ components:
       description: A refusal or failure with a stable rule id
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   schemas:
+    Preview:
+      type: object
+      required: [pr, application, namespace, sync, health, createdAt]
+      properties:
+        pr: { type: integer, description: The PR number (the Application's hangar.io/env label, pr-<number>) }
+        prUrl: { type: string, description: "https://github.com/<owner>/<app>/pull/<pr>; absent without GITHUB_OWNER" }
+        application: { type: string, description: The Argo CD Application, <app>-pr-<pr> }
+        namespace: { type: string, description: Where it runs, app-<app>-pr-<pr> }
+        image: { type: string, description: "The PR's image, <ground>/<owner>/<app>-pr:<12-char head sha>" }
+        headSha: { type: string, description: The PR head the preview's values are read at }
+        sync: { type: string, description: "Argo CD's sync status: Synced, OutOfSync, or Unknown before its first report" }
+        health: { type: string, description: "Argo CD's health: Healthy, Progressing, Degraded, Missing, Suspended, or Unknown" }
+        healthSince: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        service: { type: string, description: "The app's Service in the preview namespace; absent until it exists" }
+        port: { type: integer }
+        portForward: { type: string, description: "The kubectl port-forward that reaches it (a preview has no route)" }
     Envelope:
       type: object
       description: One CDEvent, as GET /v1/events delivers it.

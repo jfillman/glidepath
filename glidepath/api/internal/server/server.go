@@ -29,6 +29,7 @@ import (
 	"github.com/glidepath/api/internal/live"
 	"github.com/glidepath/api/internal/metrics"
 	"github.com/glidepath/api/internal/pipelineruns"
+	"github.com/glidepath/api/internal/previews"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
 	"github.com/glidepath/api/internal/testkube"
@@ -50,10 +51,11 @@ type Server struct {
 	Live     *live.Client // PipelineRuns, TaskRuns and step logs as the cluster holds them now
 	LiveHub  *live.Hub    // GET /v1/apps/{app}/live/stream: one watch per namespace, shared by its viewers
 	Envs     *environments.Client
-	Cicd     *cicd.Client  // POST /v1/apps/{app}/cicd/validations
-	Events   *events.Store // nil: no event routes
-	Tap      http.Handler  // the broker's ClusterInterceptor glidepath-api-events (events.Tap)
-	Peer     http.Handler  // the other replicas (events.PeerHandler)
+	Previews *previews.Client // GET /v1/apps/{app}/previews
+	Cicd     *cicd.Client     // POST /v1/apps/{app}/cicd/validations
+	Events   *events.Store    // nil: no event routes
+	Tap      http.Handler     // the broker's ClusterInterceptor glidepath-api-events (events.Tap)
+	Peer     http.Handler     // the other replicas (events.PeerHandler)
 	// Heartbeat is how often an idle event stream gets a comment line; ResumeGrace how far before a
 	// Last-Event-ID a resume also replays (events.Resume).
 	Heartbeat   time.Duration
@@ -110,6 +112,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/apps/{app}/tests/{id}/report", s.wrap(op{"getTestReport", "T0", "tests", "", "get", false}, s.getTestReport))
 	mux.Handle("POST /v1/apps/{app}/pipelineruns/{name}/rerun", s.wrap(op{"rerunRun", "T1", "runs", "", "rerun", false}, s.rerunRun))
 	mux.Handle("POST /v1/apps/{app}/pipelineruns/{name}/cancel", s.wrap(op{"cancelRun", "T1", "runs", "", "cancel", false}, s.cancelRun))
+	mux.Handle("GET /v1/apps/{app}/previews", s.wrap(op{"listPreviews", "T0", "environments", "", "list", false}, s.listPreviews))
 	mux.Handle("GET /v1/apps/{app}/environments", s.wrap(op{"listEnvironments", "T0", "environments", "", "list", false}, s.listEnvironments))
 	mux.Handle("GET /v1/apps/{app}/environments/{env}/rollback-plan", s.wrap(op{"getRollbackPlan", "T0", "environments", "", "get", false}, s.getRollbackPlan))
 	mux.Handle("POST /v1/apps/{app}/environments/{env}/promote", s.wrap(op{"promoteEnvironment", "T2", "environments", "", "promote", false}, s.promoteEnvironment))
@@ -670,3 +673,14 @@ func (s *Server) cancelRun(ctx context.Context, w http.ResponseWriter, r *http.R
 
 // NewLogger writes JSON lines to stdout.
 func NewLogger() *slog.Logger { return slog.New(slog.NewJSONHandler(os.Stdout, nil)) }
+
+// listPreviews is the app's preview environments: one per PR labelled preview, as Argo CD has them now. A preview is
+// an environment, so reading one needs what listing environments needs.
+func (s *Server) listPreviews(ctx context.Context, w http.ResponseWriter, _ *http.Request, _ *auth.Caller, app *apps.App) error {
+	ps, err := s.Previews.List(ctx, app.Namespace, app.Name)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"previews": ps})
+	return nil
+}

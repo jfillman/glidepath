@@ -6,8 +6,8 @@ runs, and Glidepath's [contract](contract.md); it can [re-run and cancel](#write
 PipelineRuns; and it can [propose a promotion or a rollback](#promote-and-roll-back) of a Flight environment.
 Phases 1 and 2 of the [Glidepath API spec](https://hangarplatform.dev/library/glidepath-api/) are the reads
 (tier T0). Phase 3's first writes (tier T1) are re-run and cancel; a `cicd.yaml` change is
-[validated](#validate-a-cicdyaml-change) here before anyone opens the pull request (API 0.7.0), and previews are
-still to come. Phase 4 (tier T2, propose) is promote and roll back: each only starts the app's own `release`
+[validated](#validate-a-cicdyaml-change) here before anyone opens the pull request (API 0.7.0), and an app's
+[previews](#previews) are read here (API 0.10.0); starting one stays the PR's `preview` label. Phase 4 (tier T2, propose) is promote and roll back: each only starts the app's own `release`
 Pipeline, whose gitops PR a human merges. Nothing else is written. Phase 5 starts with the [event stream](#events):
 every CDEvent the shared broker carries, re-verified and served as server-sent events with resume. Phase 6b adds the
 [live reads](#live-and-archived-reads) Tower's views of runs in flight need, so Tower no longer reads Tekton or pod
@@ -503,6 +503,17 @@ with it. `glidepath-api-reader` bound through `api.readers` is cluster-wide, so 
 **What glidepath-api itself may read for this.** Its ClusterRole adds `list` on `pipelineruns`, `get` and `list` on
 `taskruns`, and `get` on `pods` and `pods/log`, all cluster-wide (apps are onboarded after install). Nothing else:
 no pod list, no exec, no secrets beyond the existing `registry-credentials`.
+
+### Previews
+
+`GET /v1/apps/{app}/previews` (API 0.10.0) lists the app's [preview environments](ephemeral-environments.md), one per
+PR labelled `preview`, newest PR first. Each entry has the PR and its URL, the Argo CD Application and the namespace
+it deploys into (`app-<app>-pr-<n>`), the PR's image and head SHA, Argo CD's sync and health, when the preview was
+created, and the app's Service with the `kubectl port-forward` that reaches it (a preview has no route). It is read
+only: a preview starts when the label is added and ends when it is removed or the PR closes. It reads the
+Applications with glidepath-api's own identity (`list` on `applications.argoproj.io`, `get` on Services) and
+authorizes the caller like `GET /v1/apps/{app}/environments` (`list environments` in the app's namespace), so any
+reader, Tower and Clearance included, may call it.
 
 ### The fleet's release records
 

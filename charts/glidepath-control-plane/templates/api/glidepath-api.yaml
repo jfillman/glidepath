@@ -109,6 +109,15 @@ rules:
   - apiGroups: ["triggers.tekton.dev"]
     resources: ["triggertemplates"]
     verbs: ["get"]
+  # GET /v1/apps/{app}/previews, read only: the preview Applications each app's pr-envs ApplicationSet generates in
+  # its -cicd namespace, and the app's Service in each preview namespace (for the port-forward). Cluster-wide because
+  # apps and previews come and go after install; the API only lists the app's own namespace by label.
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
