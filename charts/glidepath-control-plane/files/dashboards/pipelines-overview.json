@@ -21,12 +21,12 @@
   "panels": [
     {
       "id": 1,
-      "title": "Running now",
+      "title": "Running now (cluster)",
       "type": "stat",
       "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "expr": "sum(tekton_pipelines_controller_running_pipelineruns_count{exported_namespace=~\"$app_namespace\"})", "legendFormat": "running" }
+        { "expr": "sum(tekton_pipelines_controller_running_pipelineruns)", "legendFormat": "running" }
       ]
     },
     {
@@ -73,8 +73,8 @@
       "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "expr": "histogram_quantile(0.5, sum(traces_span_metrics_duration_milliseconds_bucket{service_name=\"glidepath\", span_name=~\"^stage:.*\"}) by (le, span_name))", "legendFormat": "p50 {{span_name}}" },
-        { "expr": "histogram_quantile(0.95, sum(traces_span_metrics_duration_milliseconds_bucket{service_name=\"glidepath\", span_name=~\"^stage:.*\"}) by (le, span_name))", "legendFormat": "p95 {{span_name}}" }
+        { "expr": "histogram_quantile(0.5, sum(rate(traces_span_metrics_duration_milliseconds_bucket{service_name=\"glidepath\", span_name=~\"^stage:.*\"}[1h])) by (le, span_name))", "legendFormat": "p50 {{span_name}}" },
+        { "expr": "histogram_quantile(0.95, sum(rate(traces_span_metrics_duration_milliseconds_bucket{service_name=\"glidepath\", span_name=~\"^stage:.*\"}[1h])) by (le, span_name))", "legendFormat": "p95 {{span_name}}" }
       ]
     },
     {
@@ -108,6 +108,377 @@
             ]
           }
         ]
+      }
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "PipelineRun metrics (Tekton controller)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 8,
+      "title": "PipelineRun duration p95 by pipeline",
+      "type": "timeseries",
+      "description": "Wall-clock time of finished PipelineRuns, by Pipeline, over the last hour.",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, pipeline) (rate(tekton_pipelines_controller_pipelinerun_duration_seconds_bucket{exported_namespace=~\"$app_namespace\"}[1h])))",
+          "legendFormat": "{{pipeline}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Finished PipelineRuns by pipeline and outcome",
+      "type": "timeseries",
+      "description": "Runs finished per hour. A failed check that later passed on /retest shows once in each.",
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (pipeline, status) (increase(tekton_pipelines_controller_pipelinerun_duration_seconds_count{exported_namespace=~\"$app_namespace\"}[1h]))",
+          "legendFormat": "{{pipeline}} {{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Waiting on resolution (cluster)",
+      "type": "timeseries",
+      "description": "Runs stuck in ResolvingPipelineRef/ResolvingTaskRef. Sustained non-zero means the cluster resolver or the API server is slow (seen during the 2026-10-31 overload).",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "tekton_pipelines_controller_running_pipelineruns_waiting_on_pipeline_resolution",
+          "legendFormat": "PipelineRuns: Pipeline",
+          "refId": "A"
+        },
+        {
+          "expr": "tekton_pipelines_controller_running_pipelineruns_waiting_on_task_resolution",
+          "legendFormat": "PipelineRuns: Tasks",
+          "refId": "B"
+        },
+        {
+          "expr": "tekton_pipelines_controller_running_taskruns_waiting_on_task_resolution_count",
+          "legendFormat": "TaskRuns: Task",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "TaskRun pod start latency p95 by task",
+      "type": "timeseries",
+      "description": "From TaskRun creation to its pod being scheduled. High everywhere = scheduler or node pressure, not the Task.",
+      "gridPos": {
+        "x": 8,
+        "y": 21,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "topk(10, histogram_quantile(0.95, sum by (le, task) (rate(tekton_pipelines_controller_taskruns_pod_latency_milliseconds_bucket{exported_namespace=~\"$app_namespace\"}[1h]))))",
+          "legendFormat": "{{task}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Running over time (cluster)",
+      "type": "timeseries",
+      "description": "Tekton reports these cluster-wide only (no namespace label).",
+      "gridPos": {
+        "x": 16,
+        "y": 21,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(tekton_pipelines_controller_running_pipelineruns)",
+          "legendFormat": "PipelineRuns",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(tekton_pipelines_controller_running_taskruns)",
+          "legendFormat": "TaskRuns",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "row",
+      "title": "PipelineRun traces (Tempo)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 14,
+      "title": "Failed stages and steps",
+      "type": "table",
+      "description": "Spans the pipelines marked as errors: a failed stage, gate or step. Click a trace for the whole flow.",
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 12,
+        "h": 9
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{ resource.service.name = \"glidepath\" && status = error }",
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "traceID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open in Pipeline Run Detail",
+                    "url": "/d/platform-cicd-pipeline-detail/ci-cd-platform-pipeline-run-detail?var-traceId=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 15,
+      "title": "Slowest stages (over 10 minutes)",
+      "type": "table",
+      "description": "Stage spans that took longer than 10 minutes, newest first.",
+      "gridPos": {
+        "x": 12,
+        "y": 29,
+        "w": 12,
+        "h": 9
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{ resource.service.name = \"glidepath\" && name =~ \"^stage:.*\" && duration > 10m }",
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "traceID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open in Pipeline Run Detail",
+                    "url": "/d/platform-cicd-pipeline-detail/ci-cd-platform-pipeline-run-detail?var-traceId=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 16,
+      "title": "Span rate by stage, from traces",
+      "type": "timeseries",
+      "description": "Stage spans per second by outcome, from the collector's span metrics. STATUS_CODE_ERROR is a failed stage.",
+      "gridPos": {
+        "x": 0,
+        "y": 38,
+        "w": 24,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (span_name, status_code) (rate(traces_span_metrics_calls_total{service_name=\"glidepath\", span_name=~\"^stage:.*\"}[30m]))",
+          "legendFormat": "{{span_name}} {{status_code}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
       }
     }
   ]

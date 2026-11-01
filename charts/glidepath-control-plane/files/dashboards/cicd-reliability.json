@@ -79,7 +79,7 @@
             "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } },
             "fieldConfig": { "defaults": { "unit": "short", "min": 0,
                 "thresholds": { "steps": [ { "value": 0, "color": "green" }, { "value": 1, "color": "yellow" }, { "value": 5, "color": "red" } ] } } },
-            "targets": [ { "expr": "topk(10, sum by (task) (increase(tekton_pipelines_controller_taskrun_duration_seconds_count{exported_namespace=~\"$app_namespace\",status=\"failed\"}[24h])))", "legendFormat": "{{task}}" } ]
+            "targets": [ { "expr": "topk(10, sum by (task) (increase(tekton_pipelines_controller_pipelinerun_taskrun_duration_seconds_count{exported_namespace=~\"$app_namespace\",status=\"failed\"}[24h])))", "legendFormat": "{{task}}" } ]
         },
         {
             "id": 8, "type": "timeseries", "title": "Failures over time, by stage",
@@ -105,18 +105,18 @@
         },
         { "id": 103, "type": "row", "title": "Controller-level errors", "gridPos": { "x": 0, "y": 28, "w": 24, "h": 1 } },
         {
-            "id": 10, "type": "timeseries", "title": "Reconcile error rate by reconciler",
+            "id": 10, "type": "timeseries", "title": "Reconcile retry ratio by reconciler",
             "gridPos": { "x": 0, "y": 29, "w": 12, "h": 7 },
             "datasource": { "type": "prometheus", "uid": "prometheus" },
             "fieldConfig": { "defaults": { "unit": "percentunit" } },
-            "targets": [ { "expr": "sum by (reconciler) (increase(tekton_pipelines_controller_reconcile_count{success=\"false\"}[15m])) / sum by (reconciler) (increase(tekton_pipelines_controller_reconcile_count[15m]))", "legendFormat": "{{reconciler}}" } ]
+            "targets": [ { "expr": "sum by (name) (increase(kn_workqueue_retries_total{job=\"tekton-pipelines-controller\"}[15m])) / sum by (name) (increase(kn_workqueue_adds_total{job=\"tekton-pipelines-controller\"}[15m]))", "legendFormat": "{{name}}" } ]
         },
         {
             "id": 11, "type": "timeseries", "title": "Workqueue retries",
             "gridPos": { "x": 12, "y": 29, "w": 12, "h": 7 },
             "datasource": { "type": "prometheus", "uid": "prometheus" },
             "fieldConfig": { "defaults": { "unit": "short" } },
-            "targets": [ { "expr": "sum by (name) (increase(tekton_pipelines_controller_workqueue_retries_total[15m]))", "legendFormat": "{{name}}" } ]
+            "targets": [ { "expr": "sum by (name) (increase(kn_workqueue_retries_total{job=\"tekton-pipelines-controller\"}[15m]))", "legendFormat": "{{name}}" } ]
         }
     ]
 }

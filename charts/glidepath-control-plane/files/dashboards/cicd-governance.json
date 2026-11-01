@@ -104,7 +104,7 @@
             "fieldConfig": { "defaults": { "unit": "short", "min": 0,
                 "thresholds": { "steps": [ { "value": 0, "color": "green" } ] } } },
             "targets": [
-                { "expr": "sum by (task, status) (increase(tekton_pipelines_controller_taskrun_duration_seconds_count{exported_namespace=~\"$app_namespace\",task=~\"sast-scan|image-scan|generate-sbom\"}[7d]))", "legendFormat": "{{task}} ({{status}})" }
+                { "expr": "sum by (task, status) (increase(tekton_pipelines_controller_pipelinerun_taskrun_duration_seconds_count{exported_namespace=~\"$app_namespace\",task=~\"sast-scan|image-scan|generate-sbom\"}[7d]))", "legendFormat": "{{task}} ({{status}})" }
             ]
         }
     ]
