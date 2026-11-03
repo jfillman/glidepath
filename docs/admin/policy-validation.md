@@ -104,6 +104,9 @@ merged; release PRs cut before that keep running the stub.
 ## Files
 
 - `charts/glidepath-catalog/templates/tasks/policy-validation-gate.yaml` - fetch, render, evaluate
+- `charts/glidepath-catalog/files/lib/policy-eval.sh`, `policy-eval-prepare.py` - the bundle fetch, the offline
+  normalization and `kyverno apply`, shared with `clearance-gate.yaml`, which sends the same verdict to Clearance as
+  the change's admission result (C-8, [clearance-gate.md](clearance-gate.md))
 - `charts/glidepath-catalog/templates/pipelines/policy-validation-check.yaml` - the gate's Pipeline
 - `charts/glidepath-app/files/onboarding-templates/gitops-repo/pull-request-policy-validation.yaml` - the trigger
 - `glidepath/broker/cmd/token-review-interceptor/policybundle.go` - `/policy-bundle`

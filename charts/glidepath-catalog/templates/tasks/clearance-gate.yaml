@@ -6,17 +6,26 @@
 # task describes the change; Clearance decides and records (`deploy.request`, `deploy.clear`, `deploy.deny`). Nothing
 # here enforces anything but the check itself: phase 1 is the soft gate (the PaC check, the release guardrail).
 #
-# Four steps:
+# Five steps:
 #   fetch     (toolbox)          the PR (base, head, author, files with their line counts), the environments it changes
 #                                (policy-validation-gate's rule: <cluster>/<env>/values|release.yaml, or a cluster's
 #                                base.yaml = every environment on it), each environment's chart and whether it is
 #                                protected (cicd.yaml deploy.environments[].production), the repo's clearance.yaml at
-#                                head, the agent gates' verdict on the PR (POST /v1/provenance: who proposed it), the
-#                                head commit's check runs, and a one-commit checkout of base and head
+#                                head and the commit that last changed it (the record's policy ref), the agent gates'
+#                                verdict on the PR (POST /v1/provenance: who proposed it), the head commit's check
+#                                runs, a one-commit checkout of base and head, and each target cluster's admission
+#                                policy bundle (the broker's /policy-bundle; unreadable = an `error` verdict, not a
+#                                failed check)
 #   render    (validator image)  `helm template` of base and head per protected environment with the same value files
 #                                and injected values the Flight ApplicationSet layers, then the object diff: each
 #                                added, removed or changed object with the JSON pointers of the fields that changed
 #                                and its new images, each object's digest and the tree's digest (what a grant binds to)
+#   admission (toolbox)          the offline admission verdict per protected environment: `kyverno apply` of the
+#                                target cluster's policy bundle (the broker's /policy-bundle) to the rendered head,
+#                                the policy-validation gate's own evaluation (files/lib/policy-eval*), sent with the
+#                                change as `admission` {engine, verdict, bundle, deny, warn} and `checks.admission`, and
+#                                recorded by Clearance in every deploy.* record's `policy` group (C-8). Recorded, not
+#                                enforced here: the policy-validation- check is the gate for an admission failure
 #   register  (toolbox)          POST /v1/clearances per environment with the verifier token; the answer is the
 #                                change's state: cleared (green), holding (red until people clear it in Tower, then
 #                                /retest clearance-gate-), denied (red, the rule). The report goes to the PR comment.
@@ -93,6 +102,13 @@ spec:
               path: clearance-token
               audience: {{ .Values.agentGates.audience | quote }}
               expirationSeconds: 1200
+    - name: policy-bundle-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: policy-bundle-token
+              audience: policy-bundle
+              expirationSeconds: 600
     - name: work
       emptyDir: {}
   steps:
@@ -102,10 +118,13 @@ spec:
       volumeMounts:
         - { name: github-token-broker-token, mountPath: /var/run/secrets/platform, readOnly: true }
         - { name: clearance-token, mountPath: /var/run/secrets/clearance, readOnly: true }
+        - { name: policy-bundle-token, mountPath: /var/run/secrets/policy-bundle, readOnly: true }
         - { name: work, mountPath: /work }
       env:
         - name: GITHUB_TOKEN_BROKER_URL
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: POLICY_BUNDLE_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/policy-bundle
         - name: REPO_URL
           value: $(params.repo-url)
         - name: REVISION
@@ -127,6 +146,7 @@ spec:
         set -euo pipefail
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
+        {{- include "glidepath-catalog.policyEvalLib" . | nindent 8 }}
         : > /work/plan.txt
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
@@ -237,10 +257,24 @@ spec:
           echo "${cluster}/${env}: protected=${protected} chart=${chart_dir}"
         done < /work/envs.txt
 
-        # The repo's clearance.yaml at head (tighten-only; Clearance validates it), as JSON for the render step.
+        # The repo's clearance.yaml at head (tighten-only; Clearance validates it), as JSON for the render step, and
+        # the commit that last changed it: the record's policy ref, clearance.yaml@<commit> (C-8).
+        policy_commit=""
         if [[ -f clearance.yaml ]]; then
           yq -o json '.' clearance.yaml > /work/clearance.json || { echo "clearance.yaml is not valid YAML" >&2; exit 1; }
+          policy_commit="$(api "https://api.github.com/repos/${owner}/${repo}/commits?path=clearance.yaml&sha=${REVISION}&per_page=1" \
+            | jq -r '.[0].sha // empty' 2>/dev/null || true)"
+          echo "clearance.yaml at ${REVISION:0:12}: last changed in ${policy_commit:-an unknown commit}"
         fi
+
+        # Each protected environment's target cluster's admission policies, for the admission step: the
+        # policy-validation gate's source (the broker's /policy-bundle, ADR-0028). Unreadable is not a failed check
+        # here: that environment's admission verdict is `error` (the policy-validation- check fails on it itself).
+        mkdir -p /work/policies
+        : > /work/policies/unreadable
+        for cluster in $(awk -F'|' '$4 == "true" {print $1}' /work/plan.txt | sort -u); do
+          policy_bundle_fetch "${cluster}" "${owner}" || echo "${cluster}" >> /work/policies/unreadable
+        done
 
         # Who proposed it: the agent gates' verdict (POST /v1/provenance, the same body agent-gates sends).
         paths="$(jq -c '[.[] | .filename, (.previous_filename // empty)]' <<<"${files}")"
@@ -264,7 +298,8 @@ spec:
         checks="$(api "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/check-runs?per_page=100" | jq -c '[.check_runs[] | {name, status, conclusion}]' || echo '[]')"
         jq -nc --arg owner "${owner}" --arg repo "${repo}" --argjson pr "${PR_NUMBER}" --arg head "${REVISION}" --arg base "${base_sha}" \
           --arg author "${author}" --argjson files "${files}" --argjson looks_agent "${looks_agent}" --argjson verdict "${verdict}" --argjson checks "${checks}" \
-          '{owner: $owner, repo: $repo, pr: $pr, head: $head, base: $base, author: $author, files: $files, looksAgent: $looks_agent, provenance: $verdict, checkRuns: $checks}' \
+          --arg policy_commit "${policy_commit}" \
+          '{owner: $owner, repo: $repo, pr: $pr, head: $head, base: $base, author: $author, files: $files, looksAgent: $looks_agent, provenance: $verdict, checkRuns: $checks, policyCommit: $policy_commit}' \
           > /work/meta.json
         chmod -R a+rwX /work 2>/dev/null || true
     - name: render
@@ -314,6 +349,7 @@ spec:
           esac
           echo "${cluster}/${env}: rendered head ($(grep -c '^kind:' "${out}/head.yaml") objects) and base ($(grep -c '^kind:' "${out}/base.yaml") objects) with ${chart}"
           printf '%s\n%s\n' "${cluster}" "${env}" > "${out}/env"
+          ln -sf head.yaml "${out}/resources.yaml"  # what the admission evaluation reads (policy-eval-prepare.py)
         done < /work/plan.txt
 
         # The object diff and each environment's change request (clearance gate.py ChangeRequest).
@@ -426,12 +462,62 @@ spec:
                 change["agent"] = agent
             if policy is not None:
                 change["policy"] = policy
+                if meta.get("policyCommit"):
+                    change["policyCommit"] = meta["policyCommit"]
             with open(f"{out}/change.json", "w") as f:
                 json.dump(change, f)
             print(f"{cluster}/{env}: {len(objects)} object(s) changed of {len(head)}; tree {tree[:12]}; proposer {proposer} ({kind}); checks {checks}")
         PY
-        chmod -R a+rwX /work/eval 2>/dev/null || true
+
+        # The Kyverno CLI's inputs for the admission step (the policy-validation gate's normalization). A failure
+        # here makes every environment's admission verdict `error`; it does not fail the check.
+        python3 - <<'PY' || { echo "warning: could not prepare the offline admission evaluation"; : > /work/policies/prepare-failed; }
+        {{- include "glidepath-catalog.policyEvalPrepare" . | nindent 8 }}
+        PY
+        chmod -R a+rwX /work/eval /work/policies 2>/dev/null || true
         exit "${rc}"
+    - name: admission
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        {{- include "glidepath-catalog.policyEvalLib" . | nindent 8 }}
+        ls /work/eval/*/change.json >/dev/null 2>&1 || exit 0
+        # The offline admission verdict per protected environment, the policy-validation gate's evaluation of the same
+        # rendered head, sent with the change as a check result (C-8): Clearance records engine, verdict and the rule
+        # set's commit in every deploy.* record. pass | warn (Audit/Warn findings, or a rule offline evaluation could
+        # not decide) | fail (a Deny/Enforce policy fails) | skipped (the cluster has no admission policy) | error.
+        engine="$(kyverno_engine)"
+        if [[ -z "${engine}" ]]; then
+          echo "warning: the Kyverno CLI did not say its version: the changes are registered without an admission result"
+          exit 0
+        fi
+        for f in /work/eval/*/change.json; do
+          out="$(dirname "${f}")"; cluster="$(jq -r .cluster "${f}")"; env="$(jq -r .env "${f}")"
+          : > "${out}/findings.jsonl"
+          deny=0; warn=0
+          if [[ -f /work/policies/prepare-failed ]] || grep -qxF "${cluster}" /work/policies/unreadable 2>/dev/null; then
+            verdict=error
+          else
+            policy_eval_env "${cluster}" "${env}" "${out}/findings.jsonl"
+            case $? in
+              0) deny="$(jq -s '[.[] | select(.level == "deny")] | length' "${out}/findings.jsonl")"
+                 warn="$(jq -s '[.[] | select(.level == "warn")] | length' "${out}/findings.jsonl")"
+                 if (( deny > 0 )); then verdict=fail; elif (( warn > 0 )); then verdict=warn; else verdict=pass; fi ;;
+              2) verdict=skipped ;;
+              *) verdict=error ;;
+            esac
+          fi
+          bundle="$(policy_bundle_ref "${cluster}")"
+          jq --arg engine "${engine}" --arg verdict "${verdict}" --arg bundle "${bundle}" --argjson deny "${deny}" --argjson warn "${warn}" \
+            '.admission = ({engine: $engine, verdict: $verdict, deny: $deny, warn: $warn} + (if $bundle != "" then {bundle: $bundle} else {} end))
+             | .checks.admission = $verdict' "${f}" > "${f}.new" && mv "${f}.new" "${f}"
+          echo "${cluster}/${env}: admission ${verdict} (${engine}: ${deny} deny, ${warn} warn) against ${bundle:-no policy bundle}"
+        done
+        chmod -R a+rwX /work/eval 2>/dev/null || true
     - name: register
       image: {{ .Values.toolboxImage }}
       imagePullPolicy: IfNotPresent
@@ -478,12 +564,22 @@ spec:
                    -H "Authorization: Bearer $(cat /var/run/secrets/clearance/clearance-token)" \
                    -H "Content-Type: application/json" --data @"${f}" "${CLEARANCE_URL%/}/v1/clearances" || true)"
           code="$(tail -n1 <<<"${out}")"; body="$(sed '$d' <<<"${out}")"
+          if [[ "${code}" == 400 ]] && grep -qE "unknown field '(admission|policyCommit)'" <<<"${body}"; then
+            # A Clearance before C-8 refuses the admission result: register the change without it (the record then
+            # says engine none, verdict not-evaluated) rather than fail the check over a rollout order.
+            echo "Clearance does not take the admission result yet (a release before C-8): registering without it"
+            jq 'del(.admission, .policyCommit)' "${f}" > "${f}.pre-c8"
+            out="$(curl --silent --show-error --max-time 30 --retry 2 --retry-connrefused -w '\n%{http_code}' \
+                     -H "Authorization: Bearer $(cat /var/run/secrets/clearance/clearance-token)" \
+                     -H "Content-Type: application/json" --data @"${f}.pre-c8" "${CLEARANCE_URL%/}/v1/clearances" || true)"
+            code="$(tail -n1 <<<"${out}")"; body="$(sed '$d' <<<"${out}")"
+          fi
           env="$(jq -r '"\(.cluster)/\(.env)"' "${f}")"
           if [[ "${code}" != 200 ]]; then
             echo "{\"env\":\"${env}\",\"state\":\"error\",\"detail\":$(jq -Rs . <<<"HTTP ${code:-none}: $(head -c 300 <<<"${body}")")}" >> /work/rows.jsonl
             continue
           fi
-          jq -c --arg env "${env}" --arg tower "${TOWER_URL%/}" '{env: $env, id, state, tier, why: ([.reasons[] | select(.tier == (.tier)) | "\(.rule) (\(.subject))"] | unique | join(", ")),
+          jq -c --arg env "${env}" --arg tower "${TOWER_URL%/}" --arg adm "$(jq -r '.admission.verdict // ""' "${f}")" '{env: $env, id, state, tier, admission: $adm, why: ([.reasons[] | select(.tier == (.tier)) | "\(.rule) (\(.subject))"] | unique | join(", ")),
              requirement: (if .requirement then "\(.requirement.owner) from \(.requirement.ownerGroup)" + (if .requirement.outside > 0 then " and \(.requirement.outside) from \(.requirement.outsideGroups | join(", "))" else "" end) else "none" end),
              approvals: ([.approvals[] | "\(.person) (\(.role))"] | join(", ")), cleared_by, deny_reason, expires_at,
              link: (if $tower != "" then "\($tower)/clearance?view=clearances&change=\(.id)" else "" end)}' <<<"${body}" >> /work/rows.jsonl
@@ -504,9 +600,9 @@ spec:
           echo
           echo "Clearance's deployment gate classified this release of \`${APP_NAME}\` by what its rendered manifests change (tier 0 nothing a cluster runs, 1 an image bump, 2 runtime shape, 3 secrets, identity and policy). Tiers 0 and 1 clear by policy; 2 and 3 are cleared by people in Tower, never by the proposer."
           echo
-          echo "| | Environment | Tier | State | Why | Needs | Cleared by |"
-          echo "|---|---|---|---|---|---|---|"
-          jq -r '"| \(if .state == "cleared" then "✅" elif .state == "holding" then "⏳" else "❌" end) | \(.env) | \(.tier // "") | \(.state)\(if .state == "error" then ": " + .detail else "" end) | \((.why // "") | .[0:200]) | \(.requirement // "") | \(if .cleared_by == "policy" then "policy" elif (.approvals // "") != "" then .approvals else "" end)\(if .deny_reason then " · denied: " + .deny_reason else "" end) |"' /work/rows.jsonl
+          echo "| | Environment | Tier | State | Admission | Why | Needs | Cleared by |"
+          echo "|---|---|---|---|---|---|---|---|"
+          jq -r '"| \(if .state == "cleared" then "✅" elif .state == "holding" then "⏳" else "❌" end) | \(.env) | \(.tier // "") | \(.state)\(if .state == "error" then ": " + .detail else "" end) | \(.admission // "") | \((.why // "") | .[0:200]) | \(.requirement // "") | \(if .cleared_by == "policy" then "policy" elif (.approvals // "") != "" then .approvals else "" end)\(if .deny_reason then " · denied: " + .deny_reason else "" end) |"' /work/rows.jsonl
           links="$(jq -r 'select(.link != "") | "[\(.env)](\(.link))"' /work/rows.jsonl | paste -sd ' ' -)"
           if (( holding > 0 )); then
             echo
