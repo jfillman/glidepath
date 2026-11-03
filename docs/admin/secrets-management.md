@@ -37,9 +37,20 @@ spec:
 live against this cluster's own TokenReview API) is correct here because the dev cluster is
 also the Infisical host - see `infisicalHost`/Kubernetes-vs-Universal-Auth in
 `idp/docs/service-catalog-design.md` Item 8 for the underlying mechanism this reuses. A
-cluster that runs this control plane but does NOT host Infisical would need
-`authMethod: universal` instead - not built, since the dev cluster is currently the only
-glidepath-control-plane install.
+cluster that runs this control plane but does NOT host Infisical (Infisical as its own
+service, as in Hangar's AWS build) sets two values:
+
+```yaml
+secretStore:
+  infisical:
+    hostAPI: https://infisical.example.internal/api   # with /api, ESO's convention
+    auth: universal
+```
+
+The SecretStore Composition composes a universal-auth identity on any cluster the cluster
+registry does not mark `infisicalHost`, and writes `clientId`/`clientSecret` to the same
+`<projectSlug>-infisical-creds` Secret, which `platform-secret-store` then reads. Apron sets
+both values whenever `infisical.host` is false on the control plane.
 
 The resulting `ClusterSecretStore` (`platform-secret-store`, name unchanged from the old
 `kubernetes`-provider version so every downstream `secretStoreRef.name` reference kept

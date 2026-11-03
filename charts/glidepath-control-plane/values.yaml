@@ -314,6 +314,11 @@ secretStore:
     # (gitops-cluster-dev/10-crds-operators/infisical) - only correct when this chart
     # runs on the same cluster that hosts Infisical, see cluster-secret-store.yaml.
     hostAPI: http://infisical-infisical-standalone-infisical.infisical.svc.cluster.local:8080/api
+    # kubernetes (default): Kubernetes Auth against the in-cluster Infisical, identityId in the credentials Secret.
+    # universal: Infisical runs elsewhere (its own service, reached at hostAPI); the SecretStore Composition writes
+    # clientId/clientSecret to the credentials Secret instead (it composes universal auth on any cluster the
+    # cluster registry does not mark infisicalHost).
+    auth: kubernetes
     # Name of the Kubernetes Secret (in this chart's own namespace) holding the
     # identityId ESO authenticates with - populated by the SecretStore Composition's
     # own synthetic-secret step (infisical-project.yaml), named
