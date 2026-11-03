@@ -32,6 +32,9 @@ cp "${f}" "${WORK}/posted-${n}.json"
 if [[ "${CLEARANCE_ANSWER}" == pre-c8 && "${n}" == 1 ]]; then
   printf '{"error":"unknown field %s"}\n400' "'admission'"; exit 0
 fi
+if [[ "${CLEARANCE_ANSWER}" == pre-c8-dq && "${n}" == 1 ]]; then  # the same refusal, Go-quoted
+  printf '{"error":"json: unknown field \\"policyCommit\\""}\n400'; exit 0
+fi
 jq -c '{id: "ch-0123456789abcdef", state: "cleared", tier: 1, reasons: [], requirement: null, approvals: [], cleared_by: "policy",
         deny_reason: null, expires_at: "2026-11-10T00:00:00+00:00", admission: .admission}' "${f}"
 printf '200'
@@ -131,5 +134,10 @@ expect "pre-c8: first body has the result" "$(posted pre-c8 .admission.verdict 1
 expect "pre-c8: second body has neither field" "$(posted pre-c8 '[has("admission"), has("policyCommit")] | any' 2)" false
 has "pre-c8: says why" "$d/pre-c8/register.log" 'does not take the admission result yet'
 has "pre-c8: registered" "$d/pre-c8/report.md" 'cleared'
+
+CLEARANCE_ANSWER=pre-c8-dq run pre-c8-dq green 'resources: {limits: {memory: 256Mi}}
+serviceLabels: {team: skyport}
+serviceType: ClusterIP'
+expect "pre-c8-dq: a double-quoted refusal also falls back" "$(posted pre-c8-dq '[has("admission"), has("policyCommit")] | any' 2)" false
 
 [[ "${fail}" == 0 ]] && echo "PASS clearance_gate_admission_test" || { echo "FAILED (KEEP=1 keeps ${d})"; exit 1; }

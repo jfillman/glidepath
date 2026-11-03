@@ -564,7 +564,7 @@ spec:
                    -H "Authorization: Bearer $(cat /var/run/secrets/clearance/clearance-token)" \
                    -H "Content-Type: application/json" --data @"${f}" "${CLEARANCE_URL%/}/v1/clearances" || true)"
           code="$(tail -n1 <<<"${out}")"; body="$(sed '$d' <<<"${out}")"
-          if [[ "${code}" == 400 ]] && grep -qE "unknown field '(admission|policyCommit)'" <<<"${body}"; then
+          if [[ "${code}" == 400 ]] && grep -qE "unknown field [^A-Za-z]{0,3}(admission|policyCommit)" <<<"${body}"; then
             # A Clearance before C-8 refuses the admission result: register the change without it (the record then
             # says engine none, verdict not-evaluated) rather than fail the check over a rollout order.
             echo "Clearance does not take the admission result yet (a release before C-8): registering without it"
