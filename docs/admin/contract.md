@@ -89,10 +89,21 @@ Environments are compared by name, so reordering them is not a change. Pipeline 
 by content first, so inserting a step doesn't make every later step look changed.
 
 The rules are [`tools/cicd_scope.py`](../../tools/cicd_scope.py), standard library only.
-Clearance vendors that file byte for byte and runs it before an agent opens a pull request, so the gate
-the agent meets and the check in CI are the same code. When you change it, copy it to
-`clearance/src/clearance/packs/hangar/vendor/cicd_scope.py` (with the contract); a drift test there fails
-until you do.
+
+Clearance applies the same rules before an agent opens a pull request, and vendors nothing (Clearance
+v0.29.0, R-5). Hangar's policy bundle (autopilot `policy/hangar/bundle.json`) reads the contract's
+`scope.rules` live from glidepath-api's `GET /v1/contract` when the Clearance core starts, and checks
+`contractVersion` against the versions the bundle is written for. So:
+
+- **A change to the pointer rules** (`scope.rules`: a field moved between `open`, `tighten` and `human`, a
+  new order or default) reaches the gate an agent meets when the Clearance core next restarts. No
+  Clearance release, no Autopilot pin.
+- **A `contractVersion` bump** stops the Clearance core from starting until Hangar's bundle names the new
+  version (an Autopilot change to `policy/hangar/bundle.json`, deployed by Apron). Bump it only when the
+  scope's shape changes.
+- **A change to the structural rules** (`GP-SCOPE-002` check rides and required tests, `GP-SCOPE-003`
+  Flight environments and tiers) is code in `cicd_scope.py`, and the bundle states the same rules as
+  data (its `keyed` and `counted` invariants). Change both: the bundle is in autopilot, not Clearance.
 
 The same rules answer `POST /v1/apps/{app}/cicd/validations` on glidepath-api
 ([api.md](api.md#validate-a-cicdyaml-change)): a caller sends a patch or the whole file and gets the

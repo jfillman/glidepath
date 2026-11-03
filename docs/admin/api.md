@@ -480,7 +480,7 @@ added). The patch is applied to the file's own text (the YAML edited as a node t
 removed key goes with its comments, and a new key lands at the end of its mapping. A caller can commit it as it is.
 
 **The validator is a sidecar.** The API image is distroless, and the rules are Python (`tools/glidepath-validate`
-and `tools/cicd_scope.py`, the files Clearance vendors and the PR check runs). The chart runs the
+and `tools/cicd_scope.py`, the files the PR check runs; Clearance reads the scope rules from `GET /v1/contract`). The chart runs the
 `glidepath-validate` image (`cicdValidatorImage`, kept current by `validate-image-ci`) beside the API as
 `glidepath validate --serve 127.0.0.1:8081`, and the API posts to it on the pod's loopback (`VALIDATOR_URL`). So the
 API carries no second copy of the rules, and a contract change reaches the check and the API in one bump. When the
