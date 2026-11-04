@@ -200,7 +200,8 @@ jobs:
           sudo tar -xzf /tmp/oasdiff.tar.gz -C /usr/local/bin oasdiff
       - run: charts/glidepath-catalog/tests/api_compat_test.sh
 
-  # The policy-validation release check (docs/admin/policy-validation.md): the render and evaluate steps against a
+  # The policy-validation release check (docs/admin/policy-validation.md) and clearance-gate's admission verdict
+  # (docs/admin/clearance-gate.md), which share the evaluation: the render and evaluate steps against a
   # fixture chart and a 30-policy tree of every admission-policy shape, with the real helm and the Kyverno CLI at the
   # toolbox's version (release tarball, checksum pinned from the release's checksums.txt).
   policy-validation:
@@ -214,6 +215,8 @@ jobs:
           echo "f5b4dc73c8e2f3f66e8e0034dc370e6eb6c4617eff7d5ae3838d2200034eb421  /tmp/kyverno.tar.gz" | sha256sum -c -
           sudo tar -xzf /tmp/kyverno.tar.gz -C /usr/local/bin kyverno
       - run: charts/glidepath-catalog/tests/policy_validation_test.sh
+      # clearance-gate's admission verdict (C-8) runs the same evaluation (files/lib/policy-eval*).
+      - run: charts/glidepath-catalog/tests/clearance_gate_admission_test.sh
 
   # The flow slug's word lists: 256 x 256, no duplicates, and the chain-id -> slug
   # mapping Tower's mirror (src/tekton/chainSlug.ts) is pinned to.

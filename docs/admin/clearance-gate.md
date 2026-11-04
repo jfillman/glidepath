@@ -21,19 +21,26 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
 
 - **`.tekton/pull-request-clearance-gate.yaml`** in every gitops repo (delivered by onboarding, `targets: [k8s-rollout]`),
   on release branches only (`release-*`, not `release-record-*`), like every release gate.
-- Pipeline **`clearance-gate-check`**, Task **`clearance-gate`** (`platform-catalog`), four steps:
+- Pipeline **`clearance-gate-check`**, Task **`clearance-gate`** (`platform-catalog`), five steps:
   1. `fetch` (toolbox): the PR's base, head, author, changed files and line counts; the environments it changes
      (`<cluster>/<env>/values|release.yaml`, or a cluster's `base.yaml` = every environment on it); each environment's
      chart and whether it is **protected** (`cicd.yaml` `deploy.environments[].production: true`); the repo's
-     `clearance.yaml`; the agent gates' verdict on who proposed the PR (`POST /v1/provenance`); the head's check runs;
-     one-commit checkouts of base and head.
+     `clearance.yaml` and the commit that last changed it; the agent gates' verdict on who proposed the PR
+     (`POST /v1/provenance`); the head's check runs; one-commit checkouts of base and head; and each protected
+     environment's target cluster's **admission policy bundle** from the broker's `/policy-bundle` (the
+     [policy-validation](policy-validation.md) source; an unreadable bundle is an `error` verdict below, not a failed
+     check).
   2. `render` (the validator image): `helm template` of base and head per protected environment, with the value files
      and injected values the Flight ApplicationSet layers, then the object diff: each added, removed or changed object
      with the JSON pointers of the fields that changed and its new images, every object's digest and the **tree
-     digest** (what a grant binds to). Nothing is sent to Clearance but this description: no manifest content.
-  3. `register` (toolbox): `POST /v1/clearances` per environment with a projected token for audience `clearance`
+     digest** (what a grant binds to). Nothing is sent to Clearance but this description: no manifest content. Then
+     the Kyverno CLI's inputs for the head's tree (stand-in CRDs, Namespace labels, the normalized bundle).
+  3. `admission` (toolbox): the **offline admission verdict** per protected environment, `kyverno apply` of the
+     cluster's bundle to the rendered head: the policy-validation gate's own evaluation (the two tasks share
+     `files/lib/policy-eval.sh` and `policy-eval-prepare.py`, so they cannot disagree). See "The policy in the record".
+  4. `register` (toolbox): `POST /v1/clearances` per environment with a projected token for audience `clearance`
      (the same `CLEARANCE_VERIFIERS` rule as the agent gates). Clearance answers with the change's state.
-  4. `report`: exits 1 unless every environment is **cleared**.
+  5. `report`: exits 1 unless every environment is **cleared**.
 - An environment that is not protected is skipped (phase 1 gates protected environments only); a PR that changes
   none is `skipped` and passes.
 
@@ -49,6 +56,39 @@ Clearance records every step in its evidence chain, boundary `deployment`: `depl
 and why), `deploy.clear` (policy, or the person and their role), `deploy.deny`, `deploy.expire`. Tower and the
 Clearance plugin read them (`GET /v1/clearances`).
 
+## The policy in the record (C-8)
+
+Each change is registered with the policy that decided it, and Clearance writes it into every `deploy.*` record's
+`policy` group (Clearance `docs/gate.md`, "The policy in the record"):
+
+```json
+"policy": {"ref": "clearance.yaml@<commit>", "version": "baseline-2026-10-31+sha256:<clearance.yaml digest>",
+           "engine": "kyverno/1.19.0", "verdict": "pass",
+           "bundle": "https://github.com/<owner>/gitops-<cluster>.git//30-policy@<commit>"}
+```
+
+What the check sends in `POST /v1/clearances`, beside `policy` (the `clearance.yaml` as JSON):
+
+| Field | Value |
+|---|---|
+| `policyCommit` | the commit that last changed `clearance.yaml` at the PR head (`GET /repos/{repo}/commits?path=clearance.yaml&sha=<head>`); sent only with `policy`. A new `clearance.yaml` commit is a new `ref` |
+| `admission.engine` | `kyverno/<version>`, from `kyverno version` in the toolbox (1.19.0 today). A CLI that does not say its version: no `admission` is sent (the record says `none`, `not-evaluated`) |
+| `admission.verdict` | `pass`; `warn` (Audit/Warn findings, or a rule offline evaluation could not decide); `fail` (a Deny/Enforce policy fails: the cluster would refuse the sync); `skipped` (the cluster has no admission policy in its bundle); `error` (the bundle could not be read, or Kyverno could not run) |
+| `admission.bundle` | the rule set: `<repoURL>//<path>@<commit>` from the broker's answer |
+| `admission.deny`, `admission.warn` | the blocking and warning finding counts |
+| `checks.admission` | the verdict (it was the `policy-validation-` check run's state before C-8) |
+
+The verdict is **recorded, not enforced** by this check: a `fail` still registers the change (tiers do not read it),
+and the `policy-validation-` check is the one that goes red on it. The PR comment gains an **Admission** column.
+
+**Rollout order.** A Clearance before C-8 refuses the two new fields (strict decoding, `unknown field 'admission'`);
+the register step then registers the change again without them, says so in the log, and the record reads
+`not-evaluated`. Deploy the Clearance release first for the verdict to be recorded.
+
+**Argo CD's config management plugin (G-ARGO, not built).** The CMP registers the tree it rendered through the same
+route, so it sends the same `admission` object (`engine`, `verdict`, `bundle`, `deny`, `warn`) from its own offline
+evaluation of that tree against the same bundle, and `policyCommit` when the gitops repo has a `clearance.yaml`.
+
 ## Required or advisory
 
 `clearance-gate` is a `releaseGuardrails` entry, class `process` (like `itsm`: a decision about the change, not a
@@ -62,9 +102,12 @@ proposer", so one rule and one record); Tower stops posting the status then.
 ## Files
 
 - `charts/glidepath-catalog/templates/tasks/clearance-gate.yaml`, `templates/pipelines/clearance-gate-check.yaml`
+- `charts/glidepath-catalog/files/lib/policy-eval.sh`, `policy-eval-prepare.py`: the admission evaluation shared with
+  `policy-validation-gate.yaml`; `tests/clearance_gate_admission_test.sh` (render, admission, register against the
+  policy-validation fixtures with the real Kyverno CLI)
 - `charts/glidepath-app/files/onboarding-templates/gitops-repo/pull-request-clearance-gate.yaml`
 - `charts/glidepath-catalog/values.yaml`: the `clearance-gate` guardrail; `clearanceGate.towerUrl`; Clearance's URL
   and audience are `agentGates.clearanceUrl` / `agentGates.audience`
 - `comment-pr-check-result.yaml`: the gate's advice text
 - Apron `55-autopilot/clearance/networkpolicy.yaml` admits pods labelled `hangar.io/clearance-client: clearance-gate`
-- Clearance: `src/clearance/gate.py`, `docs/gate.md`; the API `GET /v1/clearances`, `/v1/clearance-policy`
+- Clearance: `internal/gate` (the Go core), `docs/gate.md`; the API `GET /v1/clearances`, `/v1/clearance-policy`

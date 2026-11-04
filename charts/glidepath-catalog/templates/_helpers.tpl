@@ -383,3 +383,17 @@ flight_prune_main() {
   exit "${rc}"
 }
 {{- end -}}
+
+{{- /*
+glidepath-catalog.policyEvalLib: files/lib/policy-eval.sh (policy_bundle_fetch, policy_eval_env, kyverno_engine,
+policy_bundle_ref), to splice into a step script. glidepath-catalog.policyEvalPrepare: files/lib/policy-eval-prepare.py,
+to splice between `python3 - <<'PY'` and `PY`. The policy-validation-gate and clearance-gate Tasks both use them, so
+the admission verdict Clearance records (C-8) is reached exactly as the policy-validation check reaches its own.
+*/ -}}
+{{- define "glidepath-catalog.policyEvalLib" -}}
+{{ .Files.Get "files/lib/policy-eval.sh" }}
+{{- end -}}
+
+{{- define "glidepath-catalog.policyEvalPrepare" -}}
+{{ .Files.Get "files/lib/policy-eval-prepare.py" }}
+{{- end -}}
