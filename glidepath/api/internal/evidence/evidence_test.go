@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 // A whole supply chain in miniature: a Fulcio-style root (Ed25519, like hangar-dev's) issuing a
@@ -147,6 +148,7 @@ type chain struct {
 	rekorDown    bool           // entries 500 (the public key still answers)
 	noRekorKey   bool
 	noRoot       bool
+	trustedRoot  string // the hangar-trusted-root ConfigMap's trusted-root.json; empty: not published
 	tokenCalls   int
 	mu           sync.Mutex
 }
@@ -310,6 +312,10 @@ func (c *chain) reader(t *testing.T, logs io.Writer) *Reader {
 	if !c.noRoot {
 		objs = append(objs, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: FulcioRootConfigMap, Namespace: FulcioRootNamespace},
 			Data: map[string]string{"cert.pem": c.p.rootPEM}})
+	}
+	if c.trustedRoot != "" {
+		objs = append(objs, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: TrustedRootConfigMap, Namespace: FulcioRootNamespace},
+			Data: map[string]string{"trusted-root.json": c.trustedRoot}})
 	}
 	cs := fake.NewSimpleClientset(objs...)
 	return &Reader{CS: cs, Credentials: SecretCredentials(cs), RegistryURL: gh.URL, RekorURL: rk.URL,
@@ -545,6 +551,77 @@ func TestWrongCA(t *testing.T) {
 	}
 }
 
+// trustedRootJSON is what `clearance trust-root build` writes: each PEM root and Rekor key with its window.
+func trustedRootJSON(t *testing.T, cas []*pki, caEnd time.Time, logs []*pki, logEnd time.Time) string {
+	t.Helper()
+	win := func(end time.Time) map[string]string {
+		w := map[string]string{"start": "2020-01-01T00:00:00Z"}
+		if !end.IsZero() {
+			w["end"] = end.UTC().Format(time.RFC3339)
+		}
+		return w
+	}
+	var ca []any
+	for _, p := range cas {
+		blk, _ := pem.Decode([]byte(p.rootPEM))
+		ca = append(ca, map[string]any{"uri": "http://fulcio-server.fulcio-system.svc", "validFor": win(caEnd),
+			"certChain": map[string]any{"certificates": []any{map[string]string{"rawBytes": b64s(blk.Bytes)}}}})
+	}
+	var tl []any
+	for _, p := range logs {
+		blk, _ := pem.Decode([]byte(p.rekorPEM))
+		tl = append(tl, map[string]any{"baseUrl": tlogBaseURL, "hashAlgorithm": "SHA2_256",
+			"publicKey": map[string]any{"rawBytes": b64s(blk.Bytes), "keyDetails": "PKIX_ECDSA_P256_SHA_256", "validFor": win(logEnd)},
+			"logId":     map[string]string{"keyId": b64s(p.logID)}})
+	}
+	return string(mustJSON(map[string]any{"mediaType": "application/vnd.dev.sigstore.trustedroot+json;version=0.1",
+		"certificateAuthorities": ca, "tlogs": tl}))
+}
+
+// After the cutover the cluster's fulcio-root-ca and Rekor's live key are the NEW generation. A signature made under the old
+// one (this chain's) still verifies, because hangar-trusted-root lists it with a window that was open when it signed.
+func TestPublishedTrustedRootVerifiesALegacySignatureAfterTheCutover(t *testing.T) {
+	c := newChain(t)
+	legacy := *c.p
+	newGen := newPKI(t)
+	c.p.rootPEM, c.p.rekorPEM = newGen.rootPEM, newGen.rekorPEM // what the cluster serves now
+
+	c.trustedRoot = trustedRootJSON(t, []*pki{&legacy, newGen}, time.Time{}, []*pki{&legacy, newGen}, time.Time{})
+	out, _ := read(t, c, "ghcr.io/"+repo+":1.0.0-abc")
+	for _, s := range summarize(out) {
+		if s.code != "verified" {
+			t.Fatalf("a legacy signature did not verify through the published trusted root: %v", s)
+		}
+	}
+}
+
+// A legacy window that closed before the signature was made verifies nothing: the root stops being trusted when its
+// window ends, not when someone remembers to delete it.
+func TestPublishedTrustedRootRefusesASignatureOutsideItsWindow(t *testing.T) {
+	c := newChain(t)
+	legacy := *c.p
+	c.trustedRoot = trustedRootJSON(t, []*pki{&legacy}, signedAt.Add(-time.Hour), []*pki{&legacy}, signedAt.Add(-time.Hour))
+	out, _ := read(t, c, "ghcr.io/"+repo+":1.0.0-abc")
+	for _, s := range summarize(out) {
+		if s.code == "verified" {
+			t.Fatalf("a signature made after the window closed verified: %v", s)
+		}
+	}
+}
+
+// A published trusted root that does not parse is an error shown on every attestation, never a quiet fall back to the
+// single root (which would drop the legacy signatures without saying so).
+func TestAnUnparseablePublishedTrustedRootIsNotIgnored(t *testing.T) {
+	c := newChain(t)
+	c.trustedRoot = "not json"
+	out, _ := read(t, c, "ghcr.io/"+repo+":1.0.0-abc")
+	for _, s := range summarize(out) {
+		if s.code != "trust-root-unavailable" || !strings.Contains(s.err, TrustedRootConfigMap) {
+			t.Fatal(s)
+		}
+	}
+}
+
 func TestImageRefs(t *testing.T) {
 	for in, want := range map[string][2]string{
 		"ghcr.io/o/a:1.0":                     {"o/a", "1.0"},
@@ -741,5 +818,24 @@ func TestFlightImagesUseTheFlightCredential(t *testing.T) {
 	r.FlightOwner, r.FlightCredentials = owner, nil
 	if _, err := r.Read(context.Background(), ns, "ghcr.io/"+repo+":1.0.0-abc"); err == nil {
 		t.Fatal("without a Flight credential the app's (refused) one must be used")
+	}
+}
+
+// Not publishing a trusted root is the common case: the lookup is cached for trustTTL, not repeated on every Read.
+func TestAMissingTrustedRootIsCached(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	gets := 0
+	cs.PrependReactor("get", "configmaps", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		gets++
+		return false, nil, nil
+	})
+	ts := &trustSource{cs: cs}
+	for i := 0; i < 3; i++ {
+		if tm, err := ts.trustedRoot(context.Background()); tm != nil || err != nil {
+			t.Fatal(tm, err)
+		}
+	}
+	if gets != 1 {
+		t.Fatalf("%d ConfigMap gets for 3 reads, want 1", gets)
 	}
 }

@@ -271,6 +271,32 @@ tenantOnboardingApplicationSetName: ""
 fulcio:
   publicIssuers: []
 
+# Hangar signing PKI (C-2a; docs/admin/signing-pki-cutover.md). Off: the two bootstrap hooks (hooks/fulcio-bootstrap-job.yaml,
+# hooks/rekor-signer-bootstrap-job.yaml) mint a self-generated Fulcio root and Rekor key inside the cluster, exactly as
+# before. On: the owner's key-ceremony output is the signing material instead. The hooks stop minting; ExternalSecrets
+# build fulcio-secret (the chain as cert.pem, the encrypted intermediate key as key.pem), fulcio-server-config (with the
+# key's passphrase) and rekor-signer (private.pem) from Infisical, through the ClusterSecretStore below. The fulcio-bootstrap
+# hook still writes fulcio-config (the OIDC issuer list), which is not secret. The chart never holds key material: only
+# the Infisical key NAMES live here, and rootCaPem / trustedRootJson are public certificates.
+sigstore:
+  managedKeys:
+    enabled: false
+    # The Infisical keys (project glidepath-<cluster>, read by secretStore.name). Empty derives hangar-fulcio-<clusterName>-chain,
+    # -key, -key-password and hangar-rekor-<clusterName>-signer.
+    fulcioChainKey: ""
+    fulcioKeyKey: ""
+    fulcioKeyPasswordKey: ""
+    rekorSignerKey: ""
+    refreshInterval: 1h
+    # Public: the PEM bundle fulcio-root-ca (platform-catalog) publishes as cert.pem, the new chain (intermediate, then root).
+    # Required when enabled: with the hook off, nothing else creates that ConfigMap.
+    rootCaPem: ""
+    # Public: the Sigstore TrustedRoot JSON (`clearance trust-root build`) every verifier prefers when present, published
+    # as the hangar-trusted-root ConfigMap (platform-catalog, key trusted-root.json). It lists every Fulcio chain and Rekor
+    # key with its validity window, the legacy self-generated root and the old Rekor key included until their windows
+    # close. Empty: verifiers keep building a single-root trust from fulcio-root-ca and Rekor's live key.
+    trustedRootJson: ""
+
 chains:
   configPatch:
     signers.x509.fulcio.enabled: "true"

@@ -1,5 +1,9 @@
 # platform/hooks/rekor-signer-bootstrap-job.yaml
 #
+# Rendered only while sigstore.managedKeys.enabled is false: with it on, Rekor's key is the owner's, delivered by an
+# ExternalSecret (templates/sigstore/managed-keys.yaml, docs/admin/signing-pki-cutover.md) and nothing here generates one.
+{{- if not .Values.sigstore.managedKeys.enabled }}
+#
 # Gives Rekor a signing key that survives restarts (2026-10-14). Rekor signs every receipt (the Signed Entry
 # Timestamp cosign embeds in an image's OCI annotation) and every checkpoint with this key. The chart's default,
 # `--rekor_server.signer=memory`, makes a new key on every rekor-server start, so after a restart no receipt issued
@@ -141,3 +145,4 @@ spec:
               rm -f /tmp/private.pem
 
               echo "rekor-signer created; restart rekor-server to start signing with it"
+{{- end }}

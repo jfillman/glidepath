@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -20,6 +21,11 @@ const (
 	// (templates/sigstore/fulcio-root-configmap.yaml).
 	FulcioRootNamespace = "platform-catalog"
 	FulcioRootConfigMap = "fulcio-root-ca"
+	// TrustedRootConfigMap is the Sigstore TrustedRoot the control plane publishes beside it (C-2a,
+	// docs/admin/signing-pki-cutover.md): every Fulcio chain and Rekor key with its validity window, the legacy
+	// self-generated root and the old Rekor key included until their windows close. When it exists it is the whole
+	// trust material; when it does not, the single root and Rekor's live key are used as before.
+	TrustedRootConfigMap = "hangar-trusted-root"
 	// trustTTL is how long the root and Rekor's key are kept, as Tower keeps them.
 	trustTTL = 10 * time.Minute
 )
@@ -36,6 +42,48 @@ type trustSource struct {
 	rootAt   time.Time
 	rekorKey string
 	rekorAt  time.Time
+
+	trusted   *trustMaterial
+	trustedAt time.Time
+	// absentAt is when hangar-trusted-root was last found missing (or without a document): not asked again for trustTTL.
+	absentAt time.Time
+}
+
+// trustedRoot is the published TrustedRoot as trust material, or nil when the cluster publishes none (the
+// ConfigMap is absent or has no trusted-root.json). A document that is there but does not parse is an error, never
+// a silent fall back to the single root: that would stop verifying the legacy signatures without saying so.
+func (t *trustSource) trustedRoot(ctx context.Context) (*trustMaterial, error) {
+	t.mu.Lock()
+	if t.trusted != nil && time.Since(t.trustedAt) < trustTTL {
+		defer t.mu.Unlock()
+		return t.trusted, nil
+	}
+	if !t.absentAt.IsZero() && time.Since(t.absentAt) < trustTTL {
+		defer t.mu.Unlock()
+		return nil, nil
+	}
+	t.mu.Unlock()
+	cm, err := t.cs.CoreV1().ConfigMaps(FulcioRootNamespace).Get(ctx, TrustedRootConfigMap, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		t.markAbsent()
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	doc := cm.Data["trusted-root.json"]
+	if doc == "" {
+		t.markAbsent()
+		return nil, nil
+	}
+	tm, err := parseTrustedRoot([]byte(doc))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", TrustedRootConfigMap, err)
+	}
+	t.mu.Lock()
+	t.trusted, t.trustedAt, t.absentAt = tm, time.Now(), time.Time{}
+	t.mu.Unlock()
+	return tm, nil
 }
 
 func (t *trustSource) fulcioRoot(ctx context.Context) (string, error) {
@@ -57,6 +105,12 @@ func (t *trustSource) fulcioRoot(ctx context.Context) (string, error) {
 	t.root, t.rootAt = p, time.Now()
 	t.mu.Unlock()
 	return p, nil
+}
+
+func (t *trustSource) markAbsent() {
+	t.mu.Lock()
+	t.absentAt = time.Now()
+	t.mu.Unlock()
 }
 
 func (t *trustSource) rekorPublicKey(ctx context.Context) (string, error) {

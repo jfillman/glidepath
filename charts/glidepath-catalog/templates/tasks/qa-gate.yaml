@@ -153,6 +153,10 @@ spec:
           --rekor="url=http://rekor-server.rekor-system.svc,public-key=${workdir}/rekor.pub,start-time=2020-01-01T00:00:00Z" \
           --no-default-ctfe --no-default-tsa \
           --out "${workdir}/trusted-root.json"
+        # C-2a (docs/admin/signing-pki-cutover.md): a cluster that publishes hangar-trusted-root (every Fulcio chain and
+        # Rekor key with its validity window, legacy ones included) verifies against that, so signatures made under the
+        # old self-generated root and the new Hangar PKI both verify. Absent ConfigMap: the single root built above stays.
+        if kubectl get configmap hangar-trusted-root -n platform-catalog -o jsonpath='{.data.trusted-root\.json}' > "${workdir}/trusted-root.json.hangar" 2>/dev/null && [[ -s "${workdir}/trusted-root.json.hangar" ]]; then mv "${workdir}/trusted-root.json.hangar" "${workdir}/trusted-root.json"; else rm -f "${workdir}/trusted-root.json.hangar"; fi
 
         # Manual type-filter-then-verify-blob-attestation, not a single `cosign
         # verify-attestation --type slsaprovenance` call - see verify-image-provenance.yaml

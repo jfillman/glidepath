@@ -172,6 +172,10 @@ spec:
           --fulcio="url=http://fulcio-server.fulcio-system.svc,certificate-chain=${work}/fulcio-root.pem" \
           --rekor="url=http://rekor-server.rekor-system.svc,public-key=${work}/rekor.pub,start-time=2020-01-01T00:00:00Z" \
           --no-default-ctfe --no-default-tsa --out "${work}/trusted-root.json" >/dev/null 2>&1 || die "could not build the trusted root"
+        # C-2a (docs/admin/signing-pki-cutover.md): a cluster that publishes hangar-trusted-root (every Fulcio chain and
+        # Rekor key with its validity window, legacy ones included) verifies against that, so signatures made under the
+        # old self-generated root and the new Hangar PKI both verify. Absent ConfigMap: the single root built above stays.
+        if kubectl get configmap hangar-trusted-root -n platform-catalog -o jsonpath='{.data.trusted-root\.json}' > "${work}/trusted-root.json.hangar" 2>/dev/null && [[ -s "${work}/trusted-root.json.hangar" ]]; then mv "${work}/trusted-root.json.hangar" "${work}/trusted-root.json"; else rm -f "${work}/trusted-root.json.hangar"; fi
         identity_regexp="^https://kubernetes\.io/namespaces/(app|infra)-${app}-cicd/serviceaccounts/pipeline-runner$"
 
         # spec_for <image-ref> <label>: writes ${work}/<label>.json (the verified predicate) and ${work}/<label>.digest.

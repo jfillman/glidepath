@@ -1,0 +1,38 @@
+# Hangar signing PKI (C-2a): the control-plane chart's sigstore.managedKeys render, and glidepath-api's read of the
+# published trusted root. docs/admin/signing-pki-cutover.md.
+name: signing-pki-ci
+on:
+  pull_request:
+    paths:
+      - "charts/glidepath-control-plane/**"
+      - "charts/glidepath-catalog/templates/tasks/**"
+      - "glidepath/api/internal/evidence/**"
+      - ".github/workflows/signing-pki-ci.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "charts/glidepath-control-plane/**"
+      - "charts/glidepath-catalog/templates/tasks/**"
+      - "glidepath/api/internal/evidence/**"
+permissions:
+  contents: read
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: managedKeys render
+        run: charts/glidepath-control-plane/tests/managed_keys_test.sh
+      - name: catalog tasks render
+        run: helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml > /dev/null
+  evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: glidepath/api/go.mod
+      - name: glidepath-api evidence reader (published trusted root)
+        working-directory: glidepath/api
+        run: go test ./internal/evidence/

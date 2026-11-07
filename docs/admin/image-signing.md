@@ -145,6 +145,9 @@ recommended for production" per its own docs, an accepted tradeoff (see above).
 
 ## Rekor's signing key (2026-10-14)
 
+> The key and the Fulcio root described here are the *self-generated* ones. `sigstore.managedKeys.enabled` replaces them with
+> the owner's keys from Infisical: [signing-pki-cutover.md](signing-pki-cutover.md).
+
 Rekor signs each entry's receipt (the Signed Entry Timestamp, or "inclusion promise", that cosign embeds in an
 image's OCI annotation) and each checkpoint. Until 2026-10-14 it ran with the Helm chart's default
 `--rekor_server.signer=memory`: a new key every time `rekor-server` started. Every receipt issued before a restart

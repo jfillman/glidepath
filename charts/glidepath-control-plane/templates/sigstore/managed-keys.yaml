@@ -1,0 +1,131 @@
+# glidepath/sigstore/managed-keys.yaml
+#
+# The Hangar signing PKI's delivery (C-2a, docs/admin/signing-pki-cutover.md). Rendered only when
+# sigstore.managedKeys.enabled; off, the bootstrap hooks mint the self-generated root and Rekor key as before.
+#
+# What the owner's key ceremony produced reaches the cluster through Infisical (never git, never this chart's values):
+#   <fulcioChainKey>         the PEM chain Fulcio serves as cert.pem: the intermediate "Hangar Fulcio <cluster>", then the root
+#   <fulcioKeyKey>           the intermediate's private key, PKCS#8 encrypted
+#   <fulcioKeyPasswordKey>   that key's passphrase
+#   <rekorSignerKey>         Rekor's signing key, PKCS#8 PEM (ECDSA P-256)
+# The root's private key is offline and is never in the cluster, Infisical or git. The keys are read through the
+# ClusterSecretStore the rest of this chart uses (secretStore.name). The Secrets keep the names the Deployments mount,
+# so fulcio-deployment.yaml and the Rekor chart need no change.
+#
+# fulcio-server and rekor-server read these at start: after a rotation, restart both (the cutover doc says when).
+{{- if .Values.sigstore.managedKeys.enabled }}
+{{- $m := .Values.sigstore.managedKeys }}
+{{- $c := required "clusterName is required with sigstore.managedKeys.enabled (it names the Infisical keys)" .Values.clusterName }}
+{{- $chain := default (printf "hangar-fulcio-%s-chain" $c) $m.fulcioChainKey }}
+{{- $key := default (printf "hangar-fulcio-%s-key" $c) $m.fulcioKeyKey }}
+{{- $pass := default (printf "hangar-fulcio-%s-key-password" $c) $m.fulcioKeyPasswordKey }}
+{{- $rekor := default (printf "hangar-rekor-%s-signer" $c) $m.rekorSignerKey }}
+{{- $rootPem := required "sigstore.managedKeys.rootCaPem is required when enabled: fulcio-root-ca is no longer created by a hook" $m.rootCaPem }}
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: fulcio-secret
+  namespace: fulcio-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "sigstore"
+spec:
+  refreshInterval: {{ $m.refreshInterval }}
+  secretStoreRef:
+    name: {{ .Values.secretStore.name }}
+    kind: {{ .Values.secretStore.kind }}
+  target:
+    name: fulcio-secret
+    creationPolicy: Owner
+  data:
+    - secretKey: cert.pem
+      remoteRef:
+        key: {{ $chain }}
+    - secretKey: key.pem
+      remoteRef:
+        key: {{ $key }}
+---
+# server.yaml carries the key's passphrase, so it is built from the password Secret, never written in a chart value.
+# toJson makes the passphrase a valid YAML double-quoted scalar whatever characters it holds.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: fulcio-server-config
+  namespace: fulcio-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "sigstore"
+spec:
+  refreshInterval: {{ $m.refreshInterval }}
+  secretStoreRef:
+    name: {{ .Values.secretStore.name }}
+    kind: {{ .Values.secretStore.kind }}
+  target:
+    name: fulcio-server-config
+    creationPolicy: Owner
+    template:
+      engineVersion: v2
+      data:
+        server.yaml: |
+          ca: fileca
+          fileca-cert: /etc/fulcio-secret/cert.pem
+          fileca-key: /etc/fulcio-secret/key.pem
+          fileca-key-passwd: {{ "{{ .password | toString | trim | toJson }}" }}
+          ct-log-url: ""
+          port: "5555"
+          grpc-port: "5554"
+          metrics-port: "2112"
+  data:
+    - secretKey: password
+      remoteRef:
+        key: {{ $pass }}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: rekor-signer
+  namespace: rekor-system
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "sigstore"
+spec:
+  refreshInterval: {{ $m.refreshInterval }}
+  secretStoreRef:
+    name: {{ .Values.secretStore.name }}
+    kind: {{ .Values.secretStore.kind }}
+  target:
+    name: rekor-signer
+    creationPolicy: Owner
+  data:
+    - secretKey: private.pem
+      remoteRef:
+        key: {{ $rekor }}
+---
+# What every verifier reads (the Fulcio root and, beside it, the trusted root): public certificates only. The hook used to
+# create fulcio-root-ca from the root it minted; with the hook off this is the one source, and it holds the new chain.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fulcio-root-ca
+  namespace: platform-catalog
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "sigstore"
+data:
+  cert.pem: {{ $rootPem | quote }}
+{{- end }}
+{{- with .Values.sigstore.managedKeys.trustedRootJson }}
+---
+# hangar-trusted-root is published whether or not managedKeys is on: publishing it BEFORE the flip lets every verifier learn
+# the new chain, and keep the legacy one, ahead of the first signature made under the new PKI.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hangar-trusted-root
+  namespace: platform-catalog
+  labels:
+    {{- include "glidepath-control-plane.labels" $ | nindent 4 }}
+    hangar.io/subcomponent: "sigstore"
+data:
+  trusted-root.json: {{ . | quote }}
+{{- end }}

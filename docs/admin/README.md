@@ -29,6 +29,7 @@ architecture.md wherever relevant.
 - [contract.md](contract.md) - the generated contract, `glidepath validate`, what an agent may change in `cicd.yaml`, and the `cicd-validate` check that holds every app-repo PR to it
 - [governance-stubs.md](governance-stubs.md) - the stub→real gate mechanism
 - [image-signing.md](image-signing.md) - Fulcio/cosign keyless signing
+- [signing-pki-cutover.md](signing-pki-cutover.md) - the Hangar signing PKI (C-2a): managed Fulcio/Rekor keys, the trusted root, the cutover and its rollback
 - [provenance-policy.md](provenance-policy.md) - SLSA attestation policy
 - [commit-signing.md](commit-signing.md) - gitsign commit verification
 - [rootless-builds.md](rootless-builds.md) - rootless BuildKit image builds and the Pod Security level they meet
