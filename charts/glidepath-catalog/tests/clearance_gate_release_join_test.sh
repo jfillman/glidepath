@@ -48,10 +48,44 @@ out="$(run '{"items":[{"metadata":{"name":"release-tracking-z"},"data":{"prUrl":
 [[ -z "$out" ]] || { echo "FAIL: patched a record of a different PR: $out"; fail=1; }
 [[ "$(cat "$d/outcome")" == cleared ]] || { echo "FAIL: a missing record must not fail the check: $(cat "$d/outcome")"; fail=1; }
 
-# release-log-emit: the record body gains clearance_id and clearance_tree only when the gate wrote them.
-grep -q 'clearance_id: \$clearanceId, clearance_tree: \$clearanceTree' charts/glidepath-catalog/templates/tasks/release-log-emit.yaml \
-  || { echo "FAIL: release-log-emit does not carry clearance_id"; fail=1; }
-body="$(jq -nc --arg clearanceId chg-77 --arg clearanceTree sha256:feed '{a:1} + (if $clearanceId != "" then {clearance_id: $clearanceId, clearance_tree: $clearanceTree} else {} end)')"
-[[ "$body" == *'"clearance_id":"chg-77"'* ]] || { echo "FAIL: join expression: $body"; fail=1; }
+# release-log-emit: its real emit step, against stub curl, kubectl and platform libs. The record it sends carries
+# clearance_id and clearance_tree when the release record has them, and neither when it does not.
+step release-log-emit emit > "$d/emit.sh"
+mkdir -p "$d/lib" "$d/ebin"
+cat > "$d/lib/otel.sh" <<'LIB'
+otel_log_send() { printf '%s' "$1" > "${SENT}"; }
+LIB
+echo 'github_app_installation_token() { echo tok; }' > "$d/lib/github-app.sh"
+cat > "$d/ebin/curl" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  */check-runs*) echo '{"check_runs":[]}' ;;
+  */reviews*) echo '[]' ;;
+  */comments*) echo '[]' ;;
+  *) echo '{"head":{"sha":"abc"},"merged":true,"merged_by":{"login":"dana"},"title":"release"}' ;;
+esac
+STUB
+cat > "$d/ebin/kubectl" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *clearanceId*) printf '%s' "${CM_ID:-}" ;;
+  *clearanceTree*) printf '%s' "${CM_TREE:-}" ;;
+esac
+STUB
+chmod +x "$d/ebin/"*
+emit() { # id tree -> the record the step sent
+  SENT="$d/sent.$RANDOM"; export SENT
+  PATH="$d/ebin:${PATH}" PLATFORM_LIB="$d/lib" CM_ID="$1" CM_TREE="$2" APP_NAMESPACE=app-shop-cicd APP_NAME=shop ENV=prod \
+    CLUSTER=hangar-prod STATUS=Succeeded GIT_URL=u GIT_REVISION=r PR_URL=https://github.com/o/gitops-shop/pull/7 CHAIN_ID=c7 \
+    FLOW_START_TIME= PR_CREATED_AT= FINISHED_AT= OTEL_EXPORTER_OTLP_ENDPOINT=http://otel GITHUB_TOKEN_BROKER_URL=http://b \
+    bash "$d/emit.sh" >"$d/emit.out" 2>&1 || { echo "FAIL: emit exited non-zero"; cat "$d/emit.out"; fail=1; }
+  cat "${SENT}" 2>/dev/null
+}
+rec="$(emit chg-77 sha256:feed)"
+[[ "$(jq -r '.clearance_id' <<<"$rec")" == chg-77 && "$(jq -r '.clearance_tree' <<<"$rec")" == sha256:feed && "$(jq -r '.pr_number' <<<"$rec")" == 7 ]] \
+  || { echo "FAIL: the release log record must carry the clearance join: $rec"; fail=1; }
+rec="$(emit "" "")"
+[[ -n "$rec" && "$(jq 'has("clearance_id") or has("clearance_tree")' <<<"$rec")" == false ]] \
+  || { echo "FAIL: a release the gate never saw has no clearance keys: $rec"; fail=1; }
 
 [ $fail -eq 0 ] && echo ok || exit 1
