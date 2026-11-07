@@ -15,7 +15,7 @@ lacks(){ grep -qE -- "$2" <<<"$1" && bad "$3 (/$2/ found)" || ok "$3"; }
 OFF="$(render)"
 has   "${OFF}" 'openssl rand -base64 32'                      "off: the fulcio hook still mints the root"
 has   "${OFF}" 'openssl genpkey -algorithm EC'                "off: the rekor hook still mints the key"
-lacks "${OFF}" 'kind: ExternalSecret'"$(printf '\n')"'metadata:'"$(printf '\n')"'  name: (fulcio|rekor)' "off: no managed ExternalSecret"
+lacks "${OFF}" '^  name: (fulcio-secret|fulcio-server-config|rekor-signer)$' "off: no managed ExternalSecret"
 lacks "${OFF}" 'name: hangar-trusted-root$'                   "off: no trusted-root ConfigMap without a value"
 
 PEM='-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n'
@@ -23,6 +23,7 @@ ON="$(render --set sigstore.managedKeys.enabled=true --set-string "sigstore.mana
   --set-string 'sigstore.managedKeys.trustedRootJson={"mediaType":"x"}')"
 lacks "${ON}" 'openssl rand -base64 32'                       "on: the fulcio hook mints nothing"
 lacks "${ON}" 'openssl genpkey'                               "on: the rekor hook is gone"
+has   "${ON}" '^  name: fulcio-secret$'                        "on: the ExternalSecret is rendered (the off check above is not vacuous)"
 has   "${ON}" 'key: hangar-fulcio-example-dev-chain'          "on: the chain key is derived from the cluster name"
 has   "${ON}" 'key: hangar-fulcio-example-dev-key$'           "on: the intermediate key"
 has   "${ON}" 'key: hangar-fulcio-example-dev-key-password'   "on: the passphrase"

@@ -96,7 +96,7 @@ in-cluster `http` Fulcio/Rekor URLs (the clearance release that contains jfillma
 
 1. `apron render` (`python3 hack/render.py --cluster cluster.yaml`), then diff the cluster repo. (a) adds
    `sigstore.managedKeys.trustedRootJson`; (b) adds `enabled` and `rootCaPem`; (c) adds the Clearance `attestation:` block
-   and two egress rules. Nothing else may change; a render with all three flags off is byte-identical to before.
+   and two egress rules. Nothing else may change. (An Apron render with all three flags off is byte-identical to before. The chart's own render with the flag off differs from the previous chart only by the added `hangar-trusted-root` name in the read grant `allow-fulcio-root-ca-read`, and comments.)
 2. Sync `glidepath-control-plane`. After (b) expect: ExternalSecrets `fulcio-secret`, `fulcio-server-config` (fulcio-system)
    and `rekor-signer` (rekor-system) Ready; `fulcio-root-ca` and `hangar-trusted-root` in platform-catalog; no
    `rekor-signer-bootstrap` Job. Check `kubectl get externalsecret -A` is `SecretSynced` before restarting anything.
