@@ -549,9 +549,9 @@ spec:
         # to Clearance. Best effort: a PR with no record (a hand-made one, a swept record) is not a failed check.
         join_release() {
           local cluster="$1" renv="$2" id="$3" tree="$4" slug pr_url name
-          slug="$(sed -E 's#^https?://github\.com/([^/]+/[^/.]+)(\.git)?/?$#\1#' <<<"${REPO_URL}")"
-          pr_url="https://github.com/${slug}/pull/${PR_NUMBER}"
-          [[ -n "${id}" && -n "${PR_NUMBER}" ]] || return 0
+          slug="$(sed -E 's#^https?://github\.com/([^/]+/[^/.]+)(\.git)?/?$#\1#' <<<"${REPO_URL:-}")"
+          pr_url="https://github.com/${slug}/pull/${PR_NUMBER:-}"
+          [[ -n "${id}" && -n "${PR_NUMBER:-}" ]] || return 0
           name="$(kubectl get configmap -n "${NAMESPACE}" \
             -l "hangar.io/subcomponent=release-tracking,hangar.io/env=${renv},hangar.io/cluster=${cluster}" -o json 2>/dev/null \
             | jq -r --arg u "${pr_url}" '[.items[] | select(.data.prUrl == $u)] | .[0].metadata.name // empty')"
