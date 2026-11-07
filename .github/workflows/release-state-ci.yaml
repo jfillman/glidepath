@@ -54,6 +54,8 @@ jobs:
       - run: pip install pyyaml
       - name: mark-release-merged
         run: charts/glidepath-catalog/tests/mark_release_merged_test.sh
+      - name: clearance-gate release join
+        run: charts/glidepath-catalog/tests/clearance_gate_release_join_test.sh
       - name: resolve-merged-pr
         run: charts/glidepath-catalog/tests/resolve_merged_pr_test.sh
       - name: release-record-sweeper

@@ -111,3 +111,12 @@ proposer", so one rule and one record); Tower stops posting the status then.
 - `comment-pr-check-result.yaml`: the gate's advice text
 - Apron `55-autopilot/clearance/networkpolicy.yaml` admits pods labelled `hangar.io/clearance-client: clearance-gate`
 - Clearance: `internal/gate` (the Go core), `docs/gate.md`; the API `GET /v1/clearances`, `/v1/clearance-policy`
+
+## The join to the release record (G-ARGO-6)
+
+After each `POST /v1/clearances` answers, the register step writes the change's `id` and `tree_digest` into the
+release's own record (`release-tracking-<chainId>`, found by the PR URL, cluster and environment) as `clearanceId` and
+`clearanceTree`. It is best effort: a PR with no record (hand-made, or swept) is not a failed check. glidepath-api
+returns them as `clearance: {id, tree}` on `GET /v1/apps/{app}/releases/{chainId}`, and `release-log-emit` adds
+`clearance_id` and `clearance_tree` to the release log, so Tower and the release packet join a release to its change,
+outcome and attestation by id. Test: `charts/glidepath-catalog/tests/clearance_gate_release_join_test.sh`.

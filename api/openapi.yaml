@@ -1244,6 +1244,17 @@ components:
       properties:
         name: { type: string, description: "release-tracking-<chain-id>" }
         data: { type: object, additionalProperties: { type: string } }
+        clearance:
+          type: object
+          required: [id]
+          description: >-
+            The Clearance change this release was registered as, written by the clearance-gate task as `clearanceId`
+            and `clearanceTree` in `data`. Read the change, its outcome and its attestation at Clearance's
+            `GET /v1/clearances/{id}`. Absent until the gate has registered the release's PR (a release to an
+            unprotected environment never has one).
+          properties:
+            id: { type: string, description: "The Clearance change id" }
+            tree: { type: string, description: "The manifest-tree digest the change was registered for (sha256:<hex>)" }
     FleetRelease:
       type: object
       required: [name, namespace, labels, data]

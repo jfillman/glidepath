@@ -533,12 +533,36 @@ spec:
           value: $(params.tower-url)
         - name: PIPELINE_RUN
           value: $(params.pipeline-run-name)
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: PR_NUMBER
+          value: $(params.pr-number)
         - name: NAMESPACE
           value: $(context.taskRun.namespace)
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
         report=/work/report.md
+        # join_release <cluster> <env> <change id> <tree digest>: G-ARGO-6. Writes the change's id and tree digest into
+        # the release's own record (release-tracking-<chainId>, found by this PR's URL, cluster and environment), so
+        # glidepath-api's GET /v1/apps/{app}/releases/{chainId} and the release log (release-log-emit) carry the join
+        # to Clearance. Best effort: a PR with no record (a hand-made one, a swept record) is not a failed check.
+        join_release() {
+          local cluster="$1" renv="$2" id="$3" tree="$4" slug pr_url name
+          slug="$(sed -E 's#^https?://github\.com/([^/]+/[^/.]+)(\.git)?/?$#\1#' <<<"${REPO_URL}")"
+          pr_url="https://github.com/${slug}/pull/${PR_NUMBER}"
+          [[ -n "${id}" && -n "${PR_NUMBER}" ]] || return 0
+          name="$(kubectl get configmap -n "${NAMESPACE}" \
+            -l "hangar.io/subcomponent=release-tracking,hangar.io/env=${renv},hangar.io/cluster=${cluster}" -o json 2>/dev/null \
+            | jq -r --arg u "${pr_url}" '[.items[] | select(.data.prUrl == $u)] | .[0].metadata.name // empty')"
+          if [[ -z "${name}" ]]; then
+            echo "no release record for ${pr_url} (${cluster}/${renv}) in ${NAMESPACE}: the join to ${id} is not written"
+            return 0
+          fi
+          kubectl patch configmap "${name}" -n "${NAMESPACE}" --type merge \
+            -p "$(jq -nc --arg id "${id}" --arg tree "${tree}" '{data: {clearanceId: $id, clearanceTree: $tree}}')" >/dev/null \
+            && echo "${name}: clearanceId=${id}" || echo "warning: could not write the clearance join to ${name}" >&2
+        }
         write_results() { # <outcome> <summary>
           printf '%s' "$1" > "$(results.outcome.path)"
           printf '%s' "$2" | head -c 900 > "$(results.findings-summary.path)"
@@ -583,6 +607,7 @@ spec:
              requirement: (if .requirement then "\(.requirement.owner) from \(.requirement.ownerGroup)" + (if .requirement.outside > 0 then " and \(.requirement.outside) from \(.requirement.outsideGroups | join(", "))" else "" end) else "none" end),
              approvals: ([.approvals[] | "\(.person) (\(.role))"] | join(", ")), cleared_by, deny_reason, expires_at,
              link: (if $tower != "" then "\($tower)/clearance?view=clearances&change=\(.id)" else "" end)}' <<<"${body}" >> /work/rows.jsonl
+          join_release "$(jq -r '.cluster' "${f}")" "$(jq -r '.env' "${f}")" "$(jq -r '.id // empty' <<<"${body}")" "$(jq -r '.tree_digest // empty' <<<"${body}")"
         done
         ids="$(jq -r 'select(.id) | .id' /work/rows.jsonl | paste -sd ',' -)"
         printf '%s' "${ids}" > "$(results.change-ids.path)"
