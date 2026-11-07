@@ -1,0 +1,35 @@
+{{- /*
+ConfigMap glidepath-observability: what the clearance-gate task needs to render a release with the observability
+values Argo CD renders it with (the platform-owned `observability` block of airframe-application).
+
+- cluster: this (the dev, control-plane) cluster's name.
+- runtime: the app's runtime (platformIdentity.runtime), which every cluster's ApplicationSet injects for the app.
+- values.yaml: this cluster's whole block as glidepath-app.observabilityValues builds it for the environment
+  ApplicationSets (forwarded from cluster-defaults.yaml); absent when the cluster sets none.
+
+The facts of any OTHER cluster are that cluster's own (its cluster-defaults.yaml, which its tenant-onboarding
+ApplicationSet reads): the task takes them from the broker's /policy-bundle, per environment's destination cluster, never
+from here. Not rendered for an app that does not deploy to Kubernetes (the gate covers k8s-rollout only).
+*/ -}}
+{{- if eq (include "glidepath-app.isKubernetesTarget" .) "true" }}
+{{- $o := .Values.observability | default dict }}
+{{- $block := "" }}
+{{- if or $o.namespace $o.instrumentation }}
+{{- $block = include "glidepath-app.observabilityValues" (dict "ctx" $ "chart" (include "glidepath-app.defaultChart" $ | fromYaml)) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: glidepath-observability
+  labels:
+    {{- include "glidepath-app.labels" $ | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ include "glidepath-app.namespace" $ }}
+data:
+  cluster: {{ include "glidepath-app.devCluster" $ | quote }}
+  runtime: {{ .Values.platformIdentity.runtime | default "" | quote }}
+  {{- if $block }}
+  values.yaml: |
+    {{- $block | nindent 4 }}
+  {{- end }}
+{{- end }}

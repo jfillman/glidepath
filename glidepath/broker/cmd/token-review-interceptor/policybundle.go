@@ -75,6 +75,11 @@ type policyBundleRequest struct {
 	Owner   string `json:"owner"`
 }
 
+type clusterObservability struct {
+	Namespace       string `json:"namespace"`
+	Instrumentation string `json:"instrumentation"`
+}
+
 type policyBundleResponse struct {
 	RepoURL   string                   `json:"repoURL,omitempty"`
 	Path      string                   `json:"path,omitempty"`
@@ -82,7 +87,10 @@ type policyBundleResponse struct {
 	Commit    string                   `json:"commit,omitempty"`
 	Files     int                      `json:"files"`
 	Documents []map[string]interface{} `json:"documents"`
-	Error     string                   `json:"error,omitempty"`
+	// Observability is the cluster's own observability facts (cluster-defaults.yaml at the repo root): the two fields
+	// its environment ApplicationSets inject, and nothing else of the file. Omitted when the file or block is absent.
+	Observability *clusterObservability `json:"observability,omitempty"`
+	Error         string                `json:"error,omitempty"`
 }
 
 func loadPolicySources() (*policySources, error) {
@@ -192,6 +200,7 @@ func handlePolicyBundle(clientset kubernetes.Interface, dynClient dynamic.Interf
 		}
 		_ = json.NewEncoder(w).Encode(policyBundleResponse{
 			RepoURL: src.RepoURL, Path: src.Path, Revision: src.Revision, Commit: commit, Files: files, Documents: docs,
+			Observability: observabilityFromTarball(tarball),
 		})
 	}
 }
@@ -319,5 +328,43 @@ func admissionPolicyDocuments(data []byte) ([]map[string]interface{}, bool) {
 		if policyKinds[group][kind] {
 			out = append(out, d)
 		}
+	}
+}
+
+// observabilityFromTarball reads the `observability` block of cluster-defaults.yaml at the repository root (what the
+// cluster's tenant-onboarding ApplicationSet injects into every environment), returning only namespace and
+// instrumentation: the rest of a cluster repo is not the gate's to see. nil when there is no such file or block.
+func observabilityFromTarball(tarball []byte) *clusterObservability {
+	gz, err := gzip.NewReader(bytes.NewReader(tarball))
+	if err != nil {
+		return nil
+	}
+	tr := tar.NewReader(gz)
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			return nil
+		}
+		name := h.Name
+		if i := strings.IndexByte(name, '/'); i >= 0 {
+			name = name[i+1:]
+		}
+		if h.Typeflag != tar.TypeReg || name != "cluster-defaults.yaml" || h.Size > maxPolicyFileBytes {
+			continue
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			return nil
+		}
+		var doc struct {
+			Observability *struct {
+				Namespace       string `json:"namespace"`
+				Instrumentation string `json:"instrumentation"`
+			} `json:"observability"`
+		}
+		if err := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(data), 4096).Decode(&doc); err != nil || doc.Observability == nil {
+			return nil
+		}
+		return &clusterObservability{Namespace: doc.Observability.Namespace, Instrumentation: doc.Observability.Instrumentation}
 	}
 }

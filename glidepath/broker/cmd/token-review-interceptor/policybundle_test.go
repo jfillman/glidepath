@@ -97,3 +97,26 @@ func TestResolvePolicySource(t *testing.T) {
 		}
 	}
 }
+
+func TestObservabilityFromTarball(t *testing.T) {
+	tb := tarball(t, map[string]string{
+		"cluster-defaults.yaml": "defaultChart: {path: charts/airframe-application}\nobservability:\n  namespace: observability\n  instrumentation: observability/hangar\n  password: s3cret\n",
+		"cluster.yaml":          "generated:\n  password: s3cret\n",
+	})
+	o := observabilityFromTarball(tb)
+	if o == nil || o.Namespace != "observability" || o.Instrumentation != "observability/hangar" {
+		t.Fatalf("%+v", o)
+	}
+	if o := observabilityFromTarball(tarball(t, map[string]string{"cluster-defaults.yaml": "observability: {}\n"})); o == nil || *o != (clusterObservability{}) {
+		t.Fatalf("an empty block is empty facts, not absent: %+v", o)
+	}
+	for name, files := range map[string]map[string]string{
+		"no file":  {"cluster.yaml": "x: 1\n"},
+		"no block": {"cluster-defaults.yaml": "defaultChart: {}\n"},
+		"nested":   {"sub/cluster-defaults.yaml": "observability: {namespace: x}\n"},
+	} {
+		if o := observabilityFromTarball(tarball(t, files)); o != nil {
+			t.Errorf("%s: %+v", name, o)
+		}
+	}
+}

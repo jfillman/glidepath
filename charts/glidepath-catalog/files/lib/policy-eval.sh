@@ -32,6 +32,8 @@ policy_bundle_fetch() {
   fi
   mkdir -p "/work/policies/${cluster}"
   jq -c '{repoURL, path, revision, commit, files}' <<<"${body}" > "/work/policies/${cluster}.source.json"
+  # The cluster's own observability facts (its cluster-defaults.yaml), for clearance-gate's render: `null` when it sets none.
+  jq -c '.observability // null' <<<"${body}" > "/work/policies/${cluster}.observability.json"
   # One JSON document per YAML document (JSON is YAML), so the render step reads it like any policy file.
   jq -r '.documents[] | tojson, "---"' <<<"${body}" > "/work/policies/${cluster}/bundle.yaml"
   echo "policies for ${cluster}: $(jq -r '"\(.repoURL) \(.path) @ \(.revision) (\(.commit[0:12])): \(.documents | length) document(s) in \(.files) file(s)"' <<<"${body}")"
