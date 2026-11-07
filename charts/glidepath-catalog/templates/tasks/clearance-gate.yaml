@@ -16,8 +16,10 @@
 #                                runs, a one-commit checkout of base and head, and each target cluster's admission
 #                                policy bundle (the broker's /policy-bundle; unreadable = an `error` verdict, not a
 #                                failed check)
-#   render    (validator image)  `helm template` of base and head per protected environment with the same value files
-#                                and injected values the Flight ApplicationSet layers, then the object diff: each
+#   render    (validator image)  `helm template` of base and head per protected environment exactly as Argo CD (and
+#                                Clearance's Argo CD plugin) renders it: release <app>-<env>, the destination namespace,
+#                                the same value files and injected values the Flight ApplicationSet layers (observability
+#                                included), then the object diff: every rendered object, unchanged ones marked, each
 #                                added, removed or changed object with the JSON pointers of the fields that changed
 #                                and its new images, each object's digest and the tree's digest (what a grant binds to)
 #   admission (toolbox)          the offline admission verdict per protected environment: `kyverno apply` of the
@@ -141,6 +143,8 @@ spec:
           value: {{ .Values.defaultChart.repoURL | quote }}
         - name: DEFAULT_CHART_PATH
           value: {{ .Values.defaultChart.path | quote }}
+        - name: NAMESPACE
+          value: $(context.taskRun.namespace)
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -190,6 +194,14 @@ spec:
         fi
         files="$(api "https://api.github.com/repos/${owner}/${repo}/compare/${base_sha}...${REVISION}" | jq -c '[.files[] | {filename, status, additions, deletions, previous_filename}]')"
         echo "PR ${owner}/${repo}#${PR_NUMBER} base ${base_sha:0:12} head ${REVISION:0:12} author ${author} files $(jq length <<<"${files}")"
+
+        # The cluster's observability facts for this app (namespace, instrumentation, runtime), as glidepath-app
+        # rendered them for the environment ApplicationSets: the render injects them exactly as Argo CD does, or the
+        # tree differs from the one Clearance's Argo CD plugin registers at sync. Absent = the cluster sets none. Any
+        # other failure to read fails the check: a tree rendered without them would never be found cleared.
+        if ! kubectl get configmap glidepath-observability -n "${NAMESPACE}" --ignore-not-found -o 'jsonpath={.data.values\.yaml}' > /work/observability.yaml; then
+          echo "could not read the glidepath-observability ConfigMap in ${NAMESPACE}: the render would differ from Argo CD's"; exit 1
+        fi
 
         mkdir -p /work/repo && cd /work/repo
         git init --quiet
@@ -324,11 +336,18 @@ spec:
           [[ -f "${dir}/${cluster}/${env}/values.yaml" || -f "${dir}/${cluster}/${env}/release.yaml" ]] || return 2
           printf 'appName: %s\ncluster: %s\nenvName: %s\nnamespace:\n  labels:\n    hangar.io/managed-secrets: "true"\n' \
             "${APP_NAME}" "${cluster}" "${env}" > "${out}.injected.yaml"
-          [[ -n "${ns_pattern}" ]] && printf 'serviceNamespacePattern: "%s"\n' "${ns_pattern}" >> "${out}.injected.yaml"
+          # What the environment ApplicationSet adds for the cluster's default chart only (an older pinned chart's strict
+          # schema has neither key): the namespace pattern and the observability block.
+          if [[ -n "${ns_pattern}" ]]; then
+            printf 'serviceNamespacePattern: "%s"\n' "${ns_pattern}" >> "${out}.injected.yaml"
+            [[ -s /work/observability.yaml ]] && cat /work/observability.yaml >> "${out}.injected.yaml"
+          fi
           for v in "${cluster}/base.yaml" "${cluster}/${env}/values.yaml" "${cluster}/${env}/release.yaml"; do
             [[ -f "${dir}/${v}" ]] && vf+=(-f "${dir}/${v}")
           done
-          helm template "${APP_NAME}" "${chart}" --namespace "${type}-${APP_NAME}-${env}" "${vf[@]}" -f "${out}.injected.yaml" > "${out}" 2> "${out}.err"
+          # The release name is the Argo CD Application's, <app>-<env>, as the chart stamps app.kubernetes.io/instance from it
+          # (Clearance's Argo CD plugin renders the same way: providers/argocd/cmp).
+          helm template "${APP_NAME}-${env}" "${chart}" --namespace "${type}-${APP_NAME}-${env}" "${vf[@]}" -f "${out}.injected.yaml" > "${out}" 2> "${out}.err"
         }
         rc=0
         while IFS='|' read -r cluster env chart protected; do
@@ -447,6 +466,8 @@ spec:
                 else:
                     dh, db = digest(h), digest(b)
                     if dh == db:
+                        # Listed anyway: a grant covers the whole rendered tree, not only what this PR touched.
+                        objects.append({"apiVersion": api_version, "kind": kind_, "namespace": ns, "name": name, "op": "unchanged", "fields": [], "images": [], "digest": dh})
                         continue
                     fields = []
                     leaves(b, h, "", fields)
@@ -454,6 +475,8 @@ spec:
                     objects.append({"apiVersion": api_version, "kind": kind_, "namespace": ns, "name": name, "op": "changed",
                                     "fields": fields[:MAX_FIELDS], "images": [i for i in images if isinstance(i, str)], "digest": dh})
             tree = hashlib.sha256("\n".join(sorted(f"{'/'.join(k)}:{digest(d)}" for k, d in head.items())).encode()).hexdigest()
+            if len(objects) > 2000:  # Clearance's MaxObjects
+                sys.exit(f"{cluster}/{env}: {len(objects)} rendered objects; Clearance registers at most 2000")
             change = {"app": os.environ["APP_NAME"], "env": env, "cluster": cluster, "repo": f"{meta['owner']}/{meta['repo']}".lower(),
                       "pr": meta["pr"], "head": meta["head"], "base": meta["base"], "proposer": proposer, "proposerKind": kind,
                       "protected": True, "treeDigest": tree, "paths": paths, "linesChanged": lines, "objects": objects,
@@ -466,7 +489,7 @@ spec:
                     change["policyCommit"] = meta["policyCommit"]
             with open(f"{out}/change.json", "w") as f:
                 json.dump(change, f)
-            print(f"{cluster}/{env}: {len(objects)} object(s) changed of {len(head)}; tree {tree[:12]}; proposer {proposer} ({kind}); checks {checks}")
+            print(f"{cluster}/{env}: {sum(o['op'] != 'unchanged' for o in objects)} object(s) changed of {len(head)} (all listed); tree {tree[:12]}; proposer {proposer} ({kind}); checks {checks}")
         PY
 
         # The Kyverno CLI's inputs for the admission step (the policy-validation gate's normalization). A failure
@@ -564,16 +587,27 @@ spec:
                    -H "Authorization: Bearer $(cat /var/run/secrets/clearance/clearance-token)" \
                    -H "Content-Type: application/json" --data @"${f}" "${CLEARANCE_URL%/}/v1/clearances" || true)"
           code="$(tail -n1 <<<"${out}")"; body="$(sed '$d' <<<"${out}")"
-          if [[ "${code}" == 400 ]] && grep -qE "unknown field [^A-Za-z]{0,3}(admission|policyCommit)" <<<"${body}"; then
-            # A Clearance before C-8 refuses the admission result: register the change without it (the record then
-            # says engine none, verdict not-evaluated) rather than fail the check over a rollout order.
-            echo "Clearance does not take the admission result yet (a release before C-8): registering without it"
-            jq 'del(.admission, .policyCommit)' "${f}" > "${f}.pre-c8"
+          # A Clearance older than this task refuses what it does not know yet: register without the newer part rather
+          # than fail the check over a rollout order (one fallback per refusal, at most two).
+          cur="${f}"
+          for attempt in 1 2; do
+            [[ "${code}" == 400 ]] || break
+            if grep -qE "unknown field [^A-Za-z]{0,3}(admission|policyCommit)" <<<"${body}"; then
+              # Before C-8: the record then says engine none, verdict not-evaluated.
+              echo "Clearance does not take the admission result yet (a release before C-8): registering without it"
+              filter='del(.admission, .policyCommit)'
+            elif grep -qE 'objects\[\]\.op is' <<<"${body}"; then
+              echo "Clearance does not take unchanged objects yet: registering the changed ones only (a grant will not cover the rest of the tree)"
+              filter='del(.objects[] | select(.op == "unchanged"))'
+            else
+              break
+            fi
+            jq "${filter}" "${cur}" > "${f}.try${attempt}"; cur="${f}.try${attempt}"
             out="$(curl --silent --show-error --max-time 30 --retry 2 --retry-connrefused -w '\n%{http_code}' \
                      -H "Authorization: Bearer $(cat /var/run/secrets/clearance/clearance-token)" \
-                     -H "Content-Type: application/json" --data @"${f}.pre-c8" "${CLEARANCE_URL%/}/v1/clearances" || true)"
+                     -H "Content-Type: application/json" --data @"${cur}" "${CLEARANCE_URL%/}/v1/clearances" || true)"
             code="$(tail -n1 <<<"${out}")"; body="$(sed '$d' <<<"${out}")"
-          fi
+          done
           env="$(jq -r '"\(.cluster)/\(.env)"' "${f}")"
           if [[ "${code}" != 200 ]]; then
             echo "{\"env\":\"${env}\",\"state\":\"error\",\"detail\":$(jq -Rs . <<<"HTTP ${code:-none}: $(head -c 300 <<<"${body}")")}" >> /work/rows.jsonl
