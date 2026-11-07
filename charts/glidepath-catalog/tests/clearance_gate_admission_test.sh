@@ -35,6 +35,9 @@ fi
 if [[ "${CLEARANCE_ANSWER}" == pre-c8-dq && "${n}" == 1 ]]; then  # the same refusal, Go-quoted
   printf '{"error":"json: unknown field \\"policyCommit\\""}\n400'; exit 0
 fi
+if [[ "${CLEARANCE_ANSWER}" == pre-unchanged && "${n}" == 1 ]]; then  # a Clearance before objects[].op "unchanged"
+  printf '{"error":"objects[].op is added, changed or removed"}\n400'; exit 0
+fi
 jq -c '{id: "ch-0123456789abcdef", state: "cleared", tier: 1, reasons: [], requirement: null, approvals: [], cleared_by: "policy",
         deny_reason: null, expires_at: "2026-11-10T00:00:00+00:00", admission: .admission}' "${f}"
 printf '200'
@@ -139,5 +142,15 @@ CLEARANCE_ANSWER=pre-c8-dq run pre-c8-dq green 'resources: {limits: {memory: 256
 serviceLabels: {team: skyport}
 serviceType: ClusterIP'
 expect "pre-c8-dq: a double-quoted refusal also falls back" "$(posted pre-c8-dq '[has("admission"), has("policyCommit")] | any' 2)" false
+
+# pre-unchanged: a Clearance that refuses op "unchanged" gets the change again with only the changed objects.
+CLEARANCE_ANSWER=pre-unchanged run pre-unchanged green 'resources: {limits: {memory: 256Mi}}
+serviceLabels: {team: skyport}
+serviceType: ClusterIP'
+expect "pre-unchanged: first body lists unchanged objects" "$(posted pre-unchanged '[.objects[] | select(.op == "unchanged")] | length > 0' 1)" true
+expect "pre-unchanged: second body has none" "$(posted pre-unchanged '[.objects[] | select(.op == "unchanged")] | length' 2)" 0
+expect "pre-unchanged: second body keeps the admission result" "$(posted pre-unchanged '.admission.verdict' 2)" pass
+has "pre-unchanged: says why" "$d/pre-unchanged/register.log" 'does not take unchanged objects yet'
+has "pre-unchanged: registered" "$d/pre-unchanged/report.md" 'cleared'
 
 [[ "${fail}" == 0 ]] && echo "PASS clearance_gate_admission_test" || { echo "FAILED (KEEP=1 keeps ${d})"; exit 1; }

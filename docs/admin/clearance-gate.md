@@ -30,10 +30,20 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
      environment's target cluster's **admission policy bundle** from the broker's `/policy-bundle` (the
      [policy-validation](policy-validation.md) source; an unreadable bundle is an `error` verdict below, not a failed
      check).
-  2. `render` (the validator image): `helm template` of base and head per protected environment, with the value files
-     and injected values the Flight ApplicationSet layers, then the object diff: each added, removed or changed object
-     with the JSON pointers of the fields that changed and its new images, every object's digest and the **tree
-     digest** (what a grant binds to). Nothing is sent to Clearance but this description: no manifest content. Then
+  2. `render` (the validator image): `helm template` of base and head per protected environment **exactly as Argo CD
+     renders it** (and so as Clearance's Argo CD plugin does): release name `<app>-<env>` (the Application's), the
+     environment's namespace, the value files and the injected values the Flight ApplicationSet layers, including
+     the **destination cluster's** `observability` block (that cluster's own `cluster-defaults.yaml`, which its
+     tenant-onboarding ApplicationSet reads: for the control-plane cluster the `glidepath-observability` ConfigMap
+     glidepath-app writes, for any other cluster the broker's `/policy-bundle` answer, which carries only that file's
+     `observability.namespace` and `instrumentation`; the app's runtime is the ConfigMap's). A cluster whose facts
+     cannot be read fails that environment's render rather than register a tree Argo CD would not produce. The trees are then equal, so
+     the clearance a PR earned is found by tree when Argo CD syncs it. Then the object diff: **every rendered object**
+     is listed, the ones the PR does not touch with `op: unchanged` (never tiered; a grant needs the whole tree, and
+     Clearance's token carries them with `changed: false`), each added, removed or changed object with the JSON
+     pointers of the fields that changed and its new images, every object's digest and the **tree digest** (what a
+     grant binds to). A Clearance that predates `unchanged` refuses it: the task then registers the changed objects
+     only and says so. Nothing is sent to Clearance but this description: no manifest content. Then
      the Kyverno CLI's inputs for the head's tree (stand-in CRDs, Namespace labels, the normalized bundle).
   3. `admission` (toolbox): the **offline admission verdict** per protected environment, `kyverno apply` of the
      cluster's bundle to the rendered head: the policy-validation gate's own evaluation (the two tasks share
@@ -104,7 +114,9 @@ proposer", so one rule and one record); Tower stops posting the status then.
 - `charts/glidepath-catalog/templates/tasks/clearance-gate.yaml`, `templates/pipelines/clearance-gate-check.yaml`
 - `charts/glidepath-catalog/files/lib/policy-eval.sh`, `policy-eval-prepare.py`: the admission evaluation shared with
   `policy-validation-gate.yaml`; `tests/clearance_gate_admission_test.sh` (render, admission, register against the
-  policy-validation fixtures with the real Kyverno CLI)
+  policy-validation fixtures with the real Kyverno CLI); `tests/clearance_gate_parity_test.sh` (the render equals
+  Clearance's Argo CD plugin's, against the plugin's recorded gate-api prod fixture in `tests/fixtures/clearance-parity`)
+- `charts/glidepath-app/templates/identity/observability-values.yaml`: the `glidepath-observability` ConfigMap the render reads (cluster, runtime, this cluster's block); `glidepath/broker/cmd/token-review-interceptor/policybundle.go` returns each cluster's own `observability`
 - `charts/glidepath-app/files/onboarding-templates/gitops-repo/pull-request-clearance-gate.yaml`
 - `charts/glidepath-catalog/values.yaml`: the `clearance-gate` guardrail; `clearanceGate.towerUrl`; Clearance's URL
   and audience are `agentGates.clearanceUrl` / `agentGates.audience`
