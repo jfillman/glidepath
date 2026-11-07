@@ -47,7 +47,7 @@ fails if the server's routes and the spec ever differ.
 | `GET /v1/releases?app=` | T0 | `list releases` (cluster-wide without `app=`) | Every [release record](#the-fleets-release-records) in the cluster, each with `namespace` and `labels` |
 | `GET /v1/releases/events?app=` | T0 | `list releases` (cluster-wide without `app=`) | The `ReleaseStalled` and `ReleaseDrift` Events about release records |
 | `GET /v1/apps/{app}/releases` | T0 | `list releases` | Every `release-tracking-*` record of the app |
-| `GET /v1/apps/{app}/releases/{chainId}` | T0 | `get releases` | One record |
+| `GET /v1/apps/{app}/releases/{chainId}` | T0 | `get releases` | One record; `clearance: {id, tree}` joins it to its Clearance change (below) |
 | `GET /v1/apps/{app}/evidence?image=` | T0 | `get evidence` | Every signature and attestation on the image, each [re-verified](#evidence) |
 | `GET /v1/apps/{app}/tests?limit=` | T0 | `list tests` | The app's [test runs](#tests) from Testkube, newest first |
 | `GET /v1/apps/{app}/tests/{id}/report` | T0 | `get tests` | A run's JUnit report, as XML |
@@ -917,3 +917,18 @@ Tower's calls join Tower's own traces. On hangar-prod Backstage runs the OpenTel
 which sends each call's `traceparent`, so a Tower call's spans are in hangar-prod's Tempo and glidepath-api's are in
 hangar-dev's, under one trace id. A failed call's warning in Tower's log ends with `(trace <id>)`. That id is the
 audit line's `traceId`.
+
+## Joining a release to its clearance
+
+`GET /v1/apps/{app}/releases/{chainId}` (and each item of the list) carries `clearance: {id, tree}` once the
+`clearance-gate` check has registered the release's PR with Clearance: `id` is the change id, `tree` the manifest-tree
+digest it was registered for. Nothing guesses the join from a PR number or a commit. The chain, by id:
+
+1. the release PR registers the change: `clearanceId` and `clearanceTree` are written into `release-tracking-<chainId>`;
+2. Clearance's `GET /v1/clearances/{id}` shows the change, its `outcome` (`release.id`, applied, matched, the
+   `deploy.outcome` record's seq and hash) and its `attestation` (digest, Rekor log index);
+3. the outcome and the attestation carry the same `release.id`, which is the record's `releaseId`
+   (`<chainId>:<cluster>/<env>`), so the join also closes from Clearance's side.
+
+`clearance` is absent for a release to an unprotected environment, and for a record written before the gate ran. See
+Clearance's `docs/gate.md` ("The release-record join") for the other half.

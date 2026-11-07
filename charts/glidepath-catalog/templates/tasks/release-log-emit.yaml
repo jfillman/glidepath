@@ -203,7 +203,16 @@ spec:
         # every per-release-unique field - lives in the log body as one JSON object,
         # queried via `| json` when the full record is needed. See
         # docs/admin/release-log.md's "Live-verified" section for the query proof.
+        # The join to Clearance (G-ARGO-6): the clearance-gate task wrote the change id and tree digest into the
+        # release's record when it registered the PR. Empty for a release the gate never saw.
+        clearance_id=""; clearance_tree=""
+        if [[ -n "${CHAIN_ID}" ]]; then
+          clearance_id="$(kubectl get configmap "release-tracking-${CHAIN_ID}" -n "${APP_NAMESPACE}" -o jsonpath='{.data.clearanceId}' 2>/dev/null || true)"
+          clearance_tree="$(kubectl get configmap "release-tracking-${CHAIN_ID}" -n "${APP_NAMESPACE}" -o jsonpath='{.data.clearanceTree}' 2>/dev/null || true)"
+        fi
         record_json="$(jq -nc \
+          --arg clearanceId "${clearance_id}" \
+          --arg clearanceTree "${clearance_tree}" \
           --arg appNamespace "${APP_NAMESPACE}" \
           --arg appName "${APP_NAME}" \
           --arg env "${ENV}" \
@@ -229,7 +238,7 @@ spec:
             pr_url: $prUrl, pr_number: $prNumber, pr_title: $prTitle, merged_by: $mergedBy,
             approvers: ($approversCsv | split(",") | map(select(length > 0)) | join(", ")),
             bypass: $bypass
-          } + $gates')"
+          } + (if $clearanceId != "" then {clearance_id: $clearanceId, clearance_tree: $clearanceTree} else {} end) + $gates')"
 
         # Bounded-cardinality only: one value per app x env x outcome x bypass, never
         # per-release-unique - see the comment above.

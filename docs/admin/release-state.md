@@ -42,6 +42,7 @@ One ConfigMap per release, `release-tracking-<chain-id>`, in the Application's o
 | `rolledBackBy` | relay | The rollback release that replaced this one. |
 | `changeRequestId`, `changeRequestNumber`, `changeRequestUrl` | `open-release-pr` | The release's change request in the change tool ([change-management.md](change-management.md)); empty without a provider. |
 | `changeRequestState`, `changeRequestApproval`, `rolledBackByChange` | `itsm-gate`, `itsm-change` | The change as last seen by the gate, then `implementing`, `implementing-failed`, `closed-successful` or `closed-unsuccessful` (with the rollback's emergency change). |
+| `clearanceId`, `clearanceTree` | `clearance-gate` (G-ARGO-6) | The Clearance change the release's PR was registered as, and the manifest-tree digest it was registered for. Written right after `POST /v1/clearances` answers; absent for a release to an unprotected environment. `GET /v1/apps/{app}/releases/{chainId}` returns them as `clearance: {id, tree}`, and `release-log-emit` copies them into the release log as `clearance_id` and `clearance_tree`. |
 | label `hangar.io/stall-alerted` | sweeper | The state a `ReleaseStalled` Event was already raised for. |
 
 The record is **not deleted when its outcome is read** (it used to be). The state machine needs

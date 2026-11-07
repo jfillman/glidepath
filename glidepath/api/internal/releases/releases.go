@@ -26,6 +26,27 @@ var chainID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,200}$`)
 type Record struct {
 	Name string            `json:"name"`
 	Data map[string]string `json:"data"`
+	// Clearance is the Clearance change this release was registered as (G-ARGO-6): the clearance-gate task writes
+	// clearanceId and clearanceTree into the record, so Tower and the release packet join a release to its
+	// clearance by id and never by guessing. Absent until the gate has registered the release's PR.
+	Clearance *ClearanceRef `json:"clearance,omitempty"`
+}
+
+// ClearanceRef is the join key to Clearance: the change's id (GET /v1/clearances/{id}) and the manifest-tree digest
+// it was registered for (the digest the attestation's manifest-tree subject carries).
+type ClearanceRef struct {
+	ID   string `json:"id"`
+	Tree string `json:"tree,omitempty"`
+}
+
+// newRecord is the record for a ConfigMap's data, with its clearance join when the gate wrote one.
+func newRecord(name string, d map[string]string) Record {
+	d = data(d)
+	r := Record{Name: name, Data: d}
+	if id := d["clearanceId"]; id != "" {
+		r.Clearance = &ClearanceRef{ID: id, Tree: d["clearanceTree"]}
+	}
+	return r
 }
 
 type NotFound struct{ What string }
@@ -55,7 +76,7 @@ func (r Reader) List(ctx context.Context, namespace, app string) ([]Record, erro
 	}
 	out := []Record{}
 	for _, cm := range list.Items {
-		out = append(out, Record{Name: cm.Name, Data: data(cm.Data)})
+		out = append(out, newRecord(cm.Name, cm.Data))
 	}
 	return out, nil
 }
@@ -72,7 +93,7 @@ func (r Reader) ListEnv(ctx context.Context, namespace, app, env, cluster string
 	}
 	out := []Record{}
 	for _, cm := range list.Items {
-		out = append(out, Record{Name: cm.Name, Data: data(cm.Data)})
+		out = append(out, newRecord(cm.Name, cm.Data))
 	}
 	return out, nil
 }
@@ -89,7 +110,8 @@ func (r Reader) Get(ctx context.Context, namespace, app, chain string) (*Record,
 	if err != nil {
 		return nil, err
 	}
-	return &Record{Name: cm.Name, Data: data(cm.Data)}, nil
+	rec := newRecord(cm.Name, cm.Data)
+	return &rec, nil
 }
 
 // FleetRecord is a record with where it lives: the ConfigMap fields Tower's toReleaseRecord maps (it

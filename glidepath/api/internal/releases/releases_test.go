@@ -76,3 +76,41 @@ func TestEvents(t *testing.T) {
 		t.Fatalf("one namespace: %+v", evs)
 	}
 }
+
+func TestGetClearanceJoin(t *testing.T) {
+	cm := func(name string, d map[string]string) *corev1.ConfigMap {
+		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "app-shop-cicd", Name: name,
+			Labels: map[string]string{"hangar.io/app": "shop", "hangar.io/subcomponent": "release-tracking"}}, Data: d}
+	}
+	cs := fake.NewSimpleClientset(
+		cm("release-tracking-c1", map[string]string{"releaseId": "c1:hangar-prod/prod", "clearanceId": "chg-1", "clearanceTree": "sha256:abc"}),
+		cm("release-tracking-c2", map[string]string{"releaseId": "c2:hangar-prod/prod"}),
+	)
+	r := Reader{CS: cs}
+	got, err := r.Get(context.Background(), "app-shop-cicd", "shop", "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Clearance == nil || got.Clearance.ID != "chg-1" || got.Clearance.Tree != "sha256:abc" {
+		t.Fatalf("the clearance join: %+v", got.Clearance)
+	}
+	if got.Data["clearanceId"] != "chg-1" {
+		t.Errorf("the raw data keeps the keys: %+v", got.Data)
+	}
+	none, err := r.Get(context.Background(), "app-shop-cicd", "shop", "c2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.Clearance != nil {
+		t.Errorf("a release the gate never registered has no clearance: %+v", none.Clearance)
+	}
+	list, err := r.List(context.Background(), "app-shop-cicd", "shop")
+	if err != nil || len(list) != 2 {
+		t.Fatalf("list: %v %+v", err, list)
+	}
+	for _, rec := range list {
+		if (rec.Name == "release-tracking-c1") != (rec.Clearance != nil) {
+			t.Errorf("list carries the join on c1 only: %s %+v", rec.Name, rec.Clearance)
+		}
+	}
+}
