@@ -17,7 +17,7 @@ step clearance-gate register \
 mkdir -p "$d/w/eval/hangar-prod-prod" "$d/secret" "$d/bin"
 echo tok > "$d/secret/clearance-token"
 echo plan > "$d/w/plan.txt"
-echo '{"cluster":"hangar-prod","env":"prod","treeDigest":"sha256:feed"}' > "$d/w/eval/hangar-prod-prod/change.json"
+echo '{"cluster":"hangar-prod","env":"prod","pr":7,"treeDigest":"sha256:feed"}' > "$d/w/eval/hangar-prod-prod/change.json"
 
 cat > "$d/bin/curl" <<'STUB'
 #!/usr/bin/env bash
@@ -35,7 +35,7 @@ chmod +x "$d/bin/"*
 run() { # records json -> the patch log
   PATCHLOG="$d/patch.$RANDOM"; : > "${PATCHLOG}"; export PATCHLOG
   PATH="$d/bin:${PATH}" RECORDS="$1" APP_NAME=shop CLEARANCE_URL=http://clearance TOWER_URL= PIPELINE_RUN= \
-    REPO_URL=https://github.com/o/gitops-shop.git PR_NUMBER=7 NAMESPACE=app-shop-cicd bash "$d/register.sh" >"$d/out" 2>&1 \
+    REPO_URL=https://github.com/o/gitops-shop.git PR_NUMBER='$(params.pr-number)' NAMESPACE=app-shop-cicd bash "$d/register.sh" >"$d/out" 2>&1 \
     || { echo "FAIL: register exited non-zero"; cat "$d/out"; fail=1; }
   cat "${PATCHLOG}"
 }
