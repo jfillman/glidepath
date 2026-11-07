@@ -45,6 +45,8 @@ type trustSource struct {
 
 	trusted   *trustMaterial
 	trustedAt time.Time
+	// absentAt is when hangar-trusted-root was last found missing (or without a document): not asked again for trustTTL.
+	absentAt time.Time
 }
 
 // trustedRoot is the published TrustedRoot as trust material, or nil when the cluster publishes none (the
@@ -56,9 +58,14 @@ func (t *trustSource) trustedRoot(ctx context.Context) (*trustMaterial, error) {
 		defer t.mu.Unlock()
 		return t.trusted, nil
 	}
+	if !t.absentAt.IsZero() && time.Since(t.absentAt) < trustTTL {
+		defer t.mu.Unlock()
+		return nil, nil
+	}
 	t.mu.Unlock()
 	cm, err := t.cs.CoreV1().ConfigMaps(FulcioRootNamespace).Get(ctx, TrustedRootConfigMap, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
+		t.markAbsent()
 		return nil, nil
 	}
 	if err != nil {
@@ -66,6 +73,7 @@ func (t *trustSource) trustedRoot(ctx context.Context) (*trustMaterial, error) {
 	}
 	doc := cm.Data["trusted-root.json"]
 	if doc == "" {
+		t.markAbsent()
 		return nil, nil
 	}
 	tm, err := parseTrustedRoot([]byte(doc))
@@ -73,7 +81,7 @@ func (t *trustSource) trustedRoot(ctx context.Context) (*trustMaterial, error) {
 		return nil, fmt.Errorf("%s: %w", TrustedRootConfigMap, err)
 	}
 	t.mu.Lock()
-	t.trusted, t.trustedAt = tm, time.Now()
+	t.trusted, t.trustedAt, t.absentAt = tm, time.Now(), time.Time{}
 	t.mu.Unlock()
 	return tm, nil
 }
@@ -97,6 +105,12 @@ func (t *trustSource) fulcioRoot(ctx context.Context) (string, error) {
 	t.root, t.rootAt = p, time.Now()
 	t.mu.Unlock()
 	return p, nil
+}
+
+func (t *trustSource) markAbsent() {
+	t.mu.Lock()
+	t.absentAt = time.Now()
+	t.mu.Unlock()
 }
 
 func (t *trustSource) rekorPublicKey(ctx context.Context) (string, error) {

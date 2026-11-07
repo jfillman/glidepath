@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 // A whole supply chain in miniature: a Fulcio-style root (Ed25519, like hangar-dev's) issuing a
@@ -817,5 +818,24 @@ func TestFlightImagesUseTheFlightCredential(t *testing.T) {
 	r.FlightOwner, r.FlightCredentials = owner, nil
 	if _, err := r.Read(context.Background(), ns, "ghcr.io/"+repo+":1.0.0-abc"); err == nil {
 		t.Fatal("without a Flight credential the app's (refused) one must be used")
+	}
+}
+
+// Not publishing a trusted root is the common case: the lookup is cached for trustTTL, not repeated on every Read.
+func TestAMissingTrustedRootIsCached(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	gets := 0
+	cs.PrependReactor("get", "configmaps", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		gets++
+		return false, nil, nil
+	})
+	ts := &trustSource{cs: cs}
+	for i := 0; i < 3; i++ {
+		if tm, err := ts.trustedRoot(context.Background()); tm != nil || err != nil {
+			t.Fatal(tm, err)
+		}
+	}
+	if gets != 1 {
+		t.Fatalf("%d ConfigMap gets for 3 reads, want 1", gets)
 	}
 }
