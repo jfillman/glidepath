@@ -6,6 +6,9 @@
 # This ConfigMap holds only the public cert (already discoverable via Fulcio's own
 # /api/v2/configuration), so it's safe to expose broadly.
 #
+# hangar-trusted-root (sigstore.managedKeys.trustedRootJson, templates/sigstore/managed-keys.yaml) is the public
+# Sigstore TrustedRoot every verifier prefers when it exists: both are public and readable the same way.
+#
 # Consumed by verify-image-provenance.yaml as the --ca-roots trust anchor for cosign
 # verify/verify-attestation (docs/provenance-policy.md).
 #
@@ -30,7 +33,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["configmaps"]
-    resourceNames: ["fulcio-root-ca"]
+    resourceNames: ["fulcio-root-ca", "hangar-trusted-root"]
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

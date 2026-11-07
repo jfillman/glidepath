@@ -226,6 +226,14 @@ spec:
               # The signing root is minted once (see the header); fulcio-config is not secret and is
               # rewritten on every sync, so a new issuer in .Values.fulcio.publicIssuers reaches a
               # cluster that was bootstrapped long ago.
+              {{- if .Values.sigstore.managedKeys.enabled }}
+              # sigstore.managedKeys.enabled (docs/admin/signing-pki-cutover.md): the signing material is the owner's, delivered
+              # by ExternalSecrets (templates/sigstore/managed-keys.yaml). This Job mints nothing and never touches fulcio-secret,
+              # fulcio-server-config or fulcio-root-ca. It only makes sure the namespaces exist and keeps fulcio-config current.
+              echo "==> managed keys: creating fulcio-system and rekor-system if missing (no key is generated)"
+              kubectl create namespace fulcio-system --dry-run=client -o yaml | kubectl apply -f -
+              kubectl create namespace rekor-system --dry-run=client -o yaml | kubectl apply -f -
+              {{- else }}
               if kubectl get secret fulcio-secret -n fulcio-system >/dev/null 2>&1; then
                 echo "fulcio-secret already exists - keeping the signing root (idempotent)."
                 echo "To rotate the root deliberately, use hack/generate-cluster-values.sh FORCE=1 instead."
@@ -264,6 +272,8 @@ spec:
                   --from-file=cert.pem=/tmp/cert.pem \
                   --dry-run=client -o yaml | kubectl apply -f -
               fi
+
+              {{- end }}
 
               echo "==> reading this cluster's own API server root CA (kube-root-ca.crt)"
               ISSUER_CA_CERT="$(kubectl get configmap kube-root-ca.crt -n default -o jsonpath='{.data.ca\.crt}')"

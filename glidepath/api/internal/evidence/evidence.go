@@ -105,7 +105,11 @@ func (r *Reader) Read(ctx context.Context, namespace, image string) (*Provenance
 	// unverified with why. A Rekor key failure is softer still: verification goes on without the log.
 	var tm *trustMaterial
 	var tmErr *string
-	if root, err := r.trust.fulcioRoot(ctx); err != nil {
+	if published, err := r.trust.trustedRoot(ctx); err != nil {
+		tmErr = ptr("could not load Fulcio trust root: " + err.Error())
+	} else if published != nil {
+		tm = published
+	} else if root, err := r.trust.fulcioRoot(ctx); err != nil {
 		tmErr = ptr("could not load Fulcio trust root: " + err.Error())
 	} else {
 		rekorPem, err := r.trust.rekorPublicKey(ctx)
