@@ -33,8 +33,11 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
   2. `render` (the validator image): `helm template` of base and head per protected environment **exactly as Argo CD
      renders it** (and so as Clearance's Argo CD plugin does): release name `<app>-<env>` (the Application's), the
      environment's namespace, the value files and the injected values the Flight ApplicationSet layers, including
-     the cluster's `observability` block (read from the `glidepath-observability` ConfigMap that glidepath-app writes
-     from the same helper the ApplicationSets use; absent when the cluster sets none). The trees are then equal, so
+     the **destination cluster's** `observability` block (that cluster's own `cluster-defaults.yaml`, which its
+     tenant-onboarding ApplicationSet reads: for the control-plane cluster the `glidepath-observability` ConfigMap
+     glidepath-app writes, for any other cluster the broker's `/policy-bundle` answer, which carries only that file's
+     `observability.namespace` and `instrumentation`; the app's runtime is the ConfigMap's). A cluster whose facts
+     cannot be read fails that environment's render rather than register a tree Argo CD would not produce. The trees are then equal, so
      the clearance a PR earned is found by tree when Argo CD syncs it. Then the object diff: **every rendered object**
      is listed, the ones the PR does not touch with `op: unchanged` (never tiered; a grant needs the whole tree, and
      Clearance's token carries them with `changed: false`), each added, removed or changed object with the JSON
@@ -113,7 +116,7 @@ proposer", so one rule and one record); Tower stops posting the status then.
   `policy-validation-gate.yaml`; `tests/clearance_gate_admission_test.sh` (render, admission, register against the
   policy-validation fixtures with the real Kyverno CLI); `tests/clearance_gate_parity_test.sh` (the render equals
   Clearance's Argo CD plugin's, against the plugin's recorded gate-api prod fixture in `tests/fixtures/clearance-parity`)
-- `charts/glidepath-app/templates/identity/observability-values.yaml`: the `glidepath-observability` ConfigMap the render reads
+- `charts/glidepath-app/templates/identity/observability-values.yaml`: the `glidepath-observability` ConfigMap the render reads (cluster, runtime, this cluster's block); `glidepath/broker/cmd/token-review-interceptor/policybundle.go` returns each cluster's own `observability`
 - `charts/glidepath-app/files/onboarding-templates/gitops-repo/pull-request-clearance-gate.yaml`
 - `charts/glidepath-catalog/values.yaml`: the `clearance-gate` guardrail; `clearanceGate.towerUrl`; Clearance's URL
   and audience are `agentGates.clearanceUrl` / `agentGates.audience`

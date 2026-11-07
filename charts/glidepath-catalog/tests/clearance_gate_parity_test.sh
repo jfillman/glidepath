@@ -38,7 +38,8 @@ run() { # <scenario> [observability.yaml content]: lays out what the fetch step 
   export WORK="$d/$1" FIXTURE="$fx"
   mkdir -p "$WORK/repo" "$WORK/base"
   cp -R "$fx/hangar-prod" "$WORK/repo/"; cp -R "$fx/hangar-prod" "$WORK/base/"
-  : > "$WORK/observability.yaml"; [[ -n "${2:-}" ]] && printf '%s\n' "$2" > "$WORK/observability.yaml"
+  mkdir -p "$WORK/observability" "$WORK/policies"; : > "$WORK/policies/unreadable"
+  : > "$WORK/observability/hangar-prod.yaml"; [[ -n "${2:-}" ]] && printf '%s\n' "$2" > "$WORK/observability/hangar-prod.yaml"
   echo '{"ttlDays": 3}' > "$WORK/clearance.json"
   jq -n '{owner: "jfillman", repo: "gitops-gate-api", pr: 7, head: ("a" * 40), base: ("b" * 40), author: "dana",
     files: [{filename: "hangar-prod/prod/release.yaml", status: "modified", additions: 1, deletions: 1}], looksAgent: false,
@@ -80,14 +81,42 @@ expect "observability is in the injected values, as the ApplicationSet gives it"
   "$(yq -o=json -I0 'sort_keys(..)' "$w/eval/hangar-prod__prod/head.yaml.injected.yaml")" \
   "$(jq -S -c '. + {observability: {namespace: "observability", instrumentation: "observability/auto", runtime: "python"}}' "$fx/injected.json")"
 
-# The ConfigMap the render reads is glidepath-app's own observabilityValues block (what the ApplicationSets inject), and
-# is absent when the cluster sets none.
+# Per destination cluster: the fetch step's observability block, run on a two-cluster plan. The control-plane cluster
+# (hangar-dev) takes glidepath-app's ConfigMap values; another cluster (hangar-prod) takes its OWN facts, as the broker
+# read them from its cluster-defaults.yaml, plus the app's runtime; one that sets none injects nothing; one the broker
+# could not read is not rendered at all (it would differ from Argo CD's).
+w="$d/clusters"; mkdir -p "$w/observability" "$w/policies"
+yq '.spec.steps[0].script' "$d/task.yaml" | sed "s#/work#$w#g" \
+  | awk '/# What each protected environment.s destination cluster injects/ {p=1} p {print} p && /^done$/ {exit}' > "$w/pick.sh"
+printf 'hangar-dev|prod|default|true\nhangar-prod|prod|default|true\nhangar-qa|prod|default|true\nhangar-lab|prod|default|true\n' > "$w/plan.txt"
+printf 'observability:\n  namespace: "dev-obs"\n  instrumentation: "dev-obs/auto"\n  runtime: "python"\n' > "$w/observability/dev-values.yaml"
+echo '{"namespace":"obs-prod","instrumentation":"obs-prod/hangar"}' > "$w/policies/hangar-prod.observability.json"
+echo 'null' > "$w/policies/hangar-qa.observability.json"
+echo hangar-lab > "$w/policies/unreadable"
+[[ -s "$w/pick.sh" ]] || { echo "FAIL: the fetch step's observability block was not found"; fail=1; }
+( cd "$w" && dev_cluster=hangar-dev runtime=python bash "$w/pick.sh" ) || { echo "FAIL: pick"; fail=1; }
+expect "two clusters: the control-plane cluster uses the ConfigMap's block" \
+  "$(yq -o=json -I0 .observability "$w/observability/hangar-dev.yaml")" '{"namespace":"dev-obs","instrumentation":"dev-obs/auto","runtime":"python"}'
+expect "two clusters: another cluster uses its own facts and the app's runtime" \
+  "$(yq -o=json -I0 .observability "$w/observability/hangar-prod.yaml")" '{"namespace":"obs-prod","instrumentation":"obs-prod/hangar","runtime":"python"}'
+expect "two clusters: a cluster that sets none injects nothing" "$(wc -c < "$w/observability/hangar-qa.yaml" | tr -d ' ')" 0
+[[ -e "$w/observability/hangar-lab.yaml.unreadable" ]] && echo "ok   two clusters: an unreadable cluster is marked" || { echo "FAIL unreadable marker"; fail=1; }
+# ... and the render step refuses a marked cluster rather than render a tree Argo CD would not.
+run unreadable-obs
+w2="$d/unreadable-obs"; touch "$w2/observability/hangar-prod.yaml.unreadable"; rm -rf "$w2/eval"
+( cd "$w2" && PATH="$d/bin:$PATH" APP_NAME=gate-api NAMESPACE=app-gate-api-cicd bash "$w2/step1.sh" ) > "$w2/render.log" 2>&1
+expect "unreadable observability: the environment is render-failed" "$(cat "$w2/eval/hangar-prod__prod/status")" render-failed
+
+# The ConfigMap the render reads: the cluster name and runtime always, this cluster's block (glidepath-app's own
+# observabilityValues, what the ApplicationSets inject) only when the cluster sets any.
 app=(helm template t charts/glidepath-app --set devClusterName=d --set build.x=1 --set platformIdentity.appName=a --set platformIdentity.runtime=python
      --set defaultChart.repoURL=https://x --set defaultChart.targetRevision=v1 --show-only templates/identity/observability-values.yaml)
 expect "glidepath-app writes the observability ConfigMap" \
+  "$("${app[@]}" --set observability.namespace=obs --set observability.instrumentation=otel/x | yq '.data | [.cluster, .runtime] | join(",")')" "d,python"
+expect "with the block" \
   "$("${app[@]}" --set observability.namespace=obs --set observability.instrumentation=otel/x | yq '.data."values.yaml"' | yq -o=json -I0 .)" \
   '{"observability":{"namespace":"obs","instrumentation":"otel/x","runtime":"python"}}'
-expect "and none when the cluster sets no observability" "$("${app[@]}" 2>&1 | grep -c 'could not find template')" 1
+expect "and without it when the cluster sets none" "$("${app[@]}" | yq '.data | has("values.yaml")')" false
 
 # A new environment (no base tree) lists every object as added.
 run newenv

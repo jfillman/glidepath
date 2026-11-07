@@ -1,14 +1,22 @@
 {{- /*
-The cluster's observability facts for this app, as ConfigMap glidepath-observability (data key values.yaml): the very
-`observability` block the environment ApplicationSets give airframe-application (glidepath-app.observabilityValues),
-so the clearance-gate task can render with exactly what Argo CD renders with. Without it a tenant on a cluster that
-sets observability would have a tree at PR time that differs from the one Argo CD's plugin registers at sync, and no
-clearance would be found. Not rendered when the cluster sets none (the gate then injects nothing, as Argo CD does),
-or for an app that does not deploy to Kubernetes (the gate covers k8s-rollout only).
+ConfigMap glidepath-observability: what the clearance-gate task needs to render a release with the observability
+values Argo CD renders it with (the platform-owned `observability` block of airframe-application).
+
+- cluster: this (the dev, control-plane) cluster's name.
+- runtime: the app's runtime (platformIdentity.runtime), which every cluster's ApplicationSet injects for the app.
+- values.yaml: this cluster's whole block as glidepath-app.observabilityValues builds it for the environment
+  ApplicationSets (forwarded from cluster-defaults.yaml); absent when the cluster sets none.
+
+The facts of any OTHER cluster are that cluster's own (its cluster-defaults.yaml, which its tenant-onboarding
+ApplicationSet reads): the task takes them from the broker's /policy-bundle, per environment's destination cluster, never
+from here. Not rendered for an app that does not deploy to Kubernetes (the gate covers k8s-rollout only).
 */ -}}
 {{- if eq (include "glidepath-app.isKubernetesTarget" .) "true" }}
-{{- $block := include "glidepath-app.observabilityValues" (dict "ctx" $ "chart" (include "glidepath-app.defaultChart" $ | fromYaml)) }}
-{{- if and (or (($.Values.observability | default dict).namespace) (($.Values.observability | default dict).instrumentation)) $block }}
+{{- $o := .Values.observability | default dict }}
+{{- $block := "" }}
+{{- if or $o.namespace $o.instrumentation }}
+{{- $block = include "glidepath-app.observabilityValues" (dict "ctx" $ "chart" (include "glidepath-app.defaultChart" $ | fromYaml)) }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -18,7 +26,10 @@ metadata:
     hangar.io/subcomponent: "identity"
   namespace: {{ include "glidepath-app.namespace" $ }}
 data:
+  cluster: {{ include "glidepath-app.devCluster" $ | quote }}
+  runtime: {{ .Values.platformIdentity.runtime | default "" | quote }}
+  {{- if $block }}
   values.yaml: |
     {{- $block | nindent 4 }}
-{{- end }}
+  {{- end }}
 {{- end }}

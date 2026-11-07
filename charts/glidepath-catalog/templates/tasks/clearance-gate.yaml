@@ -18,8 +18,8 @@
 #                                failed check)
 #   render    (validator image)  `helm template` of base and head per protected environment exactly as Argo CD (and
 #                                Clearance's Argo CD plugin) renders it: release <app>-<env>, the destination namespace,
-#                                the same value files and injected values the Flight ApplicationSet layers (observability
-#                                included), then the object diff: every rendered object, unchanged ones marked, each
+#                                the same value files and injected values the Flight ApplicationSet layers (the
+#                                destination cluster's observability included), then the object diff: every rendered object, unchanged ones marked, each
 #                                added, removed or changed object with the JSON pointers of the fields that changed
 #                                and its new images, each object's digest and the tree's digest (what a grant binds to)
 #   admission (toolbox)          the offline admission verdict per protected environment: `kyverno apply` of the
@@ -195,12 +195,19 @@ spec:
         files="$(api "https://api.github.com/repos/${owner}/${repo}/compare/${base_sha}...${REVISION}" | jq -c '[.files[] | {filename, status, additions, deletions, previous_filename}]')"
         echo "PR ${owner}/${repo}#${PR_NUMBER} base ${base_sha:0:12} head ${REVISION:0:12} author ${author} files $(jq length <<<"${files}")"
 
-        # The cluster's observability facts for this app (namespace, instrumentation, runtime), as glidepath-app
-        # rendered them for the environment ApplicationSets: the render injects them exactly as Argo CD does, or the
-        # tree differs from the one Clearance's Argo CD plugin registers at sync. Absent = the cluster sets none. Any
-        # other failure to read fails the check: a tree rendered without them would never be found cleared.
-        if ! kubectl get configmap glidepath-observability -n "${NAMESPACE}" --ignore-not-found -o 'jsonpath={.data.values\.yaml}' > /work/observability.yaml; then
+        # This (the control-plane) cluster's observability facts and the app's runtime, from the ConfigMap glidepath-app
+        # writes. Another cluster's facts are that cluster's own: read below, per destination, from the broker. Absent
+        # ConfigMap = nothing known here. Any other failure to read fails the check: a tree rendered without them would
+        # never be found cleared at sync.
+        mkdir -p /work/observability
+        : > /work/observability/dev-values.yaml
+        dev_cluster=""; runtime=""
+        if ! cm="$(kubectl get configmap glidepath-observability -n "${NAMESPACE}" --ignore-not-found -o json)"; then
           echo "could not read the glidepath-observability ConfigMap in ${NAMESPACE}: the render would differ from Argo CD's"; exit 1
+        fi
+        if [[ -n "${cm}" ]]; then
+          dev_cluster="$(jq -r '.data.cluster // ""' <<<"${cm}")"; runtime="$(jq -r '.data.runtime // ""' <<<"${cm}")"
+          jq -r '.data["values.yaml"] // ""' <<<"${cm}" > /work/observability/dev-values.yaml
         fi
 
         mkdir -p /work/repo && cd /work/repo
@@ -288,6 +295,21 @@ spec:
           policy_bundle_fetch "${cluster}" "${owner}" || echo "${cluster}" >> /work/policies/unreadable
         done
 
+        # What each protected environment's destination cluster injects as `observability` (its ApplicationSet reads that
+        # cluster's own cluster-defaults.yaml): this cluster's block from the ConfigMap, any other's from its repo via the
+        # broker. A cluster whose facts cannot be read cannot be rendered like Argo CD does (the render step fails it).
+        for cluster in $(awk -F'|' '$4 == "true" {print $1}' /work/plan.txt | sort -u); do
+          o="/work/observability/${cluster}.yaml"; : > "${o}"
+          if [[ "${cluster}" == "${dev_cluster}" ]]; then
+            cp /work/observability/dev-values.yaml "${o}"
+          elif grep -qx "${cluster}" /work/policies/unreadable; then
+            : > "${o}.unreadable"
+          else
+            jq -c --arg r "${runtime}" 'select(. != null and (.namespace != "" or .instrumentation != "")) | {observability: {namespace, instrumentation, runtime: $r}}' \
+              "/work/policies/${cluster}.observability.json" > "${o}"
+          fi
+        done
+
         # Who proposed it: the agent gates' verdict (POST /v1/provenance, the same body agent-gates sends).
         paths="$(jq -c '[.[] | .filename, (.previous_filename // empty)]' <<<"${files}")"
         trailers="$(api "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}" | jq -c '[.commit.message | splits("\n")
@@ -340,7 +362,7 @@ spec:
           # schema has neither key): the namespace pattern and the observability block.
           if [[ -n "${ns_pattern}" ]]; then
             printf 'serviceNamespacePattern: "%s"\n' "${ns_pattern}" >> "${out}.injected.yaml"
-            [[ -s /work/observability.yaml ]] && cat /work/observability.yaml >> "${out}.injected.yaml"
+            [[ -s "/work/observability/${cluster}.yaml" ]] && cat "/work/observability/${cluster}.yaml" >> "${out}.injected.yaml"
           fi
           for v in "${cluster}/base.yaml" "${cluster}/${env}/values.yaml" "${cluster}/${env}/release.yaml"; do
             [[ -f "${dir}/${v}" ]] && vf+=(-f "${dir}/${v}")
@@ -356,6 +378,10 @@ spec:
           if [[ "${protected}" != "true" ]]; then
             echo "${cluster}/${env}: not a protected environment (no production: true): skipped"
             echo skipped > "${out}/status"; continue
+          fi
+          if [[ -e "/work/observability/${cluster}.yaml.unreadable" ]]; then
+            echo "FAIL ${cluster}/${env}: ${cluster}'s observability facts could not be read (the broker's /policy-bundle), so the render would differ from Argo CD's"
+            echo render-failed > "${out}/status"; rc=1; continue
           fi
           if ! render /work/repo "${cluster}" "${env}" "${chart}" "${out}/head.yaml"; then
             echo "FAIL ${cluster}/${env}: helm template of the PR head failed"; cat "${out}/head.yaml.err" 2>/dev/null; echo render-failed > "${out}/status"; rc=1; continue
