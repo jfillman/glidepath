@@ -305,7 +305,8 @@ spec:
           elif grep -qx "${cluster}" /work/policies/unreadable; then
             : > "${o}.unreadable"
           else
-            jq -c --arg r "${runtime}" 'select(. != null and (.namespace != "" or .instrumentation != "")) | {observability: {namespace, instrumentation, runtime: $r}}' \
+            # One `observability:` line, not a bare JSON object: render appends this to a block mapping, where {...} is invalid.
+            jq -r --arg r "${runtime}" 'select(. != null and (.namespace != "" or .instrumentation != "")) | "observability: " + ({namespace, instrumentation, runtime: $r} | tojson)' \
               "/work/policies/${cluster}.observability.json" > "${o}"
           fi
         done

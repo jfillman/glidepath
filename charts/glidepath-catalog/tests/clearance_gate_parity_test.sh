@@ -99,6 +99,8 @@ expect "two clusters: the control-plane cluster uses the ConfigMap's block" \
   "$(yq -o=json -I0 .observability "$w/observability/hangar-dev.yaml")" '{"namespace":"dev-obs","instrumentation":"dev-obs/auto","runtime":"python"}'
 expect "two clusters: another cluster uses its own facts and the app's runtime" \
   "$(yq -o=json -I0 .observability "$w/observability/hangar-prod.yaml")" '{"namespace":"obs-prod","instrumentation":"obs-prod/hangar","runtime":"python"}'
+expect "two clusters: another cluster's block can be appended to the injected values" \
+  "$({ printf 'appName: a\nnamespace:\n  labels:\n    x: "y"\n'; cat "$w/observability/hangar-prod.yaml"; } | yq -o=json -I0 .observability.namespace)" '"obs-prod"'
 expect "two clusters: a cluster that sets none injects nothing" "$(wc -c < "$w/observability/hangar-qa.yaml" | tr -d ' ')" 0
 [[ -e "$w/observability/hangar-lab.yaml.unreadable" ]] && echo "ok   two clusters: an unreadable cluster is marked" || { echo "FAIL unreadable marker"; fail=1; }
 # ... and the render step refuses a marked cluster rather than render a tree Argo CD would not.
