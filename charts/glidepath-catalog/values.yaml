@@ -176,6 +176,20 @@ agentRelease:
   # URL and audience are agentGates'; the tenants repo is the broker's (glidepath-control-plane tenantsRepoUrl).
   cluster: ""
 
+agentPreflight:
+  # The `preflight` PR check (docs/admin/agent-definitions.md, "Preflight"): Autopilot's gateway, reached by the check's
+  # pod with a projected token for `audience`. Empty gatewayUrl: no gateway on this cluster, so the check reports "not
+  # run" and passes.
+  gatewayUrl: ""
+  audience: autopilot-gateway
+  # The person the candidate runs act as (X-Hangar-On-Behalf-Of): the check's service account must be one of the
+  # gateway's delegates (CLEARANCE_DELEGATES), and this person a platform admin (CLEARANCE_ADMINS) or the owner of
+  # the agents being checked, or the gateway refuses the launch.
+  onBehalfOf: "user:preflight"
+  # Each run's model-token budget (the gateway caps it at its own limit) and how long the check waits for the runs.
+  modelTokens: "150000"
+  maxWaitSeconds: "720"
+
 clearanceGate:
   # Where people clear a holding change: Backstage's external URL (the Clearance plugin's Clearances page). Empty
   # leaves the link out of the PR comment. Clearance's URL and audience are agentGates' (the same Clearance).

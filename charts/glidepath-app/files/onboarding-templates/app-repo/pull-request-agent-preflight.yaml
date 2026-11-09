@@ -1,0 +1,30 @@
+# BOILERPLATE - the preflight check (glidepath docs/admin/agent-definitions.md, "Preflight"): on a PR to main that changes
+# an agent definition (agents/<name>.yaml), each one that has Preflight cases runs as a budgeted candidate on
+# Autopilot's gateway and is scored against them; a failing case fails the check. Delivered to every app repo whatever
+# cicd.yaml says; it runs only when a definition changes.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: preflight-
+  labels:
+    hangar.io/app: "<APP_NAME>"
+  annotations:
+    pipelinesascode.tekton.dev/on-cel-expression: 'event == "pull_request" && target_branch == "main" && files.all.exists(f, f.startsWith("agents/"))'
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+spec:
+  pipelineRef:
+    resolver: cluster
+    params:
+      - { name: kind, value: pipeline }
+      - { name: name, value: agent-preflight-check }
+      - { name: namespace, value: platform-catalog }
+  params:
+    - { name: repo-url, value: "{{ repo_url }}" }
+    - { name: revision, value: "{{ revision }}" }
+    - { name: pr-number, value: "{{ pull_request_number }}" }
+  taskRunTemplate:
+    serviceAccountName: pipeline-runner
+  timeouts:
+    tasks: "16m"
+    finally: "4m"
+    pipeline: "20m"

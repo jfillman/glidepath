@@ -1,0 +1,47 @@
+# catalog/pipelines/agent-preflight-check.yaml
+#
+# The `preflight` PR check's Pipeline (docs/admin/agent-definitions.md, "Preflight"): one task, agent-preflight, and the
+# PR comment. Delivered to every onboarded app repo; it runs only on a PR that changes agents/*.yaml (the onboarding
+# template's CEL), so a repo without agents never sees it.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: agent-preflight-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Runs every agent definition a PR changes under Preflight on Autopilot's gateway and scores it against the agent's cases.
+  params:
+    - { name: repo-url, type: string }
+    - { name: revision, type: string }
+    - { name: pr-number, type: string, default: "" }
+  tasks:
+    - name: preflight
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: agent-preflight }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+  finally:
+    - name: comment-pr
+      when:
+        - { input: $(params.pr-number), operator: notin, values: [""] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: comment-pr-check-result }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: gate-name, value: preflight }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: status, value: $(tasks.status) }

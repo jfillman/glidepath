@@ -1,0 +1,159 @@
+# catalog/tasks/agent-preflight.yaml
+#
+# The `preflight` PR check (docs/admin/agent-definitions.md, "Preflight"): every agent definition a PR changes
+# (agents/<name>.yaml) that has Preflight cases is launched as a budgeted candidate run on Autopilot's gateway and
+# scored there against its cases. The gateway decides everything: which cases an agent has (GET /v1/preflight/cases),
+# the clamped run (POST /v1/agents/{name}/runs with the candidate `document` and a `budget`), and the score (POST
+# /v1/preflight/score). This task launches, waits and reports; a case that fails, a run that does not finish in time
+# or a launch the gateway refuses fails the check. A definition with no cases is reported, not failed.
+#
+# Two steps, like agent-definitions (a failed step's results are not reported): `run` gathers, asks and waits, always
+# exits 0; `report` exits 1 when a case failed.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: agent-preflight
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+    # The gateway's ingress NetworkPolicy admits pods with this label (apron 55-autopilot).
+    hangar.io/autopilot-gateway-client: agent-preflight
+spec:
+  description: Launches a budgeted Preflight run of every agent definition a PR changes on Autopilot's gateway, scores it against the agent's cases, and fails when a case fails.
+  params:
+    - { name: repo-url, type: string }
+    - { name: revision, type: string }
+    - { name: pr-number, type: string, default: "" }
+    - name: gateway-url
+      type: string
+      default: {{ .Values.agentPreflight.gatewayUrl | quote }}
+    - name: on-behalf-of
+      type: string
+      default: {{ .Values.agentPreflight.onBehalfOf | quote }}
+    - name: model-tokens
+      type: string
+      default: {{ .Values.agentPreflight.modelTokens | quote }}
+    - name: max-wait-seconds
+      type: string
+      default: {{ .Values.agentPreflight.maxWaitSeconds | quote }}
+  results:
+    - { name: findings-summary, description: "One line for the PR comment's headline." }
+  volumes:
+    - name: tokens
+      projected:
+        sources:
+          - serviceAccountToken: { path: github-token-broker-token, audience: github-installation-token, expirationSeconds: 600 }
+          - serviceAccountToken: { path: gateway-token, audience: {{ .Values.agentPreflight.audience | quote }}, expirationSeconds: 3600 }
+    - name: work
+      emptyDir: {}
+  steps:
+    - name: run
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: tokens, mountPath: /var/run/secrets/platform, readOnly: true }
+        - { name: work, mountPath: /work }
+      env:
+        - { name: GITHUB_TOKEN_BROKER_URL, value: "http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token" }
+        - { name: REPO_URL, value: $(params.repo-url) }
+        - { name: REVISION, value: $(params.revision) }
+        - { name: PR_NUMBER, value: $(params.pr-number) }
+        - { name: GATEWAY_URL, value: $(params.gateway-url) }
+        - { name: ON_BEHALF_OF, value: $(params.on-behalf-of) }
+        - { name: MODEL_TOKENS, value: $(params.model-tokens) }
+        - { name: MAX_WAIT, value: $(params.max-wait-seconds) }
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        printf 0 > /work/failed; : > /work/report
+        owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+        gh() { curl --fail --silent --show-error --max-time 20 --retry 3 --retry-connrefused -H "Authorization: Bearer ${token}" -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
+        api="https://api.github.com/repos/${owner}/${repo}"
+        if [[ -n "${PR_NUMBER}" ]] && ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+          PR_NUMBER="$(gh -H "Accept: application/vnd.github+json" "${api}/commits/${REVISION}/pulls" | jq -r '.[0].number // empty')"
+        fi
+        [[ -n "${PR_NUMBER}" ]] || { echo "no PR: nothing to preflight"; printf 'no pull request' > "$(results.findings-summary.path)"; exit 0; }
+        base="$(gh -H "Accept: application/vnd.github+json" "${api}/pulls/${PR_NUMBER}" | jq -r .base.sha)"
+        files="$(gh -H "Accept: application/vnd.github+json" "${api}/compare/${base}...${REVISION}" \
+          | jq -c '[.files[] | select(.filename | test("^agents/[a-z0-9-]+\\.ya?ml$")) | select(.filename | test("catalog-info") | not) | select(.status != "removed") | {filename}]')"
+        n="$(jq length <<<"${files}")"
+        if [[ "${n}" == 0 ]]; then echo "no agent definition added or changed"; printf 'no agent definition changed' > "$(results.findings-summary.path)"; exit 0; fi
+        if [[ -z "${GATEWAY_URL}" ]]; then
+          echo "NOT RUN: preflight - no Autopilot gateway on this cluster to run ${n} changed definition(s) on" > /work/report
+          printf 'not run: no gateway' > "$(results.findings-summary.path)"; exit 0
+        fi
+        gw() { # <method> <path> [json body] -> body, then the status on the last line
+          local body=(); [[ -n "${3:-}" ]] && body=(--data "$3")
+          curl --silent --show-error --max-time 30 -X "$1" -w '\n%{http_code}' \
+            -H "Authorization: Bearer $(cat /var/run/secrets/platform/gateway-token)" -H "X-Hangar-On-Behalf-Of: ${ON_BEHALF_OF}" \
+            -H "Content-Type: application/json" ${body[@]+"${body[@]}"} "${GATEWAY_URL%/}$2" || true
+        }
+        raw() { # <path> <ref> -> JSON of the YAML, or null when absent
+          local out; out="$(curl --silent --max-time 20 -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github.raw+json" -w '\n%{http_code}' "${api}/contents/$1?ref=$2")"
+          [[ "$(tail -n1 <<<"${out}")" == 200 ]] && sed '$d' <<<"${out}" | yq -o json '.' 2>/dev/null || echo null
+        }
+        bad=0; summary=()
+        echo "| Definition | Case | Result | Detail |" > /work/table; echo "|---|---|---|---|" >> /work/table
+        while IFS= read -r f; do
+          path="$(jq -r .filename <<<"${f}")"; doc="$(raw "${path}" "${REVISION}")"
+          name="$(jq -r '.name // empty' <<<"${doc}")"
+          if [[ -z "${name}" ]]; then echo "| \`${path}\` | | ❌ | not a readable agent definition |" >> /work/table; bad=$((bad + 1)); continue; fi
+          out="$(gw GET "/v1/preflight/cases?agent=${name}")"; code="$(tail -n1 <<<"${out}")"; ans="$(sed '$d' <<<"${out}")"
+          if [[ "${code}" != 200 ]]; then
+            echo "| \`${path}\` | | ❌ | the gateway answered ${code:-nothing} listing cases: $(head -c 200 <<<"${ans}") |" >> /work/table; bad=$((bad + 1)); continue
+          fi
+          if [[ "$(jq '.cases | length' <<<"${ans}")" == 0 ]]; then
+            echo "| \`${path}\` | | ➖ | no Preflight cases for \`${name}\` |" >> /work/table; summary+=("${name} no cases"); continue
+          fi
+          cases_json="$(jq -c . <<<"${ans}")"
+          # Launch every run of every case (a case with runs: 2 reads a second run), then wait for all of them.
+          asked='[]'; launched=1
+          while IFS= read -r c; do
+            cid="$(jq -r .id <<<"${c}")"; runs="$(jq -r .runs <<<"${c}")"; sessions='[]'
+            for ((i = 1; i <= runs; i++)); do
+              body="$(jq -nc --argjson doc "${doc}" --arg input "$(jq -r .input <<<"${c}")" --argjson t "${MODEL_TOKENS}" '{input: $input, document: $doc, budget: {model_tokens: $t}}')"
+              out="$(gw POST "/v1/agents/${name}/runs" "${body}")"; code="$(tail -n1 <<<"${out}")"; ans="$(sed '$d' <<<"${out}")"
+              if [[ "${code}" != 201 ]]; then
+                echo "| \`${path}\` | \`${cid}\` | ❌ | launch refused (${code:-no answer}): $(jq -r '.error // empty' <<<"${ans}" | head -c 300) |" >> /work/table
+                bad=$((bad + 1)); launched=0; break 2
+              fi
+              sessions="$(jq -c --arg s "$(jq -r .session <<<"${ans}")" '. + [$s]' <<<"${sessions}")"
+            done
+            asked="$(jq -c --arg c "${cid}" --argjson s "${sessions}" '. + [{case: $c, sessions: $s}]' <<<"${asked}")"
+          done < <(jq -c '.cases[]' <<<"${cases_json}")
+          (( launched )) || continue
+          deadline=$((SECONDS + MAX_WAIT)); final=""
+          while (( SECONDS < deadline )); do
+            out="$(gw POST /v1/preflight/score "$(jq -nc --arg a "${name}" --argjson c "${asked}" '{agent: $a, cases: $c}')")"
+            code="$(tail -n1 <<<"${out}")"; ans="$(sed '$d' <<<"${out}")"
+            if [[ "${code}" != 200 ]]; then final="error ${code}: $(jq -r '.error // empty' <<<"${ans}" | head -c 300)"; break; fi
+            if jq -e '.finished' <<<"${ans}" >/dev/null; then final=done; break; fi
+            sleep 10
+          done
+          if [[ "${final}" == done ]]; then
+            jq -r --arg p "${path}" '.scores[] | "| `\($p)` | `\(.case)` | \(if .passed then "✅" else "❌" end) | \((.reasons // []) | join("; ") | .[0:400]) (\(.tokens) tokens) |"' <<<"${ans}" >> /work/table
+            if jq -e '.passed' <<<"${ans}" >/dev/null; then summary+=("${name} pass"); else summary+=("${name} FAIL"); bad=$((bad + 1)); fi
+          else
+            echo "| \`${path}\` | | ❌ | ${final:-did not finish within ${MAX_WAIT}s} |" >> /work/table; summary+=("${name} unfinished"); bad=$((bad + 1))
+          fi
+        done < <(jq -c '.[]' <<<"${files}")
+        {
+          if (( bad > 0 )); then echo "FAIL: preflight - ${bad} definition(s) or case(s) failed Preflight"; else echo "PASS: preflight - ${n} definition(s) scored"; fi
+          echo; cat /work/table; echo
+          echo "Each case ran the candidate definition from this PR as a budgeted task on Autopilot's gateway (tier at most T1, no GitHub calls, capped time, calls and tokens) and was scored deterministically against the case's checks."
+        } > /work/report
+        (( bad > 0 )) && printf 1 > /work/failed
+        printf '%s' "${n} definition(s): ${summary[*]:-none}" | head -c 900 > "$(results.findings-summary.path)"
+    - name: report
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        cat /work/report
+        [[ "$(cat /work/failed)" == 1 ]] && exit 1 || exit 0
