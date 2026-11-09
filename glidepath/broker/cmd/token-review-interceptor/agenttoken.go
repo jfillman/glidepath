@@ -15,6 +15,10 @@ package main
 //   - The repo is an onboarded app's own, by exactly /github-read-token's rule (githubReadCheck's names and
 //     githubReadOwns' Repository CR): so even if the App is installed on a cluster or platform repo, and even if
 //     Clearance were wrong, nothing is minted for it. Clearance's repos.allow is the first check; this is the second.
+//   - The one exception is the tenants repo (AGENT_PIN_TENANTS_REPO, owner/repo, the same value /agent-pin pins in):
+//     it is no app's own repo and has no Repository CR, but Clearance's xr.request opens its PRs, so a request for
+//     exactly that owner/repo with no app is accepted, same caller list, same down-scoped token. Nothing else
+//     outside an app's own repos is.
 //   - The token is down-scoped twice: repositories [repo], and permissions contents and pull_requests write,
 //     metadata read. Never workflows, so a push touching .github/workflows is refused by GitHub, and never checks,
 //     administration or merge-bypass: the App opens PRs a person merges.
@@ -60,15 +64,24 @@ func loadAgentTokenCallers() map[string]bool {
 
 // agentTokenCheck is the caller and request half of the decision, pure so it is tested as a table. The repo-name rule
 // is /github-read-token's; the Repository CR half is githubReadOwns.
-func agentTokenCheck(callers map[string]bool, caller string, req githubReadRequest) (int, error) {
+func agentTokenCheck(callers map[string]bool, caller string, req githubReadRequest, tenants string) (int, error) {
 	if len(callers) == 0 {
 		return http.StatusServiceUnavailable, fmt.Errorf("agent tokens are not configured (AGENT_TOKEN_CALLERS unset)")
 	}
 	if !callers[caller] {
 		return http.StatusForbidden, fmt.Errorf("%s may not ask for agent tokens", caller)
 	}
+	if isTenantsRepo(req, tenants) {
+		return http.StatusOK, nil
+	}
 	// githubReadCheck with a caller list of exactly this caller: its name rules, not its caller rule.
 	return githubReadCheck(map[string]bool{caller: true}, caller, req)
+}
+
+// isTenantsRepo is a request for exactly the configured tenants repo (owner/repo, case-insensitive) with no app: the
+// repo xr.request opens PRs in, which no app owns. Unset tenants never matches.
+func isTenantsRepo(req githubReadRequest, tenants string) bool {
+	return tenants != "" && req.App == "" && strings.EqualFold(req.Owner+"/"+req.Repo, tenants)
 }
 
 type agentAppLoader struct {
@@ -121,13 +134,16 @@ func handleAgentInstallationToken(clientset kubernetes.Interface, dynClient dyna
 			fail(http.StatusBadRequest, "request body must be {\"owner\":..., \"repo\":..., \"app\":...}")
 			return
 		}
-		if code, err := agentTokenCheck(callers, caller, req); err != nil {
+		tenants := strings.TrimSpace(os.Getenv("AGENT_PIN_TENANTS_REPO"))
+		if code, err := agentTokenCheck(callers, caller, req, tenants); err != nil {
 			fail(code, err.Error())
 			return
 		}
-		if err := githubReadOwns(dynClient, req); err != nil {
-			fail(http.StatusForbidden, err.Error())
-			return
+		if !isTenantsRepo(req, tenants) {
+			if err := githubReadOwns(dynClient, req); err != nil {
+				fail(http.StatusForbidden, err.Error())
+				return
+			}
 		}
 		app, err := loader.get()
 		if err != nil {
@@ -151,7 +167,7 @@ func handleAgentInstallationToken(clientset kubernetes.Interface, dynClient dyna
 			fail(http.StatusBadGateway, err.Error())
 			return
 		}
-		log.Printf("agent token: %s for %s/%s (app %s) %v", caller, req.Owner, req.Repo, req.App, perms)
+		log.Printf("agent token: %s for %s/%s (app %q) %v", caller, req.Owner, req.Repo, req.App, perms)
 		_ = json.NewEncoder(w).Encode(githubInstallationTokenResponse{Token: instToken, ExpiresAt: expiresAt})
 	}
 }

@@ -44,9 +44,14 @@ func TestAgentTokenCheck(t *testing.T) {
 		{"the old pre-deployment identity", callers, "system:serviceaccount:platform-system:clearance", ok, 403},
 		{"an agent run's own SA", callers, "system:serviceaccount:agent-r-0001:run", ok, 403},
 		{"not configured", map[string]bool{}, clearanceSA, ok, 503},
+		{"the tenants repo, no app", callers, clearanceSA, githubReadRequest{Owner: "jfillman", Repo: "tenants"}, 200},
+		{"the tenants repo, case-insensitive", callers, clearanceSA, githubReadRequest{Owner: "JFillman", Repo: "Tenants"}, 200},
+		{"the tenants repo naming an app", callers, clearanceSA, githubReadRequest{Owner: "jfillman", Repo: "tenants", App: "boarding-api"}, 403},
+		{"another owner's tenants repo", callers, clearanceSA, githubReadRequest{Owner: "other", Repo: "tenants"}, 400},
+		{"the tenants repo, wrong caller", callers, "system:serviceaccount:agent-r-0001:run", githubReadRequest{Owner: "jfillman", Repo: "tenants"}, 403},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			code, err := agentTokenCheck(c.callers, c.caller, c.req)
+			code, err := agentTokenCheck(c.callers, c.caller, c.req, "jfillman/tenants")
 			if code != c.code || (code == 200) != (err == nil) {
 				t.Fatalf("code %d err %v, want %d", code, err, c.code)
 			}
@@ -61,6 +66,8 @@ func TestAgentInstallationTokenEndpoint(t *testing.T) {
 	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/jfillman/boarding-api/installation":
+			io.WriteString(w, `{"id": 7}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/jfillman/tenants/installation":
 			io.WriteString(w, `{"id": 7}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/7/access_tokens":
 			var body map[string]any
@@ -117,11 +124,28 @@ func TestAgentInstallationTokenEndpoint(t *testing.T) {
 	if string(raw) != `{"permissions":{"contents":"write","metadata":"read","pull_requests":"write"},"repositories":["boarding-api"]}` {
 		t.Fatalf("the mint is not down-scoped: %s", raw)
 	}
+	// The tenants repo (xr.request's PRs): no app, no Repository CR, the same down-scoped mint; unconfigured, it is refused.
+	tenantsBody := `{"owner":"jfillman","repo":"tenants"}`
+	t.Setenv("AGENT_PIN_TENANTS_REPO", "")
+	if code, out := call("t-"+clearanceSA, tenantsBody); code == 200 || out.Token != "" {
+		t.Fatalf("tenants repo with AGENT_PIN_TENANTS_REPO unset: %d %+v", code, out)
+	}
+	t.Setenv("AGENT_PIN_TENANTS_REPO", "jfillman/tenants")
+	if code, out := call("t-"+clearanceSA, tenantsBody); code != 200 || out.Token != "ghs_agent" {
+		t.Fatalf("tenants repo: %d %+v", code, out)
+	}
+	raw, _ = json.Marshal(mints[1])
+	if string(raw) != `{"permissions":{"contents":"write","metadata":"read","pull_requests":"write"},"repositories":["tenants"]}` {
+		t.Fatalf("the tenants mint is not down-scoped: %s", raw)
+	}
+	mints = mints[:1]
 	for _, c := range []struct {
 		token, body string
 		code        int
 	}{
 		{"", good, 401},
+		{"t-system:serviceaccount:platform-system:glidepath-api", tenantsBody, 403},
+		{"t-" + clearanceSA, `{"owner":"jfillman","repo":"tenants","app":"x"}`, 403},
 		{"bad", good, 401},
 		{"t-system:serviceaccount:platform-system:glidepath-api", good, 403},
 		{"t-" + clearanceSA, `{"owner":"jfillman","repo":"gitops-hangar-dev","app":"boarding-api"}`, 403},
