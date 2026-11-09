@@ -117,6 +117,36 @@ printf 'promotion:\n  enabled: true\n  pinDigest: true\n' > "${tmp}/promotion-va
 expect "ruleset with promotion on (image-promotion required, as the chart's effective registry)" \
   "$(rs -f "${tmp}/promotion-values.yaml")" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- agent-gates- image-promotion- "
 
+# ---- G-ARGO-8: the rollout flip. clearance-gate is advisory by default; releaseGuardrailOverrides makes it required, and
+# then the one hard register task replaces the advisory pair, the fan-in's wait, the bypass detectors, the log's
+# required set and the ruleset all name it. The check name comes from pipelinesAsCode (applicationName + legacy names),
+# never from a literal in the scripts.
+printf 'releaseGuardrailOverrides:\n  clearance-gate: { required: true }\n' > "${tmp}/cg-required.yaml"
+render cgreq -f "${tmp}/cg-required.yaml"
+expect "clearance-gate-check required: one hard register task, no render-check" "$(tasks clearance-gate-check "${tmp}/cgreq.yaml" | tr '\n' ' ')" \
+  "register advisory-reason=rollback "
+expect "clearance-gate-check default: advisory register plus a hard render-check" "$(tasks clearance-gate-check "${tmp}/default.yaml" | tr '\n' ' ')" \
+  "register-advisory+continue render-check advisory-reason=not-required "
+for task in detect-bypass-merge release-log-emit wait-for-release-guardrails; do
+  script_of "${task}" "${tmp}/cgreq.yaml" > "${tmp}/cgreq-${task}.sh"
+  bash -n "${tmp}/cgreq-${task}.sh" || { echo "FAIL: bash -n ${task} (clearance-gate required)"; fail=1; }
+done
+expect "required clearance-gate: detect-bypass-merge counts it" "$(grep -o 'for gate in .*; do' "${tmp}/cgreq-detect-bypass-merge.sh")" \
+  "for gate in sast image-scan provenance sbom values itsm policy-validation agent-gates clearance-gate ; do"
+expect "required clearance-gate: the fan-in waits on it" "$(grep -o 'for g in .*; do' "${tmp}/cgreq-wait-for-release-guardrails.sh")" \
+  'for g in "sast" "image-scan" "provenance" "sbom" "values" "itsm" "policy-validation" "agent-gates" "clearance-gate" ;'" do"
+expect "required clearance-gate: release-log-emit's bypass set" "$(grep -o 'required_gates=".*"' "${tmp}/cgreq-release-log-emit.sh")" \
+  'required_gates=" sast image-scan provenance sbom values itsm policy-validation agent-gates clearance-gate "'
+expect "required clearance-gate: the ruleset requires it (by the configured application name)" \
+  "$(rs -f "${tmp}/cg-required.yaml")" "sast- image-scan- provenance- sbom- values- itsm- policy-validation- agent-gates- clearance-gate- "
+# A check is found under every name PaC has posted it, so a renamed application keeps finding it.
+printf 'pipelinesAsCode:\n  applicationName: Acme\n  legacyApplicationNames: ["Pipelines as Code CI", "Glidepath"]\n' > "${tmp}/rename.yaml"
+render cgrename -f "${tmp}/cg-required.yaml" -f "${tmp}/rename.yaml"
+script_of wait-for-release-guardrails "${tmp}/cgrename.yaml" > "${tmp}/cgrename-wait.sh"
+grep -q 'Acme' "${tmp}/cgrename-wait.sh" && grep -q 'Pipelines as Code CI' "${tmp}/cgrename-wait.sh" \
+  || { echo "FAIL: the fan-in's wait does not read pipelinesAsCode.applicationName and legacyApplicationNames"; fail=1; }
+if script_of clearance-gate "${tmp}/cgrename.yaml" | grep -q 'Glidepath / '; then echo "FAIL: clearance-gate task hardcodes the check prefix"; fail=1; fi
+
 # ---- sast and provenance cannot be made advisory
 for locked in sast provenance; do
   printf 'releaseGuardrailOverrides:\n  %s: { required: false }\n' "${locked}" > "${tmp}/locked.yaml"

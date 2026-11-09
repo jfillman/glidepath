@@ -156,6 +156,26 @@ for step in admission register report; do
   yq ".spec.steps[${i}].script" "$d/task.yaml" | grep -q 'skip-rest' || { echo "FAIL: step ${step} ignores the render-only marker"; fail=1; }
 done
 
+# A release to an environment that is not `production: true` (staging) is never registered, and a REQUIRED check must
+# still pass for it: render skips it (no helm call), register writes outcome `skipped`, report exits 0. Then a PR that
+# changes a protected and an unprotected environment registers only the protected one.
+run unprot
+w="$d/unprot"; rm -rf "$w/eval" "$w"/helm-*.args
+echo "hangar-staging|staging|default|false" > "$w/plan.txt"
+( cd "$w" && PATH="$d/bin:$PATH" APP_NAME=gate-api NAMESPACE=app-gate-api-cicd bash "$w/step1.sh" ) > "$w/render.log" 2>&1
+expect "unprotected: render exits 0" "$?" 0
+expect "unprotected: marked skipped" "$(cat "$w/eval/hangar-staging__staging/status")" skipped
+expect "unprotected: nothing was rendered" "$(ls "$w"/helm-*.args 2>/dev/null | wc -l | tr -d ' ')" 0
+for st in register report; do
+  i="$(yq ".spec.steps | to_entries | .[] | select(.value.name == \"${st}\") | .key" "$d/task.yaml")"
+  yq ".spec.steps[${i}].script" "$d/task.yaml" | sed -e "s#/work#$w#g" -e "s#\$(results.outcome.path)#$w/r.outcome#g" \
+    -e "s#\$(results.findings-summary.path)#$w/r.summary#g" -e "s#\$(results.change-ids.path)#$w/r.ids#g" \
+    -e "s#/var/run/secrets/clearance#$w#g" > "$w/${st}.sh"
+  ( cd "$w" && PATH="$d/bin:$PATH" APP_NAME=gate-api CLEARANCE_URL=http://clearance.invalid TOWER_URL= PIPELINE_RUN=pr1 REPO_URL=https://github.com/o/gitops-gate-api NAMESPACE=x bash "$w/${st}.sh" ) > "$w/${st}.log" 2>&1
+  expect "unprotected: ${st} exits 0 (a required check passes)" "$?" 0
+done
+expect "unprotected: outcome is skipped" "$(cat "$w/r.outcome")" skipped
+
 # The Pipeline: the advisory copy gets a hard render-check beside it; the required copy does not need one.
 pl() { helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml "$@" --show-only templates/pipelines/clearance-gate-check.yaml; }
 adv="$(pl | yq '[.spec.tasks[] | .name + ((.onError // "") | select(. != "") | ":" + .)] | join(" ")')"
