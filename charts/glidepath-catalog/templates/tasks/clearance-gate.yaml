@@ -82,6 +82,10 @@ spec:
       type: string
       default: {{ .Values.clearanceGate.towerUrl | quote }}
       description: Where people clear a change (Backstage's URL); empty leaves the link out of the comment.
+    - name: render-only
+      type: string
+      default: "false"
+      description: "\"true\" runs fetch and render only and fails when an environment cannot be rendered. The advisory copy of the check (onError: continue, whose findings stay green) runs one beside the register task so a render failure is never green."
   results:
     - name: outcome
       description: cleared | holding | denied | skipped | fail
@@ -347,10 +351,12 @@ spec:
           value: $(params.app-name)
         - name: NAMESPACE
           value: $(context.taskRun.namespace)
+        - name: RENDER_ONLY
+          value: $(params.render-only)
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
-        [[ -s /work/plan.txt ]] || exit 0
+        [[ -s /work/plan.txt ]] || { [[ "${RENDER_ONLY:-}" == true ]] && : > /work/skip-rest; exit 0; }
         type="${NAMESPACE%%-*}"
         mkdir -p /work/eval
         render() { # <tree dir> <cluster> <env> <chart> <out file> ; exit 2 when the environment does not exist in that tree
@@ -468,7 +474,9 @@ spec:
         if identity == "confirmed":
             kind, agent = "agent", rec.get("agent")
             proposer = f"autopilot-runs/{agent}" if agent else f"user:{meta['author']}"
-        elif identity == "not-agent":
+        elif identity in ("not-agent", "unattested"):
+            # unattested = a person's change with an AI co-author trailer outside Clearance (a warning, never a tier):
+            # Clearance's gate counts it as not-agent, so the change is a person's, not `unknown`.
             kind, agent, proposer = "person", None, f"user:{meta['author']}"
         else:
             kind, agent, proposer = "unknown", rec.get("agent"), f"user:{meta['author']}"
@@ -525,6 +533,8 @@ spec:
         {{- include "glidepath-catalog.policyEvalPrepare" . | nindent 8 }}
         PY
         chmod -R a+rwX /work/eval /work/policies 2>/dev/null || true
+        # render-only (the advisory copy's companion): nothing after this step runs when every environment rendered
+        [[ "${RENDER_ONLY:-}" == true && "${rc}" == 0 ]] && : > /work/skip-rest
         exit "${rc}"
     - name: admission
       image: {{ .Values.toolboxImage }}
@@ -535,6 +545,7 @@ spec:
         #!/usr/bin/env bash
         set -uo pipefail
         {{- include "glidepath-catalog.policyEvalLib" . | nindent 8 }}
+        [[ -f /work/skip-rest ]] && exit 0
         ls /work/eval/*/change.json >/dev/null 2>&1 || exit 0
         # The offline admission verdict per protected environment, the policy-validation gate's evaluation of the same
         # rendered head, sent with the change as a check result (C-8): Clearance records engine, verdict and the rule
@@ -590,6 +601,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
+        [[ -f /work/skip-rest ]] && exit 0
         report=/work/report.md
         # join_release <cluster> <env> <change id> <tree digest> <pr>: the PR is change.json .pr (resolved by fetch; the raw
         # pr-number param is empty or unsubstituted on a /retest); G-ARGO-6. Writes the change's id and tree digest into
@@ -721,6 +733,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        [[ -f /work/skip-rest ]] && exit 0
         [[ -f /work/report ]] && cat /work/report
         if [[ "$(cat /work/failed 2>/dev/null || echo 0)" == 1 ]]; then
           echo "FAIL: clearance-gate - see the report above (holding: clear it in Tower, then /retest clearance-gate-)"

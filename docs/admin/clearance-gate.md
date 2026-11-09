@@ -26,7 +26,9 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
      (`<cluster>/<env>/values|release.yaml`, or a cluster's `base.yaml` = every environment on it); each environment's
      chart and whether it is **protected** (`cicd.yaml` `deploy.environments[].production: true`); the repo's
      `clearance.yaml` and the commit that last changed it; the agent gates' verdict on who proposed the PR
-     (`POST /v1/provenance`); the head's check runs; one-commit checkouts of base and head; and each protected
+     (`POST /v1/provenance`; `confirmed` is an agent's change, `not-agent` and `unattested` a person's, anything else
+     `unknown` - `unattested` is AI-co-authored work outside Clearance, a warning there, and Clearance's gate counts it
+     as `not-agent`, so the proposer kind is `person`); the head's check runs; one-commit checkouts of base and head; and each protected
      environment's target cluster's **admission policy bundle** from the broker's `/policy-bundle` (the
      [policy-validation](policy-validation.md) source; an unreadable bundle is an `error` verdict below, not a failed
      check).
@@ -108,6 +110,13 @@ received yet hangs promotion ([release-guardrails.md](release-guardrails.md), th
 once every gitops repo with a protected environment has the `.tekton` file. **Required, it replaces Tower's
 `hangar/release-signoff`** (decision 2 of the gate design: the gate's tier-2 rule is Hand-flown's "one owner, not the
 proposer", so one rule and one record); Tower stops posting the status then.
+
+**A release that cannot be rendered is never green, advisory or not.** The advisory copy ignores its task's failure
+(`onError: continue`), so a change that is holding or denied stays green by design. A gate that could not render the
+release has seen nothing, so the advisory Pipeline runs a second task, `render-check` (the same Task with
+`render-only: "true"`: fetch and render, no register), with no `onError`: when an environment's `helm template`
+fails, that task fails and so does the check. When every environment renders it stops there. The required copy has no
+second task; its single task already fails on a render failure.
 
 ## Files
 
