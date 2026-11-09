@@ -126,4 +126,42 @@ rm -rf "$d/newenv/base/hangar-prod"; mkdir -p "$d/newenv/base"
 ( cd "$d/newenv" && rm -rf eval helm-*.args && PATH="$d/bin:$PATH" APP_NAME=gate-api NAMESPACE=app-gate-api-cicd bash "$d/newenv/step1.sh" ) > "$d/newenv/render.log" 2>&1
 expect "new environment: all added" "$(jq -r '[.objects[].op] | unique | join(",")' "$(change newenv)")" added
 
+# An `unattested` provenance verdict (an AI co-author trailer outside Clearance) is a person's change, not `unknown`.
+run unattested
+w="$d/unattested"
+jq '.provenance = {identity: {status: "unattested"}, scope: {status: "unattested"}} | .looksAgent = false' "$w/meta.json" > "$w/meta2.json" && mv "$w/meta2.json" "$w/meta.json"
+rm -rf "$w/eval" "$w"/helm-*.args
+( cd "$w" && PATH="$d/bin:$PATH" APP_NAME=gate-api NAMESPACE=app-gate-api-cicd bash "$w/step1.sh" ) > "$w/render.log" 2>&1
+expect "unattested: the proposer is a person" "$(jq -r '[.proposerKind, .proposer, (.agent // "none"), .checks.provenance] | join(",")' "$(change unattested)")" "person,user:dana,none,unattested"
+run unknown-prov
+w="$d/unknown-prov"
+jq '.provenance = {identity: {status: "unrecorded"}} | .looksAgent = true' "$w/meta.json" > "$w/meta2.json" && mv "$w/meta2.json" "$w/meta.json"
+rm -rf "$w/eval"
+( cd "$w" && PATH="$d/bin:$PATH" APP_NAME=gate-api NAMESPACE=app-gate-api-cicd bash "$w/step1.sh" ) > "$w/render.log" 2>&1
+expect "an unrecorded agent PR stays unknown" "$(jq -r .proposerKind "$(change unknown-prov)")" unknown
+
+# render-only (the advisory copy's companion): a render failure fails the step; a good render skips every later step.
+run ro-ok
+w="$d/ro-ok"; rm -rf "$w/eval"
+( cd "$w" && PATH="$d/bin:$PATH" RENDER_ONLY=true APP_NAME=gate-api NAMESPACE=app-gate-api-cicd bash "$w/step1.sh" ) > "$w/render.log" 2>&1
+expect "render-only: a good render exits 0" "$?" 0
+[[ -f "$w/skip-rest" ]] && echo "ok   render-only: later steps are skipped" || { echo "FAIL render-only: no skip marker"; fail=1; }
+run ro-bad
+w="$d/ro-bad"; rm -rf "$w/eval"; touch "$w/observability/hangar-prod.yaml.unreadable"
+( cd "$w" && PATH="$d/bin:$PATH" RENDER_ONLY=true APP_NAME=gate-api NAMESPACE=app-gate-api-cicd bash "$w/step1.sh" ) > "$w/render.log" 2>&1
+rc=$?
+[[ "${rc}" != 0 && ! -f "$w/skip-rest" ]] && echo "ok   render-only: a render failure fails the step (exit ${rc})" || { echo "FAIL render-only: rc=${rc}"; fail=1; }
+for step in admission register report; do
+  i="$(yq ".spec.steps | to_entries | .[] | select(.value.name == \"${step}\") | .key" "$d/task.yaml")"
+  yq ".spec.steps[${i}].script" "$d/task.yaml" | grep -q 'skip-rest' || { echo "FAIL: step ${step} ignores the render-only marker"; fail=1; }
+done
+
+# The Pipeline: the advisory copy gets a hard render-check beside it; the required copy does not need one.
+pl() { helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml "$@" --show-only templates/pipelines/clearance-gate-check.yaml; }
+adv="$(pl | yq '[.spec.tasks[] | .name + ((.onError // "") | select(. != "") | ":" + .)] | join(" ")')"
+expect "advisory pipeline: register-advisory (ignored) and a render-check (not ignored)" "${adv}" "register-advisory:continue render-check"
+printf 'releaseGuardrailOverrides:\n  clearance-gate: { required: true }\n' > "$d/req.yaml"
+req="$(pl -f "$d/req.yaml" | yq '[.spec.tasks[] | .name] | join(" ")')"
+expect "required pipeline: one hard register task" "${req}" "register"
+
 [[ "${fail}" == 0 ]] && echo "PASS clearance_gate_parity_test" || { echo "FAILED (KEEP=1 keeps ${d})"; exit 1; }

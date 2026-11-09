@@ -5,7 +5,8 @@
 # for people or is denied; a finally comment-pr block reports either way (the full report travels in the gate-report
 # ConfigMap). class process, like itsm: whether people have cleared a change is a decision, not a property of the
 # image, so a rollback is judged like any release (its tree is a change too); no rollback-advisory copy. The
-# registry's `required` applies: false renders only the -advisory copy (onError: continue).
+# registry's `required` applies: false renders only the -advisory copy (onError: continue) plus a render-check task
+# (the same Task, render-only, no onError) so a release that cannot be rendered is never green.
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
@@ -44,6 +45,25 @@ spec:
         - { name: pr-number, value: $(params.pr-number) }
         - { name: app-name, value: $(params.app-name) }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+    {{- if not $required }}
+    # The advisory copy ignores its task's failure (onError: continue), so a change that is holding or denied stays
+    # green by design. A gate that could not render the release saw nothing, and must not show green: this sibling
+    # runs fetch and render only, with no onError, and fails the run when an environment does not render.
+    - name: render-check
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: clearance-gate }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: render-only, value: "true" }
+    {{- end }}
   finally:
     - name: comment-pr
       when:
