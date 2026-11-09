@@ -196,3 +196,20 @@ func TestInstantiateAndRunName(t *testing.T) {
 		t.Fatal("Tower's release tracker would refuse the name")
 	}
 }
+
+func TestPromotableRepoIsTheGroundSourceOfAFlightImage(t *testing.T) {
+	for name, tc := range map[string]struct{ file, want string }{
+		"flight copy with a recorded source": {"release:\n  image:\n    repository: ghcr.io/flight/a\n    tag: 1.0.0-abc\n    source: ghcr.io/ground/a\n", "ghcr.io/ground/a"},
+		"no recorded source":                 {"release:\n  image:\n    repository: ghcr.io/ground/a\n    tag: 1.0.0-abc\n", "ghcr.io/ground/a"},
+		"an empty source":                    {"release:\n  image:\n    repository: ghcr.io/ground/a\n    source: \"\"\n", "ghcr.io/ground/a"},
+		"the deprecated rollout.image":       {"rollout:\n  image:\n    repository: ghcr.io/ground/a\n", "ghcr.io/ground/a"},
+	} {
+		doc, err := parse(tc.file, "release.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := promotableRepo(doc); got != tc.want {
+			t.Errorf("%s: %q, want %q", name, got, tc.want)
+		}
+	}
+}

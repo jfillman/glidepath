@@ -172,7 +172,7 @@ func (c *Client) resolveSource(ctx context.Context, gh GitHub, repos Repos, req 
 		if err != nil {
 			return nil, err
 		}
-		imageRepo, imageTag = orElse(doc, "repository"), orElse(doc, "tag")
+		imageRepo, imageTag = promotableRepo(doc), orElse(doc, "tag")
 		recorded, _ = scalar(getIn(doc, "releaseTracking", "gitRevision"))
 		path = candidate
 		if imageRepo != "" && imageTag != "" {
@@ -193,6 +193,16 @@ func (c *Client) resolveSource(ctx context.Context, gh GitHub, repos Repos, req 
 		}
 	}
 	return &source{imageRepo, imageTag, rev, gitURL}, nil
+}
+
+// promotableRepo is the repository a Flight source is promoted from: release.image.source, the Ground repository the
+// image was built in, when the file records one. release.image.repository is then the Flight copy, which the release
+// pipeline cannot read with the app's Ground registry credential (resolve-image-ref) and the promoter refuses (PROM-06).
+func promotableRepo(doc *yaml.Node) string {
+	if v, ok := scalar(getIn(doc, "release", "image", "source")); ok && v != "" {
+		return v
+	}
+	return orElse(doc, "repository")
 }
 
 // orElse is `doc.getIn(['release','image',k]) ?? doc.getIn(['rollout','image',k])`.

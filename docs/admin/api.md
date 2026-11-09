@@ -342,7 +342,8 @@ Exactly one source pair, as Tower requires (`GP-API-400` otherwise). Then, in To
    cluster says is running. A Ground source: `glidepath/envs/<env>.release.yaml`'s `release.image`, then
    `glidepath/envs/<env>.yaml`'s `release.image`, then its `rollout.image`, from the app repo; the commit is the
    tag's trailing sha expanded against the app repo. A Flight source: `<cluster>/<env>/release.yaml` in
-   `gitops-<app>`, then `values.yaml`, each `release.image` falling back to `rollout.image`; the commit is
+   `gitops-<app>`, then `values.yaml`, each `release.image` falling back to `rollout.image`, promoted from
+   `release.image.source` (the Ground repository) when the file records one; the commit is
    `releaseTracking.gitRevision` when the file still has one, else the tag's sha. A first deploy uses the client's
    image only once its tag's sha resolves to a real commit of the app repo. Nothing recorded is `GP-API-422`; a
    file with invalid YAML (a duplicate key) is an error naming the file.
