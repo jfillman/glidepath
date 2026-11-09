@@ -266,6 +266,9 @@ spec:
             agent-definitions)
               recommendation="Clearance reviewed each agent definition this PR changes (glidepath docs/admin/agent-definitions.md). A **DF-*** rule names why Clearance would not load the file or why its agent could not use what it lists: DF-SCHEMA (the schema), DF-NAME (the file name and the agent's name), DF-IDENTITY (a workload agent runs as autopilot-runs/<name>), DF-TOOL / DF-TRIPWIRE (an unknown or forbidden tool), DF-CEILING (a tool above the tier ceiling), DF-REPOS (a repo tool with no repos.allow), DF-MODEL (a model this deployment does not route), DF-IMAGE (not from the runtime catalog, or not pinned by digest). The tier in the table is what the release will be cleared by when it merges."
               ;;
+            preflight)
+              recommendation="Each changed agent definition with Preflight cases ran as a budgeted candidate on Autopilot's gateway and was scored against them (glidepath docs/admin/agent-definitions.md, Preflight). A ❌ case names the verifiers that failed or the budget it overran; fix the definition (or its instructions) and push. A refused launch names why (the definition would not load, or the check may not run it); an unfinished run means the gateway did not finish it within the wait."
+              ;;
             cicd-validate)
               recommendation="The lines above are \`glidepath validate\`'s findings on this PR's cicd.yaml (docs/admin/contract.md, docs/user/cicd-yaml-reference.md): each names the rule, the field and the fix. Run \`tools/glidepath-validate cicd.yaml\` from a Glidepath checkout to see them locally. **GP-SCOPE** rules apply to an agent's PR only: the field is one an agent may not change, or may only tighten - have a person make that change in their own PR."
               ;;

@@ -324,8 +324,8 @@ kind: PipelineConfig
 What it gets, the same as every other onboarded repository: its registration (the
 `app-<name>-cicd` namespace, the Pipelines-as-Code `Repository`, `pipeline-runner`), and the
 always-on `.tekton/` files: `onboarding-resync.yaml`, `pull-request-cicd-validate.yaml`,
-`pull-request-agent-gates.yaml`, and `pull-request-agent-definitions.yaml` with
-`push-agent-release.yaml` (each of those two runs only when `agents/` changes,
+`pull-request-agent-gates.yaml`, `pull-request-agent-definitions.yaml`, `pull-request-agent-preflight.yaml`, and
+`push-agent-release.yaml` (the last three run only when `agents/` changes,
 [../admin/agent-definitions.md](../admin/agent-definitions.md)).
 
 What it does not get: no `flow-*.yaml`, no build cache, no environments or `glidepath/`
