@@ -107,6 +107,7 @@ spec:
         failed_checks=""
         # "<PaC application name> / <gate>-", under the current name or an earlier one (catalog pipelinesAsCode).
         pac_apps={{ include "glidepath-catalog.pacAppNames" . | squote }}
+        ext_checks={{ include "glidepath-catalog.externalChecks" . | squote }}
         for gate in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ if .required }}{{ .name }} {{ end }}{{ end }}; do
           # Advisory for this app only (releaseGuardrailOverridesByApp): its check may be red, and merging past it is
           # what the admin allowed, not a bypass.
@@ -116,8 +117,8 @@ spec:
           # this every gate reads back "missing" here, which would report BYPASS DETECTED
           # on every single normal merge regardless of real outcome - confirmed live
           # 2026-09-06 this was silently broken since 9706649 the day before.
-          conclusion="$(jq -r --argjson apps "${pac_apps}" --arg g "${gate}" \
-            '[.check_runs[] | select(.name as $x | any($apps[]; . + " / " + $g + "-" == $x))][0].conclusion // "missing"' <<<"${checks_json}")"
+          conclusion="$(jq -r --argjson apps "${pac_apps}" --argjson ext "${ext_checks}" --arg g "${gate}" \
+            '[.check_runs[] | select({{ include "glidepath-catalog.checkMatchJq" . }}) | {{ include "glidepath-catalog.neutralOkJq" . }}][0].conclusion // "missing"' <<<"${checks_json}")"
           if [[ "${conclusion}" != "success" ]]; then
             failed_checks="${failed_checks}${failed_checks:+, }${gate} (${conclusion})"
           fi

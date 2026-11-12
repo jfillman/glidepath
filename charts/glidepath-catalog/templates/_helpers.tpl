@@ -106,7 +106,11 @@ override map and the refusal apply everywhere at once (docs/admin/release-guardr
 {{- define "glidepath-catalog.guardrails" -}}
 {{- $out := list -}}
 {{- $overrides := .Values.releaseGuardrailOverrides | default dict -}}
+{{- $cc := eq (include "glidepath-catalog.clearanceChecks" .) "true" -}}
 {{- range .Values.releaseGuardrails -}}
+{{- /* An entry with `clearanceChecks: true` exists only where Clearance's App reports the agent checks; one with
+`clearanceChecks: false` (the Glidepath agent-gates- fallback) only where it does not (C-7). */ -}}
+{{- if or (not (hasKey . "clearanceChecks")) (eq .clearanceChecks $cc) -}}
 {{- $g := deepCopy . -}}
 {{- $required := true -}}
 {{- if hasKey $g "required" }}{{ $required = $g.required }}{{ end -}}
@@ -120,6 +124,7 @@ override map and the refusal apply everywhere at once (docs/admin/release-guardr
 {{- $_ := set $g "required" $required -}}
 {{- $out = append $out $g -}}
 {{- end -}}
+{{- end -}}
 {{- /* ADR-0029 phase 3: with promotion on, the promote pipeline's check is a required gate. It is not a
 releaseGuardrails entry because nothing delivers a .tekton file for it (the fan-in starts it), and with promotion
 off no PR would ever get the check and every merge would read as a bypass. */ -}}
@@ -127,6 +132,46 @@ off no PR would ever get the check and every merge would read as a bypass. */ -}
 {{- $out = append $out (dict "name" "image-promotion" "description" "The release image copied by digest to the Flight registry with its signatures and attestations, and a promotion attestation for this release" "status" "real" "class" "integrity" "required" true "targets" (list "k8s-rollout")) -}}
 {{- end -}}
 {{- $out | toJson -}}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.clearanceChecks (C-7): "true" when Clearance's GitHub App reports the agent-identity and agent-scope
+checks that replace Glidepath's `agent-gates-` check - agentGates.clearanceUrl is set AND agentGates.clearanceChecks is
+on. Anything else is "false": the cluster keeps the `agent-gates-` check (the without-Clearance guardrail).
+*/ -}}
+{{- define "glidepath-catalog.clearanceChecks" -}}
+{{- $a := .Values.agentGates | default dict -}}
+{{- ternary "true" "false" (and (not (empty $a.clearanceUrl)) (eq (toString (default false $a.clearanceChecks)) "true")) -}}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.externalChecks (C-7): the effective registry's gates whose check run is posted by another App, as a
+JSON object { <gate>: "<exact check-run name>" }. Every reader matches these by the exact name; any other gate is
+"<PaC application name> / <gate>-" (pacAppNames). {} on a cluster that has none.
+*/ -}}
+{{- define "glidepath-catalog.externalChecks" -}}
+{{- $m := dict -}}
+{{- range (include "glidepath-catalog.guardrails" . | fromJsonArray) -}}
+{{- if .check }}{{ $_ := set $m .name .check }}{{ end -}}
+{{- end -}}
+{{- $m | toJson -}}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.checkMatchJq (C-7): the jq condition (inside select(...)) that picks a gate's check runs by name.
+Needs $apps (pacAppNames), $ext (externalChecks) and $g (the gate) bound by the caller's jq invocation.
+*/ -}}
+{{- define "glidepath-catalog.checkMatchJq" -}}
+.name as $x | (if ($ext[$g] // null) != null then $x == $ext[$g] else any($apps[]; . + " / " + $g + "-" == $x) end)
+{{- end -}}
+
+{{- /*
+glidepath-catalog.neutralOkJq: a neutral conclusion of another App's check (Clearance labels an AI-co-authored person's PR
+`unattested`: a warning, never a failure) reads as success, as GitHub's own required-check evaluation treats neutral.
+Applies only to the gates in $ext; a Glidepath gate's neutral is unchanged.
+*/ -}}
+{{- define "glidepath-catalog.neutralOkJq" -}}
+(if .conclusion == "neutral" and ($ext[$g] // null) != null then .conclusion = "success" else . end)
 {{- end -}}
 
 {{- /*

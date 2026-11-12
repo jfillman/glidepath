@@ -134,7 +134,7 @@ The validator runs from the `glidepath-validate` image (`tools/validate.Containe
 `cicd_scope.py`, the schema and the contract of one commit; `validate-image-ci` publishes
 `ghcr.io/<owner>/glidepath-validate:sha-<short>` on every change and sets `cicdValidatorImage` in the
 catalog values). The toolbox image stays bash-only. The check blocks a merge only as a required status
-check: `hack/apply-agent-gates-ruleset.sh <owner>/<repo>` adds it to the app repo's ruleset, once the
+check: `hack/apply-agent-gates-ruleset.sh [-f <values>] <owner>/<repo>` adds it to the app repo's ruleset, once the
 repo has the `.tekton` file (a required check nothing reports would block every PR).
 
 Clearance still runs the scope rules before an agent opens the PR (R021), so the agent learns of a

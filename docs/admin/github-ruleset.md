@@ -23,6 +23,7 @@ use one ruleset for `gitops-*`).
 |---|---|---|
 | Required status checks | one per `releaseGuardrails` entry, named `<pipelinesAsCode.applicationName> / <gate>-` (`Glidepath / <gate>-`) | PaC names the check after its `application-name` and the PipelineRun `generateName`, which is `<gate>-` (see `wait-for-release-guardrails` and [github-app.md](github-app.md)) |
 | Check's `integration_id` | `4461953` (the lab's Pipelines as Code GitHub App; `--integration-id` for another install's) | only that app's check counts; a look-alike status from anything else is ignored |
+| The agent gate (C-7) | with `agentGates.clearanceChecks` on (and a `clearanceUrl`): `Clearance / agent-identity` and `Clearance / agent-scope`, `integration_id` = `agentGates.clearanceAppId` (`--clearance-app-id`). Otherwise `Glidepath / agent-gates-` under the PaC App's id | the Clearance GitHub App posts those two check runs itself, under its own name and App id, not Glidepath's. The script refuses to build the ruleset without the id: a required check no App reports blocks every PR ([agent-gates.md](agent-gates.md)) |
 | Require a pull request | yes; **2 approvals normally**, 0 in the lab | the human gate. `require_last_push_approval` only matters when approvals > 0 |
 | `strict_required_status_checks_policy` | `false` | the gates run on the PR head commit; the branch need not be up to date |
 | `do_not_enforce_on_create` | `true` | a brand-new branch is not blocked before its first checks |
@@ -64,6 +65,10 @@ These are invisible while the ruleset is not enforced and would surface the day 
    emitted by the generator (it defaults sensibly).
 
 ## Applying it
+
+Moving a cluster from `agent-gates-` to Clearance's App: apply the new ruleset **before** the onboarding resync removes
+`.tekton/pull-request-agent-gates.yaml` from the repos, so the old check is never required while nothing reports it
+([agent-gates.md](agent-gates.md#migration)). App repos use `hack/apply-agent-gates-ruleset.sh -f <values> <owner>/<app>`.
 
 ```bash
 hack/apply-guardrail-ruleset.sh --dry-run --approvals 0 <owner>/gitops-flight-api     # inspect

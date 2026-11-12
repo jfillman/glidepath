@@ -203,6 +203,16 @@ agentGates:
   audience: clearance
   # The GitHub logins agents open PRs as (the agents' GitHub App, Hangar D4).
   agentLogins: ["hangar-autopilot-agents[bot]"]
+  # C-7: retire the Glidepath `agent-gates-` check in favour of the Clearance GitHub App's own check runs
+  # (`Clearance / agent-identity`, `Clearance / agent-scope`; Clearance docs/provenance-app.md). Takes effect only with
+  # clearanceUrl set (a cluster with no Clearance keeps agent-gates-) and the App installed on every onboarded app and
+  # gitops repo, since a release waits on its check runs. On: the registry swaps `agent-gates` for `agent-identity`
+  # and `agent-scope`, and onboarding stops delivering (and removes) .tekton/pull-request-agent-gates.yaml.
+  clearanceChecks: false
+  # The Clearance App's GitHub App id, the integration_id of its required status checks in the rulesets
+  # (hack/apply-guardrail-ruleset.sh, hack/apply-agent-gates-ruleset.sh). Empty: those scripts refuse to build a ruleset
+  # that needs it. Not the agents' App (hangar-autopilot-agents), a different App by design.
+  clearanceAppId: ""
 
 # Release-signing policy (docs/admin/commit-signing.md): who may sign, and who may merge, the app commit a
 # release promotes - read by the provenance gate (verify-commit-signature.yaml) and passed to Conforma as rule
@@ -348,15 +358,38 @@ releaseGuardrails:
     required: true
     targets: [k8s-rollout]
   # The agent gates (docs/admin/agent-gates.md): Clearance's verdict on whether this PR is the one its agent opened
-  # (agent-identity) and inside that agent's scope (agent-scope). Every PR to main gets the check; a person's PR,
+  # (agent-identity) and inside that agent's scope (agent-scope). Every PR to main gets the verdict; a person's PR,
   # and every release PR, is "not-agent" and passes. Required: an agent's propose-only upper PR (repo.pr.open_upper)
   # that someone pushed onto, or that touches paths its agent may not, must not release. It reads Clearance, so a
   # Clearance outage holds releases until it is back (or the gate is made advisory per cluster).
+  # Two forms, one effective at a time (`clearanceChecks`, glidepath-catalog.clearanceChecks):
+  #  - agent-identity and agent-scope: the Clearance GitHub App's own check runs, matched by their exact names (`check`)
+  #    and, in the rulesets, by the App's id (`integration: clearance`, agentGates.clearanceAppId). Nothing of Glidepath
+  #    runs for them, so no .tekton file is delivered and no /retest <name>- exists (re-run them from the check).
+  #  - agent-gates: Glidepath's own check, the without-Clearance guardrail: where there is no Clearance it fails
+  #    the PRs that look like an agent's; with Clearance but without the App it asks Clearance.
   - name: agent-gates
     description: "Agent identity and scope - Clearance's record of the PR its agent opened: the same head commit and trailers, and only paths that agent may change (a person's PR passes as not-agent)"
     status: real
     class: integrity
     required: true
+    clearanceChecks: false
+  - name: agent-identity
+    description: "Agent identity - Clearance's record of the PR its agent opened: the same head commit and trailers (a person's PR passes as not-agent); posted by the Clearance GitHub App"
+    status: real
+    class: integrity
+    required: true
+    clearanceChecks: true
+    check: "Clearance / agent-identity"
+    integration: clearance
+  - name: agent-scope
+    description: "Agent scope - only paths the agent's commit carried and its definition still admits (a person's PR passes as not-agent); posted by the Clearance GitHub App"
+    status: real
+    class: integrity
+    required: true
+    clearanceChecks: true
+    check: "Clearance / agent-scope"
+    integration: clearance
   # The deployment gate (Clearance docs/gate.md, decided 2026-10-31; docs/admin/clearance-gate.md): every release PR
   # to a protected environment (production: true) is registered with Clearance, classified into a tier 0-3 from what
   # its rendered manifests change, and cleared by policy (0-1) or by named people in Tower (2-3). The check is green
