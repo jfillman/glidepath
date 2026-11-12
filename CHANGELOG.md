@@ -4,6 +4,23 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### A-11: the `propose` scope class (contract version 2)
+
+- `agentScope` gains **`propose`**: an agent may add or change a Flight environment, the release step into it and a new
+  environment's `cluster` and `production`, but only in a pull request a person must merge. Rules may set `proposeOn`
+  (`added`, `changed`, `removed`): any other kind of change to the field is `human`, so a new environment's cluster is
+  propose and an existing one's still is not. Secrets, signers, the gates, `deploy.target`, `deploy.chart`, the cloud blocks,
+  `api`, `gitopsRepo` and `manifestPath` stay `human`. Docs: contract.md, "propose".
+- `tools/cicd_scope.py`: `needs_person(base, head, scope)` lists what is propose; `scope_problems` no longer refuses a Flight
+  environment added or changed (GP-SCOPE-003 is now removing one, or any tier change). `glidepath validate`, the validator
+  sidecar and `POST /v1/apps/{app}/cicd/validations` answer `needsPerson` (always present); `changes[].agentScope` can read
+  `propose`. The `cicd-validate-` check passes such a change and says "needs a person to merge".
+- **`contractVersion` is 2.** Roll out Clearance, then Autopilot (its bundle names version 2), then this.
+- Catalog: a Clearance `agent-scope` check that is neutral and titled `needs a person: ...` is not success to any reader
+  (neutralOkJq), so it holds a release until Clearance posts success (a person merged) or failure (a bot did).
+  `detect-bypass-merge` reads it as success only when the PR's merger is a person (account type User, not a `[bot]` login, not in
+  `agentGates.agentLogins`), and reports a bypass otherwise.
+
 ### C-7: the agent gates move to Clearance's GitHub App (opt-in per cluster)
 
 - New catalog values `agentGates.clearanceChecks` (default `false`) and `agentGates.clearanceAppId`. With

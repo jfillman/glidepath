@@ -1132,14 +1132,25 @@ components:
         change: { type: string, enum: [added, removed, changed] }
         before: { description: The value before (absent when added) }
         after: { description: The value after (absent when removed) }
-        agentScope: { type: string, enum: [open, tighten, human], description: The contract's scope for this field }
+        agentScope: { type: string, enum: [open, tighten, human, propose], description: "The contract's scope for this kind of change to this field. propose: an agent may make it only in a pull request a person merges (a propose rule whose proposeOn does not name this kind of change reads human)" }
+    CicdNeedsPerson:
+      type: object
+      required: [pointer, change, message]
+      properties:
+        pointer: { type: string, description: "The field, or the Flight environment or release step as a whole, that needs a person to merge" }
+        change: { type: string, enum: [added, removed, changed] }
+        message: { type: string }
     CicdValidationResult:
       type: object
-      required: [valid, problems, changes, summary, base, resulting, contractVersion]
+      required: [valid, problems, changes, needsPerson, summary, base, resulting, contractVersion]
       properties:
         valid: { type: boolean, description: No error-severity problem }
         problems: { type: array, items: { $ref: "#/components/schemas/CicdProblem" } }
         changes: { type: array, items: { $ref: "#/components/schemas/CicdChange" } }
+        needsPerson:
+          type: array
+          items: { $ref: "#/components/schemas/CicdNeedsPerson" }
+          description: "With agent true and a valid change: what only a person may merge (the contract's propose class: a Flight environment added or changed, a release step into one, a new environment's cluster). Not a problem; the tool that opens the pull request marks it human-merge. Always present, empty when nothing needs a person" 
         summary: { type: string, description: "One line: the verdict, then what changed" }
         base:
           type: object

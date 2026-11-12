@@ -22,7 +22,9 @@ One pass, three layers:
      GP-CHECKS-001 a checks-only file (no build) sets pipelines, test, deploy, api or ephemeralEnvironments
   3. with --agent and a base: what an agent may change (tools/cicd_scope.py, from the contract):
      GP-SCOPE-001 a human-only field changed, GP-SCOPE-002 a gate loosened,
-     GP-SCOPE-003 a Flight environment added, removed or changed, or a tier changed
+     GP-SCOPE-003 a Flight environment removed, or a tier changed
+     A Flight environment added or changed, a new Flight environment's cluster and production, and a release step
+     into a Flight environment are `propose`: no problem, reported as needsPerson (a person must merge the PR).
 
 Exit 0 = no errors (warnings allowed), 1 = an error, 2 = bad usage. Text output: one line per finding,
 `file | pointer | rule | message | hint`. --format json: one object per file with `valid` and `problems`
@@ -43,7 +45,7 @@ from jsonschema.exceptions import best_match
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import cicd_scope  # noqa: E402
-from cicd_scope import scope_problems  # noqa: E402
+from cicd_scope import needs_person, scope_problems  # noqa: E402
 
 SCHEMA = json.loads((ROOT / "schemas" / "cicd.schema.json").read_text())
 CONTRACT_PATH = ROOT / "contract" / "glidepath-contract.json"
@@ -213,7 +215,7 @@ def changes_of(base_doc, head_doc, scope):
     for ptr, b, h in cicd_scope.changes(base_doc if base_doc is not None else {}, head_doc if head_doc is not None else {}):
         rule = cicd_scope.rule_for(scope["rules"], ptr)
         c = {"pointer": ptr, "change": "removed" if h is cicd_scope.MISSING else "added" if b is cicd_scope.MISSING else "changed",
-             "agentScope": (rule or {}).get("agentScope", "human")}
+             "agentScope": cicd_scope.effective_scope(rule, "removed" if h is cicd_scope.MISSING else "added" if b is cicd_scope.MISSING else "changed")}
         if b is not cicd_scope.MISSING:
             c["before"] = b
         if h is not cicd_scope.MISSING:
@@ -222,10 +224,18 @@ def changes_of(base_doc, head_doc, scope):
     return out
 
 
+def needs_of(agent, base_doc, head_doc, contract):
+    """What an agent's change needs a person to merge (cicd_scope.needs_person): [] for a person's change, or one that failed to parse."""
+    if not agent or head_doc is None:
+        return []
+    return needs_person(base_doc, head_doc, contract["scope"])
+
+
 def check(path, args):
     base = base_text(args, path) if args.agent else None
     contract = json.loads(Path(args.contract).read_text()) if args.agent else None
-    return check_texts(Path(path).read_text(), path, base, args.agent, contract)[0]
+    probs, head, base_doc = check_texts(Path(path).read_text(), path, base, args.agent, contract)
+    return probs, needs_of(args.agent, base_doc, head, contract) if not any(p["severity"] == "error" for p in probs) else []
 
 
 def serve(addr, contract_path):
@@ -265,12 +275,14 @@ def serve(addr, contract_path):
             base = req.get("base")
             if base is not None and not isinstance(base, str):
                 return self.answer(400, {"error": "base is the file's text, or null for no file yet"})
-            probs, head, base_doc = check_texts(req["head"], "cicd.yaml", base, bool(req.get("agent", False)), contract)
+            agent = bool(req.get("agent", False))
+            probs, head, base_doc = check_texts(req["head"], "cicd.yaml", base, agent, contract)
+            needs = [] if any(p["severity"] == "error" for p in probs) else needs_of(agent, base_doc, head, contract)
             changes = []
             if head is not None and "base" in req and (base is None or base_doc is not None):
                 changes = changes_of(base_doc, head, contract["scope"])
             self.answer(200, {"valid": not any(p["severity"] == "error" for p in probs), "problems": probs,
-                              "changes": changes, "contractVersion": contract["contractVersion"]})
+                              "changes": changes, "needsPerson": needs, "contractVersion": contract["contractVersion"]})
 
     host, _, port = addr.rpartition(":")
     httpd = ThreadingHTTPServer((host or "127.0.0.1", int(port)), Handler)
@@ -303,10 +315,10 @@ def main():
     failed = False
     results = []
     for f in args.files:
-        probs = check(f, args)
+        probs, needs = check(f, args)
         errors = [p for p in probs if p["severity"] == "error"]
         failed |= bool(errors)
-        results.append({"file": f, "valid": not errors, "problems": probs})
+        results.append({"file": f, "valid": not errors, "problems": probs, "needsPerson": needs})
     if args.format == "json":
         print(json.dumps(results if len(results) > 1 else results[0], indent=2))
     else:
@@ -314,8 +326,11 @@ def main():
             for p in r["problems"]:
                 sev = "" if p["severity"] == "error" else f" ({p['severity']})"
                 print(f"{r['file']} | {p['pointer']} | {p['rule']}{sev} | {p['message']} | {p['hint']}")
+            for n in r["needsPerson"]:
+                print(f"{r['file']} | {n['pointer']} | needs-person | {n['message']} | a person must merge this pull request")
             if r["valid"]:
-                print(f"{r['file']}: ok" + (f", {len(r['problems'])} warning(s)" if r["problems"] else ""))
+                print(f"{r['file']}: ok" + (f", {len(r['problems'])} warning(s)" if r["problems"] else "") +
+                      (f"; needs a person to merge: {', '.join(n['pointer'] for n in r['needsPerson'])}" if r["needsPerson"] else ""))
     return 1 if failed else 0
 
 

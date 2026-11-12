@@ -464,6 +464,7 @@ the result and the base to the validator. The answer is 200 whether or not the r
 
 ```json
 {"valid": false,
+ "needsPerson": [],
  "problems": [{"pointer": "/governance/sast", "rule": "GP-SCOPE-002", "severity": "error",
                "message": "/governance/sast loosened (true -> false)",
                "hint": "An agent may turn a gate on or make it stricter, never the other way."}],
@@ -471,8 +472,15 @@ the result and the base to the validator. The answer is 200 whether or not the r
  "summary": "1 error(s): GP-SCOPE-002; 1 change(s): /governance/sast true -> false",
  "base": {"repo": "jfillman/gate-api", "ref": "HEAD", "sha": "7f3c…", "present": true},
  "resulting": "apiVersion: platform/v1\n…",
- "contractVersion": 1}
+ "contractVersion": 2}
 ```
+
+`needsPerson` (contract version 2) is, for an `agent: true` change that is otherwise valid, what only a person may
+merge: a Flight environment added or changed, a release step into one, a new environment's `cluster` and
+`production` (the contract's [`propose` class](contract.md#propose-what-an-agent-may-change-only-in-a-pull-request-a-person-merges)).
+It is not a problem: the change is valid, and the caller that opens the pull request marks it human-merge. The field is
+always there, empty when nothing needs a person, and empty when the change is invalid (a refusal is the answer then).
+`changes[].agentScope` can read `propose`.
 
 `changes` is every field the change touches, each with the contract's `agentScope`, so a caller can tell a person
 what it is about to propose. A file missing at the base is compared with an empty one (every field counts as

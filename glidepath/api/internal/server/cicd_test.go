@@ -45,7 +45,11 @@ func newValidator(t *testing.T) *fakeValidator {
 		if _, hasBase := req["base"]; hasBase && head != base {
 			changes = append(changes, map[string]any{"pointer": "/x", "change": "changed", "before": false, "after": true, "agentScope": "open"})
 		}
-		json.NewEncoder(w).Encode(map[string]any{"valid": len(problems) == 0, "problems": problems, "changes": changes, "contractVersion": 1})
+		needs := []map[string]any{}
+		if req["agent"] == true && strings.Contains(head, "tier: flight") {
+			needs = append(needs, map[string]any{"pointer": "/deploy/environments/prod", "change": "added", "message": "Flight environment 'prod' added: needs a person to merge"})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"valid": len(problems) == 0, "problems": problems, "changes": changes, "needsPerson": needs, "contractVersion": 2})
 	}))
 	t.Cleanup(v.srv.Close)
 	return v
@@ -147,6 +151,28 @@ func TestValidateCicdContentAsAgentAtRef(t *testing.T) {
 	}
 	if !strings.HasPrefix(out["summary"].(string), "1 error(s): GP-SCOPE-002; 1 change(s)") {
 		t.Fatalf("summary %q", out["summary"])
+	}
+}
+
+// The contract's propose class: an agent's Flight environment is valid, and the answer says a person must merge it. The
+// field is always there (an empty list for a change that needs nobody), so a caller never has to guess its absence.
+func TestValidateCicdNeedsPerson(t *testing.T) {
+	s, gh, _, _ := withCicd(t, validator)
+	gh.files["jfillman/shop/cicd.yaml"] = "deploy:\n  environments: []\n"
+	code, out, body := postCicd(t, s, `{"content": "deploy:\n  environments:\n    - {name: prod, tier: flight}\n", "agent": true}`, nil)
+	if code != http.StatusOK || out["valid"] != true {
+		t.Fatalf("%d %s", code, body)
+	}
+	needs, _ := out["needsPerson"].([]any)
+	if len(needs) != 1 || needs[0].(map[string]any)["pointer"] != "/deploy/environments/prod" {
+		t.Fatalf("needsPerson %v", out["needsPerson"])
+	}
+	if !strings.Contains(out["summary"].(string), "needs a person to merge") {
+		t.Fatalf("summary %q", out["summary"])
+	}
+	code, out, body = postCicd(t, s, `{"content": "deploy:\n  environments:\n    - {name: prod, tier: ground}\n", "agent": true}`, nil)
+	if code != http.StatusOK || out["needsPerson"] == nil || len(out["needsPerson"].([]any)) != 0 {
+		t.Fatalf("an ordinary change needs nobody, as an empty list: %d %s", code, body)
 	}
 }
 

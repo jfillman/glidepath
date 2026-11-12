@@ -32,7 +32,7 @@ CATALOG_VALUES = ROOT / "charts" / "glidepath-catalog" / "values.yaml"
 OPENAPI = ROOT / "api" / "openapi.yaml"
 OUT = ROOT / "contract" / "glidepath-contract.json"
 
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2   # 2: agentScope gains `propose` (and rules `proposeOn`); a consumer must know it before it reads v2
 METHODS = ("get", "post", "put", "patch", "delete")
 
 
@@ -101,6 +101,8 @@ def scope_rules(meta, fields_by_pointer):
                 out["default"] = r["default"]
             elif "default" in fields_by_pointer.get(r["pattern"], {}):
                 out["default"] = fields_by_pointer[r["pattern"]]["default"]
+        if r["agentScope"] == "propose" and r.get("proposeOn"):
+            out["proposeOn"] = r["proposeOn"]
         if r.get("why"):
             out["why"] = r["why"]
         rules.append(out)
@@ -164,10 +166,21 @@ def build():
             "fields": fields,
         },
         "scope": {
+            "classes": {
+                "open": "an agent may change it",
+                "tighten": "only in the stricter direction",
+                "human": "never in an agent's pull request",
+                "propose": "an agent may change it only in a pull request a person must merge; the verdict lists it as needsPerson",
+            },
             "rules": scope_rules(meta, by_pointer),
             "structural": {
                 "GP-SCOPE-002": "a flow loses a check-ride step or a required test step",
-                "GP-SCOPE-003": "a Flight environment is added, removed or changed, or an environment changes tier",
+                "GP-SCOPE-003": "a Flight environment is removed, or an environment changes tier",
+            },
+            "needsPerson": {
+                "flight-environment": "a Flight environment added or changed",
+                "release-step": "a release step into a Flight environment added or changed",
+                "pointer": "a change to a field whose rule is propose, for a kind of change the rule's proposeOn names",
             },
             "implementation": "tools/cicd_scope.py",
         },

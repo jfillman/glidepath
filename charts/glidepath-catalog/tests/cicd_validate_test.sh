@@ -67,6 +67,15 @@ expect "agent rules against the merge base 0123456"
 run "a person making the same change passes" 0 "$person" "$d/loosened.yaml" "$d/base.yaml"
 expect "valid"
 
+# The propose class: an agent adds a Flight environment. It passes, and says a person must merge it; a person's own PR does not.
+yq '.deploy.environments += [{"name": "prod", "tier": "flight", "cluster": "hangar-prod"}]' "$ex" > "$d/flight.yaml"
+yq '.deploy.environments |= map(select(.tier != "flight"))' "$ex" > "$d/noflight-base.yaml"
+run "an agent adding a Flight environment passes and needs a person" 0 "$agent" "$d/flight.yaml" "$d/noflight-base.yaml"
+expect "NEEDS A PERSON  /deploy/environments/prod"
+expect "needs a person to merge: /deploy/environments/prod"
+run "a person adding the same Flight environment has no such note" 0 "$person" "$d/flight.yaml" "$d/noflight-base.yaml"
+[[ "$out$summary" != *"needs a person"* ]] && echo "ok   a person's change is not marked" || { echo "FAIL a person's change was marked needs-person"; fail=1; }
+
 printf '{}\n' > "$d/empty.yaml"
 run "an agent adding cicd.yaml is compared with nothing" 1 "$agent_new" "$ex" "$d/empty.yaml"
 expect "no cicd.yaml there: every field counts as added"
