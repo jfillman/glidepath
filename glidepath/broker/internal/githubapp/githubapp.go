@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -138,6 +139,9 @@ func InstallationIDForRepo(appJWT, owner, repo string) (int64, error) {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return 0, fmt.Errorf("GitHub installation lookup for %s/%s: status 404: %s: %w", owner, repo, string(body), ErrNotInstalled)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("GitHub installation lookup for %s/%s: status %d: %s", owner, repo, resp.StatusCode, string(body))
 	}
@@ -222,3 +226,7 @@ func mintInstallationToken(appJWT string, installationID int64, scope map[string
 	}
 	return parsed.Token, parsed.ExpiresAt, nil
 }
+
+// ErrNotInstalled is wrapped by InstallationIDForRepo when GitHub answers 404: the App is not installed on the repo
+// (or cannot see it). Callers map it to a clear message instead of a bare upstream error.
+var ErrNotInstalled = errors.New("GitHub App is not installed on the repo")

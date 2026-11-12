@@ -105,7 +105,10 @@ func githubReadOwns(dynClient dynamic.Interface, req githubReadRequest) error {
 func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Interface, appCreds *githubapp.Creds, callers map[string]bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		var caller string
+		var req githubReadRequest
 		fail := func(code int, msg string) {
+			logTokenFailure("github read token", caller, req, code, msg)
 			w.WriteHeader(code)
 			_ = json.NewEncoder(w).Encode(githubInstallationTokenResponse{Error: msg})
 		}
@@ -118,12 +121,12 @@ func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Int
 			fail(http.StatusUnauthorized, "missing or malformed Authorization: Bearer <token> header")
 			return
 		}
-		caller, authErr := verifyCallerUsername(clientset, token, githubReadAudience)
+		var authErr string
+		caller, authErr = verifyCallerUsername(clientset, token, githubReadAudience)
 		if authErr != "" {
 			fail(http.StatusUnauthorized, authErr)
 			return
 		}
-		var req githubReadRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
 			fail(http.StatusBadRequest, "request body must be {\"owner\":..., \"repo\":..., \"app\":...}")
 			return
@@ -143,7 +146,7 @@ func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Int
 		}
 		installationID, err := githubapp.InstallationIDForRepo(appJWT, req.Owner, req.Repo)
 		if err != nil {
-			fail(http.StatusBadGateway, err.Error())
+			fail(http.StatusBadGateway, installationLookupMessage("the GitHub App", req, err))
 			return
 		}
 		instToken, expiresAt, err := githubapp.MintRepoReadToken(appJWT, installationID, req.Repo)

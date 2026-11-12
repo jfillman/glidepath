@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
@@ -210,6 +211,7 @@ func handleAgentPin(clientset kubernetes.Interface, dynClient dynamic.Interface,
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fail := func(code int, msg string) {
+			log.Printf("agent pin failed: status=%d reason=%q", code, msg)
 			w.WriteHeader(code)
 			_ = json.NewEncoder(w).Encode(agentPinResponse{Error: msg})
 		}
