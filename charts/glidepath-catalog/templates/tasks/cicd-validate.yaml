@@ -97,7 +97,9 @@ spec:
         paths='[]'
         for page in $(seq 1 30); do
           batch="$(gh "${api}/pulls/${pr}/files?per_page=100&page=${page}")"
-          paths="$(jq -c --argjson b "${batch}" '. + [$b[] | .filename, (.previous_filename // empty)]' <<<"${paths}")"
+          # Both documents go through stdin: a page's files JSON carries every patch and can pass the 128 KiB a single
+          # argument may hold ("jq: Argument list too long" on a 357 KB page, backstage#264).
+          paths="$(printf '%s\n%s\n' "${paths}" "${batch}" | jq -cs '.[0] + [.[1][] | .filename, (.previous_filename // empty)]')"
           [ "$(jq length <<<"${batch}")" -lt 100 ] && break
         done
         if ! jq -e 'index("cicd.yaml")' <<<"${paths}" >/dev/null; then
