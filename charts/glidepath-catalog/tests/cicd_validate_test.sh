@@ -75,4 +75,14 @@ expect "GP-SCOPE-001"
 run "a PR that removes cicd.yaml fails" 1 "$person"
 expect "leaves the repository without a cicd.yaml"
 
+# The fetch step collects the changed paths a page at a time. A page's files JSON carries every patch, so it must reach
+# jq through stdin, never an argument (an argument holds at most 128 KiB: "Argument list too long", backstage#264).
+line="$(yq '.spec.steps[] | select(.name == "fetch") | .script' "$d/task.yaml" | grep -E '^\s*paths="\$\(printf' || true)"
+if [[ -z "$line" ]]; then echo "FAIL the fetch step does not collect paths through stdin"; fail=1; else
+  big="$(python3 -c 'import json; print(json.dumps([{"filename": "src/f%d.ts" % i, "patch": "x" * 4000} for i in range(100)] + [{"filename": "cicd.yaml", "previous_filename": "old.yaml", "patch": "y"}]))')"
+  got="$(paths='["a"]'; batch="$big"; eval "$line"; echo "$paths")"
+  [[ "$(jq length <<<"$got")" == 103 && "$(jq -r '.[-2:] | join(",")' <<<"$got")" == "cicd.yaml,old.yaml" ]] \
+    && echo "ok   a 400 KB files page is read through stdin (103 paths)" || { echo "FAIL large files page: $(head -c 200 <<<"$got")"; fail=1; }
+fi
+
 [[ "${fail}" == 0 ]] && echo "PASS cicd_validate_test" || exit 1
