@@ -107,7 +107,7 @@ spec:
         while true; do
           checks_json="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
             -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/check-runs")"
+            "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/check-runs?per_page=100")"
 
           pending=()
           pac_apps={{ include "glidepath-catalog.pacAppNames" . | squote }}

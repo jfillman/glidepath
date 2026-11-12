@@ -100,7 +100,7 @@ spec:
 
         checks_json="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
           -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
-          "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs")"
+          "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")"
 
         # Checked by name (not "were all check-runs green") so an unrelated future
         # Check some other tool adds can't cause a false positive/negative.
