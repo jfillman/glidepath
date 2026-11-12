@@ -127,6 +127,15 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: charts/glidepath-catalog/tests/detect_bypass_merge_test.sh
 
+  # The propose-class merge audit for app repos (detect-propose-merge): a PR marked for a person to merge, merged by a bot, an
+  # agents' login or no named account, is reported; a person's merge and an unmarked PR are quiet.
+  detect-propose-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: charts/glidepath-catalog/tests/detect_propose_merge_test.sh
+
   # validate-values and policy-validation-gate on a /retest: pr-number arrives as the unsubstituted PaC template.
   retest-pr-number:
     runs-on: ubuntu-latest

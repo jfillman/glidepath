@@ -436,7 +436,9 @@ spec:
         fi
         # The agent-definitions and preflight checks and the agent release (docs/admin/agent-definitions.md), the same way: every repo
         # gets them, and each runs only when agents/ changes. Absent from an older app chart's ConfigMap, so only when there.
-        for f in pull-request-agent-definitions.yaml pull-request-agent-preflight.yaml push-agent-release.yaml; do
+        # push-propose-merge-check.yaml (docs/admin/contract.md, "propose") runs on every push to main and is quiet unless a
+        # PR marked for a person to merge was merged by a bot or an agents' login.
+        for f in pull-request-agent-definitions.yaml pull-request-agent-preflight.yaml push-agent-release.yaml push-propose-merge-check.yaml; do
           if [[ -f "/opt/platform/onboarding-templates/app-repo/${f}" ]]; then
             sed -e "s|<APP_NAME>|${APP_NAME}|g" "/opt/platform/onboarding-templates/app-repo/${f}" > ".tekton/${f}"
           fi

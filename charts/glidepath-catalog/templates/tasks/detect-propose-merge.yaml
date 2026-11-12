@@ -1,0 +1,104 @@
+# catalog/tasks/detect-propose-merge.yaml
+#
+# The post-merge audit for an APP repo's propose-class PRs (docs/admin/contract.md, "propose"). detect-bypass-merge covers
+# gitops repos only. A PR an agent opened for a person to merge (a Flight environment or the release step in cicd.yaml) is
+# marked at its source: the head commit carries `Hangar-Merge: person` (and Clearance's agent-scope check is neutral
+# "needs a person: ..." until the merge). If such a PR merged and its merger is not a person (GitHub account type other
+# than User, a [bot] login, or one of agentGates.agentLogins; or no merger named), that is reported to Slack as a
+# break-glass merge, always (a security signal is not silenceable by notifications.slack.enabled), like detect-bypass-merge.
+# A person's merge is quiet. Never fails the pipeline: it is an alert, not a gate.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: detect-propose-merge
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Alerts Slack when a PR marked for a person to merge (Hangar-Merge - person) was merged by a bot, an agents' login or no named account.
+  params:
+    - name: repo-url
+      type: string
+    - name: pr-number
+      type: string
+    - name: merged
+      type: string
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+    - name: slack-webhook
+      secret:
+        secretName: app-secrets
+        optional: true
+  steps:
+    - name: check
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: github-token-broker-token, mountPath: /var/run/secrets/platform, readOnly: true }
+        - { name: slack-webhook, mountPath: /var/run/secrets/slack, readOnly: true }
+      env:
+        - { name: GITHUB_TOKEN_BROKER_URL, value: "http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token" }
+        - { name: REPO_URL, value: $(params.repo-url) }
+        - { name: PR_NUMBER, value: $(params.pr-number) }
+        - { name: MERGED, value: $(params.merged) }
+        - { name: AGENT_LOGINS, value: {{ join "," .Values.agentGates.agentLogins | quote }} }
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        if [[ "${MERGED}" != "true" ]]; then echo "not a merge - nothing to check."; exit 0; fi
+        owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+        api="https://api.github.com/repos/${owner}/${repo}"
+        gh() { curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+                 -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" "$@"; }
+        pr_json="$(gh "${api}/pulls/${PR_NUMBER}")"
+        head_sha="$(jq -r '.head.sha' <<<"${pr_json}")"
+        merged_by="$(jq -r '.merged_by.login // "unknown"' <<<"${pr_json}")"
+        merged_type="$(jq -r '.merged_by.type // "unknown"' <<<"${pr_json}")"
+        pr_title="$(jq -r '.title' <<<"${pr_json}")"
+        pr_url="$(jq -r '.html_url' <<<"${pr_json}")"
+
+        # Marked for a person: the head commit's trailer, or Clearance's agent-scope check titled "needs a person".
+        msg="$(gh "${api}/commits/${head_sha}" | jq -r '.commit.message')"
+        marked=false
+        if grep -qE '^Hangar-Merge: *person *$' <<<"${msg}"; then marked=true; fi
+        if [[ "${marked}" != "true" ]]; then
+          if gh "${api}/commits/${head_sha}/check-runs?per_page=100" \
+               | jq -e '[.check_runs[] | select(.name == "Clearance / agent-scope") | (.output.title // "") | select(startswith("needs a person"))] | length > 0' >/dev/null; then marked=true; fi
+        fi
+        if [[ "${marked}" != "true" ]]; then echo "PR #${PR_NUMBER} is not marked for a person to merge - nothing to audit."; exit 0; fi
+
+        person=true
+        if [[ "${merged_type}" != "User" || "${merged_by}" == *"[bot]" ]] \
+           || tr ',' '\n' <<<"${AGENT_LOGINS}" | grep -qixF "${merged_by}"; then person=false; fi
+        if [[ "${person}" == "true" ]]; then
+          echo "PR #${PR_NUMBER} (marked for a person) was merged by ${merged_by}, a person - no finding."
+          exit 0
+        fi
+        echo "PROPOSE MERGE BY NON-PERSON: PR #${PR_NUMBER} needed a person to merge it; merged by ${merged_by} (${merged_type})." >&2
+
+        WEBHOOK_URL="$(cat /var/run/secrets/slack/slack-webhook-url 2>/dev/null || true)"
+        if [[ -z "${WEBHOOK_URL}" ]]; then
+          echo "warn: no slack-webhook-url secret mounted - finding recorded in this log only" >&2
+          exit 0
+        fi
+        payload="$(jq -n \
+          --arg headerText "⚠ ${owner}/${repo} · Propose-class PR merged by a non-person" \
+          --arg prTitle "${pr_title}" --arg prUrl "${pr_url}" --arg mergedBy "${merged_by} (${merged_type})" \
+          --arg footer "glidepath · $(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+          def field(l; v): {type: "mrkdwn", text: ("*" + l + "*\n" + v)};
+          {attachments: [{color: "#B91C1C", blocks: [
+            {type: "header", text: {type: "plain_text", text: $headerText, emoji: true}},
+            {type: "section", fields: [field("PR"; "<" + $prUrl + "|" + $prTitle + ">"), field("Merged by"; $mergedBy),
+              field("Why"; "an agent proposed this change for a person to merge")]},
+            {type: "context", elements: [{type: "mrkdwn", text: $footer}]}]}]}')"
+        curl --fail --silent --show-error --max-time 10 --retry 3 --retry-connrefused \
+          -X POST "${WEBHOOK_URL}" -H 'Content-Type: application/json' -d "${payload}"

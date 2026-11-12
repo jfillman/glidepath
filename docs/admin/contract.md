@@ -138,6 +138,11 @@ protection can require anything). Four layers, none of which is a ruleset:
    whose agent-scope is still "needs a person" is held, and a failure after a bot's merge holds it too. `detect-bypass-merge`
    (every gitops repo PR close) reads it as success only when `merged_by` is a person (type `User`, not a `[bot]` login, not in
    `agentGates.agentLogins`); otherwise the merge is reported as a break-glass bypass (Slack, the release log's `bypass`).
+   **App repos too:** every app repo gets `.tekton/push-propose-merge-check.yaml` (onboarding, like the agent-release file), a push-to-main
+   run of the `propose-merge-check` Pipeline: `resolve-merged-pr`, then `detect-propose-merge`. It reads the merged PR's head commit for the
+   `Hangar-Merge: person` trailer (or Clearance's agent-scope check titled "needs a person") and, if the merger is a bot, an agents'
+   login, an account that is not a `User`, or unnamed, alerts Slack (always, not silenceable) naming the PR and the merger. A person's merge
+   and every unmarked PR are quiet; the run never fails.
 
 Layers 3 and 4 need the Clearance GitHub App's checks (`agentGates.clearanceChecks: true`). On a cluster in the fallback
 (`agent-gates-`), layers 1 and 2 hold and the merge is not checked afterwards.
@@ -145,8 +150,8 @@ Layers 3 and 4 need the Clearance GitHub App's checks (`agentGates.clearanceChec
 What this does not do: GitHub still lets any collaborator with write access press merge (an agents' App token has pull-request
 write). The controls are that no tool presses it, that a merge by anything but a person turns a required check red and
 alerts, and that the release path refuses to carry it on. A repo on a paid plan can additionally require the Clearance
-checks and a review in a ruleset ([agent-gates.md](agent-gates.md#making-it-block)). App repos have no detective check of their own
-for a bot merge, apart from Clearance's check turning red.
+checks and a review in a ruleset ([agent-gates.md](agent-gates.md#making-it-block)). App repos have the same detective check
+(`detect-propose-merge`) as gitops repos, so a bot's merge there is alerted too, besides Clearance's check turning red.
 
 #### Rolling out `propose`
 

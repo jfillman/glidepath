@@ -6,6 +6,10 @@ Notable changes to Glidepath. Newest first.
 
 ### A-11: the `propose` scope class (contract version 2)
 
+- App repos get the post-merge audit too: onboarding delivers `.tekton/push-propose-merge-check.yaml` (Pipeline `propose-merge-check`, Task
+  `detect-propose-merge`): a PR marked for a person (`Hangar-Merge: person`, or Clearance's "needs a person" check) merged by a bot,
+  an agents' login, a non-User account or no named merger is alerted to Slack. Quiet otherwise; never fails the run.
+
 - `agentScope` gains **`propose`**: an agent may add or change a Flight environment, the release step into it and a new
   environment's `cluster` and `production`, but only in a pull request a person must merge. Rules may set `proposeOn`
   (`added`, `changed`, `removed`): any other kind of change to the field is `human`, so a new environment's cluster is
