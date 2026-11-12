@@ -18,6 +18,10 @@
 #              open     - change freely; a human still merges the PR
 #              tighten  - may only move in the stricter direction (see `order`)
 #              human    - never in an agent's PR
+#              propose  - an agent may make the change, but only in a PR that a person must merge (a PR the tool
+#                         that opens it marks human-merge); the validator reports it as `needsPerson`, not a problem
+# proposeOn  propose only: the kinds of change (added, changed, removed) that are propose; any other kind of
+#            change to the field is human. Unset: every kind.
 # order      tighten only: bool (false < true), enum (the list, loosest first), int (smaller is looser)
 # default    tighten only: the value an unset field means, when the schema itself declares none
 
@@ -41,8 +45,12 @@ fields:
   - { pattern: /deploy/environments/*/lambda, owner: team, risk: high, agentScope: human }
   - { pattern: /deploy/environments/*/azureContainerApps, owner: team, risk: high, agentScope: human }
   - { pattern: /deploy/environments/*/chart, owner: team, risk: high, agentScope: human }
-  - { pattern: /deploy/environments/*/cluster, owner: team, risk: high, agentScope: human }
-  - { pattern: /deploy/environments/*/production, owner: team, risk: medium, agentScope: human }
+  # A NEW Flight environment must name its cluster and may say production (an agent proposes it, a person merges
+  # it); changing or removing them on an existing environment re-homes or re-classifies it, a human's change.
+  - { pattern: /deploy/environments/*/cluster, owner: team, risk: high, agentScope: propose, proposeOn: [added],
+      why: "Where a Flight environment runs. Naming it for a new environment is a proposal a person merges; moving an existing one is a human's change." }
+  - { pattern: /deploy/environments/*/production, owner: team, risk: medium, agentScope: propose, proposeOn: [added],
+      why: "Marks the environment that serves real users. Declaring it on a new environment is a proposal a person merges; changing it on an existing one is a human's change." }
   - { pattern: /api, owner: team, risk: medium, agentScope: human,
       why: "The spec the api-compat release gate compares; moving it changes what the gate checks." }
   - { pattern: /pipelines/*/steps/*/cluster, owner: team, risk: high, agentScope: human }
@@ -68,7 +76,8 @@ fields:
   - { pattern: /ephemeralEnvironments, owner: team, risk: low, agentScope: open }
   - { pattern: /notifications, owner: team, risk: low, agentScope: open }
   - { pattern: /deploy/strategy, owner: team, risk: medium, agentScope: open }
-  # Ground entries only: GP-SCOPE-003 refuses any change to a Flight entry or a tier.
+  # Ground entries are open. A Flight entry added or changed is propose (needs_person in tools/cicd_scope.py); GP-SCOPE-003
+  # refuses removing one and any tier change.
   - { pattern: /deploy/environments, owner: team, risk: medium, agentScope: open }
   # GP-SCOPE-002 also refuses a flow that loses a check-ride or a required test step.
   - { pattern: /pipelines, owner: team, risk: medium, agentScope: open }

@@ -209,8 +209,69 @@ class Scope(unittest.TestCase):
     def test_gitops_repo(self):
         self.assertEqual(self.scope(lambda d: d["pipelines"]["ci"]["steps"][5].update(gitopsRepo="gitops-evil")), ["GP-SCOPE-001"])
 
-    def test_flight_env_added(self):
-        self.assertEqual(self.scope(lambda d: d["deploy"]["environments"].append({"name": "staging", "tier": "flight"})), ["GP-SCOPE-003"])
+    def refused(self, fn):
+        """The GP-SCOPE rule ids alone (the same change can also trip a schema or convention rule)."""
+        return sorted({p["rule"] for p in cicd_scope.scope_problems(BASE, edit(fn), SCOPE)})
+
+    def needs(self, fn):
+        """The pointers of what the change needs a person to merge (the propose class)."""
+        return sorted(n["pointer"] for n in cicd_scope.needs_person(BASE, edit(fn), SCOPE))
+
+    # --- the propose class: an agent may add or change a Flight environment, in a PR a person merges ---------
+    STAGING = {"name": "staging", "tier": "flight", "cluster": "hangar-prod"}
+
+    def test_flight_env_added_is_propose_not_refused(self):
+        add = lambda d: d["deploy"]["environments"].append(dict(self.STAGING))
+        self.assertEqual(self.scope(add), [])
+        self.assertEqual(self.needs(add), sorted(["/deploy/environments/staging", "/deploy/environments/staging/cluster"]))
+
+    def test_new_flight_env_may_say_production(self):
+        add = lambda d: d["deploy"]["environments"].append(dict(self.STAGING, name="prod2", production=True))
+        self.assertEqual(self.scope(add), [])
+        self.assertIn("/deploy/environments/prod2/production", self.needs(add))
+
+    def test_existing_env_cluster_stays_human(self):
+        self.assertEqual(self.scope(lambda d: d["deploy"]["environments"][2].update(cluster="other")), ["GP-SCOPE-001"])
+
+    def test_existing_env_production_stays_human(self):
+        self.assertEqual(self.scope(lambda d: d["deploy"]["environments"][2].update(production=False)), ["GP-SCOPE-001"])
+        self.assertEqual(self.scope(lambda d: d["deploy"]["environments"][2].pop("production")), ["GP-SCOPE-001"])
+
+    def test_flight_env_cloud_and_chart_blocks_stay_human(self):
+        add = lambda d: d["deploy"]["environments"].append(dict(self.STAGING, chart={"version": "9.9.9"}))
+        self.assertEqual(self.refused(add), ["GP-SCOPE-001"])
+        add = lambda d: d["deploy"]["environments"].append(dict(self.STAGING, ecs={"cluster": "x", "service": "y", "containerName": "z", "region": "us-east-1"}))
+        self.assertEqual(self.refused(add), ["GP-SCOPE-001"])
+
+    def test_flight_env_removed_is_refused(self):
+        self.assertEqual(self.refused(lambda d: d["deploy"]["environments"].pop(2)), ["GP-SCOPE-001", "GP-SCOPE-003"])
+
+    def test_flight_env_renamed_is_removed_and_added(self):
+        self.assertEqual(self.refused(lambda d: d["deploy"]["environments"][2].update(name="prod-eu")), ["GP-SCOPE-001", "GP-SCOPE-003"])
+
+    def test_release_step_into_a_flight_env_is_propose(self):
+        add = lambda d: d["pipelines"]["ci"]["steps"].insert(5, {"stage": "release", "env": "prod"})
+        self.assertEqual(self.scope(add), [])
+        self.assertEqual(self.needs(add), ["/pipelines/ci/steps/5"])
+
+    def test_release_step_unchanged_needs_nothing(self):
+        self.assertEqual(self.needs(lambda d: d["build"]["cache"].update(enabled=True)), [])
+
+    def test_ground_and_open_changes_need_no_person(self):
+        self.assertEqual(self.needs(lambda d: d["deploy"]["environments"].insert(2, {"name": "qa", "tier": "ground"})), [])
+        self.assertEqual(self.needs(lambda d: d["governance"].update(sbom=True)), [])
+
+    def test_a_refused_change_is_still_refused_with_a_propose_part(self):
+        def both(d):
+            d["deploy"]["environments"].append(dict(self.STAGING))
+            d["secrets"].append({"name": "AWS", "key": "aws"})
+        self.assertEqual(self.scope(both), ["GP-SCOPE-001"])
+
+    def test_agent_adding_a_new_file_with_a_flight_env(self):
+        self.assertIn("/deploy/environments/prod", [n["pointer"] for n in cicd_scope.needs_person(None, BASE, SCOPE)])
+
+    def test_tier_flight_to_ground_is_refused(self):
+        self.assertEqual(self.refused(lambda d: d["deploy"]["environments"][2].update(tier="ground")), ["GP-SCOPE-003"])
 
     def test_tier_changed(self):
         self.assertEqual(self.scope(lambda d: d["deploy"]["environments"][1].update(tier="flight")), ["GP-SCOPE-003"])
@@ -223,6 +284,18 @@ class Scope(unittest.TestCase):
 
     def test_new_file_with_secrets(self):
         self.assertIn("GP-SCOPE-001", cicd_scope_rules(None, BASE))
+
+    def test_cli_says_a_person_must_merge(self):
+        with tempfile.TemporaryDirectory() as d:
+            head, base = Path(d) / "cicd.yaml", Path(d) / "base.yaml"
+            base.write_text(yaml.safe_dump(BASE))
+            head.write_text(yaml.safe_dump(edit(lambda x: x["deploy"]["environments"].append({"name": "staging", "tier": "flight", "cluster": "hangar-prod"}))))
+            res = subprocess.run([sys.executable, str(VALIDATE), str(head), "--agent", "--base", str(base)], capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, res.stdout)
+            self.assertIn("needs a person to merge: /deploy/environments/staging", res.stdout)
+            js = subprocess.run([sys.executable, str(VALIDATE), str(head), "--agent", "--base", str(base), "--format", "json"], capture_output=True, text=True)
+            out = json.loads(js.stdout)
+            self.assertEqual((out["valid"], len(out["needsPerson"])), (True, 2))
 
     def test_base_ref(self):
         with tempfile.TemporaryDirectory() as d:
@@ -265,7 +338,23 @@ class Contract(unittest.TestCase):
     def test_every_schema_leaf_has_a_scope(self):
         fields = CONTRACT["cicd"]["fields"]
         self.assertGreater(len(fields), 50)
-        self.assertTrue(all(f["agentScope"] in ("open", "tighten", "human") for f in fields))
+        self.assertTrue(all(f["agentScope"] in ("open", "tighten", "human", "propose") for f in fields))
+
+    def test_propose_rules_are_few_and_named(self):
+        # The class is deny-by-default: exactly these two pointer rules are propose, each only for a new environment.
+        propose = {r["pattern"]: r.get("proposeOn") for r in SCOPE["rules"] if r["agentScope"] == "propose"}
+        self.assertEqual(propose, {"/deploy/environments/*/cluster": ["added"], "/deploy/environments/*/production": ["added"]})
+        self.assertEqual(set(SCOPE["classes"]), {"open", "tighten", "human", "propose"})
+
+    def test_propose_never_covers_what_constrains_an_agent(self):
+        # secrets, signers, deploy identity, gates, api and the gitops fields stay human: no propose rule reaches them.
+        for ptr in ("/secrets", "/governance/allowedCommitSigners", "/deploy/target", "/deploy/chart", "/deploy/ecs",
+                    "/deploy/lambda", "/deploy/azureContainerApps", "/deploy/environments/prod/chart",
+                    "/deploy/environments/prod/ecs", "/api", "/pipelines/ci/steps/3/gitopsRepo",
+                    "/pipelines/ci/steps/3/manifestPath", "/pipelines/ci/steps/3/cluster", "/governance/sast"):
+            r = cicd_scope.rule_for(SCOPE["rules"], ptr)
+            self.assertNotEqual(r["agentScope"], "propose", ptr)
+            self.assertEqual(cicd_scope.effective_scope(r, "added"), "human" if r["agentScope"] == "human" else r["agentScope"], ptr)
 
     def test_tighten_rules_have_an_order_and_default(self):
         for r in SCOPE["rules"]:
@@ -349,6 +438,28 @@ class Serve(unittest.TestCase):
         self.assertEqual(out["problems"], [])
         self.assertEqual(out["changes"], [{"pointer": "/build/cache/enabled", "change": "changed", "before": False, "after": True, "agentScope": "open"}])
         self.assertEqual(out["contractVersion"], CONTRACT["contractVersion"])
+
+    def test_flight_env_added_is_valid_and_needs_a_person(self):
+        head = edit(lambda d: d["deploy"]["environments"].append({"name": "staging", "tier": "flight", "cluster": "hangar-prod"}))
+        out = self.post({"head": yaml.safe_dump(head), "base": yaml.safe_dump(BASE), "agent": True})
+        self.assertTrue(out["valid"])
+        self.assertEqual([p["rule"] for p in out["problems"]], [])
+        self.assertEqual(sorted(n["pointer"] for n in out["needsPerson"]), ["/deploy/environments/staging", "/deploy/environments/staging/cluster"])
+        self.assertIn(("/deploy/environments/staging/cluster", "propose"), [(c["pointer"], c["agentScope"]) for c in out["changes"]])
+        # The same change by a person (agent false): nothing needs a person, there is no agent PR.
+        out = self.post({"head": yaml.safe_dump(head), "base": yaml.safe_dump(BASE), "agent": False})
+        self.assertEqual(out["needsPerson"], [])
+
+    def test_an_invalid_change_lists_no_needs(self):
+        head = edit(lambda d: (d["deploy"]["environments"].append({"name": "staging", "tier": "flight", "cluster": "hangar-prod"}), d["secrets"].append({"name": "A", "key": "a"})))
+        out = self.post({"head": yaml.safe_dump(head), "base": yaml.safe_dump(BASE), "agent": True})
+        self.assertFalse(out["valid"])
+        self.assertEqual(out["needsPerson"], [])
+
+    def test_a_changed_cluster_is_reported_human_not_propose(self):
+        head = edit(lambda d: d["deploy"]["environments"][2].update(cluster="other"))
+        out = self.post({"head": yaml.safe_dump(head), "base": yaml.safe_dump(BASE), "agent": True})
+        self.assertEqual([c["agentScope"] for c in out["changes"] if c["pointer"].endswith("/cluster")], ["human"])
 
     def test_agent_loosening_a_gate(self):
         head = yaml.safe_dump(edit(lambda d: d["governance"].update(sast=False)))

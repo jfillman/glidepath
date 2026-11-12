@@ -104,6 +104,24 @@ expect "clearance: no agent-scope check (App not installed) is a bypass" "$(bypa
 clearance_scenario cc-neutral ""; jq '.check_runs |= map(if .name == "Clearance / agent-identity" then .conclusion = "neutral" else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
 run gitops-gate-api step-clearance.sh
 expect "clearance: neutral (unattested) is not a bypass" "$(bypass)" ""
+# The propose class: agent-scope is neutral, titled "needs a person: ...", until a person merges the PR. Merged by a person it is
+# no bypass (Clearance's replacement may not be on the check list yet); merged by a bot or an agents' login it is one.
+needs_person_scenario() { # <name> <merger login> <merger type>
+  clearance_scenario "$1" ""
+  jq '.check_runs |= map(if .name == "Clearance / agent-scope" then .conclusion = "neutral" | .output = {title: "needs a person: cicd.yaml"} else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+  jq --arg l "$2" --arg t "$3" '.merged_by = {login: $l, type: $t}' "$FX/pr.json" > "$FX/x" && mv "$FX/x" "$FX/pr.json"
+}
+needs_person_scenario np-person riley User; run gitops-gate-api step-clearance.sh
+expect "propose: needs-a-person neutral, merged by a person: no bypass" "$(bypass)" ""
+needs_person_scenario np-bot "some-app[bot]" Bot; run gitops-gate-api step-clearance.sh
+expect "propose: needs-a-person neutral, merged by a bot: bypass" "$(bypass)" "agent-scope (neutral)"
+needs_person_scenario np-bot-login "hangar-autopilot-agents[bot]" User; run gitops-gate-api step-clearance.sh
+expect "propose: needs-a-person neutral, merged by the agents' login: bypass" "$(bypass)" "agent-scope (neutral)"
+needs_person_scenario np-unknown riley User; jq 'del(.merged_by)' "$FX/pr.json" > "$FX/x" && mv "$FX/x" "$FX/pr.json"; run gitops-gate-api step-clearance.sh
+expect "propose: needs-a-person neutral, merger unknown: bypass" "$(bypass)" "agent-scope (neutral)"
+needs_person_scenario np-other riley User; jq '.check_runs |= map(if .name == "Clearance / agent-identity" then .conclusion = "neutral" | .output = {title: "Warning: unattested"} else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+run gitops-gate-api step-clearance.sh
+expect "propose: an unattested neutral on another check stays a warning" "$(bypass)" ""
 # a check run of another name (a Glidepath-named agent-identity-) is not Clearance's
 clearance_scenario cc-impostor ""; jq '.check_runs |= map(if .name == "Clearance / agent-identity" then .name = "Glidepath / agent-identity-" else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
 run gitops-gate-api step-clearance.sh

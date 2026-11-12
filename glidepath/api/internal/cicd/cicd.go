@@ -66,6 +66,14 @@ type Change struct {
 	AgentScope string          `json:"agentScope"`
 }
 
+// NeedsPerson is one part of an agent's change that the contract's `propose` class lets it make only in a pull request
+// a person merges: a Flight environment added or changed, a release step into one, a new environment's cluster.
+type NeedsPerson struct {
+	Pointer string `json:"pointer"`
+	Change  string `json:"change"` // added, removed, changed
+	Message string `json:"message"`
+}
+
 // Base is the file the change was applied to.
 type Base struct {
 	Repo    string `json:"repo"`
@@ -76,21 +84,23 @@ type Base struct {
 
 // Result is the answer. Valid is the validator's verdict on the resulting file; the request itself succeeded.
 type Result struct {
-	Valid           bool      `json:"valid"`
-	Problems        []Problem `json:"problems"`
-	Changes         []Change  `json:"changes"`
-	Summary         string    `json:"summary"`
-	Base            Base      `json:"base"`
-	Resulting       string    `json:"resulting"`
-	ContractVersion int       `json:"contractVersion"`
+	Valid           bool          `json:"valid"`
+	Problems        []Problem     `json:"problems"`
+	Changes         []Change      `json:"changes"`
+	NeedsPerson     []NeedsPerson `json:"needsPerson"`
+	Summary         string        `json:"summary"`
+	Base            Base          `json:"base"`
+	Resulting       string        `json:"resulting"`
+	ContractVersion int           `json:"contractVersion"`
 }
 
 // verdict is what the validator answers.
 type verdict struct {
-	Valid           bool      `json:"valid"`
-	Problems        []Problem `json:"problems"`
-	Changes         []Change  `json:"changes"`
-	ContractVersion int       `json:"contractVersion"`
+	Valid           bool          `json:"valid"`
+	Problems        []Problem     `json:"problems"`
+	Changes         []Change      `json:"changes"`
+	NeedsPerson     []NeedsPerson `json:"needsPerson"`
+	ContractVersion int           `json:"contractVersion"`
 }
 
 // Validator calls `glidepath validate --serve` (the sidecar).
@@ -127,6 +137,9 @@ func (v *Validator) validate(ctx context.Context, head string, base *string, age
 	}
 	if out.Changes == nil {
 		out.Changes = []Change{}
+	}
+	if out.NeedsPerson == nil {
+		out.NeedsPerson = []NeedsPerson{}
 	}
 	return &out, nil
 }
@@ -206,8 +219,11 @@ func (c *Client) Validate(ctx context.Context, app *apps.App, req Request) (*Res
 	if err != nil {
 		return nil, err
 	}
-	out.Valid, out.Problems, out.Changes, out.ContractVersion = v.Valid, v.Problems, v.Changes, v.ContractVersion
+	out.Valid, out.Problems, out.Changes, out.NeedsPerson, out.ContractVersion = v.Valid, v.Problems, v.Changes, v.NeedsPerson, v.ContractVersion
 	out.Summary = Summarize(out.Problems, out.Changes)
+	if len(out.NeedsPerson) > 0 {
+		out.Summary += "; needs a person to merge"
+	}
 	return out, nil
 }
 

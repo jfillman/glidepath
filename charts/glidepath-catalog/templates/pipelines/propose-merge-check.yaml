@@ -1,0 +1,48 @@
+# catalog/pipelines/propose-merge-check.yaml
+#
+# Runs on a push to main of an APP repo (the onboarding template push-propose-merge-check.yaml): finds the merged PR
+# (resolve-merged-pr: a push that is not a PR merge skips the rest) and has detect-propose-merge report a PR marked for
+# a person to merge that a bot, an agents' login or no named account merged. The app-repo counterpart of
+# bypass-merge-check's break-glass audit (docs/admin/contract.md, "propose").
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: propose-merge-check
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: After an app-repo push to main, finds the merged PR and alerts Slack if a propose-class PR (marked for a person) was merged by a non-person.
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+      default: ""
+  tasks:
+    - name: resolve-merged-pr
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: resolve-merged-pr }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+    - name: detect-propose-merge
+      runAfter: [resolve-merged-pr]
+      when:
+        - input: $(tasks.resolve-merged-pr.results.pr-number)
+          operator: notin
+          values: [""]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: detect-propose-merge }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: pr-number, value: $(tasks.resolve-merged-pr.results.pr-number) }
+        - { name: merged, value: $(tasks.resolve-merged-pr.results.merged) }

@@ -171,7 +171,19 @@ glidepath-catalog.neutralOkJq: a neutral conclusion of another App's check (Clea
 Applies only to the gates in $ext; a Glidepath gate's neutral is unchanged.
 */ -}}
 {{- define "glidepath-catalog.neutralOkJq" -}}
-(if .conclusion == "neutral" and ($ext[$g] // null) != null then .conclusion = "success" else . end)
+(if .conclusion == "neutral" and ($ext[$g] // null) != null and ((.output.title // "") | startswith("needs a person") | not) then .conclusion = "success" else . end)
+{{- end -}}
+
+{{- /*
+glidepath-catalog.needsPersonOkJq: the exception to neutralOkJq. Clearance's agent-scope check is neutral, titled "needs a person: <paths>",
+on an agent's PR that changes something only a person may merge (the contract's `propose` class). That neutral is NOT success
+to any reader: until a person merges the PR it is a pending decision, and Clearance replaces it with success when a person merged it, or
+failure when an agent or bot did (internal/githubapp, docs/provenance-app.md). The one reader that runs at the moment of the merge,
+detect-bypass-merge, may beat Clearance's replacement to the check list, so it reads that neutral as success when jq's $person is true
+(the PR's merger is not a bot or an agents' login), and as the neutral it is otherwise. Chain it after neutralOkJq.
+*/ -}}
+{{- define "glidepath-catalog.needsPersonOkJq" -}}
+(if .conclusion == "neutral" and ($ext[$g] // null) != null and ((.output.title // "") | startswith("needs a person")) and $person then .conclusion = "success" else . end)
 {{- end -}}
 
 {{- /*

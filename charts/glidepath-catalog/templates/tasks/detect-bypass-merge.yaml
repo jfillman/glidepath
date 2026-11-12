@@ -73,6 +73,7 @@ spec:
           value: $(params.pr-number)
         - name: MERGED
           value: $(params.merged)
+        - { name: AGENT_LOGINS, value: {{ join "," .Values.agentGates.agentLogins | quote }} }
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -95,6 +96,11 @@ spec:
           "https://api.github.com/repos/${owner}/${repo}/pulls/${PR_NUMBER}")"
         head_sha="$(jq -r '.head.sha' <<<"${pr_json}")"
         merged_by="$(jq -r '.merged_by.login // "unknown"' <<<"${pr_json}")"
+        # A person merged it: not a bot (GitHub's account type, or a [bot] login) and not one of the agents' logins. An agent
+        # PR that needs a person (Clearance's agent-scope check, neutral "needs a person: ...") is no bypass when one did.
+        person=true
+        if [[ "$(jq -r '.merged_by.type // "unknown"' <<<"${pr_json}")" != "User" || "${merged_by}" == *"[bot]" ]] \
+           || tr ',' '\n' <<<"${AGENT_LOGINS}" | grep -qixF "${merged_by}"; then person=false; fi
         pr_title="$(jq -r '.title' <<<"${pr_json}")"
         pr_url="$(jq -r '.html_url' <<<"${pr_json}")"
 
@@ -117,8 +123,8 @@ spec:
           # this every gate reads back "missing" here, which would report BYPASS DETECTED
           # on every single normal merge regardless of real outcome - confirmed live
           # 2026-09-06 this was silently broken since 9706649 the day before.
-          conclusion="$(jq -r --argjson apps "${pac_apps}" --argjson ext "${ext_checks}" --arg g "${gate}" \
-            '[.check_runs[] | select({{ include "glidepath-catalog.checkMatchJq" . }}) | {{ include "glidepath-catalog.neutralOkJq" . }}][0].conclusion // "missing"' <<<"${checks_json}")"
+          conclusion="$(jq -r --argjson apps "${pac_apps}" --argjson ext "${ext_checks}" --arg g "${gate}" --argjson person "${person}" \
+            '[.check_runs[] | select({{ include "glidepath-catalog.checkMatchJq" . }}) | {{ include "glidepath-catalog.neutralOkJq" . }} | {{ include "glidepath-catalog.needsPersonOkJq" . }}][0].conclusion // "missing"' <<<"${checks_json}")"
           if [[ "${conclusion}" != "success" ]]; then
             failed_checks="${failed_checks}${failed_checks:+, }${gate} (${conclusion})"
           fi

@@ -162,14 +162,20 @@ spec:
         problems = result["problems"]
         errors = [p for p in problems if p["severity"] == "error"]
         warnings = [p for p in problems if p["severity"] != "error"]
+        # Agent PRs only: what the contract's `propose` class lets an agent change, in a PR a person must merge.
+        needs = [] if errors else result.get("needsPerson") or []
 
         print(f"cicd.yaml at {meta['head'][:7]} ({where}): schema and convention rules" +
               (f"; agent rules against the merge base {meta['mergeBase'][:7]}" +
                ("" if meta.get("base") else " (no cicd.yaml there: every field counts as added)") if meta.get("agent") else ""))
         for p in problems:
             print(f"{p['severity'].upper():7} {p['rule']}  {p['pointer']}: {p['message']}" + (f"\n        fix: {p['hint']}" if p.get("hint") else ""))
+        for n in needs:
+            print(f"NEEDS A PERSON  {n['pointer']}: {n['message']}")
         rules = ", ".join(sorted({p["rule"] for p in errors}))
         summary = (f"{len(errors)} error(s): {rules}" if errors else "valid") + (f", {len(warnings)} warning(s)" if warnings else "")
+        if needs:
+            summary += "; needs a person to merge: " + ", ".join(n["pointer"] for n in needs)
         try:
             Path("$(results.findings-summary.path)").write_text(summary)
         except OSError as e:  # the verdict is in the log and the exit code either way
@@ -177,4 +183,7 @@ spec:
         if errors:
             print(f"FAIL: cicd-validate - {summary}. Fix cicd.yaml and push, or `tools/glidepath-validate cicd.yaml` locally first.")
             sys.exit(1)
+        if needs:
+            print("This is an agent's change to a Flight environment (the contract's `propose` class). It passes, but only a "
+                  "person may merge it: Clearance's agent-scope check shows neutral until a person does, and fails if an agent merges it.")
         print(f"PASS: cicd-validate - {summary}")

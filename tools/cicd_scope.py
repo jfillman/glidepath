@@ -6,16 +6,24 @@ gate an agent meets before it opens a pull request and the check that pull reque
 CI are the same code. Change it here, then copy it there.
 
     problems = scope_problems(base, head, contract["scope"])
+    needs = needs_person(base, head, contract["scope"])   # what only a person's merge may land
 
 `base` and `head` are the parsed cicd.yaml before and after the change (a dict, or None for a file
 that doesn't exist yet). `contract["scope"]` is the `scope` block of contract/glidepath-contract.json.
-Each problem is a dict: pointer, rule, message, hint.
+Each problem is a dict: pointer, rule, message, hint. Each needs-person entry is a dict: pointer, change, message.
+
+Scope classes (a rule's `agentScope`): open, tighten, human, and propose: a change an agent may make only in a
+pull request that a person merges. A propose change is not a problem, so `scope_problems` stays empty for it;
+`needs_person` lists it, and the caller (the tool that opens the PR) marks the PR human-merge. A rule may set
+`proposeOn` (a list of "added", "changed", "removed"): the kinds of change that are propose; any other kind of
+change to that field is human. So a NEW Flight environment's `cluster` is propose and an EXISTING one's is not.
 
 Rules:
   GP-SCOPE-001  a human-only field changed
   GP-SCOPE-002  a gate loosened: a tighten-only field moved the loose way, or a flow lost a
                 check-ride step or a required test step
-  GP-SCOPE-003  a Flight environment added, removed or changed, or an environment's tier changed
+  GP-SCOPE-003  a Flight environment removed, or an environment's tier changed (a Flight environment
+                added or changed, and the release step into one, is propose: see needs_person)
 """
 from __future__ import annotations
 
@@ -50,6 +58,21 @@ def pointer_matches(pattern: str, pointer: str) -> bool:
         return (pat[i] == "*" or pat[i] == ptr[j]) and go(i + 1, j + 1)
 
     return go(0, 0)
+
+
+def kind_of(base: Any, head: Any) -> str:
+    return "removed" if head is MISSING else "added" if base is MISSING else "changed"
+
+
+def effective_scope(rule: dict | None, kind: str) -> str:
+    """The scope a change of this kind has under the rule: a propose rule that names `proposeOn` is propose only for
+    those kinds and human for the others; no rule is human."""
+    if rule is None:
+        return "human"
+    sc = rule["agentScope"]
+    if sc == "propose" and kind not in (rule.get("proposeOn") or ("added", "changed", "removed")):
+        return "human"
+    return sc
 
 
 def rule_for(rules: list[dict], pointer: str) -> dict | None:
@@ -177,10 +200,10 @@ def _structural(base: Any, head: Any) -> list[dict]:
         if b and h and b.get("tier") != h.get("tier"):
             out.append(_p(ptr + "/tier", "GP-SCOPE-003", f"environment '{name}' changed tier from {b.get('tier')} to {h.get('tier')}",
                           "Moving an environment between Ground and Flight changes which gates guard it. A human makes that change."))
-        elif "flight" in ((b or {}).get("tier"), (h or {}).get("tier")) and b != h:
-            what = "added" if not b else "removed" if not h else "changed"
-            out.append(_p(ptr, "GP-SCOPE-003", f"Flight environment '{name}' {what}",
-                          "Flight environments are changed by a human. An agent may add or change Ground environments."))
+        elif "flight" in ((b or {}).get("tier"), (h or {}).get("tier")) and b != h and not h:
+            out.append(_p(ptr, "GP-SCOPE-003", f"Flight environment '{name}' removed",
+                          "Removing a Flight environment is a human's change. An agent may propose adding or changing one, "
+                          "in a pull request a person merges."))
     bG, hG = _gate_counts(base), _gate_counts(head)
     for flow, (rides, tests) in bG.items():
         r2, t2 = hG.get(flow, (0, 0))
@@ -205,8 +228,8 @@ def scope_problems(base: Any, head: Any, scope: dict) -> list[dict]:
     problems = []
     for ptr, b, h in changes(base if base is not None else {}, head if head is not None else {}):
         r = rule_for(rules, ptr)
-        what = "removed" if h is MISSING else "added" if b is MISSING else "changed"
-        if r is None or r["agentScope"] == "human":
+        what = kind_of(b, h)
+        if effective_scope(r, what) == "human":
             problems.append(_p(ptr, "GP-SCOPE-001", f"{ptr} {what}: a human-only field" + ("" if r else " (no rule covers it)"),
                                (r or {}).get("why") or "Ask a human to make this change, or leave the field as it was."))
         elif r["agentScope"] == "tighten" and loosened(r, b, h):
@@ -215,6 +238,54 @@ def scope_problems(base: Any, head: Any, scope: dict) -> list[dict]:
     seen = {(p["pointer"], p["rule"]) for p in problems}
     problems += [p for p in _structural(base, head) if (p["pointer"], p["rule"]) not in seen]
     return problems
+
+
+def _flight_envs(doc: Any) -> set[str]:
+    return {n for n, e in _envs(doc).items() if e.get("tier") == "flight"}
+
+
+def _release_steps(doc: Any) -> list[tuple[str, int, dict]]:
+    out = []
+    for flow, body in (((doc or {}).get("pipelines")) or {}).items():
+        for i, s in enumerate(_steps(body)):
+            if (s.get("stage") or s.get("task")) == "release":
+                out.append((flow, i, s))
+    return out
+
+
+def needs_person(base: Any, head: Any, scope: dict) -> list[dict]:
+    """What in the change an agent may propose but only a person may merge (the `propose` class), as dicts of
+    pointer, change, message: a change to a field whose rule is propose (for that kind of change), a Flight
+    environment added or changed (`/deploy/environments/<name>`), and a release step into a Flight environment added
+    or changed. Empty for a change that is all open or tighten. It lists what scope_problems does not refuse; a
+    change that scope_problems refuses is refused whole, whatever this lists."""
+    base_doc, head_doc = base if base is not None else {}, head if head is not None else {}
+    found: dict[str, dict] = {}
+
+    def note(ptr: str, change: str, message: str) -> None:
+        found.setdefault(ptr, {"pointer": ptr, "change": change, "message": message})
+
+    for ptr, b, h in changes(base_doc, head_doc):
+        r = rule_for(scope["rules"], ptr)
+        kind = kind_of(b, h)
+        if r is not None and r["agentScope"] == "propose" and effective_scope(r, kind) == "propose":
+            note(ptr, kind, f"{ptr} {kind}: a propose field, which needs a person to merge")
+    bE, hE = _envs(base_doc), _envs(head_doc)
+    for name, h in hE.items():
+        b = bE.get(name)
+        if h.get("tier") == "flight" and b != h:
+            note(f"/deploy/environments/{_esc(name)}", "added" if b is None else "changed",
+                 f"Flight environment '{name}' {'added' if b is None else 'changed'}: needs a person to merge")
+    flight = _flight_envs(head_doc)
+    before = [s for _, _, s in _release_steps(base_doc)]
+    for flow, i, s in _release_steps(head_doc):
+        if s.get("env") in flight:
+            if s in before:
+                before.remove(s)
+            else:
+                note(f"/pipelines/{_esc(flow)}/steps/{i}", "added",
+                     f"a release step into Flight environment '{s.get('env')}' added or changed: needs a person to merge")
+    return list(found.values())
 
 
 def _show(v: Any, rule: dict) -> str:

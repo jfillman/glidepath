@@ -247,6 +247,11 @@ expect "clearance green: one event" "$(events)" 1
 scenario cc-neutral; cc_checks success success
 jq '(.check_runs[] | select(.name == "Clearance / agent-identity")).conclusion = "neutral"' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"; run
 expect "clearance unattested (neutral): one event" "$(events)" 1
+# The propose class: agent-scope neutral titled "needs a person: ..." is pending, not success: no promotion on it, until Clearance
+# replaces it with success (a person merged) -- never on the strength of the neutral alone, and never when an agent merged (failure).
+scenario cc-needs-person; cc_checks success success
+jq '(.check_runs[] | select(.name == "Clearance / agent-scope")) |= (.conclusion = "neutral" | .output = {title: "needs a person: cicd.yaml"})' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"; run
+expect "clearance needs-a-person (neutral): no event" "$(events)" 0
 scenario cc-red; cc_checks success failure; run
 expect "clearance scope red: no event" "$(events)" 0
 expect "clearance scope red: says so" "$(grep -c 'agent-scope (failure)' "$FX/out")" 1

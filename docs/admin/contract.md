@@ -72,7 +72,8 @@ every field has an `agentScope`:
 |---|---|---|
 | `open` | An agent may change it | `build`, `test`, `ephemeralEnvironments`, `notifications`, `deploy.strategy`, Ground entries in `deploy.environments`, `pipelines` |
 | `tighten` | Only in the stricter direction | `governance.sast`, `imageScan`, `policyCheck`, `sbom` (off to on), `governance.githubMerge.mode` (`""` < `merger` < `strict`), `githubMerge.requiredApprovals` (up), a test step's `required` (false to true) |
-| `human` | Never in an agent's PR | `secrets`, `governance.allowedCommitSigners`, `deploy.target`, `deploy.releaseFile`, `deploy.chart`, the cloud blocks (`ecs`, `lambda`, `azureContainerApps`, globally or per environment), an environment's `cluster` and `production`, `api`, a step's `cluster`, `gitopsRepo` and `manifestPath` |
+| `propose` | Only in a PR that a person must merge ([below](#propose-what-an-agent-may-change-only-in-a-pull-request-a-person-merges)) | A Flight environment added or changed in `deploy.environments`, the release step into one, a **new** environment's `cluster` and `production` |
+| `human` | Never in an agent's PR | `secrets`, `governance.allowedCommitSigners`, `deploy.target`, `deploy.releaseFile`, `deploy.chart`, the cloud blocks (`ecs`, `lambda`, `azureContainerApps`, globally or per environment), an **existing** environment's `cluster` and `production`, `api`, a step's `cluster`, `gitopsRepo` and `manifestPath`, removing a Flight environment, any tier change |
 
 The rule behind the split is that an agent never edits a control that constrains it. Secrets,
 signers, cloud deploy identity and the gates are those controls. A build flag isn't.
@@ -83,12 +84,81 @@ Three rules check an agent's change against the file it started from:
 |---|---|
 | `GP-SCOPE-001` | A `human` field added, removed or changed |
 | `GP-SCOPE-002` | A `tighten` field moved the loose way (an unset field counts as its default), or a flow that lost its check-ride step or one of its required test steps |
-| `GP-SCOPE-003` | A Flight environment added, removed or changed, or any environment's tier changed |
+| `GP-SCOPE-003` | A Flight environment removed, or any environment's tier changed. (Adding or changing one is `propose`: not refused, listed as `needsPerson`.) |
 
 Environments are compared by name, so reordering them is not a change. Pipeline steps are matched
 by content first, so inserting a step doesn't make every later step look changed.
 
 The rules are [`tools/cicd_scope.py`](../../tools/cicd_scope.py), standard library only.
+
+### `propose`: what an agent may change only in a pull request a person merges
+
+Contract version 2 (2026-11-12, owner decision: an agent asked to configure an app configures every environment the
+person names, and a person approves anything that touches prod). An agent may add or change a Flight environment, the
+release step into it, and (in the app's gitops repo) the Flight values an AppSpec sets, but the change is a
+*proposal*: the pull request that carries it must be merged by a person.
+
+What is `propose`, and only this (deny by default: every other field keeps its class):
+
+| Change | Why it is propose, and what is not |
+|---|---|
+| A Flight environment **added** or **changed** (`/deploy/environments/<name>`) | The agent declares `{name, tier: flight, cluster, production?}`. Its `chart`, `ecs`, `lambda`, `azureContainerApps` stay `human` (GP-SCOPE-001): they are the deploy identity. |
+| A **new** environment's `cluster` and `production` | Declaring prod on `hangar-prod` needs both. They are `propose` with `proposeOn: [added]`: on an environment that already exists, changing or removing them stays `human`, because that re-homes or re-classifies something already serving, which is a person's decision, not a proposal. |
+| A release step into a Flight environment, added or changed | The `release` step with `env:` naming a Flight environment. A step's `cluster`, `gitopsRepo` and `manifestPath` stay `human`. |
+| Removing a Flight environment, any `tier` change | Refused: GP-SCOPE-003. |
+
+Never `propose`, whatever the change: `secrets`, `governance.allowedCommitSigners`, the gates (`tighten` rules), `deploy.target`,
+`deploy.chart`, the cloud blocks, `api`, `gitopsRepo`, `manifestPath`. An agent never edits a control that constrains it.
+
+The shape. A rule's `agentScope` may be `propose`, with an optional `proposeOn` (`added`, `changed`, `removed`): the kinds
+of change that are propose; any other kind of change to that field reads `human`. The validator keeps its two answers
+apart: `problems` is what is refused, and `needsPerson` (`[{pointer, change, message}]`) is what is allowed only for a
+person's merge. A change with a problem is refused whole, whatever it also lists. The `cicd-validate-` check on an agent's PR
+passes such a change and prints `needs a person to merge: <pointers>`; `glidepath validate --agent` and
+`POST /v1/apps/{app}/cicd/validations` say the same (`needsPerson`). `contractVersion` is 2 because a consumer that does not
+know the class would read an unknown `agentScope`: Clearance's policy bundle names the versions it is written for and
+stops the core on any other, so roll out in the order [below](#rolling-out-propose).
+
+**How "a person must merge" is enforced**, given there are no GitHub rulesets (private repos on the free plan, so no branch
+protection can require anything). Four layers, none of which is a ruleset:
+
+1. *Nothing an agent can call merges.* The agents' tools open a branch and a PR and nothing else (`airframe.apply`'s adapter
+   sends only GETs and the POSTs that build a PR; Autopilot's tests read every request a run makes). There is no merge, review
+   or push-to-existing-branch tool.
+2. *Marked at the source.* The tools that carry a propose change (`glidepath.cicd.propose`, `airframe.apply`) mark the
+   PR human-merge: a `Hangar-Merge: person` commit trailer and, in Clearance's receipt for the call, `merge: person` and the
+   `needsPerson` paths. The generic file tool, `repo.pr.open`, cannot carry one: Clearance's R021 refuses a propose field
+   there, because that tool has no way to mark the PR. The mark is made by the tool, never by the agent.
+3. *Clearance's `Clearance / agent-scope` check* on such a PR is **neutral**, titled `needs a person: <paths>`, never
+   success, until a merge. When the PR is merged by a login that is not a bot (GitHub's account type) and not one of the
+   agents' logins, Clearance posts success; when it is merged by a bot or an agents' login, it posts failure (AS005).
+4. *Glidepath's readers do not treat that neutral as success.* Since C-7 a neutral Clearance check reads as success (the
+   `unattested` warning). The needs-a-person neutral is the exception: the promotion fan-in, `PROM-03`,
+   `wait-for-release-guardrails`, the release log and the release PR's governance table keep it as neutral, so a commit
+   whose agent-scope is still "needs a person" is held, and a failure after a bot's merge holds it too. `detect-bypass-merge`
+   (every gitops repo PR close) reads it as success only when `merged_by` is a person (type `User`, not a `[bot]` login, not in
+   `agentGates.agentLogins`); otherwise the merge is reported as a break-glass bypass (Slack, the release log's `bypass`).
+   **App repos too:** every app repo gets `.tekton/push-propose-merge-check.yaml` (onboarding, like the agent-release file), a push-to-main
+   run of the `propose-merge-check` Pipeline: `resolve-merged-pr`, then `detect-propose-merge`. It reads the merged PR's head commit for the
+   `Hangar-Merge: person` trailer (or Clearance's agent-scope check titled "needs a person") and, if the merger is a bot, an agents'
+   login, an account that is not a `User`, or unnamed, alerts Slack (always, not silenceable) naming the PR and the merger. A person's merge
+   and every unmarked PR are quiet; the run never fails.
+
+Layers 3 and 4 need the Clearance GitHub App's checks (`agentGates.clearanceChecks: true`). On a cluster in the fallback
+(`agent-gates-`), layers 1 and 2 hold and the merge is not checked afterwards.
+
+What this does not do: GitHub still lets any collaborator with write access press merge (an agents' App token has pull-request
+write). The controls are that no tool presses it, that a merge by anything but a person turns a required check red and
+alerts, and that the release path refuses to carry it on. A repo on a paid plan can additionally require the Clearance
+checks and a review in a ruleset ([agent-gates.md](agent-gates.md#making-it-block)). App repos have the same detective check
+(`detect-propose-merge`) as gitops repos, so a bot's merge there is alerted too, besides Clearance's check turning red.
+
+#### Rolling out `propose`
+
+Clearance first (its policy engine learns `propose`, the check learns `needs-person`), then Autopilot (its bundle names
+contract version 2, the pinned Clearance is the new one, the tools mark PRs), then Glidepath (the contract becomes version 2, the
+`cicd-validate` image and the catalog with the new readers). Glidepath last: while its contract is still version 1, an
+agent's Flight proposal is refused (GP-SCOPE-003 as before), so the new Clearance and Autopilot are inert until it ships.
 
 Clearance applies the same rules before an agent opens a pull request, and vendors nothing (Clearance
 v0.29.0, R-5). Hangar's policy bundle (autopilot `policy/hangar/bundle.json`) reads the contract's
@@ -100,9 +170,10 @@ v0.29.0, R-5). Hangar's policy bundle (autopilot `policy/hangar/bundle.json`) re
   Clearance release, no Autopilot pin.
 - **A `contractVersion` bump** stops the Clearance core from starting until Hangar's bundle names the new
   version (an Autopilot change to `policy/hangar/bundle.json`, deployed by Apron). Bump it only when the
-  scope's shape changes.
+  scope's shape changes (version 2: the `propose` class and `proposeOn`).
 - **A change to the structural rules** (`GP-SCOPE-002` check rides and required tests, `GP-SCOPE-003`
-  Flight environments and tiers) is code in `cicd_scope.py`, and the bundle states the same rules as
+  removing a Flight environment and tiers; adding or changing a Flight environment is `propose`, which the bundle states as the
+  `keyed` invariant's protected change, refused on the generic file path) is code in `cicd_scope.py`, and the bundle states the same rules as
   data (its `keyed` and `counted` invariants). Change both: the bundle is in autopilot, not Clearance.
 
 The same rules answer `POST /v1/apps/{app}/cicd/validations` on glidepath-api
