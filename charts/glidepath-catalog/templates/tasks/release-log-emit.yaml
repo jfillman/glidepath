@@ -143,7 +143,7 @@ spec:
 
         checks_json="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
           -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
-          "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs")"
+          "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")"
 
         # Same "checked by name, not blanket all-green" approach as
         # detect-bypass-merge.yaml, and the same releaseGuardrails single-source-of-truth
@@ -165,13 +165,14 @@ spec:
         for g in $(advisory_gates_for_app "${log_app}"); do required_gates=${required_gates/" ${g} "/" "}; done
         # "<PaC application name> / <gate>-", under the current name or an earlier one (catalog pipelinesAsCode).
         pac_apps={{ include "glidepath-catalog.pacAppNames" . | squote }}
+        ext_checks={{ include "glidepath-catalog.externalChecks" . | squote }}
         for gate in {{ range (include "glidepath-catalog.guardrails" . | fromJsonArray) }}{{ .name }} {{ end }}; do
           # Trailing "-": see wait-for-release-guardrails.yaml's identical match for why -
           # the real check-run name includes generateName's own trailing dash. Without
           # this every gate reads back "missing" and bypass="true" fires on every merge -
           # confirmed live 2026-09-06 this was silently broken since 9706649 the day before.
-          conclusion="$(jq -r --argjson apps "${pac_apps}" --arg g "${gate}" \
-            '[.check_runs[] | select(.name as $x | any($apps[]; . + " / " + $g + "-" == $x))][0].conclusion // "missing"' <<<"${checks_json}")"
+          conclusion="$(jq -r --argjson apps "${pac_apps}" --argjson ext "${ext_checks}" --arg g "${gate}" \
+            '[.check_runs[] | select({{ include "glidepath-catalog.checkMatchJq" . }}) | {{ include "glidepath-catalog.neutralOkJq" . }}][0].conclusion // "missing"' <<<"${checks_json}")"
           gate_key="gate_$(echo "${gate}" | tr '-' '_')"
           gates_json="$(jq -nc --argjson gates "${gates_json}" --arg k "${gate_key}" --arg v "${conclusion}" \
             '$gates + {($k): $v}')"

@@ -28,6 +28,8 @@ render_step() { # <out> [extra helm args...]
 # Every scenario runs against the per-app render (backstage: image-scan advisory); the gate-api ones are untouched by it.
 render_step step.sh --set-json 'releaseGuardrailOverridesByApp={"backstage":{"image-scan":{"required":false}}}'
 render_step step-noapp.sh
+# C-7: Clearance's App reports the agent checks; nothing of Glidepath runs for them.
+render_step step-clearance.sh --set agentGates.clearanceUrl=http://clearance.example --set agentGates.clearanceChecks=true
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
   --show-only templates/tasks/comment-pr-check-result.yaml | yq -e '.spec.steps[] | select(.name == "promotion-ready")' >/dev/null 2>&1 \
   && { echo "FAIL: promotion-ready renders with promotion off"; fail=1; }
@@ -51,10 +53,13 @@ case "$method $url" in
   "POST http://el-cdevents-broker"*) printf '%s\n' "$data" >> "$FX/events"; exit 0 ;;
   "GET "*/pulls/53/files*) cat "$FX/files.json" ;;
   "GET "*/pulls/53) cat "$FX/pr.json" ;;
-  "GET "*/check-runs*) cat "$FX/checks.json" ;;
+  "GET "*/check-runs*)
+    # a check that lands later: the first read is checks.json, every read after it later.json
+    if [[ -f "$FX/later.json" && -f "$FX/served" ]]; then cat "$FX/later.json"; else touch "$FX/served"; cat "$FX/checks.json"; fi ;;
   *) echo "unexpected $method $url" >&2; exit 22 ;;
 esac
 EOF
+printf '#!/usr/bin/env bash\nexit 0\n' > "$work/bin/sleep"
 cat > "$work/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
@@ -228,5 +233,35 @@ expect "pipeline-only-late: failure recorded" "$(jq -r '.data["gate.111111111111
 # a red verdict is never re-judged: still recorded red, the run is not read.
 scenario late-red; started 500; echo failure > "$FX/gate/verdict"; run
 expect "late-red: failure recorded" "$(jq -r '.data["gate.111111111111.sbom"]' "$FX/patches")" failure
+
+# ---- C-7: Clearance's check runs (exact names, another App) count as required gates, and are waited for briefly.
+cc_checks() { # <identity-status> <scope-status>: every Glidepath gate green but sbom (running), Clearance's as given
+  jq --arg i "$1" --arg sc "$2" '.check_runs |= (map(select(.name | test("agent-gates") | not))
+      + [{name: "Clearance / agent-identity", status: (if $i == "success" or $i == "failure" then "completed" else $i end), conclusion: (if $i == "success" or $i == "failure" then $i else null end), started_at: "2026-10-28T10:00:00Z"},
+         {name: "Clearance / agent-scope", status: (if $sc == "success" or $sc == "failure" then "completed" else $sc end), conclusion: (if $sc == "success" or $sc == "failure" then $sc else null end), started_at: "2026-10-28T10:00:00Z"}])' \
+    "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+}
+STEP=step-clearance.sh
+scenario cc-green; cc_checks success success; run
+expect "clearance green: one event" "$(events)" 1
+scenario cc-neutral; cc_checks success success
+jq '(.check_runs[] | select(.name == "Clearance / agent-identity")).conclusion = "neutral"' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"; run
+expect "clearance unattested (neutral): one event" "$(events)" 1
+scenario cc-red; cc_checks success failure; run
+expect "clearance scope red: no event" "$(events)" 0
+expect "clearance scope red: says so" "$(grep -c 'agent-scope (failure)' "$FX/out")" 1
+scenario cc-late; cc_checks success in_progress; cp "$FX/checks.json" "$FX/later.json"
+jq '(.check_runs[] | select(.name == "Clearance / agent-scope")) |= (.status = "completed" | .conclusion = "success")' "$FX/later.json" > "$FX/x" && mv "$FX/x" "$FX/later.json"
+run
+expect "clearance lands after the last gate: one event" "$(events)" 1
+scenario cc-never; cc_checks success success
+jq '.check_runs |= map(select(.name != "Clearance / agent-scope"))' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"; run
+expect "clearance never reports (App not installed): no event" "$(events)" 0
+expect "clearance never reports: says agent-scope is missing" "$(grep -c 'agent-scope (missing)' "$FX/out")" 1
+# the old Glidepath name is not accepted for it
+scenario cc-impostor; cc_checks success success
+jq '.check_runs |= map(if .name == "Clearance / agent-scope" then .name = "Pipelines as Code CI / agent-scope-" else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"; run
+expect "a Glidepath-named agent-scope- does not count: no event" "$(events)" 0
+STEP=
 
 [[ "${fail}" == 0 ]] && echo "PASS promotion_fan_in_test" || exit 1

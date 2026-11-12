@@ -21,6 +21,10 @@ render() { # <out> [extra helm args...]
 }
 render step.sh --set-json 'releaseGuardrailOverridesByApp={"backstage":{"image-scan":{"required":false}}}'
 render step-default.sh
+# C-7: Clearance's App reports the agent checks (agentGates.clearanceChecks with a clearanceUrl).
+render step-clearance.sh --set agentGates.clearanceUrl=http://clearance.example --set agentGates.clearanceChecks=true
+# clearanceChecks without a clearanceUrl is the fallback: no Clearance on the cluster, agent-gates- stays.
+render step-nourl.sh --set agentGates.clearanceChecks=true
 
 mkdir -p "$work/bin" "$work/lib"
 echo 'github_app_installation_token() { echo gh-token; }' > "$work/lib/github-app.sh"
@@ -77,5 +81,40 @@ expect "repo backstage (not gitops-backstage): bypass" "$(bypass)" "image-scan (
 
 scenario default-render image-scan; run gitops-backstage step-default.sh
 expect "chart default, backstage, image-scan red: bypass" "$(bypass)" "image-scan (failure)"
+
+# ---- C-7: the agent gate is Clearance's two check runs, named exactly and posted by another App
+clearance_scenario() { # <name> <red gate,...>: PaC gates under "Glidepath / <g>-", Clearance's under its exact names
+  scenario "$1" "$2"
+  jq --arg red ",$2," '.check_runs |= (map(select(.name | test("agent-gates") | not) | .name |= sub("^Pipelines as Code CI"; "Glidepath"))
+      + ["agent-identity","agent-scope"] | map(if type == "string" then {name: ("Clearance / " + .), status: "completed", conclusion: "success"} else . end))
+      | .check_runs |= map(if (.name | sub("^Clearance / "; "")) as $g | ($red | contains("," + $g + ",")) then .conclusion = "failure" else . end)' \
+    "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+}
+clearance_scenario cc-green ""; run gitops-gate-api step-clearance.sh
+expect "clearance: all green, no bypass" "$(bypass)" ""
+expect "clearance: all green, normal merge" "$(grep -c 'normal merge, no bypass detected' "$FX/out")" 1
+clearance_scenario cc-identity agent-identity; run gitops-gate-api step-clearance.sh
+expect "clearance: agent-identity red is a bypass" "$(bypass)" "agent-identity (failure)"
+clearance_scenario cc-scope agent-scope; run gitops-gate-api step-clearance.sh
+expect "clearance: agent-scope red is a bypass" "$(bypass)" "agent-scope (failure)"
+clearance_scenario cc-missing ""; jq '.check_runs |= map(select(.name != "Clearance / agent-scope"))' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+run gitops-gate-api step-clearance.sh
+expect "clearance: no agent-scope check (App not installed) is a bypass" "$(bypass)" "agent-scope (missing)"
+# Clearance's `unattested` (a warning, reported neutral) is not a bypass; a Glidepath gate's neutral still is
+clearance_scenario cc-neutral ""; jq '.check_runs |= map(if .name == "Clearance / agent-identity" then .conclusion = "neutral" else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+run gitops-gate-api step-clearance.sh
+expect "clearance: neutral (unattested) is not a bypass" "$(bypass)" ""
+# a check run of another name (a Glidepath-named agent-identity-) is not Clearance's
+clearance_scenario cc-impostor ""; jq '.check_runs |= map(if .name == "Clearance / agent-identity" then .name = "Glidepath / agent-identity-" else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+run gitops-gate-api step-clearance.sh
+expect "clearance: a Glidepath-named agent-identity- does not count" "$(bypass)" "agent-identity (missing)"
+# the per-cluster override: advisory is not a bypass concern only through required: false (renders out of the set)
+render step-clearance-adv.sh --set agentGates.clearanceUrl=http://clearance.example --set agentGates.clearanceChecks=true \
+  --set-json 'releaseGuardrailOverrides={"agent-scope":{"required":false}}'
+clearance_scenario cc-adv agent-scope; run gitops-gate-api step-clearance-adv.sh
+expect "clearance: agent-scope advisory per cluster, red: no bypass" "$(bypass)" ""
+# the fallback: no clearanceUrl keeps Glidepath's agent-gates- check, and never reads Clearance's names
+scenario fallback agent-gates; run gitops-gate-api step-nourl.sh
+expect "no Clearance: agent-gates- red is a bypass" "$(bypass)" "agent-gates (failure)"
 
 [[ "${fail}" == 0 ]] && echo "PASS detect_bypass_merge_test" || exit 1

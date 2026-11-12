@@ -137,7 +137,7 @@ releaseGuardrailOverrides:
    `tower.releaseSignoff.postStatus: false` in Backstage's app-config. Tower then stops posting
    `hangar/release-signoff` and no longer clears one; the "shipped without a sign-off" announcement stays. Until
    then both run, and the status is harmless.
-6. `agent-gates-` retirement is **not** part of this: it follows Clearance's C-7.
+6. `agent-gates-` retirement is **not** part of this: it is C-7 (`agentGates.clearanceChecks`, [agent-gates.md](agent-gates.md#migration)).
 
 Rollback of the flip is the same setting back to `false` (and re-applying the ruleset); a held change then no longer
 blocks, it still reports.

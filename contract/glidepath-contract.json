@@ -1210,6 +1210,20 @@
       "required": true
     },
     {
+      "name": "agent-identity",
+      "description": "Agent identity - Clearance's record of the PR its agent opened: the same head commit and trailers (a person's PR passes as not-agent); posted by the Clearance GitHub App",
+      "status": "real",
+      "class": "integrity",
+      "required": true
+    },
+    {
+      "name": "agent-scope",
+      "description": "Agent scope - only paths the agent's commit carried and its definition still admits (a person's PR passes as not-agent); posted by the Clearance GitHub App",
+      "status": "real",
+      "class": "integrity",
+      "required": true
+    },
+    {
       "name": "clearance-gate",
       "description": "Clearance's deployment gate - the release classified by what its rendered manifests change (tier 0-3) and cleared by policy or by the app's owners (and an outside group for tier 3), never the proposer",
       "status": "real",

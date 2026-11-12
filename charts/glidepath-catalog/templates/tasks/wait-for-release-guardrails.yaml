@@ -107,10 +107,11 @@ spec:
         while true; do
           checks_json="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
             -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/check-runs")"
+            "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/check-runs?per_page=100")"
 
           pending=()
           pac_apps={{ include "glidepath-catalog.pacAppNames" . | squote }}
+          ext_checks={{ include "glidepath-catalog.externalChecks" . | squote }}
           for gate in "${sibling_gates[@]}"; do
             # Sorted by most recently started, not just the first match - a gate can have
             # multiple check-runs on the same commit after a `/retest`, and only the
@@ -125,8 +126,8 @@ spec:
             # until timeout regardless of real outcome, even though every sibling gate
             # had genuinely already succeeded. The application name is the current one or an earlier one (catalog
             # pipelinesAsCode), so a check posted before a rename still counts.
-            run_json="$(jq -c --argjson apps "${pac_apps}" --arg g "${gate}" \
-              '[.check_runs[] | select(.name as $x | any($apps[]; . + " / " + $g + "-" == $x))] | sort_by(.started_at) | last // {}' <<<"${checks_json}")"
+            run_json="$(jq -c --argjson apps "${pac_apps}" --argjson ext "${ext_checks}" --arg g "${gate}" \
+              '[.check_runs[] | select({{ include "glidepath-catalog.checkMatchJq" . }}) | {{ include "glidepath-catalog.neutralOkJq" . }}] | sort_by(.started_at) | last // {}' <<<"${checks_json}")"
             status="$(jq -r '.status // "missing"' <<<"${run_json}")"
             conclusion="$(jq -r '.conclusion // empty' <<<"${run_json}")"
 

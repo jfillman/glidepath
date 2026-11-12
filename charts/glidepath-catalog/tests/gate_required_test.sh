@@ -240,6 +240,71 @@ refuse required-string "releaseGuardrailOverridesByApp.backstage.image-scan: onl
 refuse not-a-map "releaseGuardrailOverridesByApp.backstage must be a map" \
   $'releaseGuardrailOverridesByApp:\n  backstage: [image-scan]'
 
+# ---- C-7: Clearance's GitHub App reports the agent checks (agentGates.clearanceUrl + clearanceChecks)
+cat > "${tmp}/cc-values.yaml" <<'YAML'
+agentGates:
+  clearanceUrl: http://clearance.example
+  clearanceChecks: true
+  clearanceAppId: "5561694"
+YAML
+render cc -f "${tmp}/cc-values.yaml"
+for task in detect-bypass-merge release-log-emit wait-for-release-guardrails open-release-pr promote comment-pr-check-result deliver-onboarding-files; do
+  script_of "${task}" "${tmp}/cc.yaml" > "${tmp}/cc-${task}.sh"
+  [[ -s "${tmp}/cc-${task}.sh" ]] && bash -n "${tmp}/cc-${task}.sh" || { echo "FAIL: bash -n ${task} (clearance)"; fail=1; }
+done
+expect "clearance: detect-bypass-merge gate loop" "$(grep -o 'for gate in .*; do' "${tmp}/cc-detect-bypass-merge.sh")" \
+  "for gate in sast image-scan provenance sbom values itsm policy-validation agent-identity agent-scope ; do"
+expect "clearance: the exact check names are the readers' external map" \
+  "$(grep -o "^ *ext_checks='.*'" "${tmp}/cc-detect-bypass-merge.sh" | sed "s/^ *ext_checks=//")" \
+  "'{\"agent-identity\":\"Clearance / agent-identity\",\"agent-scope\":\"Clearance / agent-scope\"}'"
+expect "default: no external checks" "$(grep -o "^ *ext_checks='.*'" "${tmp}/perapp-detect-bypass-merge.sh" | sed "s/^ *ext_checks=//")" "'{}'"
+expect "clearance: wait-for-release-guardrails gates" "$(grep -o 'for g in .*; do' "${tmp}/cc-wait-for-release-guardrails.sh")" \
+  'for g in "sast" "image-scan" "provenance" "sbom" "values" "itsm" "policy-validation" "agent-identity" "agent-scope" ; do'
+expect "clearance: promote required gates" "$(grep -o 'required_gates=".*"' "${tmp}/cc-promote.sh")" \
+  'required_gates="sast image-scan provenance sbom values itsm policy-validation agent-identity agent-scope "'
+grep -q 'agent-gates' "${tmp}/cc-open-release-pr.sh" && { echo "FAIL: clearance PR body table still lists agent-gates"; fail=1; }
+grep -q '| `agent-identity` |' "${tmp}/cc-open-release-pr.sh" && grep -q '| `agent-scope` |' "${tmp}/cc-open-release-pr.sh" \
+  || { echo "FAIL: clearance PR body table lacks agent-identity/agent-scope"; fail=1; }
+expect "clearance: release-log bypass set" "$(grep -o '^ *required_gates=" .*"' "${tmp}/cc-release-log-emit.sh" | sed 's/^ *//')" \
+  'required_gates=" sast image-scan provenance sbom values itsm policy-validation agent-identity agent-scope "'
+expect "clearance: onboarding is told" "$(grep -c 'CLEARANCE_CHECKS' "${tmp}/cc-deliver-onboarding-files.sh")" "$(grep -c 'CLEARANCE_CHECKS' "${tmp}/cc-deliver-onboarding-files.sh")"
+python3 - "${tmp}/cc.yaml" "${tmp}/default.yaml" <<'PY' || fail=1
+import sys, yaml
+for path, want in ((sys.argv[1], "true"), (sys.argv[2], "false")):
+    for d in yaml.safe_load_all(open(path)):
+        if d and d.get("kind") == "Task" and d["metadata"]["name"] == "deliver-onboarding-files":
+            for st in d["spec"]["steps"]:
+                env = {e["name"]: e.get("value") for e in st.get("env", [])}
+                if "CLEARANCE_CHECKS" in env and env["CLEARANCE_CHECKS"] != want:
+                    print("FAIL: %s CLEARANCE_CHECKS=%s want %s in %s" % (st["name"], env["CLEARANCE_CHECKS"], want, path)); sys.exit(1)
+                if "RELEASE_GUARDRAILS_JSON" in env:
+                    names = [g["name"] for g in __import__("json").loads(env["RELEASE_GUARDRAILS_JSON"])]
+                    if (("agent-gates" in names) == (want == "true")):
+                        print("FAIL: onboarding registry %s in %s" % (names, path)); sys.exit(1)
+PY
+# the ruleset: the App's exact names under its id; the PaC gates under theirs
+expect "clearance: gitops ruleset" "$(hack/apply-guardrail-ruleset.sh --dry-run -f "${tmp}/cc-values.yaml" x/gitops-a | grep -v '^#' \
+  | jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[]|"\(.context)=\(.integration_id)"' | tr '\n' ' ')" \
+  "Glidepath / sast-=4461953 Glidepath / image-scan-=4461953 Glidepath / provenance-=4461953 Glidepath / sbom-=4461953 Glidepath / values-=4461953 Glidepath / itsm-=4461953 Glidepath / policy-validation-=4461953 Clearance / agent-identity=5561694 Clearance / agent-scope=5561694 "
+expect "clearance: per-cluster advisory agent-scope leaves it out of the ruleset" "$(hack/apply-guardrail-ruleset.sh --dry-run -f "${tmp}/cc-values.yaml" \
+  -f <(printf 'releaseGuardrailOverrides:\n  agent-scope: { required: false }\n') x/gitops-a | grep -v '^#' \
+  | jq -r '.rules[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context' | grep -c 'agent-scope')" 0
+printf 'agentGates:\n  clearanceUrl: http://c\n  clearanceChecks: true\n' > "${tmp}/cc-noid.yaml"
+hack/apply-guardrail-ruleset.sh --dry-run -f "${tmp}/cc-noid.yaml" x/gitops-a >/dev/null 2>"${tmp}/err" && { echo "FAIL: ruleset built without the Clearance App id"; fail=1; }
+grep -q 'GitHub App id is not set' "${tmp}/err" || { echo "FAIL: missing-id message: $(cat "${tmp}/err")"; fail=1; }
+expect "clearance: app-repo ruleset" "$(hack/apply-agent-gates-ruleset.sh --dry-run -f "${tmp}/cc-values.yaml" x/app | grep -v '^#' \
+  | jq -r '.rules[0].parameters.required_status_checks[]|"\(.context)=\(.integration_id)"' | tr '\n' ' ')" \
+  "Clearance / agent-identity=5561694 Clearance / agent-scope=5561694 Glidepath / cicd-validate-=4461953 "
+expect "default: app-repo ruleset keeps agent-gates-" "$(hack/apply-agent-gates-ruleset.sh --dry-run x/app | grep -v '^#' \
+  | jq -r '.rules[0].parameters.required_status_checks[].context' | tr '\n' ' ')" "Glidepath / agent-gates- Glidepath / cicd-validate- "
+# the fallback: clearanceChecks without a clearanceUrl keeps agent-gates (no Clearance on the cluster)
+render ccnourl --set agentGates.clearanceChecks=true
+script_of detect-bypass-merge "${tmp}/ccnourl.yaml" > "${tmp}/ccnourl.sh"
+expect "no Clearance: clearanceChecks alone keeps agent-gates" "$(grep -o 'for gate in .*; do' "${tmp}/ccnourl.sh")" \
+  "for gate in sast image-scan provenance sbom values itsm policy-validation agent-gates ; do"
+# a per-cluster override of the old name still renders (it just has nothing to act on once Clearance reports the checks)
+render ccold -f "${tmp}/cc-values.yaml" --set-json 'releaseGuardrailOverrides={"agent-gates":{"required":false}}'
+
 rm -rf "${tmp}"
 [[ ${fail} -eq 0 ]] && echo "OK: the registry's required field drives every gate, the bypass tooling and the ruleset"
 exit ${fail}

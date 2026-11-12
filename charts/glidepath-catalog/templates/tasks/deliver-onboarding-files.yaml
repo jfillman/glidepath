@@ -85,8 +85,12 @@ spec:
           mountPath: /opt/platform/onboarding-templates/gitops-repo
           readOnly: true
       env:
+        # The effective registry (an entry whose check another App reports has no .tekton file here), and whether
+        # Clearance's GitHub App replaces the agent-gates- check (C-7, docs/admin/agent-gates.md).
         - name: RELEASE_GUARDRAILS_JSON
-          value: {{ .Values.releaseGuardrails | toJson | quote }}
+          value: {{ include "glidepath-catalog.guardrails" . | quote }}
+        - name: CLEARANCE_CHECKS
+          value: {{ include "glidepath-catalog.clearanceChecks" . | quote }}
         - name: GITHUB_TOKEN_BROKER_URL
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
         - name: GIT_URL
@@ -414,7 +418,14 @@ spec:
           "/opt/platform/onboarding-templates/app-repo/onboarding-resync.yaml" > ".tekton/onboarding-resync.yaml"
         # The agent gates run on every PR whatever cicd.yaml says (docs/admin/agent-gates.md): an app cannot opt its
         # repo out of the check on agent PRs. Absent from an older app chart's ConfigMap, so only when it is there.
-        if [[ -f /opt/platform/onboarding-templates/app-repo/pull-request-agent-gates.yaml ]]; then
+        # With Clearance's GitHub App reporting the agent checks (CLEARANCE_CHECKS, C-7) the file is not delivered, and
+        # one this Task delivered earlier (the BOILERPLATE marker; a tenant's own file has none) is removed.
+        if [[ "${CLEARANCE_CHECKS}" == "true" ]]; then
+          if [[ -f .tekton/pull-request-agent-gates.yaml ]] && head -1 .tekton/pull-request-agent-gates.yaml | grep -q '^# BOILERPLATE'; then
+            rm -f .tekton/pull-request-agent-gates.yaml
+            echo "app repo: removed .tekton/pull-request-agent-gates.yaml - Clearance's App reports agent-identity and agent-scope"
+          fi
+        elif [[ -f /opt/platform/onboarding-templates/app-repo/pull-request-agent-gates.yaml ]]; then
           sed -e "s|<APP_NAME>|${APP_NAME}|g" \
             "/opt/platform/onboarding-templates/app-repo/pull-request-agent-gates.yaml" > ".tekton/pull-request-agent-gates.yaml"
         fi
@@ -957,6 +968,8 @@ spec:
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
         - name: GITOPS_REPO_URL
           value: $(params.gitops-repo-url)
+        - name: CLEARANCE_CHECKS
+          value: {{ include "glidepath-catalog.clearanceChecks" . | quote }}
         - name: APP_NAMESPACE
           value: $(params.app-namespace)
         - name: APP_NAME
@@ -1011,8 +1024,19 @@ spec:
           fi
         done
 
+        # Clearance's App reports the agent checks (CLEARANCE_CHECKS, C-7, docs/admin/agent-gates.md): the agent-gates
+        # template is not delivered, and the file an earlier run delivered is removed (marker line, as above).
+        skip_agent_gates=false
+        if [[ "${CLEARANCE_CHECKS}" == "true" ]]; then
+          skip_agent_gates=true
+          if [[ -f .tekton/pull-request-agent-gates.yaml ]] && head -1 .tekton/pull-request-agent-gates.yaml | grep -qE '^# (STUB|BOILERPLATE)\b'; then
+            rm -f .tekton/pull-request-agent-gates.yaml
+            echo "gitops repo: removed .tekton/pull-request-agent-gates.yaml - Clearance's App reports agent-identity and agent-scope"
+          fi
+        fi
         for f in /opt/platform/onboarding-templates/gitops-repo/*.yaml; do
           base="$(basename "${f}")"
+          [[ "${skip_agent_gates}" == "true" && "${base}" == "pull-request-agent-gates.yaml" ]] && continue
           sed \
             -e "s|<APP_NAMESPACE>|${APP_NAMESPACE}|g" \
             -e "s|<APP_NAME>|${APP_NAME}|g" \
