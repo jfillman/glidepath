@@ -114,7 +114,7 @@ func logTokenFailure(endpoint, caller string, req githubReadRequest, code int, r
 	if caller == "" {
 		caller = "(unauthenticated)"
 	}
-	log.Printf("%s failed: caller=%s repo=%s/%s app=%q status=%d reason=%q", endpoint, caller, req.Owner, req.Repo, req.App, code, reason)
+	log.Printf("%s failed: caller=%s repo=%q app=%q status=%d reason=%q", endpoint, caller, req.Owner+"/"+req.Repo, req.App, code, reason)
 }
 
 // installationLookupMessage is the reason for a failed installation lookup: a clear sentence when the App is simply

@@ -209,7 +209,7 @@ func TestAgentInstallationTokenNotInstalledIsLoggedAndClear(t *testing.T) {
 	if rec.Code != 502 || out.Error != "the agents' GitHub App is not installed on jfillman/parachute" {
 		t.Fatalf("not installed: %d %+v", rec.Code, out)
 	}
-	for _, want := range []string{"agent token failed", "caller=" + clearanceSA, "repo=jfillman/parachute", "status=502", "not installed"} {
+	for _, want := range []string{"agent token failed", "caller=" + clearanceSA, `repo="jfillman/parachute"`, "status=502", "not installed"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("log %q lacks %q", logs.String(), want)
 		}
