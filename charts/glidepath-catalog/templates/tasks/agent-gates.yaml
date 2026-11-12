@@ -78,7 +78,8 @@ spec:
         paths='[]'
         for page in $(seq 1 30); do
           batch="$(gh "${api}/pulls/${PR_NUMBER}/files?per_page=100&page=${page}")"
-          paths="$(jq -c --argjson b "${batch}" '. + [$b[] | .filename, (.previous_filename // empty)]' <<<"${paths}")"
+          # Through stdin: a page's files JSON carries every patch and can pass the 128 KiB an argument may hold.
+          paths="$(printf '%s\n%s\n' "${paths}" "${batch}" | jq -cs '.[0] + [.[1][] | .filename, (.previous_filename // empty)]')"
           [ "$(jq length <<<"${batch}")" -lt 100 ] && break
         done
         trailers="$(gh "${api}/commits/${head}" | jq -c '[.commit.message | splits("\n")
