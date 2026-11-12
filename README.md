@@ -89,3 +89,8 @@ of a broader internal developer platform (e.g. alongside a Crossplane-based serv
 catalog and self-service app onboarding) without modification: per-cluster state
 (trust roots, tenant lists) always lives in that cluster's own config, never inside
 this repo - see [ADR-0006](docs/admin/adr/0006-cluster-agnostic-bootstrap.md).
+
+## License
+
+Copyright 2026 James Fillman. Licensed under the [Apache License, Version 2.0](LICENSE).
+See [NOTICE](NOTICE) for attribution and [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute.
