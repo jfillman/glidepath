@@ -28,6 +28,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -107,11 +108,32 @@ func (l *agentAppLoader) get() (*githubapp.Creds, error) {
 	return app, nil
 }
 
+// logTokenFailure logs one line per refused or failed token request: who asked (when authenticated), for what, the
+// status and the reason. The reason is the text the response carries; no token is ever in it.
+func logTokenFailure(endpoint, caller string, req githubReadRequest, code int, reason string) {
+	if caller == "" {
+		caller = "(unauthenticated)"
+	}
+	log.Printf("%s failed: caller=%s repo=%q app=%q status=%d reason=%q", endpoint, caller, req.Owner+"/"+req.Repo, req.App, code, reason)
+}
+
+// installationLookupMessage is the reason for a failed installation lookup: a clear sentence when the App is simply
+// not installed on the repo, the upstream error otherwise.
+func installationLookupMessage(appName string, req githubReadRequest, err error) string {
+	if errors.Is(err, githubapp.ErrNotInstalled) {
+		return fmt.Sprintf("%s is not installed on %s/%s", appName, req.Owner, req.Repo)
+	}
+	return err.Error()
+}
+
 func handleAgentInstallationToken(clientset kubernetes.Interface, dynClient dynamic.Interface, callers map[string]bool) http.HandlerFunc {
 	loader := &agentAppLoader{load: func() (*githubapp.Creds, error) { return githubapp.LoadCredsFrom(agentAppDir) }}
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		var caller string
+		var req githubReadRequest
 		fail := func(code int, msg string) {
+			logTokenFailure("agent token", caller, req, code, msg)
 			w.WriteHeader(code)
 			_ = json.NewEncoder(w).Encode(githubInstallationTokenResponse{Error: msg})
 		}
@@ -124,12 +146,12 @@ func handleAgentInstallationToken(clientset kubernetes.Interface, dynClient dyna
 			fail(http.StatusUnauthorized, "missing or malformed Authorization: Bearer <token> header")
 			return
 		}
-		caller, authErr := verifyCallerUsername(clientset, token, agentTokenAudience)
+		var authErr string
+		caller, authErr = verifyCallerUsername(clientset, token, agentTokenAudience)
 		if authErr != "" {
 			fail(http.StatusUnauthorized, authErr)
 			return
 		}
-		var req githubReadRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
 			fail(http.StatusBadRequest, "request body must be {\"owner\":..., \"repo\":..., \"app\":...}")
 			return
@@ -158,7 +180,7 @@ func handleAgentInstallationToken(clientset kubernetes.Interface, dynClient dyna
 		}
 		installationID, err := githubapp.InstallationIDForRepo(appJWT, req.Owner, req.Repo)
 		if err != nil {
-			fail(http.StatusBadGateway, err.Error())
+			fail(http.StatusBadGateway, installationLookupMessage("the agents' GitHub App", req, err))
 			return
 		}
 		perms := agentTokenPermissions()

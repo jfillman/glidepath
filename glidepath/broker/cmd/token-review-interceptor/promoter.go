@@ -130,6 +130,7 @@ func handlePromoterToken(clientset kubernetes.Interface, platformApp *githubapp.
 		cfg := loader.withApp()
 		w.Header().Set("Content-Type", "application/json")
 		fail := func(code int, msg string) {
+			log.Printf("promoter failed: status=%d reason=%q", code, msg)
 			w.WriteHeader(code)
 			_ = json.NewEncoder(w).Encode(githubInstallationTokenResponse{Error: msg})
 		}

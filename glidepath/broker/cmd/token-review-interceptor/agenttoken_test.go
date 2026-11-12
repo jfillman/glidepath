@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -170,4 +171,55 @@ func writeTestApp(t *testing.T, dir string) {
 	}
 	os.WriteFile(filepath.Join(dir, "github-application-id"), []byte("456\n"), 0o600)
 	os.WriteFile(filepath.Join(dir, "github-private-key"), pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0o600)
+}
+
+// The App not being installed on the repo is a 502 with a clear reason, and every failure is logged with caller, repo and
+// status (never a token).
+func TestAgentInstallationTokenNotInstalledIsLoggedAndClear(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `{"message":"Not Found"}`)
+	}))
+	defer gh.Close()
+	defer githubapp.SetAPIBaseForTest(gh.URL)()
+	dir := t.TempDir()
+	old := agentAppDir
+	agentAppDir = dir
+	defer func() { agentAppDir = old }()
+	writeTestApp(t, dir)
+
+	cs := fake.NewSimpleClientset()
+	cs.PrependReactor("create", "tokenreviews", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		tr := a.(k8stesting.CreateAction).GetObject().(*authenticationv1.TokenReview)
+		return true, &authenticationv1.TokenReview{Status: authenticationv1.TokenReviewStatus{
+			Authenticated: true, User: authenticationv1.UserInfo{Username: strings.TrimPrefix(tr.Spec.Token, "t-")}}}, nil
+	})
+	var logs strings.Builder
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+
+	dyn := repos(repoCR("app-parachute-cicd", "parachute", "https://github.com/jfillman/parachute"))
+	h := handleAgentInstallationToken(cs, dyn, map[string]bool{clearanceSA: true})
+	req := httptest.NewRequest(http.MethodPost, "/agent-installation-token", strings.NewReader(`{"owner":"jfillman","repo":"parachute","app":"parachute"}`))
+	req.Header.Set("Authorization", "Bearer t-"+clearanceSA)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	var out githubInstallationTokenResponse
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != 502 || out.Error != "the agents' GitHub App is not installed on jfillman/parachute" {
+		t.Fatalf("not installed: %d %+v", rec.Code, out)
+	}
+	for _, want := range []string{"agent token failed", "caller=" + clearanceSA, `repo="jfillman/parachute"`, "status=502", "not installed"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("log %q lacks %q", logs.String(), want)
+		}
+	}
+
+	// An unauthenticated refusal is logged too.
+	logs.Reset()
+	rec = httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodPost, "/agent-installation-token", strings.NewReader(`{}`)))
+	if rec.Code != 401 || !strings.Contains(logs.String(), "status=401") {
+		t.Fatalf("401 not logged: %d %q", rec.Code, logs.String())
+	}
 }

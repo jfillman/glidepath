@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path"
@@ -134,6 +135,7 @@ func handlePolicyBundle(clientset kubernetes.Interface, dynClient dynamic.Interf
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fail := func(code int, msg string) {
+			log.Printf("policy bundle failed: status=%d reason=%q", code, msg)
 			w.WriteHeader(code)
 			_ = json.NewEncoder(w).Encode(policyBundleResponse{Error: msg})
 		}
