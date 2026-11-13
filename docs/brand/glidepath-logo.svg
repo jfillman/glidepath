@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="t">
+  <title id="t">Glidepath</title>
+  <!-- Instrument-panel ground, Hangar's dark surface (the same as Clearance's App logo) -->
+  <rect width="512" height="512" rx="104" fill="#14181D"/>
+  <!-- The G: a gauge arc open at the top right, its bar the runway -->
+  <path d="M352 140 A160 160 0 1 0 416 256 L300 256" fill="none" stroke="#E8A33D" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- The glide path: a sky line coming in through the opening, down to its touchdown on the bar -->
+  <path d="M440 128 L318 214" fill="none" stroke="#6FB2D9" stroke-width="40" stroke-linecap="round"/>
+</svg>
