@@ -23,10 +23,10 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
-const clearanceSA = "system:serviceaccount:autopilot-system:clearance"
+const gatewaySA = "system:serviceaccount:autopilot-system:autopilot-gateway"
 
 func TestAgentTokenCheck(t *testing.T) {
-	callers := map[string]bool{clearanceSA: true}
+	callers := map[string]bool{gatewaySA: true}
 	ok := githubReadRequest{Owner: "jfillman", Repo: "boarding-api", App: "boarding-api"}
 	for _, c := range []struct {
 		name    string
@@ -35,20 +35,20 @@ func TestAgentTokenCheck(t *testing.T) {
 		req     githubReadRequest
 		code    int
 	}{
-		{"app repo", callers, clearanceSA, ok, 200},
-		{"gitops repo", callers, clearanceSA, githubReadRequest{Owner: "jfillman", Repo: "gitops-boarding-api", App: "boarding-api"}, 200},
-		{"a cluster repo", callers, clearanceSA, githubReadRequest{Owner: "jfillman", Repo: "gitops-hangar-dev", App: "boarding-api"}, 403},
-		{"a platform repo named as its own app", callers, clearanceSA, githubReadRequest{Owner: "jfillman", Repo: "glidepath", App: "glidepath"}, 200}, // names pass; githubReadOwns refuses (no Repository CR)
-		{"another app's repo", callers, clearanceSA, githubReadRequest{Owner: "jfillman", Repo: "gate-api", App: "boarding-api"}, 403},
-		{"a path in the repo", callers, clearanceSA, githubReadRequest{Owner: "jfillman", Repo: "a/../b", App: "a"}, 400},
+		{"app repo", callers, gatewaySA, ok, 200},
+		{"gitops repo", callers, gatewaySA, githubReadRequest{Owner: "jfillman", Repo: "gitops-boarding-api", App: "boarding-api"}, 200},
+		{"a cluster repo", callers, gatewaySA, githubReadRequest{Owner: "jfillman", Repo: "gitops-hangar-dev", App: "boarding-api"}, 403},
+		{"a platform repo named as its own app", callers, gatewaySA, githubReadRequest{Owner: "jfillman", Repo: "glidepath", App: "glidepath"}, 200}, // names pass; githubReadOwns refuses (no Repository CR)
+		{"another app's repo", callers, gatewaySA, githubReadRequest{Owner: "jfillman", Repo: "gate-api", App: "boarding-api"}, 403},
+		{"a path in the repo", callers, gatewaySA, githubReadRequest{Owner: "jfillman", Repo: "a/../b", App: "a"}, 400},
 		{"glidepath-api is not a caller here", callers, "system:serviceaccount:platform-system:glidepath-api", ok, 403},
 		{"the old pre-deployment identity", callers, "system:serviceaccount:platform-system:clearance", ok, 403},
 		{"an agent run's own SA", callers, "system:serviceaccount:agent-r-0001:run", ok, 403},
-		{"not configured", map[string]bool{}, clearanceSA, ok, 503},
-		{"the tenants repo, no app", callers, clearanceSA, githubReadRequest{Owner: "jfillman", Repo: "tenants"}, 200},
-		{"the tenants repo, case-insensitive", callers, clearanceSA, githubReadRequest{Owner: "JFillman", Repo: "Tenants"}, 200},
-		{"the tenants repo naming an app", callers, clearanceSA, githubReadRequest{Owner: "jfillman", Repo: "tenants", App: "boarding-api"}, 403},
-		{"another owner's tenants repo", callers, clearanceSA, githubReadRequest{Owner: "other", Repo: "tenants"}, 400},
+		{"not configured", map[string]bool{}, gatewaySA, ok, 503},
+		{"the tenants repo, no app", callers, gatewaySA, githubReadRequest{Owner: "jfillman", Repo: "tenants"}, 200},
+		{"the tenants repo, case-insensitive", callers, gatewaySA, githubReadRequest{Owner: "JFillman", Repo: "Tenants"}, 200},
+		{"the tenants repo naming an app", callers, gatewaySA, githubReadRequest{Owner: "jfillman", Repo: "tenants", App: "boarding-api"}, 403},
+		{"another owner's tenants repo", callers, gatewaySA, githubReadRequest{Owner: "other", Repo: "tenants"}, 400},
 		{"the tenants repo, wrong caller", callers, "system:serviceaccount:agent-r-0001:run", githubReadRequest{Owner: "jfillman", Repo: "tenants"}, 403},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -99,7 +99,7 @@ func TestAgentInstallationTokenEndpoint(t *testing.T) {
 			Authenticated: true, User: authenticationv1.UserInfo{Username: strings.TrimPrefix(tr.Spec.Token, "t-")}}}, nil
 	})
 	dyn := repos(repoCR("app-boarding-api-cicd", "boarding-api", "https://github.com/jfillman/boarding-api"))
-	h := handleAgentInstallationToken(cs, dyn, map[string]bool{clearanceSA: true})
+	h := handleAgentInstallationToken(cs, dyn, map[string]bool{gatewaySA: true})
 	call := func(token, body string) (int, githubInstallationTokenResponse) {
 		req := httptest.NewRequest(http.MethodPost, "/agent-installation-token", strings.NewReader(body))
 		if token != "" {
@@ -113,12 +113,12 @@ func TestAgentInstallationTokenEndpoint(t *testing.T) {
 	}
 	good := `{"owner":"jfillman","repo":"boarding-api","app":"boarding-api"}`
 
-	if code, out := call("t-"+clearanceSA, good); code != 503 || out.Token != "" {
+	if code, out := call("t-"+gatewaySA, good); code != 503 || out.Token != "" {
 		t.Fatalf("no App mounted: %d %+v", code, out)
 	}
 	// The Secret syncs: the next request loads it, no restart.
 	writeTestApp(t, dir)
-	if code, out := call("t-"+clearanceSA, good); code != 200 || out.Token != "ghs_agent" {
+	if code, out := call("t-"+gatewaySA, good); code != 200 || out.Token != "ghs_agent" {
 		t.Fatalf("allowed caller: %d %+v", code, out)
 	}
 	raw, _ := json.Marshal(mints[0])
@@ -128,11 +128,11 @@ func TestAgentInstallationTokenEndpoint(t *testing.T) {
 	// The tenants repo (xr.request's PRs): no app, no Repository CR, the same down-scoped mint; unconfigured, it is refused.
 	tenantsBody := `{"owner":"jfillman","repo":"tenants"}`
 	t.Setenv("AGENT_PIN_TENANTS_REPO", "")
-	if code, out := call("t-"+clearanceSA, tenantsBody); code == 200 || out.Token != "" {
+	if code, out := call("t-"+gatewaySA, tenantsBody); code == 200 || out.Token != "" {
 		t.Fatalf("tenants repo with AGENT_PIN_TENANTS_REPO unset: %d %+v", code, out)
 	}
 	t.Setenv("AGENT_PIN_TENANTS_REPO", "jfillman/tenants")
-	if code, out := call("t-"+clearanceSA, tenantsBody); code != 200 || out.Token != "ghs_agent" {
+	if code, out := call("t-"+gatewaySA, tenantsBody); code != 200 || out.Token != "ghs_agent" {
 		t.Fatalf("tenants repo: %d %+v", code, out)
 	}
 	raw, _ = json.Marshal(mints[1])
@@ -146,13 +146,13 @@ func TestAgentInstallationTokenEndpoint(t *testing.T) {
 	}{
 		{"", good, 401},
 		{"t-system:serviceaccount:platform-system:glidepath-api", tenantsBody, 403},
-		{"t-" + clearanceSA, `{"owner":"jfillman","repo":"tenants","app":"x"}`, 403},
+		{"t-" + gatewaySA, `{"owner":"jfillman","repo":"tenants","app":"x"}`, 403},
 		{"bad", good, 401},
 		{"t-system:serviceaccount:platform-system:glidepath-api", good, 403},
-		{"t-" + clearanceSA, `{"owner":"jfillman","repo":"gitops-hangar-dev","app":"boarding-api"}`, 403},
-		{"t-" + clearanceSA, `{"owner":"jfillman","repo":"glidepath","app":"glidepath"}`, 403},
-		{"t-" + clearanceSA, `{"owner":"other","repo":"boarding-api","app":"boarding-api"}`, 403},
-		{"t-" + clearanceSA, `nope`, 400},
+		{"t-" + gatewaySA, `{"owner":"jfillman","repo":"gitops-hangar-dev","app":"boarding-api"}`, 403},
+		{"t-" + gatewaySA, `{"owner":"jfillman","repo":"glidepath","app":"glidepath"}`, 403},
+		{"t-" + gatewaySA, `{"owner":"other","repo":"boarding-api","app":"boarding-api"}`, 403},
+		{"t-" + gatewaySA, `nope`, 400},
 	} {
 		if code, out := call(c.token, c.body); code != c.code || out.Token != "" {
 			t.Errorf("%s %s: %d %+v, want %d", c.token, c.body, code, out, c.code)
@@ -199,9 +199,9 @@ func TestAgentInstallationTokenNotInstalledIsLoggedAndClear(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 
 	dyn := repos(repoCR("app-parachute-cicd", "parachute", "https://github.com/jfillman/parachute"))
-	h := handleAgentInstallationToken(cs, dyn, map[string]bool{clearanceSA: true})
+	h := handleAgentInstallationToken(cs, dyn, map[string]bool{gatewaySA: true})
 	req := httptest.NewRequest(http.MethodPost, "/agent-installation-token", strings.NewReader(`{"owner":"jfillman","repo":"parachute","app":"parachute"}`))
-	req.Header.Set("Authorization", "Bearer t-"+clearanceSA)
+	req.Header.Set("Authorization", "Bearer t-"+gatewaySA)
 	rec := httptest.NewRecorder()
 	h(rec, req)
 	var out githubInstallationTokenResponse
@@ -209,7 +209,7 @@ func TestAgentInstallationTokenNotInstalledIsLoggedAndClear(t *testing.T) {
 	if rec.Code != 502 || out.Error != "the agents' GitHub App is not installed on jfillman/parachute" {
 		t.Fatalf("not installed: %d %+v", rec.Code, out)
 	}
-	for _, want := range []string{"agent token failed", "caller=" + clearanceSA, `repo="jfillman/parachute"`, "status=502", "not installed"} {
+	for _, want := range []string{"agent token failed", "caller=" + gatewaySA, `repo="jfillman/parachute"`, "status=502", "not installed"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("log %q lacks %q", logs.String(), want)
 		}

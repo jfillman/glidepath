@@ -48,7 +48,7 @@ metadata:
   labels:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
-    # Clearance's ingress NetworkPolicy admits pods with this label (apron 55-autopilot/clearance).
+    # Clearance's ingress NetworkPolicy admits pods with this label (apron 55-clearance).
     hangar.io/clearance-client: clearance-gate
 spec:
   description: Registers a gitops release PR's protected environments with Clearance's deployment gate (the rendered diff, classified 0-3) and fails while the change holds for people or is denied.

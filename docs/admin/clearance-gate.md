@@ -178,7 +178,7 @@ second task; its single task already fails on a render failure.
 - `charts/glidepath-catalog/values.yaml`: the `clearance-gate` guardrail; `clearanceGate.towerUrl`; Clearance's URL
   and audience are `agentGates.clearanceUrl` / `agentGates.audience`
 - `comment-pr-check-result.yaml`: the gate's advice text
-- Apron `55-autopilot/clearance/networkpolicy.yaml` admits pods labelled `hangar.io/clearance-client: clearance-gate`
+- Apron `55-clearance/clearance` (its networkPolicy values) admits pods labelled `hangar.io/clearance-client: clearance-gate`
 - Clearance: `internal/gate` (the Go core), `docs/gate.md`; the API `GET /v1/clearances`, `/v1/clearance-policy`
 
 ## The join to the release record (G-ARGO-6)

@@ -134,7 +134,7 @@ it asks the broker for a token per PR, `POST /agent-installation-token` (`agentt
 
 | | |
 |---|---|
-| Caller | `Authorization: Bearer <projected SA token>`, audience `agent-installation-token`, checked by TokenReview. Only the usernames in `agentToken.callers` (env `AGENT_TOKEN_CALLERS`; default `system:serviceaccount:autopilot-system:clearance`). Anyone else is 403, an empty list 503. |
+| Caller | `Authorization: Bearer <projected SA token>`, audience `agent-installation-token`, checked by TokenReview. Only the usernames in `agentToken.callers` (env `AGENT_TOKEN_CALLERS`; default `system:serviceaccount:autopilot-system:autopilot-gateway`). Anyone else is 403, an empty list 503. |
 | Body | `{"owner": "<owner>", "repo": "<repo>", "app": "<app>"}` |
 | Repo rule | `/github-read-token`'s, exactly: an onboarded app's own repo with a PaC Repository CR mapping to it. A cluster repo (`gitops-hangar-dev`) or a platform repo is 403 even if the App is installed there. Clearance's per-agent `repos.allow` is checked first; this is the second check. **One exception, the tenants repo** (`AGENT_PIN_TENANTS_REPO`, the chart's `tenantsRepoUrl`, the repo `/agent-pin` pins into): no app owns it and it has no Repository CR, but Clearance's `xr.request` opens its PRs, so a request for exactly that `owner/repo` with no `app` is accepted for the same callers and gets the same down-scoped token. Unset, it is refused like any other non-app repo; naming an app with it is 403. |
 | Token | `repositories: [<repo>]`, `permissions: {contents: write, pull_requests: write, metadata: read}`. Never `workflows`: GitHub refuses a push touching `.github/workflows`. No checks, administration or bypass: the App opens PRs a person merges. |

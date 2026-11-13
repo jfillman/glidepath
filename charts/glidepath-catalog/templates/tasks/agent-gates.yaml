@@ -15,7 +15,7 @@ metadata:
   labels:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
-    # Clearance's ingress NetworkPolicy admits pods with this label (apron 55-autopilot/clearance).
+    # Clearance's ingress NetworkPolicy admits pods with this label (apron 55-clearance).
     hangar.io/clearance-client: agent-gates
 spec:
   description: Checks a PR against Clearance's record of agent PRs - agent-identity and agent-scope.
