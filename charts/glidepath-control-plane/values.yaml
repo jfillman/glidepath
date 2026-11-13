@@ -451,7 +451,7 @@ githubRead:
 agentToken:
   enabled: false
   callers:
-    - system:serviceaccount:autopilot-system:clearance
+    - system:serviceaccount:autopilot-system:autopilot-gateway
   appIdKey: agent-app-id
   privateKeyKey: agent-app-private-key
 
