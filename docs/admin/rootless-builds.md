@@ -51,3 +51,17 @@ kubectl create --dry-run=server -n pss-check -f build-pod.yaml
 
 Admission is not enough: a `restricted`-shaped pod is admitted and then fails inside
 rootlesskit. Run a real build once on a new cluster before onboarding apps.
+
+## When the step fails before it builds anything
+
+`could not connect to unix:///run/user/1000/buildkit/buildkitd.sock after N trials`, with an
+empty log under it, means buildkitd did not start listening in time. The step did not reach
+the Containerfile, so nothing is wrong with the app.
+
+`buildctl-daemonless.sh` starts buildkitd and polls its socket. Its own default is 10 tries,
+about 3 seconds in all, which a loaded node can miss. The step sets
+`BUILDCTL_CONNECT_RETRIES_MAX=60`, about 45 seconds. A healthy start still connects within
+the first few tries, so this costs nothing when the node is not busy.
+
+If it still fails after 60 tries, the log under the message is no longer empty: read it. An
+empty log again means the node is starved, not slow; look at node load before retrying.

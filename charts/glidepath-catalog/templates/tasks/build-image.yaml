@@ -242,6 +242,13 @@ spec:
         # rootless-on-Kubernetes guidance).
         - name: BUILDKITD_FLAGS
           value: --oci-worker-no-process-sandbox
+        # buildctl-daemonless.sh starts buildkitd and polls its socket; the default of 10
+        # tries is about 3 seconds in all. On a loaded node buildkitd takes longer than that
+        # to come up and the step failed with "could not connect to ...buildkitd.sock after
+        # 10 trials" and an empty log (backstage 1.0.2-83c14de, 2026-11-14). 60 tries is
+        # about 45 seconds, and a healthy start still connects on the first few.
+        - name: BUILDCTL_CONNECT_RETRIES_MAX
+          value: "60"
         - name: DOCKER_CONFIG
           value: /home/user/.docker
         - name: CONTAINERFILE_PATH
