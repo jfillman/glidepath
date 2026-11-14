@@ -64,9 +64,11 @@ gh() { # <repos/ path> <json>
 commit() { # <sha> <parents> <login or ""> -> a compare/commit entry
   jq -nc --arg s "$1" --argjson p "$2" --arg l "$3" '{sha: $s, parents: [range($p)] | map({sha: "x"}), author: (if $l == "" then null else {login: $l} end), commit: {author: {name: $l}}}'
 }
-prpages() { # <pr> <opener> <head sha> <commit json array> <message for coauthors or ""> [merge commit sha] [merger] [merged_at]
-  gh "o/shop/pulls/$1" "$(jq -nc --arg h "$3" --arg a "$2" --arg m "${6:-}" --arg g "${7:-pat}" --arg t "${8:-2026-11-13T00:0$1:00Z}" \
-    '{head: {sha: $h}, user: {login: $a}, merged_by: {login: $g}, merged_at: $t, merge_commit_sha: $m}')"
+prpages() { # <pr> <opener> <head sha> <commit json array> <message for coauthors or ""> [merge commit sha] [merger] [merged_at] [json merged over the PR]
+  local x="${9:-}"; [[ -n "$x" ]] || x='{}'
+  gh "o/shop/pulls/$1" "$(jq -nc --arg h "$3" --arg a "$2" --arg m "${6:-}" --arg g "${7:-pat}" --arg t "${8:-2026-11-13T00:0$1:00Z}" --argjson x "$x" \
+    '{head: {sha: $h}, user: {login: $a, type: "User"}, merged_by: {login: $g}, merged_at: $t, merge_commit_sha: $m,
+      base: {ref: "main", repo: {full_name: "o/shop"}}, additions: 10, deletions: 0} * $x')"
   gh "o/shop/pulls/$1/commits?per_page=100&page=1" "$(jq -nc --argjson c "$4" --arg m "$5" '[$c[] | {sha, commit: {message: ("subject\n\n" + $m)}}]')"
   gh "o/shop/pulls/$1/files?per_page=100&page=1" '[{"filename": "src/a.ts"}]'
 }
@@ -85,6 +87,7 @@ scenario() { # <name>: the normal one: previous release P (merged), this release
   printf 'replicaCount: 2\nrelease:\n  image:\n    repository: ghcr.io/x/shop\n    tag: 1.0.2-%s\nreleaseTracking:\n  releaseId: rel2:c1/prod\n  cluster: c1\n  appNamespace: app-shop-cicd\n' "${R:0:7}" > "$FIX/head/c1/prod/release.yaml"
   echo '[{"filename":"c1/prod/release.yaml","status":"modified"}]' > "$FIX/files.json"
   gh "o/gitops-shop/pulls/7" '{"commits": 1}'
+  gh "o/shop" '{"default_branch": "main"}'
   gh "o/shop/compare/$P...$R?per_page=1" '{"status":"ahead","total_commits":4}'
   gh "o/shop/compare/$P...$R?per_page=100&page=1" "$(jq -nc --argjson a "$(commit "$C1" 1 dana)" --argjson b "$(commit "$M1" 2 dana)" --argjson c "$(commit "$C2" 1 dana)" --argjson e "$(commit "$M2" 2 dana)" '{commits: [$a, $b, $c, $e]}')"
   cpulls "$C1" '[281]'; cpulls "$M1" '[281]'; cpulls "$C2" '[282]'; cpulls "$M2" '[282]'
@@ -92,10 +95,10 @@ scenario() { # <name>: the normal one: previous release P (merged), this release
   prpages 282 dana "$C2" "[{\"sha\":\"$C2\"}]" "Co-Authored-By: Claude <noreply@anthropic.com>" "$M2"
   echo '{"281":{"identity":{"status":"unattested"}},"282":{"identity":{"status":"unattested"}}}' > "$FIX/verdicts.json"
 }
-resolve() { # -> prints the function's JSON; the files list is $FIX/files.json
+resolve() { # (PRAUTHORTYPE: the PR author's account type) -> prints the function's JSON; the files list is $FIX/files.json
   ( source "$d/lib.sh"; github_app_installation_token() { echo tok; }
     PATH="$d/bin:$PATH" NAMESPACE=app-shop-cicd APP_NAME=shop CLEARANCE_URL=http://clearance PIPELINE_LOGINS="${PIPELINE_LOGINS:-}" \
-    release_source_resolve o gitops-shop 7 "$(cat "$FIX/files.json")" "$FIX/head" "$FIX/base" "${PRAUTHOR:-cicd-pac[bot]}" ) 2> "$FIX/stderr"
+    release_source_resolve o gitops-shop 7 "$(cat "$FIX/files.json")" "$FIX/head" "$FIX/base" "${PRAUTHOR:-cicd-pac[bot]}" "${PRAUTHORTYPE:-Bot}" ) 2> "$FIX/stderr"
 }
 # the clearance token the lib reads
 mkdir -p "$d/secret"; echo tok > "$d/secret/clearance-token"
@@ -174,7 +177,7 @@ out="$(PIPELINE_LOGINS="cicd-pac[bot]" PRAUTHOR=dana resolve)"; expect "a person
 scenario dup; jq '.items += [.items[0]]' "$FIX/records.json" > "$FIX/r" && mv "$FIX/r" "$FIX/records.json"
 out="$(resolve)"; expect "two records for one PR: none trusted" "$(q '[.resolved, (.reason | test("2 release records"))] | join(",")')" "false,true"
 scenario dotted-repo; jq '.items[0].data.gitUrl = "https://github.com/o/shop.js" | .items[1].data.gitUrl = "https://github.com/o/shop.js"' "$FIX/records.json" > "$FIX/r" && mv "$FIX/r" "$FIX/records.json"
-for f in "$FIX"/gh/o_shop_*; do cp "$f" "$FIX/gh/o_shop_js_${f##*/o_shop_}"; done
+for f in "$FIX"/gh/o_shop_*; do cp "$f" "$FIX/gh/o_shop_js_${f##*/o_shop_}"; done; cp "$FIX/gh/o_shop" "$FIX/gh/o_shop_js"
 out="$(resolve)"; expect "a repository name with a dot is valid" "$(q '[.resolved, .sourceRepo] | join(",")')" "true,o/shop.js"
 
 # 7. Unresolvable: no record for the image the environment runs now (swept), a first release, a range over the cap.
@@ -244,6 +247,56 @@ scenario old-record; jq 'del(.items[0].data.imageRepository)' "$FIX/records.json
 out="$(resolve)"; expect "a record that predates the repository field: unresolved, says so" "$(q '[.resolved, (.reason | test("predates"))] | join(",")')" "false,true"
 scenario forged-sha; jq --arg x "$(sha 999)" '.items[0].data.gitRevision = $x' "$FIX/records.json" > "$FIX/r" && mv "$FIX/r" "$FIX/records.json"
 out="$(resolve)"; expect "an image tag that does not end in the record's commit: unresolved" "$(q '[.resolved, (.reason | test("does not end in"))] | join(",")')" "false,true"
+
+# 11. Covering PRs must really land the commit on the released branch of the source repo (the source repo's default branch:
+#     the pipeline records none) and be a PR into that repo. A commit pushed straight to main that a PR from a side branch
+#     later "contains" must stay no-PR.
+scenario side-branch; prpages 282 dana "$C2" "[{\"sha\":\"$C2\"}]" "" "$M2" pat 2026-11-13T00:02:00Z '{"base": {"ref": "side"}}'
+out="$(resolve)"; expect "a PR merged into a side branch does not cover the commit (X pushed to main, PR containing X merged to a side branch)" "$(q '[.provenance, (.noPr | join(","))] | join("|")')" "unknown|$C2,$M2"
+scenario fork-base; prpages 282 dana "$C2" "[{\"sha\":\"$C2\"}]" "" "$M2" pat 2026-11-13T00:02:00Z '{"base": {"repo": {"full_name": "evil/shop"}}}'
+out="$(resolve)"; expect "a PR into another base repository does not cover it" "$(q '[.provenance, (.noPr | join(","))] | join("|")')" "unknown|$C2,$M2"
+scenario unmerged; gh "o/shop/commits/$C2/pulls?per_page=100&page=1" '[{"number":282,"merged_at":null}]'; gh "o/shop/commits/$M2/pulls?per_page=100&page=1" '[{"number":282,"merged_at":null}]'
+out="$(resolve)"; expect "a closed-unmerged or open PR (merged_at null) does not cover it" "$(q '[.provenance, (.noPr | join(","))] | join("|")')" "unknown|$C2,$M2"
+scenario trunk; gh "o/shop" '{"default_branch": "trunk"}'
+out="$(resolve)"; expect "the released branch is the source repo's default branch, not the PR's claim: PRs into main do not cover when it is trunk" "$(q .resolved)" false
+scenario squash; gh "o/shop/compare/$P...$R?per_page=1" '{"status":"ahead","total_commits":1}'
+gh "o/shop/compare/$P...$R?per_page=100&page=1" "$(jq -nc --argjson a "$(commit "$R" 1 squasher)" '{commits: [$a]}')"
+cpulls "$R" '[281]'; prpages 281 dana "$C1" "[{\"sha\":\"$C1\"},{\"sha\":\"$C2\"}]" "" "$R"
+out="$(resolve)"; expect "a squash merge: the one commit on main is the PR's merge_commit_sha" "$(q '[.provenance, .proposer, (.noPr | length)] | join("|")')" "unattested|user:dana|0"
+scenario rebase; gh "o/shop/compare/$P...$R?per_page=1" '{"status":"ahead","total_commits":2}'
+gh "o/shop/compare/$P...$R?per_page=100&page=1" "$(jq -nc --argjson a "$(commit "$(sha 50)" 1 x)" --argjson b "$(commit "$R" 1 x)" '{commits: [$a, $b]}')"
+cpulls "$(sha 50)" '[281]'; cpulls "$R" '[281]'; prpages 281 dana "$C1" "[{\"sha\":\"$C1\"},{\"sha\":\"$C2\"}]" "" "$R"
+out="$(resolve)"; expect "a rebase merge: only the tip (merge_commit_sha) is provable; the rebased commits have new shas, so fail closed" "$(q '[.provenance, (.noPr | join(","))] | join("|")')" "unknown|$(sha 50)"
+
+# 12. The single proposer: bots never, then the human opener of the PR with the most changed lines (ties: newest).
+scenario pick-bot; prpages 281 "dependabot[bot]" "$C1" "[{\"sha\":\"$C1\"}]" "" "$M1" pat 2026-11-13T05:00:00Z '{"additions": 900}'
+out="$(resolve)"; expect "a bot's huge PR does not steer: the human opener proposes" "$(q .proposer)" "user:dana"
+scenario pick-type; prpages 281 "ci-account" "$C1" "[{\"sha\":\"$C1\"}]" "" "$M1" pat 2026-11-13T05:00:00Z '{"additions": 900, "user": {"type": "Bot"}}'
+out="$(resolve)"; expect "an account whose API type is Bot is skipped though its login lacks [bot]" "$(q .proposer)" "user:dana"
+scenario pick-setting; prpages 281 "svc-release" "$C1" "[{\"sha\":\"$C1\"}]" "" "$M1" pat 2026-11-13T05:00:00Z '{"additions": 900}'
+out="$(PIPELINE_LOGINS=svc-release resolve)"; expect "a login in clearanceGate.pipelineLogins is skipped" "$(q .proposer)" "user:dana"
+scenario pick-lines; prpages 281 zed "$C1" "[{\"sha\":\"$C1\"}]" "" "$M1" pat 2026-11-13T06:00:00Z '{"additions": 40, "deletions": 5}'
+prpages 282 amy "$C2" "[{\"sha\":\"$C2\"}]" "" "$M2" pat 2026-11-13T07:00:00Z '{"additions": 20}'
+out="$(resolve)"; expect "the human opener of the PR with the most changed lines (not the newest) proposes" "$(q .proposer)" "user:zed"
+prpages 282 amy "$C2" "[{\"sha\":\"$C2\"}]" "" "$M2" pat 2026-11-13T07:00:00Z '{"additions": 45}'
+out="$(resolve)"; expect "equal lines: the newest" "$(q .proposer)" "user:amy"
+scenario pick-merger; prpages 281 "a[bot]" "$C1" "[{\"sha\":\"$C1\"}]" "" "$M1" mia 2026-11-13T01:00:00Z; prpages 282 "b[bot]" "$C2" "[{\"sha\":\"$C2\"}]" "" "$M2" lee 2026-11-13T02:00:00Z
+out="$(resolve)"; expect "every opener a bot: the human merger of the newest PR proposes" "$(q '[.proposer, .proposerKind] | join(",")')" "user:lee,person"
+prpages 282 "b[bot]" "$C2" "[{\"sha\":\"$C2\"}]" "" "$M2" "web[bot]" 2026-11-13T02:00:00Z
+out="$(resolve)"; expect "the newest PR's merger a bot too: the next newest human merger" "$(q .proposer)" "user:mia"
+scenario pick-none; prpages 281 "a[bot]" "$C1" "[{\"sha\":\"$C1\"}]" "" "$M1" "m[bot]" 2026-11-13T01:00:00Z; prpages 282 "b[bot]" "$C2" "[{\"sha\":\"$C2\"}]" "" "$M2" "n[bot]" 2026-11-13T02:00:00Z
+out="$(resolve)"; expect "no human at all: kind unknown" "$(q '[.proposerKind, .provenance] | join(",")')" "unknown,unattested"
+
+# 13. A curl failure is not masked by the jq after it.
+scenario curl-fail-pr; rm "$FIX/gh/o_gitops_shop_pulls_7"
+out="$(resolve)"; expect "the release PR cannot be read: unresolved, says so" "$(q '[.resolved, .reason] | join(",")')" "false,could not read the release PR"
+scenario curl-fail-commit; jq '.items[0].data.kind = "rollback"' "$FIX/records.json" > "$FIX/r" && mv "$FIX/r" "$FIX/records.json"
+out="$(resolve)"; expect "the single commit cannot be read: unresolved, says so" "$(q '[.resolved, (.reason | test("could not read o/shop@"))] | join(",")')" "false,true"
+
+# 14. A Bot account authored the PR, the pipelineLogins setting is empty and no record names it: still a person's PR, with a warning.
+scenario warn; jq '.items[0].data.prUrl = "https://github.com/o/gitops-shop/pull/99"' "$FIX/records.json" > "$FIX/r" && mv "$FIX/r" "$FIX/records.json"
+out="$(PIPELINE_LOGINS="" PRAUTHORTYPE=Bot resolve)"; expect "empty pipelineLogins and a Bot author: a warning is printed" "$(q '[.applicable, (.warning | test("pipelineLogins"))] | join(",")')" "false,true"
+out="$(PIPELINE_LOGINS="" PRAUTHORTYPE=User resolve)"; expect "no warning for a person" "$(q '.warning // "none"')" none
 
 # 10. The render step's mapping into the change request (the real step, a stand-in helm, the parity fixture).
 fx="$(pwd)/charts/glidepath-catalog/tests/fixtures/clearance-parity"
