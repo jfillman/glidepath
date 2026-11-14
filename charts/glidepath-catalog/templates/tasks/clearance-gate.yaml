@@ -155,6 +155,7 @@ spec:
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
         {{- include "glidepath-catalog.policyEvalLib" . | nindent 8 }}
+        {{- include "glidepath-catalog.releaseSourceLib" . | nindent 8 }}
         : > /work/plan.txt
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
@@ -279,6 +280,18 @@ spec:
           echo "${cluster}|${env}|${chart_dir}|${protected}" >> /work/plan.txt
           echo "${cluster}/${env}: protected=${protected} chart=${chart_dir}"
         done < /work/envs.txt
+
+        # Who proposed a release PR the pipeline opened: the author(s) of the source change it releases and the provenance of
+        # that source (files/lib/release-source.sh; docs/admin/clearance-gate.md, "Who proposed a release"). A release PR's
+        # own author is the pipeline's GitHub App and says nothing about the change. Nothing here is read from the PR's text:
+        # the pipeline's release record names the source, and the PR must be exactly what the record says it wrote.
+        release_source_resolve "${owner}" "${repo}" "${PR_NUMBER}" "${files}" /work/repo /work/base > /work/source.json \
+          || { echo "FAIL: could not tell whether this is a pipeline release PR (the release records are unreadable)"; exit 1; }
+        if [[ "$(jq -r .applicable /work/source.json)" == true ]]; then
+          echo "release source: $(jq -r 'if .resolved then "\(.mode) \(.sourceRepo)@\(.releasedCommit[0:7]) (\(.commits) commit(s)), authors \([.authors[] | .login] | join(", ")), provenance \(.provenance)" else "UNRESOLVED: \(.reason)" end' /work/source.json)"
+        else
+          echo "release source: no release record names this PR; the PR's own author is the proposer"
+        fi
 
         # The repo's clearance.yaml at head (tighten-only; Clearance validates it), as JSON for the render step, and
         # the commit that last changed it: the record's policy ref, clearance.yaml@<commit> (C-8).
@@ -480,7 +493,22 @@ spec:
             kind, agent, proposer = "person", None, f"user:{meta['author']}"
         else:
             kind, agent, proposer = "unknown", rec.get("agent"), f"user:{meta['author']}"
-        checks = {"ci": status_of(None), "provenance": identity, "render": "ok", "admission": status_of(checks_named("policy-validation"))}
+        extra_checks = {}
+        # A release PR the pipeline opened (the fetch step's /work/source.json, from the release record): its own author is
+        # the pipeline's GitHub App, so the proposer, its kind and the provenance are the SOURCE change's (the commits
+        # between the previous release and this one in the app repo). Unresolvable source: the PR author, kind unknown
+        # (never person), which Clearance denies (DG-PROVENANCE) - nothing is vouched for that could not be established.
+        src = json.load(open("/work/source.json")) if os.path.exists("/work/source.json") else {"applicable": False}
+        if src.get("applicable"):
+            if src.get("resolved"):
+                proposer, kind, agent, identity = src["proposer"], src["proposerKind"], src.get("agent"), src["provenance"]
+                # Clearance's change request has one proposer. Every author is kept in checks, which the change stores.
+                extra_checks = {"sourceAuthors": ",".join(a["login"] for a in src["authors"])[:900],
+                                "sourceRange": f"{src['sourceRepo']}@{(src.get('previousCommit') or '')[:12]}..{src['releasedCommit'][:12]} ({src['mode']}, {src['commits']} commits)"}
+            else:
+                kind, agent, proposer, identity = "unknown", None, f"user:{meta['author']}", "unknown"
+                extra_checks = {"sourceUnresolved": src.get("reason", "")[:900]}
+        checks = {"ci": status_of(None), "provenance": identity, "render": "ok", "admission": status_of(checks_named("policy-validation")), **extra_checks}
         paths = sorted({f["filename"] for f in meta["files"]} | {f["previous_filename"] for f in meta["files"] if f.get("previous_filename")})
         lines = sum(int(f.get("additions") or 0) + int(f.get("deletions") or 0) for f in meta["files"])
 
@@ -701,6 +729,19 @@ spec:
           echo "|---|---|---|---|---|---|---|---|"
           jq -r '"| \(if .state == "cleared" then "✅" elif .state == "holding" then "⏳" else "❌" end) | \(.env) | \(.tier // "") | \(.state)\(if .state == "error" then ": " + .detail else "" end) | \(.admission // "") | \((.why // "") | .[0:200]) | \(.requirement // "") | \(if .cleared_by == "policy" then "policy" elif (.approvals // "") != "" then .approvals else "" end)\(if .deny_reason then " · denied: " + .deny_reason else "" end) |"' /work/rows.jsonl
           links="$(jq -r 'select(.link != "") | "[\(.env)](\(.link))"' /work/rows.jsonl | paste -sd ' ' -)"
+          if [[ -s /work/source.json && "$(jq -r '.applicable // false' /work/source.json)" == true ]]; then
+            echo
+            echo "**Source of this release** (the pipeline opened this PR, so the proposer is the author of the change it releases, not the PR's author):"
+            jq -r '
+              if .resolved then
+                "- Registered with Clearance as proposer `\(.proposer)` (\(.proposerKind)), provenance `\(.provenance)`. Released: `\(.sourceRepo)` \(if .mode == "range" then "`\(.previousCommit[0:7])`..`\(.releasedCommit[0:7])`, \(.commits) commit(s)" elif .mode == "rollback" then "`\(.releasedCommit[0:7])` alone (a rollback restores one earlier commit)" else "`\(.releasedCommit[0:7])` alone (the same commit as the release it replaces)" end)."
+                + "\n- Authors: \([.authors[] | "`\(.login)` (\(.commits))"] | join(", ")). Clearance holds one proposer; every author is in the change'"'"'s `sourceAuthors` check."
+                + "\n- Source pull requests: \([.prs[] | if .number == 0 then (.note // "none") else "#\(.number) by `\(.author)`: \(.identity)\(if .agent != "" then " (agent \(.agent))" else "" end)" end] | join("; ")). The release is only as attested as its weakest source PR (unknown, then unattested, then not-agent, then confirmed)."
+              else
+                "- **Source unresolved: registered as proposer unknown, which Clearance denies.** \(.reason)"
+              end
+              + "\n- Promoter: \(if .promoter != "" then "`\(.promoter)`" else "not recorded (a pipeline-driven release, or a record from before the promoter was kept)" end). Clearance has no field for it yet, so it is named here only."' /work/source.json
+          fi
           if (( holding > 0 )); then
             echo
             echo "**Holding:** someone the requirement names clears it in Tower${links:+ (${links})}, then comment \`/retest clearance-gate-\` here: the same head is re-registered and found cleared. A new push is a new change. A holding change expires after the gate's TTL (7 days by default)."

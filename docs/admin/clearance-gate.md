@@ -28,7 +28,8 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
      `clearance.yaml` and the commit that last changed it; the agent gates' verdict on who proposed the PR
      (`POST /v1/provenance`; `confirmed` is an agent's change, `not-agent` and `unattested` a person's, anything else
      `unknown` - `unattested` is AI-co-authored work outside Clearance, a warning there, and Clearance's gate counts it
-     as `not-agent`, so the proposer kind is `person`); the head's check runs; one-commit checkouts of base and head; and each protected
+     as `not-agent`, so the proposer kind is `person`; for a release PR the pipeline opened the
+     source change's author and provenance replace this, [below](#who-proposed-a-release)); the head's check runs; one-commit checkouts of base and head; and each protected
      environment's target cluster's **admission policy bundle** from the broker's `/policy-bundle` (the
      [policy-validation](policy-validation.md) source; an unreadable bundle is an `error` verdict below, not a failed
      check).
@@ -100,6 +101,66 @@ the register step then registers the change again without them, says so in the l
 **Argo CD's config management plugin (G-ARGO, not built).** The CMP registers the tree it rendered through the same
 route, so it sends the same `admission` object (`engine`, `verdict`, `bundle`, `deny`, `warn`) from its own offline
 evaluation of that tree against the same bundle, and `policyCommit` when the gitops repo has a `clearance.yaml`.
+
+## Who proposed a release
+
+A release PR is written by the pipeline's GitHub App, so its author (`<app>[bot]`) and its single commit say nothing
+about the change it releases. Registered naively, the proposer was the bot (kind `person`, provenance `not-agent`),
+which also let the real author clear their own tier-2 change, because the rule is "one owner, not the proposer". The
+gate now registers **the source change's** author and provenance instead
+(`charts/glidepath-catalog/files/lib/release-source.sh`, run in the `fetch` step; tested by
+`tests/clearance_gate_release_source_test.sh`).
+
+**What it trusts, and why.** Only things the pipeline wrote or can verify:
+
+| Trusted | Why |
+|---|---|
+| The **release record** (`release-tracking-<chainId>`, the one whose `prUrl` is this PR): image, `imageDigest` (when the release pins one), `gitUrl` and `gitRevision` (the source commit), `kind`, `initiator` | written by `open-release-pr` with the pipeline's ServiceAccount; a PR's author cannot write it |
+| The **previous release's record** (same app, environment and cluster, merged, whose image is what the base manifest runs) | same |
+| The app repo's **git history and PR metadata** (compare, commits, associated PRs), read with the GitHub App's token | GitHub's own data; a commit's author is its account |
+| **Clearance's provenance verdict** per source PR (`POST /v1/provenance`) | Clearance's own receipts decide `confirmed`; nothing here reimplements it |
+
+Not trusted for anything: the release PR's author, title, body, branch name or commit message, and any text in it. The
+PR is accepted as the pipeline's only if its **content is exactly what the record says the pipeline wrote**: one commit;
+one file, `<cluster>/<env>/release.yaml` (or `values.yaml`) of the record's cluster and environment; nothing different
+from base in that file except `release.image.*`, `rollout.image` and `releaseTracking`; the head's `release.image.tag` is
+the record's (and its `digest` the record's `imageDigest`, when recorded); and the tag's `-<sha>` suffix, if it has one,
+starts the record's source commit. A PR pre-opened on the release branch name, a second commit pushed to the branch, an
+extra file or a changed field fails this: the source is **unresolved**, never borrowed.
+
+**What is registered** (only fields Clearance accepts today):
+
+| | |
+|---|---|
+| `proposer` | `user:<login>` of the source author; if several, the one with the most commits in the range, ties by login (deterministic) |
+| `proposerKind`, `agent`, `checks.provenance` | from the **weakest** source PR (below) |
+| `checks.sourceAuthors` | every author, comma-separated: Clearance's request has one proposer, so the rest ride in `checks`, which Clearance stores with the change |
+| `checks.sourceRange` | `<repo>@<previous>..<released> (<mode>, <n> commits)` |
+| the gate's comment | the authors with commit counts, each source PR with its verdict, the promoter |
+
+**Weakest verdict wins**, in this order, weakest first: `unknown` (a commit with no merged PR, a forged-trailer or
+modified agent PR, Clearance not answering) < `unattested` (an AI co-author trailer Clearance has no record of) <
+`not-agent` (no AI signal) < `confirmed` (an agent opened it through Clearance). `confirmed` is claimed only when
+**every** source PR is confirmed; any `unattested` PR makes the release `unattested` (it contains agent work outside
+Clearance, so `not-agent` would understate it); a person's PR beside a confirmed one makes it `not-agent`. `unknown`
+becomes `proposerKind: unknown`, which Clearance **denies** (`DG-PROVENANCE`); `unattested` and `not-agent` are `person`.
+
+| Case | Behaviour |
+|---|---|
+| Normal release | previous release's commit `..` this release's commit in the app repo; authors are the non-merge commits' accounts; source PRs are their merged PRs |
+| Several authors | none dropped: all in `checks.sourceAuthors` and the comment; the proposer is the most active, ties by login |
+| Source cannot be resolved (record swept, first release to the environment, over 250 commits, an author with no GitHub account, GitHub unreadable) | proposer `user:<PR author>`, kind **`unknown`** (never `person`), provenance `unknown`; `checks.sourceUnresolved` and the comment say why. Clearance denies it: fix the cause and `/retest`, or release again |
+| Rollback (`kind: rollback`, or the image is older than the one the environment runs) | the restored commit alone: its author and its PR's provenance (what is restored was released, and cleared, before) |
+| Same commit released again | that commit alone |
+| PR not opened by the pipeline (no record names it, e.g. a person's hand-made release PR) | unchanged: the PR's author and the agent gates' verdict |
+| Release records unreadable | the check fails: it cannot tell which of the above this is |
+
+**The promoter** (who triggered the promotion; the bot only opens the PR for them) is Tower's `initiator`, which
+`open-release-pr` now keeps on the release record (`initiator`, with `imageDigest`). It is empty for a release a flow
+started rather than a person. Clearance has no field for it, so the gate names it in its comment and does not send it.
+Clearance would need a `promoter` on the change request, stored with the change like `proposer`, and the "not the
+proposer" rule (`DG-PROPOSER`, tier 2 and 3 approvers) refusing the proposer, **every** source author and the promoter,
+with `sourceAuthors` as a real list.
 
 ## Required or advisory
 

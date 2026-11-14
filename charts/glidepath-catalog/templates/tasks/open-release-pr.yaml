@@ -244,6 +244,12 @@ spec:
         # release's CDEvent when the upper cluster reports a Rollout fact for it. One
         # function so the two writers below (a retry that reuses an open PR, and a fresh
         # PR) cannot drift apart. configJson is the cicd.yaml content as resolved here.
+        # The digest the release pins, for clearance-gate to check the release PR against (docs/admin/clearance-gate.md,
+        # "Who proposed a release"): recorded only when this release pins one (promotion.pinDigest).
+        record_digest=""
+{{- if .Values.promotion.pinDigest }}
+        [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]] && record_digest="${IMAGE_DIGEST}"
+{{- end }}
         write_release_record() {
           local pr_url_arg="$1" pr_created_arg="$2"
           # The reducer (glidepath-relay) owns state from here on, so the initial state is
@@ -260,6 +266,8 @@ spec:
             --from-literal="releaseId=${CHAIN_ID}:${CLUSTER}/${ENV}" \
             --from-literal="kind=${RELEASE_KIND}" \
             --from-literal="image=${IMAGE_REF}" \
+            --from-literal="imageDigest=${record_digest}" \
+            --from-literal="initiator=${INITIATOR}" \
             --from-literal="rollbackOf=${ROLLBACK_OF}" \
             --from-literal="rollbackReason=${ROLLBACK_REASON}" \
             --from-literal="appNamespace=${APP_NAMESPACE}" \

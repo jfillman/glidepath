@@ -4,6 +4,14 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### clearance-gate: a release is proposed by the author of its source, not by the release bot
+
+- A release PR the pipeline opened is registered with Clearance under the author(s) of the app-repo commits it releases (previous release to this
+  one) and the weakest provenance of their source PRs, not the pipeline's GitHub App (kind `person`, `not-agent`), which also let the author clear their
+  own tier-2 change. Resolved from the release record, accepted only for a PR whose content is what the record says the pipeline wrote; an unresolvable
+  source is registered `unknown` (Clearance denies it). `open-release-pr` keeps `imageDigest` and the promoter (`initiator`) on the record. Every author
+  rides in `checks.sourceAuthors`; the promoter is in the gate's comment. See docs/admin/clearance-gate.md, "Who proposed a release".
+
 ### A-11: the `propose` scope class (contract version 2)
 
 - App repos get the post-merge audit too: onboarding delivers `.tekton/push-propose-merge-check.yaml` (Pipeline `propose-merge-check`, Task
