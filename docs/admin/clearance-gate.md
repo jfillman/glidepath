@@ -115,26 +115,27 @@ gate now registers **the source change's** author and provenance instead
 
 | Trusted | Why |
 |---|---|
-| The **release record** (`release-tracking-<chainId>`, the one whose `prUrl` is this PR): image, `imageDigest` (when the release pins one), `gitUrl` and `gitRevision` (the source commit), `kind`, `initiator` | written by `open-release-pr` with the pipeline's ServiceAccount; a PR's author cannot write it |
+| The **release record** (`release-tracking-<chainId>`, the one whose `prUrl` is this PR; two records for one PR are trusted as neither): image, `imageRepository`, `imageSource` and `imageDigest` (the last two only when the release pins a digest), `gitUrl` and `gitRevision` (the source commit), `kind`, `initiator` | written by `open-release-pr`; a release PR's author cannot write it. **Caveat, see "The record's own trust" below** |
 | The **previous release's record** (same app, environment and cluster, merged, whose image is what the base manifest runs) | same |
-| The app repo's **git history and PR metadata** (compare, commits, associated PRs), read with the GitHub App's token | GitHub's own data; a commit's author is its account |
+| The app repo's **merged pull requests** (which PR contains each commit, who opened it, who merged it), read with the GitHub App's token | authenticated GitHub account facts. A **commit's author or committer is never used**: GitHub derives a commit's author login from the author email, which whoever pushes the commit chooses |
 | **Clearance's provenance verdict** per source PR (`POST /v1/provenance`) | Clearance's own receipts decide `confirmed`; nothing here reimplements it |
 
 Not trusted for anything: the release PR's author, title, body, branch name or commit message, and any text in it. The
 PR is accepted as the pipeline's only if its **content is exactly what the record says the pipeline wrote**: one commit;
 one file, `<cluster>/<env>/release.yaml` (or `values.yaml`) of the record's cluster and environment; nothing different
-from base in that file except `release.image.*`, `rollout.image` and `releaseTracking`; the head's `release.image.tag` is
-the record's (and its `digest` the record's `imageDigest`, when recorded); and the tag's `-<sha>` suffix, if it has one,
-starts the record's source commit. A PR pre-opened on the release branch name, a second commit pushed to the branch, an
+from base in that file except the image and release-tracking fields, and each of those equal to the record's: `release.image`
+`repository`, `tag`, `source` and `digest` (**no digest in the record means the PR must carry none**: unresolved otherwise), no
+`rollout.image`, `releaseTracking` `releaseId`, `cluster` and `appNamespace`; and the tag's `-<sha>` suffix, if it has one,
+starts the record's source commit. A record written before the gate kept `imageRepository` cannot vouch for a PR: unresolved. A PR pre-opened on the release branch name, a second commit pushed to the branch, an
 extra file or a changed field fails this: the source is **unresolved**, never borrowed.
 
 **What is registered** (only fields Clearance accepts today):
 
 | | |
 |---|---|
-| `proposer` | `user:<login>` of the source author; if several, the one with the most commits in the range, ties by login (deterministic) |
+| `proposer` | `user:<login>` of the **opener of the newest merged source PR** (by merge time, then PR number): deterministic and not steerable by commit counts or commit metadata |
 | `proposerKind`, `agent`, `checks.provenance` | from the **weakest** source PR (below) |
-| `checks.sourceAuthors` | every author, comma-separated: Clearance's request has one proposer, so the rest ride in `checks`, which Clearance stores with the change |
+| `checks.sourceAuthors`, `checks.sourceMergers` | every PR opener and every PR merger, comma-separated: Clearance's request has one proposer, so the rest ride in `checks`, which Clearance stores with the change |
 | `checks.sourceRange` | `<repo>@<previous>..<released> (<mode>, <n> commits)` |
 | the gate's comment | the authors with commit counts, each source PR with its verdict, the promoter |
 
@@ -147,12 +148,15 @@ becomes `proposerKind: unknown`, which Clearance **denies** (`DG-PROVENANCE`); `
 
 | Case | Behaviour |
 |---|---|
-| Normal release | previous release's commit `..` this release's commit in the app repo; authors are the non-merge commits' accounts; source PRs are their merged PRs |
-| Several authors | none dropped: all in `checks.sourceAuthors` and the comment; the proposer is the most active, ties by login |
+| Normal release | previous release's commit `..` this release's commit in the app repo. **Every** commit, merge commits included, must be the merge commit of, or a commit in, a merged PR (paginated; 300 or more associated PRs is not trusted); those PRs are the sources |
+| Several openers or mergers | none dropped: all in `checks.sourceAuthors` / `checks.sourceMergers` and the comment. **Until Clearance excludes them, only the proposer is kept from clearing the change**: another opener or a merger of a source PR can still clear it as owner |
+| First release to an environment | the single released commit, resolved through its merged PR like any other (the earlier history was never released here) |
+| A commit no merged PR contains (a direct push, or a merge commit made outside a PR) | provenance `unknown` (Clearance denies); the comment names each such commit in full. It stays in the range of **every later release** (previous release `..` next), so that environment cannot advance until an owner decides how to baseline it: this is deliberately not designed here. A login Clearance cannot record as a principal is unresolved, never altered |
 | Source cannot be resolved (record swept, first release to the environment, over 250 commits, an author with no GitHub account, GitHub unreadable) | proposer `user:<PR author>`, kind **`unknown`** (never `person`), provenance `unknown`; `checks.sourceUnresolved` and the comment say why. Clearance denies it: fix the cause and `/retest`, or release again |
 | Rollback (`kind: rollback`, or the image is older than the one the environment runs) | the restored commit alone: its author and its PR's provenance (what is restored was released, and cleared, before) |
 | Same commit released again | that commit alone |
 | PR not opened by the pipeline (no record names it, e.g. a person's hand-made release PR) | unchanged: the PR's author and the agent gates' verdict |
+| PR authored by the pipeline's App (`clearanceGate.pipelineLogins`, a setting; empty = off) but no record names it | not a person's change: kind `unknown`, with the reason |
 | Release records unreadable | the check fails: it cannot tell which of the above this is |
 
 **The promoter** (who triggered the promotion; the bot only opens the PR for them) is Tower's `initiator`, which
@@ -160,7 +164,9 @@ becomes `proposerKind: unknown`, which Clearance **denies** (`DG-PROVENANCE`); `
 started rather than a person. Clearance has no field for it, so the gate names it in its comment and does not send it.
 Clearance would need a `promoter` on the change request, stored with the change like `proposer`, and the "not the
 proposer" rule (`DG-PROPOSER`, tier 2 and 3 approvers) refusing the proposer, **every** source author and the promoter,
-with `sourceAuthors` as a real list.
+with `sourceAuthors` and `sourceMergers` as real lists.
+
+**The record's own trust.** The record is a ConfigMap in the app's `-cicd` namespace, and `pipeline-runner` (the ServiceAccount every PipelineRun there uses, token mounted) may create, patch and delete ConfigMaps namespace-wide. Tasks that run code from the app repo (`build-source`, `run-tests`, the app's own `build.sh` / `test.sh` and dependency install scripts) run as that ServiceAccount, so that code can forge or delete a release record. Until that is closed, "only the pipeline writes the record" holds for a repo whose build and test code is trusted. The smallest fix is to run the source-executing tasks as a ServiceAccount with no ConfigMap rights (or `automountServiceAccountToken: false`), and add a ValidatingAdmissionPolicy that lets only `open-release-pr` and `mark-release-merged` write `release-tracking-*` ConfigMaps.
 
 ## Required or advisory
 

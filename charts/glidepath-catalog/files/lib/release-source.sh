@@ -5,7 +5,7 @@
 # change being released. The change was written in the app repo. This resolves who wrote it and what Clearance's
 # provenance says about it, from what the pipeline recorded and can verify, never from text the PR carries:
 #
-#   release_source_resolve <owner> <repo> <pr> <files json> <head dir> <base dir>     prints one JSON object
+#   release_source_resolve <owner> <repo> <pr> <files json> <head dir> <base dir> <PR author>     prints one JSON object
 #
 # Reads: the release record (release-tracking-<chainId> in this namespace, written by open-release-pr; only the
 # pipeline's ServiceAccount can write it), the PR's commit count, the manifest at base and head (checked out), the
@@ -20,11 +20,14 @@
 # `reason` is what the gate prints. Returns non-zero (reason on stderr) only when it cannot even tell whether the PR is
 # a release (the release records cannot be read): the check fails rather than guess.
 #
-# Trusted: the release record (pipeline-written: image, digest, source repo and commit, kind, initiator), the app repo's
-# git history and PR metadata as GitHub serves them, Clearance's provenance verdicts. NOT trusted: the release PR's
-# author, title, body, branch name or commit message, or anything in it beyond the image fields the record describes.
-# The PR is accepted as the pipeline's only if its content is exactly what the record says the pipeline wrote (one
-# commit, one manifest file, nothing changed in it but the image the record names); anything else is unresolved.
+# Trusted: the release record (pipeline-written: image, repository, digest, source repo and commit, kind, initiator), the
+# app repo's merged pull requests as GitHub serves them (who opened and who merged each: authenticated account facts),
+# Clearance's provenance verdicts. NOT trusted: the release PR's author, title, body, branch name or commit message,
+# and NEVER a commit's author or committer: GitHub derives the commit author login from the commit's author email, which
+# whoever pushes the commit chooses. Identity comes only from the merged PRs that contain the commits.
+# The release PR is accepted as the pipeline's only if its content is exactly what the record says the pipeline wrote
+# (one commit, one manifest file, only the image and release-tracking fields, each equal to the record's); anything
+# else is unresolved. Safe choice when the record has no digest: the PR must carry none either.
 
 _rs_api() { # <token> <url>
   curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
@@ -44,20 +47,37 @@ _rs_pages() { # <token> <url without paging> <jq filter turning a page into an a
 }
 
 release_source_resolve() {
-  local owner="$1" repo="$2" prn="$3" files="$4" hdir="$5" bdir="$6"
+  local owner="$1" repo="$2" prn="$3" files="$4" hdir="$5" bdir="$6" pr_author="${7:-}"
   local pr_url="https://github.com/${owner}/${repo}/pull/${prn}" records rec tok n
   records="$(kubectl get configmap -n "${NAMESPACE}" -l "hangar.io/subcomponent=release-tracking,hangar.io/app=${APP_NAME}" -o json)" \
     || { echo "could not read the release records in ${NAMESPACE}: cannot tell whether ${pr_url} is a pipeline release" >&2; return 1; }
+  local nrec
+  nrec="$(jq --arg u "${pr_url}" '[.items[] | select(.data.prUrl == $u)] | length' <<<"${records}")"
+  if (( nrec > 1 )); then
+    jq -nc --arg r "${nrec} release records name ${pr_url}; the pipeline writes one, so none is trusted" '{applicable: true, resolved: false, reason: $r}'
+    return 0
+  fi
   rec="$(jq -c --arg u "${pr_url}" '[.items[] | select(.data.prUrl == $u)] | .[0].data // empty' <<<"${records}")"
   if [[ -z "${rec}" ]]; then
+    # No record names this PR. A person's own PR is unchanged. A PR authored by the pipeline's own App (a configured
+    # login, never a hardcoded one) with no record is not a person's change and its source is unknown.
+    local pl
+    for pl in $(tr ',' ' ' <<<"${PIPELINE_LOGINS:-}"); do
+      if [[ -n "${pr_author}" && "$(tr 'A-Z' 'a-z' <<<"${pl}")" == "$(tr 'A-Z' 'a-z' <<<"${pr_author}")" ]]; then
+        jq -nc --arg r "the PR is authored by the pipeline's GitHub App (${pr_author}) but no release record names it (swept, or not written by this pipeline), so the change it releases is unknown" \
+          '{applicable: true, resolved: false, reason: $r}'
+        return 0
+      fi
+    done
     jq -nc '{applicable: false}'
     return 0
   fi
-  local rkind renv rcluster rimage rdigest rrev rurl rinit rid rtag base_info
+  local rkind renv rcluster rimage rdigest rrev rurl rinit rid rtag base_info rrepo rsource rappns
   _rs_field() { jq -r --arg k "$1" '.[$k] // ""' <<<"${rec}"; }
   rkind="$(_rs_field kind)"; renv="$(_rs_field env)"; rcluster="$(_rs_field cluster)"; rimage="$(_rs_field image)"
   rdigest="$(_rs_field imageDigest)"; rrev="$(_rs_field gitRevision)"; rurl="$(_rs_field gitUrl)"
   rinit="$(_rs_field initiator)"; rid="$(_rs_field releaseId)"; rtag="${rimage##*:}"
+  rrepo="$(_rs_field imageRepository)"; rsource="$(_rs_field imageSource)"; rappns="$(_rs_field appNamespace)"
   base_info="$(jq -nc --arg k "${rkind}" --arg i "${rinit}" --arg id "${rid}" --arg rev "${rrev}" --arg img "${rimage}" \
     '{releaseKind: $k, releaseId: $id, promoter: $i, releasedCommit: $rev, image: $img}')"
   _rs_fail() { jq -nc --arg r "$1" --argjson b "${base_info}" '{applicable: true, resolved: false, reason: $r} + $b'; }
@@ -88,10 +108,20 @@ release_source_resolve() {
   if [[ -z "${rtag}" || "$(jq -r '(. // {}) | .release.image.tag // ""' <<<"${head_json}")" != "${rtag}" ]]; then
     _rs_fail "the image in the release PR ($(jq -r '(. // {}) | .release.image.tag // "none"' <<<"${head_json}")) is not the record's (${rtag:-none})"; return 0
   fi
-  if [[ -n "${rdigest}" && "$(jq -r '(. // {}) | .release.image.digest // ""' <<<"${head_json}")" != "${rdigest}" ]]; then
-    _rs_fail "the image digest in the release PR is not the digest the pipeline recorded for this release"; return 0
+  # Every identity-bearing field the comparison above strips is checked against the record, none left unchecked. A record
+  # without the repository (written before the gate kept it) cannot vouch for the PR: unresolved, the safe choice.
+  if [[ -z "${rrepo}" ]]; then
+    _rs_fail "the release record names no image repository (it predates the gate keeping it), so the PR's image cannot be checked against it"; return 0
   fi
-  if [[ ! "${rrev}" =~ ^[0-9a-f]{40}$ ]] || [[ ! "${rurl}" =~ ^https://github\.com/([^/]+)/([^/.]+)(\.git)?/?$ ]]; then
+  if [[ "$(jq -r '(. // {}) | [(.release.image // {}) | .repository // "", .source // "", .digest // ""] | join("|")' <<<"${head_json}")" != "${rrepo}|${rsource}|${rdigest}" ]]; then
+    _rs_fail "the image repository, source or digest in the release PR is not the one the pipeline recorded for this release (a record with no digest means the PR must carry none either)"; return 0
+  fi
+  if [[ "$(jq -r '(. // {}) | [((.release.image // {}) | keys - ["repository","tag","digest","source"] | length), ((.rollout // {}) | has("image")), ((.releaseTracking // {}) | keys - ["cluster","appNamespace","releaseId"] | length), (.releaseTracking.releaseId // ""), (.releaseTracking.cluster // ""), (.releaseTracking.appNamespace // "")] | map(tostring) | join("|")' <<<"${head_json}")" != "0|false|0|${rid}|${rcluster}|${rappns}" ]]; then
+    _rs_fail "the release PR's image or releaseTracking fields are not what the pipeline writes for this record"; return 0
+  fi
+  local rurl_norm
+  rurl_norm="$(sed -E 's#(\.git)?/?$##' <<<"${rurl}")"
+  if [[ ! "${rrev}" =~ ^[0-9a-f]{40}$ ]] || [[ ! "${rurl_norm}" =~ ^https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)$ ]]; then
     _rs_fail "the release record names no usable source commit (${rurl:-no repo}@${rrev:-none})"; return 0
   fi
   local sowner="${BASH_REMATCH[1]}" srepo="${BASH_REMATCH[2]}" tag_sha=""
@@ -111,8 +141,10 @@ release_source_resolve() {
     base_tag="$(jq -r '(. // {}) | .release.image.tag // .rollout.image.tag // ""' <<<"${base_json}")"
     base_digest="$(jq -r '(. // {}) | .release.image.digest // ""' <<<"${base_json}")"
     if [[ -z "${base_tag}" ]]; then
-      _rs_fail "the environment has no earlier release (nothing at base to compare with), so the commits this release carries are unknown"; return 0
+      mode=first   # nothing released here before: the range is the single released commit
     fi
+  fi
+  if [[ "${rkind}" != rollback && "${mode}" != first ]]; then
     prev_rec="$(jq -c --arg env "${renv}" --arg cl "${rcluster}" --arg t "${base_tag}" --arg d "${base_digest}" --arg me "${rid}" '
       [.items[].data | select(.env == $env and .cluster == $cl and .releaseId != $me and (.mergedAt // "") != ""
          and ((.image // "") | endswith(":" + $t)) and ($d == "" or (.imageDigest // "") == "" or .imageDigest == $d))]
@@ -139,44 +171,49 @@ release_source_resolve() {
       *) _rs_fail "GitHub compared ${prev:0:7}...${rrev:0:7} as '${status}'"; return 0 ;;
     esac
   fi
-  if [[ "${mode}" != range ]]; then
+  if [[ "${mode}" != range ]]; then   # rollback, single, first
     commits="$(_rs_api "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/commits/${rrev}" | jq -c '[.]')" \
       || { _rs_fail "could not read ${sowner}/${srepo}@${rrev:0:7}"; return 0; }
   fi
-  commits="$(jq -c '[.[] | {sha, parents: (.parents | length), login: (.author.login // "")}]' <<<"${commits}")"
+  commits="$(jq -c '[.[] | {sha}]' <<<"${commits}")"
   if [[ "$(jq 'length' <<<"${commits}")" == 0 ]]; then
     _rs_fail "no commits between ${prev:0:7} and ${rrev:0:7}"; return 0
   fi
 
-  # 3. Authors: the account of each non-merge commit (a merge commit's author is whoever merged, not who wrote). Named
-  #    most commits first, then by login, so the first is deterministic.
-  local authors noacct
-  noacct="$(jq -r '[.[] | select(.parents < 2 and .login == "") | .sha[0:7]] | join(", ")' <<<"${commits}")"
-  if [[ -n "${noacct}" ]]; then
-    _rs_fail "commit(s) ${noacct} have no GitHub account for their author, so the author cannot be named"; return 0
-  fi
-  authors="$(jq -c '(map(select(.parents < 2))) as $w | (if ($w | length) > 0 then $w else . end)
-    | group_by(.login) | map({login: .[0].login, commits: length}) | sort_by(-.commits, .login)' <<<"${commits}")"
-
-  # 4. Each source pull request's provenance, as Clearance's own verdict (POST /v1/provenance, the body agent-gates
-  #    sends, with every commit's co-author trailers). A commit with no merged pull request cannot be asked about.
-  local covered='[]' prs='[]' nopr='' sha pulls p pn phead pauthor pcommits pfiles body verdict code out ident agent
+  # 3. Each commit of the range, merge commits included, maps to the merged pull request that contains it: the commit is that
+  #    PR's merge commit or one of its commits. Identity is the PR's opener and merger (authenticated GitHub accounts),
+  #    never a commit's author or committer (GitHub takes the author login from an email the pusher sets). A commit no merged
+  #    PR contains (a direct push, a merge commit made outside a PR) is "no PR": it cannot be vouched for.
+  #    Each PR's provenance is Clearance's own verdict (POST /v1/provenance, the body agent-gates sends, with every
+  #    commit's co-author trailers).
+  local covered='[]' prs='[]' nopr='[]' sha pulls p pn phead popener pmerger pmerged pmsha pcommits pfiles body verdict code out ident agent login
   while IFS= read -r sha; do
     [[ -n "${sha}" ]] || continue
     jq -e --arg s "${sha}" 'index($s) != null' <<<"${covered}" >/dev/null && continue
-    pulls="$(_rs_api "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/commits/${sha}/pulls" | jq -c '[.[] | select(.merged_at != null) | .number]')" \
+    pulls="$(_rs_pages "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/commits/${sha}/pulls" '[.[] | select(.merged_at != null) | .number]' 3)" \
       || { _rs_fail "could not find the pull request of ${sowner}/${srepo}@${sha:0:7}"; return 0; }
-    if [[ "${pulls}" == "[]" ]]; then nopr="${nopr:+${nopr}, }${sha:0:7}"; continue; fi
+    if (( $(jq 'length' <<<"${pulls}") >= 300 )); then
+      _rs_fail "${sowner}/${srepo}@${sha:0:7} is associated with 300 or more pull requests; the list is not read in full, so it is not trusted"; return 0
+    fi
     for pn in $(jq -r '.[]' <<<"${pulls}"); do
+      jq -e --argjson n "${pn}" 'any(.[]; .number == $n)' <<<"${prs}" >/dev/null && continue
       p="$(_rs_api "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/pulls/${pn}")" \
         || { _rs_fail "could not read ${sowner}/${srepo}#${pn}"; return 0; }
       pcommits="$(_rs_pages "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/pulls/${pn}/commits" '.' 3)" \
         || { _rs_fail "could not read the commits of ${sowner}/${srepo}#${pn}"; return 0; }
       pfiles="$(_rs_pages "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/pulls/${pn}/files" '[.[] | .filename, (.previous_filename // empty)]' 30)" \
         || { _rs_fail "could not read the files of ${sowner}/${srepo}#${pn}"; return 0; }
-      covered="$(jq -c --argjson c "$(jq -c '[.[].sha]' <<<"${pcommits}")" '. + $c' <<<"${covered}")"
-      phead="$(jq -r '.head.sha' <<<"${p}")"; pauthor="$(jq -r '.user.login' <<<"${p}")"
-      body="$(jq -nc --arg repo "${sowner}/${srepo}" --argjson pr "${pn}" --arg head "${phead}" --arg author "${pauthor}" \
+      phead="$(jq -r '.head.sha' <<<"${p}")"; popener="$(jq -r '.user.login // ""' <<<"${p}")"
+      pmerger="$(jq -r '.merged_by.login // ""' <<<"${p}")"; pmerged="$(jq -r '.merged_at // ""' <<<"${p}")"
+      pmsha="$(jq -r '.merge_commit_sha // ""' <<<"${p}")"
+      for login in "${popener}" "${pmerger}"; do
+        # Clearance's principal pattern: letters, digits and : / _ . @ [ ] -  (so dependabot[bot] and dotted logins fit).
+        if [[ ! "${login}" =~ ^[]A-Za-z0-9_.@[-]{1,190}$ ]]; then
+          _rs_fail "${sowner}/${srepo}#${pn} has an opener or merger (${popener:-none}, ${pmerger:-none}) Clearance cannot record as a principal"; return 0
+        fi
+      done
+      covered="$(jq -c --argjson c "$(jq -c '[.[].sha]' <<<"${pcommits}")" --arg m "${pmsha}" '. + $c + [$m]' <<<"${covered}")"
+      body="$(jq -nc --arg repo "${sowner}/${srepo}" --argjson pr "${pn}" --arg head "${phead}" --arg author "${popener}" \
           --argjson paths "${pfiles}" --argjson commits "${pcommits}" '
         ([$commits[] | select(.sha == $head)][0].commit.message // "") as $head_msg
         | {repo: $repo, pr: $pr, head: $head, author: $author, paths: $paths,
@@ -196,26 +233,33 @@ release_source_resolve() {
         fi
       fi
       case "${ident}" in confirmed|not-agent|unattested) ;; *) ident=unknown ;; esac
-      prs="$(jq -c --argjson n "${pn}" --arg a "${pauthor}" --arg i "${ident}" --arg g "${agent}" '. + [{number: $n, author: $a, identity: $i, agent: $g}]' <<<"${prs}")"
+      prs="$(jq -c --argjson n "${pn}" --arg a "${popener}" --arg m "${pmerger}" --arg t "${pmerged}" --arg i "${ident}" --arg g "${agent}" \
+        '. + [{number: $n, author: $a, merger: $m, mergedAt: $t, identity: $i, agent: $g}]' <<<"${prs}")"
     done
-  done < <(jq -r '.[] | select(.parents < 2) | .sha' <<<"${commits}")
-  if [[ -n "${nopr}" ]]; then
-    prs="$(jq -c --arg n "${nopr}" '. + [{number: 0, author: "", identity: "unknown", agent: "", note: ("commit(s) " + $n + " have no merged pull request")}]' <<<"${prs}")"
+    jq -e --arg s "${sha}" 'index($s) != null' <<<"${covered}" >/dev/null || nopr="$(jq -c --arg s "${sha}" '. + [$s]' <<<"${nopr}")"
+  done < <(jq -r '.[].sha' <<<"${commits}")
+  if [[ "$(jq 'length' <<<"${prs}")" == 0 ]]; then
+    _rs_fail "no commit of the range maps to a merged pull request (commits: $(jq -r 'map(.[0:7]) | join(", ")' <<<"${nopr}")), so its author cannot be named" ; return 0
   fi
 
-  # 5. The weakest verdict of the source, in the order unknown < unattested < not-agent < confirmed. `confirmed` (an agent
+  # 4. The weakest verdict of the source, in the order unknown < unattested < not-agent < confirmed. `confirmed` (an agent
   #    opened it through Clearance and nothing was added) is claimed only if every source PR is confirmed. One PR with an
   #    AI co-author trailer Clearance has no record of makes the release `unattested`; a release of only PRs with no AI
-  #    signal is `not-agent` (a person's change); a commit nobody can vouch for, a forged trailer, a modified agent PR or
+  #    signal is `not-agent` (a person's change); a commit no merged PR contains, a forged trailer, a modified agent PR or
   #    an answer Clearance could not give (any verdict that is not one of the three) makes it `unknown`.
+  #    The proposer is the opener of the newest merged source PR (by merge time, then number): deterministic, and not
+  #    steerable by commit counts. Every opener and every merger is listed.
   jq -nc --argjson base "${base_info}" --arg mode "${mode}" --arg repo "${sowner}/${srepo}" --arg prev "${prev}" --arg head "${rrev}" \
-    --argjson commits "${commits}" --argjson authors "${authors}" --argjson prs "${prs}" '
+    --argjson commits "${commits}" --argjson prs "${prs}" --argjson nopr "${nopr}" '
     def rank: {"unknown": 0, "unattested": 1, "not-agent": 2, "confirmed": 3}[.];
-    ($prs | map(.identity) | sort_by(rank) | .[0] // "unknown") as $prov
+    def tally(f): group_by(f) | map({login: (.[0] | f), prs: length}) | sort_by(.login);
+    ($prs | map(.identity) + (if ($nopr | length) > 0 then ["unknown"] else [] end) | sort_by(rank) | .[0]) as $prov
     | ($prs | map(select(.identity == "confirmed" and .agent != "") | .agent) | unique) as $agents
+    | ($prs | sort_by(.mergedAt, .number) | last | .author) as $proposer
     | $base + {applicable: true, resolved: true, mode: $mode, sourceRepo: $repo, previousCommit: $prev, releasedCommit: $head,
-        commits: ($commits | length), authors: $authors, prs: $prs, provenance: $prov, agents: $agents,
+        commits: ($commits | length), authors: ($prs | tally(.author)), mergers: ($prs | tally(.merger)), prs: $prs, noPr: $nopr,
+        provenance: $prov, agents: $agents,
         proposerKind: (if $prov == "confirmed" then "agent" elif $prov == "unknown" then "unknown" else "person" end)}
-    | .proposer = (if .proposerKind == "agent" and ($agents | length) > 0 then "autopilot-runs/" + $agents[0] else "user:" + ($authors[0].login // "unknown") end)
+    | .proposer = (if .proposerKind == "agent" and ($agents | length) > 0 then "autopilot-runs/" + $agents[0] else "user:" + $proposer end)
     | .agent = (if .proposerKind == "agent" and ($agents | length) > 0 then $agents[0] else null end)'
 }

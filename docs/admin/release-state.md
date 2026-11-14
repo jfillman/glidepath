@@ -27,7 +27,7 @@ One ConfigMap per release, `release-tracking-<chain-id>`, in the Application's o
 | `prUrl`, `prCreatedAt` | `open-release-pr` | The gitops release PR and when it opened. |
 | `releaseId`, `kind` | `open-release-pr` | The release's identity; `promote`, or `rollback` (ADR-0021 phase 4). |
 | `image` | `open-release-pr` | The image the release deploys. Rollback eligibility matches on it; records written before phase 4 have none and never qualify. |
-| `imageDigest`, `initiator` | `open-release-pr` | The digest the release pins (only when `promotion.pinDigest` is on), and who asked for it when a person did (Tower's Promote or Roll back; empty for a flow step). `clearance-gate` checks the release PR against the digest and names the promoter in its comment ([clearance-gate.md](clearance-gate.md#who-proposed-a-release)). |
+| `imageRepository`, `imageSource`, `imageDigest`, `initiator` | `open-release-pr` | The repository the release PR writes, the source repository and digest it pins (the last two only when `promotion.pinDigest` is on), and who asked for it when a person did (Tower's Promote or Roll back; empty for a flow step). `clearance-gate` checks the release PR against the digest and names the promoter in its comment ([clearance-gate.md](clearance-gate.md#who-proposed-a-release)). |
 | `rollbackOf`, `rollbackReason` | `open-release-pr` | A rollback only: the release-id it replaces, and why. |
 | `appNamespace`, `appName`, `env`, `cluster` | `open-release-pr` | What was released and where. |
 | `gitUrl`, `gitRevision`, `flowStartTime`, `configJson` | `open-release-pr` | The context the outcome events and the lead-time anchor need. |
