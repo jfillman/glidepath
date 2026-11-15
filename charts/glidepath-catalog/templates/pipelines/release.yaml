@@ -146,10 +146,23 @@ spec:
         only valid when every task referencing it also declares it optional, a real,
         admission-time-checked Tekton constraint (docs/admin/chaining.md).
   tasks:
+    # Pipeline trust T3: nothing runs before this. It reads the ref and commit Pipelines-as-Code recorded on this run (no
+    # parameter) and refuses the run unless the git host protects that ref (glidepath-api); see tasks/verify-ref-protection.yaml.
+    # No `when`, no retries, not in finally: every other task runs after it.
+    - name: verify-ref-protection
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: verify-ref-protection }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: pipeline-kind, value: privileged }
     # Everything that precedes the stage's real work, in one pod: flow/stage trace ids,
     # pipelinerun.started, the clone (when the workspace is bound) and cicd.yaml
     # validation. Replaced five single-purpose Tasks on 2026-10-09 - see stage-preflight.yaml.
     - name: preflight
+      runAfter: [verify-ref-protection]
       taskRef:
         resolver: cluster
         params:
@@ -172,6 +185,7 @@ spec:
         - { name: config-json, value: $(params.config-json) }
 
     - name: resolve-image-ref
+      runAfter: [verify-ref-protection]
       taskRef:
         resolver: cluster
         params:
@@ -231,6 +245,8 @@ spec:
         - { name: release-kind, value: $(params.release-kind) }
         - { name: rollback-of, value: $(params.rollback-of) }
         - { name: rollback-reason, value: $(params.rollback-reason) }
+        # Pipeline trust T3: the ref-protection verdict (or "Off here") goes into the release record.
+        - { name: ref-protection, value: $(tasks.verify-ref-protection.results.ref-protection-summary) }
 
     # Hands off to the DORA exporter (glidepath/dora-exporter) - only runs if
     # open-release-pr actually succeeded (standard Tekton DAG failure propagation, no

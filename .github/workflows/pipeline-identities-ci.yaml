@@ -28,6 +28,7 @@ jobs:
       # cel-python evaluates the admission policies' own CEL, so a typo in an expression fails here, not in production.
       - run: pip install pyyaml cel-python
       - run: python3 charts/glidepath-app/tests/pipeline_least_privilege_test.py
+      - run: python3 charts/glidepath-app/tests/chain_origin_test.py
       - run: python3 charts/glidepath-control-plane/tests/cicd_run_admission_test.py
       - run: python3 charts/glidepath-catalog/tests/build_artifact_publish_test.py
       - run: python3 charts/glidepath-catalog/tests/workspace_hardening_test.py

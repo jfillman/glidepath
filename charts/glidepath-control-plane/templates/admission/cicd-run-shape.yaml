@@ -22,6 +22,12 @@
 #                              push-image) as image-pusher. Separate so it can be rolled out in audit first.
 #   cicd-run-no-taskruns       PaC never creates a TaskRun; one from its identity is refused.
 #
+# This is the first of two layers on a ref. It decides on the ref's NAME (a configured protected branch, or a tag of the release
+# shape) and on what Pipelines-as-Code recorded; it cannot see whether the git host protects that ref. The second layer is
+# the catalog's verify-ref-protection task, the first task of every privileged Pipeline and of the build, which asks
+# glidepath-api (GET /v1/apps/{app}/ref-protection) and refuses the run unless the host requires review for it
+# (docs/admin/security.md, "Ref protection"; the catalog's refProtection.mode).
+#
 # Every expression is has()-guarded and every matchCondition cannot raise on a missing field, so a CEL error cannot refuse a
 # request cluster-wide (failurePolicy Fail would turn one into an outage).
 apiVersion: admissionregistration.k8s.io/v1
@@ -123,6 +129,8 @@ spec:
            variables.srcRef.matches({{ $c.tagRefPattern | squote }})) :
           ('pipelinesascode.tekton.dev/branch' in variables.anns && variables.anns['pipelinesascode.tekton.dev/branch'] in {{ $c.protectedBranches | toJson }}))
       message: "This Pipeline starts only from a push to a protected branch (cicdRunAdmission.protectedBranches) or to a tag matching cicdRunAdmission.tagRefPattern (decided on the full ref), or, for a check, from a pull request into a protected branch."
+    - expression: "!variables.anns.exists(k, k.startsWith('glidepath.io/'))"
+      message: "A run created from a .tekton file may carry no glidepath.io/ annotation: glidepath.io/origin-ref and origin-sha are set by the platform's own Triggers on a chained run, and verify-ref-protection trusts them."
     - expression: >-
         variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || p.name != 'image-repo' ||
           (variables.appName != '' &&

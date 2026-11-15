@@ -575,6 +575,15 @@ class CicdRunAdmission(unittest.TestCase):
             for t in tasks:
                 self.assertIn(t, msg, "message omits %s (%s)" % (t, pipeline))
 
+    def test_a_file_cannot_set_the_chain_origin(self):
+        # glidepath.io/origin-* are set by the Triggers on a chained run and read by verify-ref-protection: a run a .tekton file
+        # creates may carry no glidepath.io/ annotation at all.
+        for key in ("glidepath.io/origin-ref", "glidepath.io/origin-sha", "glidepath.io/anything"):
+            md = meta("push", "main")
+            md["annotations"] = dict(md["annotations"], **{key: "refs/heads/main"})
+            self.refused(run("release", metadata=md, taskRunSpecs=None), msg="glidepath.io")
+        self.admitted(run("release", metadata=meta("push", "main"), taskRunSpecs=None))
+
     # ---- source isolation ----
     def test_source_isolation_for_every_pipeline_that_runs_repository_code(self):
         pusher = [{"pipelineTaskName": t, "serviceAccountName": "image-pusher"} for t in PUSHER_TASKS]

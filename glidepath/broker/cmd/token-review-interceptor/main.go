@@ -123,7 +123,11 @@ func main() {
 	mux.HandleFunc("/github-installation-token", handleGitHubInstallationToken(clientset, dynClient, appCreds))
 	mux.HandleFunc("/policy-bundle", handlePolicyBundle(clientset, dynClient, appCreds, policySrc))
 	mux.HandleFunc("/promoter-token", handlePromoterToken(clientset, appCreds, loadPromoter()))
-	mux.HandleFunc("/github-read-token", handleGitHubReadToken(clientset, dynClient, appCreds, loadGitHubReadCallers()))
+	refProtectionExtra, err := loadRefProtectionPermissions()
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	mux.HandleFunc("/github-read-token", handleGitHubReadToken(clientset, dynClient, appCreds, loadGitHubReadCallers(), refProtectionExtra, loadRefProtectionCallers()))
 	mux.HandleFunc("/agent-installation-token", handleAgentInstallationToken(clientset, dynClient, loadAgentTokenCallers()))
 	mux.HandleFunc("/agent-pin", handleAgentPin(clientset, dynClient, appCreds))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
