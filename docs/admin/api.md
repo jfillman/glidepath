@@ -387,10 +387,14 @@ field naming an origin is ignored):
   resolved (from the source environment's release file, or the rollback target's record). A build of another
   repository (a pull request's `-pr` image) or another commit is never a candidate. The caller supplies neither a chain
   id nor a build.
-- **Two builds, one digest** (a rerun of the same commit): the earliest finished one, the build that produced the
-  content. **Two builds, different digests** for the commit: the API does not read the registry here, so it cannot tell
-  which one the tag points at, and resolves nothing. A source that cannot be read (Results down) also resolves nothing,
-  with the error; a failed read is never answered as "no build".
+- **Digest.** When the source environment's release file pins a digest (`release.image.digest`, written when
+  `promotion.pinDigest` is on), only the build that pushed **that** digest is the origin; a build of the same commit
+  that pushed other bytes is not, and no match is "origin unknown". The digest comes from the file, never the body. A
+  rollback has no pinned digest to read (the release record keeps the image tag only) and resolves without one.
+- **No pinned digest.** Two builds that pushed the SAME digest (a rerun): the earliest finished one, the build that
+  produced the content. Two builds with DIFFERENT digests: nothing is resolved, because the tag could be either. A
+  source that cannot be read (Results down) also resolves nothing, with the error; a failed read is never answered as
+  "no build".
 - **Unresolved is not refused.** Lineage is information, not a gate. With no origin the promotion starts as before and
   the answer says `"originUnknown": "origin unknown: <why>"`; the run carries no origin annotations and the record no
   origin fields. A build older than the archive (30 days) and the first promotion of an image built elsewhere are the

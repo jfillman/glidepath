@@ -198,6 +198,12 @@ spec:
           value: $(params.flow-start-time)
         - name: ORIGIN_TRACE_WINDOW
           value: $(params.origin-trace-window)
+        # The run this pod belongs to, from the label Tekton's controller sets: what the origin annotations are read from.
+        # Not a parameter (a Task never substitutes $(context.pipelineRun.name)) and not a file's to set.
+        - name: PIPELINE_RUN_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['tekton.dev/pipelineRun']
         - name: IS_FLOW_TERMINAL
           value: $(params.is-flow-terminal)
         - name: GITHUB_TOKEN_BROKER_URL
@@ -243,17 +249,21 @@ spec:
           [[ -n "${ORIGIN_TRACE_WINDOW}" ]] || return 0
           local w="${ORIGIN_TRACE_WINDOW}" n u secs run tp fin fin_epoch now_epoch
           n="${w%[smhd]}"; u="${w: -1}"
-          if ! [[ "${n}" =~ ^[0-9]+$ ]]; then echo "origin trace: window '${w}' is not <n>s|m|h|d; this run starts its own trace" >&2; return 0; fi
+          if ! [[ "${n}" =~ ^[0-9]{1,6}$ ]]; then echo "origin trace: window '${w}' is not <n>s|m|h|d; this run starts its own trace" >&2; return 0; fi
           case "${u}" in s) secs=$(( n )) ;; m) secs=$(( n * 60 )) ;; h) secs=$(( n * 3600 )) ;; d) secs=$(( n * 86400 )) ;;
             *) echo "origin trace: window '${w}' is not <n>s|m|h|d; this run starts its own trace" >&2; return 0 ;; esac
-          if ! run="$(kubectl get pipelinerun "${TEKTON_PIPELINE_RUN}" -n "${NAMESPACE}" -o json 2>/dev/null)"; then
+          if ! run="$(kubectl get pipelinerun "${PIPELINE_RUN_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null)"; then
             echo "origin trace: could not read this run's annotations; this run starts its own trace" >&2; return 0
           fi
-          tp="$(jq -r '.metadata.annotations["glidepath.io/origin-traceparent"] // empty' <<<"${run}")"
-          fin="$(jq -r '.metadata.annotations["glidepath.io/origin-finished-at"] // empty' <<<"${run}")"
+          # Every failure below is "own trace", never a failed release: a malformed annotation cannot stop the run.
+          if ! tp="$(jq -r '.metadata.annotations["glidepath.io/origin-traceparent"] // empty | strings' <<<"${run}" 2>/dev/null)" ||
+             ! fin="$(jq -r '.metadata.annotations["glidepath.io/origin-finished-at"] // empty | strings' <<<"${run}" 2>/dev/null)"; then
+            echo "origin trace: this run's annotations are unreadable; this run starts its own trace" >&2; return 0
+          fi
           [[ -n "${tp}" ]] || return 0   # no origin resolved (a flow's own step, or an origin that could not be found)
           if ! [[ "${tp}" =~ ^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$ ]]; then echo "origin trace: the origin's traceparent is malformed; this run starts its own trace" >&2; return 0; fi
-          if ! fin_epoch="$(jq -rn --arg t "${fin}" '$t | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601' 2>/dev/null)"; then
+          if ! [[ "${fin}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ ]] ||
+             ! fin_epoch="$(jq -rn --arg t "${fin}" '$t | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601' 2>/dev/null)"; then
             echo "origin trace: the build's finish time '${fin}' is unreadable; this run starts its own trace" >&2; return 0
           fi
           now_epoch="$(date +%s)"

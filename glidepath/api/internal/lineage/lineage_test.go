@@ -51,7 +51,29 @@ type fake struct {
 func (f fake) Runs(context.Context, string, string) ([]Run, error) { return f.runs, f.err }
 
 func resolve(srcs ...Source) Resolution {
-	return (&Resolver{Sources: srcs}).Resolve(context.Background(), "app-gate-api-cicd", repo+":2.0.14-e65cefa", commit)
+	return (&Resolver{Sources: srcs}).Resolve(context.Background(), "app-gate-api-cicd", repo+":2.0.14-e65cefa", commit, "")
+}
+
+func resolveDigest(digest string, srcs ...Source) Resolution {
+	return (&Resolver{Sources: srcs}).Resolve(context.Background(), "app-gate-api-cicd", repo+":2.0.14-e65cefa", commit, digest)
+}
+
+// The release file pins a digest: the build that pushed THAT digest is the origin, whatever else was built from the commit.
+func TestAPinnedDigestSelectsItsBuildAndAnotherDigestIsNotTheOrigin(t *testing.T) {
+	b1 := buildRun("b1", dig1, "2026-11-15T20:56:00Z", chain)
+	b2 := buildRun("b2", dig2, "2026-11-15T22:00:00Z", "22222222-2222-4222-8222-222222222222")
+	if r := resolveDigest(dig2, fake{runs: []Run{b1, b2}}); r.Origin == nil || r.Origin.Run != "b2" {
+		t.Fatalf("two builds, different digests, one pinned: the pinned one: %+v %q", r.Origin, r.Unknown)
+	}
+	if r := resolveDigest(dig1, fake{runs: []Run{b1, b2}}); r.Origin == nil || r.Origin.ChainID != chain {
+		t.Fatalf("%+v", r)
+	}
+	if r := resolveDigest(dig2, fake{runs: []Run{b1}}); r.Origin != nil || !strings.Contains(r.Unknown, "none pushed the pinned digest") {
+		t.Fatalf("a build with a different digest is not the origin: %+v", r)
+	}
+	if r := resolveDigest("sha256:short", fake{runs: []Run{b1}}); r.Origin != nil {
+		t.Fatalf("%+v", r)
+	}
 }
 
 func TestImageRepo(t *testing.T) {
@@ -134,7 +156,7 @@ func TestABuildWithoutAReadableChainIsUnknown(t *testing.T) {
 }
 
 func TestNoFullCommitNoLookup(t *testing.T) {
-	r := (&Resolver{Sources: []Source{fake{runs: []Run{buildRun("b", dig1, "2026-11-15T20:56:00Z", chain)}}}}).Resolve(context.Background(), "ns", repo+":1", "e65cefa")
+	r := (&Resolver{Sources: []Source{fake{runs: []Run{buildRun("b", dig1, "2026-11-15T20:56:00Z", chain)}}}}).Resolve(context.Background(), "ns", repo+":1", "e65cefa", "")
 	if r.Origin != nil {
 		t.Fatalf("%+v", r)
 	}

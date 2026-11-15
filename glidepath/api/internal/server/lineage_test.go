@@ -25,10 +25,11 @@ type fakeLineage struct {
 	res           lineage.Resolution
 	image, commit string
 	namespace     string
+	digest        string
 }
 
-func (f *fakeLineage) Resolve(_ context.Context, ns, image, commit string) lineage.Resolution {
-	f.namespace, f.image, f.commit = ns, image, commit
+func (f *fakeLineage) Resolve(_ context.Context, ns, image, commit, digest string) lineage.Resolution {
+	f.namespace, f.image, f.commit, f.digest = ns, image, commit, digest
 	return f.res
 }
 
@@ -72,6 +73,21 @@ func TestPromoteCarriesTheBuildsLineage(t *testing.T) {
 	}
 	if param(store.objs[name], "chain-id") != nil || param(store.objs[name], "flow-traceparent") != nil {
 		t.Fatalf("the promotion keeps its own chain: nothing is passed as a chain id or trace param: %v", store.objs[name]["spec"])
+	}
+}
+
+// The source environment's release file pins a digest (promotion.pinDigest): it is what the origin is matched on, read from
+// the file and never from the body.
+func TestPromoteBindsTheOriginToThePinnedDigest(t *testing.T) {
+	s, _, gh, _ := withEnvs(t, releaser)
+	pin := "sha256:" + strings.Repeat("a", 64)
+	gh.files["jfillman/shop/glidepath/envs/dev.release.yaml"] = "release:\n  image: { repository: ghcr.io/jfillman/shop, tag: 1.2.3-abc1234, digest: " + pin + " }\n"
+	l := &fakeLineage{res: anOrigin()}
+	s.Envs.Lineage = l
+	st, _, body := postJSON(t, s, "/v1/apps/shop/environments/staging/promote", hdr("rel", "k1"),
+		`{"cluster":"hangar-prod","sourceEnv":"dev","sourceCluster":"hangar-dev","digest":"sha256:`+strings.Repeat("b", 64)+`"}`)
+	if st != 201 || l.digest != pin {
+		t.Fatalf("%d %s digest %q", st, body, l.digest)
 	}
 }
 

@@ -156,8 +156,12 @@ func buildOf(r Run, repo, commit string) (b build, ok bool, why string) {
 		FlowStartTime: pres["start-time"], FinishedAt: t.UTC().Format(time.RFC3339Nano), Run: name, Digest: res["IMAGE_DIGEST"]}, finished: t}, true, ""
 }
 
-// Resolve finds the build of imageRef at commit (a full 40-hex sha) in namespace.
+// Resolve finds the build of imageRef at commit (a full 40-hex sha) in namespace. digest is the manifest digest the image
+// being released is pinned to (sha256:<hex>, from the source environment's release file when promotion.pinDigest is on), or
+// "" when the release pins none.
 //
+//   - With a digest: only a build of that repository, commit AND digest is the origin. A build of the commit that pushed a
+//     different digest is not (a rerun that produced other bytes).
 //   - No build found: Unknown (the build is older than the archive, or ran elsewhere).
 //   - Builds that pushed the SAME digest (a rerun of the same commit): the earliest finished one, the build that produced
 //     the content; the later ones only pushed it again.
@@ -165,8 +169,11 @@ func buildOf(r Run, repo, commit string) (b build, ok bool, why string) {
 //     does not read the registry here. Nothing is guessed.
 //   - A source that fails is Unknown too, with the error, even when another found a build: the failed one might hold a
 //     second build that makes the answer ambiguous.
-func (r *Resolver) Resolve(ctx context.Context, namespace, imageRef, commit string) Resolution {
+func (r *Resolver) Resolve(ctx context.Context, namespace, imageRef, commit, digest string) Resolution {
 	repo := ImageRepo(imageRef)
+	if digest != "" && !digestRE.MatchString(digest) {
+		return Resolution{Unknown: "the release pins a digest that is not sha256:<hex>"}
+	}
 	if repo == "" || !commitRE.MatchString(commit) {
 		return Resolution{Unknown: "the release names no image repository or no full commit sha to look a build up by"}
 	}
@@ -196,6 +203,18 @@ func (r *Resolver) Resolve(ctx context.Context, namespace, imageRef, commit stri
 			return Resolution{Unknown: strings.Join(whys, "; ")}
 		}
 		return Resolution{Unknown: fmt.Sprintf("no succeeded build of %s at %s on the cluster or in the run archive (older than the archive, or built elsewhere)", repo, commit[:7])}
+	}
+	if digest != "" {
+		var same []build
+		for _, b := range builds {
+			if b.Digest == digest {
+				same = append(same, b)
+			}
+		}
+		if len(same) == 0 {
+			return Resolution{Unknown: fmt.Sprintf("%d build(s) of %s at %s found, none pushed the pinned digest %s", len(builds), repo, commit[:7], digest[:19])}
+		}
+		builds = same
 	}
 	digests := map[string]bool{}
 	for _, b := range builds {

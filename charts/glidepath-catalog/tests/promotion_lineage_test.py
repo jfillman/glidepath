@@ -39,7 +39,10 @@ def put(path, text):
 
 
 def get(path):
-    return open(path).read() if os.path.exists(path) else ""
+    if not os.path.exists(path):
+        return ""
+    with open(path) as f:
+        return f.read()
 
 
 def docs(*args):
@@ -91,8 +94,9 @@ class Wiring(unittest.TestCase):
                 script = step.get("script", "")
                 self.assertNotIn("param origin", script)
                 self.assertNotRegex(script, r"\$\(params\.origin-(chain|trace)")
-        env = {e["name"]: e for e in TASKS["open-release-pr"]["spec"]["steps"][0]["env"]}
-        self.assertEqual(env["PIPELINE_RUN_NAME"]["valueFrom"]["fieldRef"]["fieldPath"], "metadata.labels['tekton.dev/pipelineRun']")
+        for name in ("open-release-pr", "stage-preflight"):
+            env = {e["name"]: e for e in TASKS[name]["spec"]["steps"][0]["env"]}
+            self.assertEqual(env["PIPELINE_RUN_NAME"]["valueFrom"]["fieldRef"]["fieldPath"], "metadata.labels['tekton.dev/pipelineRun']", name)
 
 
 class Preflight(unittest.TestCase):
@@ -122,7 +126,7 @@ class Preflight(unittest.TestCase):
                 os.remove(os.path.join(self.tmp, "r-" + r))
         env = dict(os.environ, FX=fx, PATH=os.path.join(self.tmp, "bin") + os.pathsep + os.environ["PATH"], PLATFORM_LIB=LIB,
                    ORIGIN_TRACE_WINDOW=window, INCOMING_CHAIN_ID=chain, INCOMING_TRACEPARENT=tp, INCOMING_FLOW_START_TIME="2026-11-15T20:00:00Z" if chain else "",
-                   IS_FLOW_TERMINAL=terminal, TEKTON_PIPELINE_RUN="promote-staging-e65cefae-7ef9ab", NAMESPACE="app-gate-api-cicd", STAGE_NAME="release")
+                   IS_FLOW_TERMINAL=terminal, PIPELINE_RUN_NAME="promote-staging-e65cefae-7ef9ab", NAMESPACE="app-gate-api-cicd", STAGE_NAME="release")
         p = subprocess.run(["bash", os.path.join(self.tmp, "seg.sh")], capture_output=True, text=True, env=env)
         self.assertEqual(p.returncode, 0, p.stderr)
         out = {r: get(os.path.join(self.tmp, "r-" + r)) for r in ("traceparent", "start-time", "chain-id", "chain-slug", "trace-joined", "flow-terminal")}
@@ -180,6 +184,9 @@ class Preflight(unittest.TestCase):
         del gone["glidepath.io/origin-finished-at"]
         self.assertEqual(self.run_seg(gone)["trace-joined"], "false")
         self.assertEqual(self.run_seg(self.origin(), window="12 hours")["trace-joined"], "false")
+        # a window big enough to overflow the shell's arithmetic is "own trace", not a failed release
+        self.assertEqual(self.run_seg(self.origin(), window="99999999999999999999h")["trace-joined"], "false")
+        self.assertEqual(self.run_seg(self.origin(extra={"glidepath.io/origin-finished-at": "2026-13-45T99:99:99Z"}))["trace-joined"], "false")
 
     def test_an_incoming_trace_without_a_chain_is_a_new_chain_in_the_same_trace(self):
         r = self.run_seg({}, window="", tp=TP)

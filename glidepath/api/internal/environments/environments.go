@@ -107,7 +107,7 @@ type Client struct {
 	// Lineage resolves the build a release's image came from (internal/lineage); nil resolves none, and a release run
 	// then carries no origin and its answer says nothing about one.
 	Lineage interface {
-		Resolve(ctx context.Context, namespace, imageRef, commit string) lineage.Resolution
+		Resolve(ctx context.Context, namespace, imageRef, commit, digest string) lineage.Resolution
 	}
 	Records interface { // release records for one environment and cluster
 		ListEnv(ctx context.Context, namespace, app, env, cluster string) ([]releases.Record, error)
@@ -208,6 +208,7 @@ func Instantiate(resource any, params map[string]string, template string) (any, 
 // releaseRun is Tower's ReleaseRunParams.
 type releaseRun struct {
 	env, cluster, gitURL, gitRevision, imageRef, initiator string
+	digest                                                 string          // the manifest digest the source environment's release file pins (promotion.pinDigest), or ""
 	rollback                                               *rollbackParams // set for a rollback
 }
 
@@ -314,7 +315,7 @@ func (c *Client) startRun(ctx context.Context, app *apps.App, p releaseRun, keyH
 	var origin *lineage.Origin
 	unknown := ""
 	if c.Lineage != nil {
-		res := c.Lineage.Resolve(ctx, app.Namespace, p.imageRef, p.gitRevision)
+		res := c.Lineage.Resolve(ctx, app.Namespace, p.imageRef, p.gitRevision, p.digest)
 		if res.Origin != nil {
 			origin = res.Origin
 			stampOrigin(ann, origin)

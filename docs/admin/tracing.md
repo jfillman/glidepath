@@ -111,9 +111,11 @@ never from a parameter, and:
 - `preflight` also accepts an incoming trace context **without** an incoming chain id: a new chain in the existing
   trace. That is the same join, entered with a `flow-traceparent` parameter instead of the annotations.
 
-**Span links are not emitted.** The otel-cli the toolbox pins (`catalog/toolbox/Dockerfile`, `OTEL_CLI_VERSION`) has no
-span-link option on `otel-cli span`, and the catalog's helpers send raw spans only through it, so a promotion that
-starts its own trace records only `originTraceId`, not an OTel link. If otel-cli gains links, `otel_span_send` is the one place to add one.
+**Span links are not emitted.** Checked, not recalled: `otel-cli span --help` in the toolbox image the catalog pins
+(`glidepath-toolbox:2026-10-31-checks-only`, otel-cli 0.4.5 from `catalog/toolbox/Dockerfile`) lists no link option (the word
+"link" does not appear in its flags), so a span cannot carry an OTel link to the build's trace. A promotion that starts its
+own trace records the build's trace id as `originTraceId` on its release record and in the API instead. If a later
+otel-cli gains links, `otel_span_send` is the one place to add one.
 
 **Why 12 hours, not 24.** The lab's Tempo (`observability/tempo`) has `compactor.block_retention: 24h` and no
 `max_duration` override. Retention deletes blocks by age, so the build's spans are gone 24 hours after they were written.
