@@ -156,8 +156,8 @@ ArgoCD's `pullRequest.github.tokenRef` reads from a static Secret - the generato
 controller polls GitHub independently, not through a live per-call exchange like
 `open-release-pr.yaml` uses for the release stage. Rather than a new long-lived PAT,
 `pr-token-refresher-cronjob.yaml` runs every 20 minutes (comfortably inside a GitHub App
-installation token's 1-hour lifetime), at a minute derived from the app name (`prTokenRefresher.minuteOffset`
-overrides it) so the apps' refreshers do not fire together as a dedicated `pr-env-token-refresher`
+installation token's 1-hour lifetime), at a minute picked from `prTokenRefresher.minuteSlots` by the app name (`prTokenRefresher.minuteOffset`
+overrides it), so the apps' refreshers do not fire together and none meets a platform CronJob. The CronJob runs as a dedicated `pr-env-token-refresher`
 ServiceAccount in the Application's own namespace, calls the same
 `/github-installation-token` endpoint built for the release stage, and writes the result
 into `<app-name>-pr-generator-token` - the only thing it's allowed to touch there
@@ -209,7 +209,7 @@ request for an unrelated repo still gets rejected.
 ## TTL backstop (a backstop again, not the primary cleanup path)
 
 `pr-namespace-ttl-sweep-cronjob.yaml` is a single shared, platform-level CronJob (applied
-once, not per Application) in `platform-system`, running every 30 minutes (minutes 5 and 35, `cronSchedules.prNamespaceTtlSweep`): lists every
+once, not per Application) in `platform-system`, running every 30 minutes (minutes 8 and 38, `cronSchedules.prNamespaceTtlSweep`): lists every
 namespace labeled `hangar.io/ephemeral-env=true` across all Applications and deletes any
 whose owning ArgoCD Application no longer exists.
 

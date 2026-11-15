@@ -108,9 +108,12 @@ deploy:
   # airframe-application chart) is the only supported value today, and the default.
   strategy: rollout
 
-# The pr-token-refresher CronJob runs every 20 minutes, at minute (adler32 of the app name) mod 20 so the apps on a
-# cluster do not all fire together. Set minuteOffset (0-19) to pick the minute.
+# The pr-token-refresher CronJob runs every 20 minutes, at a minute picked from minuteSlots by the app name (adler32 mod
+# the list length) so the apps on a cluster do not all fire together. The slots are the minutes (0-19) whose every firing
+# (m, m+20, m+40) is clear of :00/:30 and of the platform CronJobs (glidepath-control-plane cronSchedules, Apron's
+# agentrun-reaper and clearance-targets); cronjob_schedule_test.py checks that. minuteOffset (0-19) overrides the pick.
 prTokenRefresher:
+  minuteSlots: [4, 5, 9, 14, 15, 19]
   minuteOffset: null
 
 ephemeralEnvironments:

@@ -872,7 +872,7 @@ however many retries Argo makes. The hook path sent one per attempt.
 create on Events there, and gives the sweeper its own Role. The cluster-wide `get` that
 phase 1 added stays until every namespace has the Role, then goes.
 
-**The sweeper** (`release-record-sweeper`, control plane, every 10 minutes at minute 3): raises a
+**The sweeper** (`release-record-sweeper`, control plane, every 10 minutes at minute 2): raises a
 `ReleaseStalled` Event, once per state, on a record that is `merged` with no fact for 45
 minutes or `progressing` with no fact for 45 minutes (the heartbeat arrives every 15), and
 deletes records past 14 days (terminal, closed, proposed, or state-less legacy). Records are

@@ -20,6 +20,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")
 CP = os.path.join(ROOT, "charts", "glidepath-control-plane")
 APP = os.path.join(ROOT, "charts", "glidepath-app")
 VALUES = os.path.join(CP, "tests", "values.example.yaml")
+# The other platform CronJobs, which Apron renders (templates/55-autopilot/agentrun-reaper, 59-clearance-targets).
+APRON_SCHEDULES = ["7-59/10 * * * *", "3-59/15 * * * *"]
 
 
 def helm(chart, *args):
@@ -108,12 +110,22 @@ class PrTokenRefresher(unittest.TestCase):
         self.assertEqual(len(set(slots)), 3, slots)
         self.assertEqual(slots, [self.render(a)["spec"]["schedule"] for a in apps], "not deterministic")
 
-    def test_the_apps_clear_the_control_plane_slots(self):
-        taken = set()
-        for j in ControlPlane.jobs if hasattr(ControlPlane, "jobs") else cronjobs(helm(CP, "-f", VALUES)):
+    def test_every_slot_clears_the_platform_schedules(self):
+        """Whatever app name hashes to a slot, no firing meets a platform CronJob or :00/:30."""
+        taken = {0, 30}
+        for j in cronjobs(helm(CP, "-f", VALUES)):
             taken |= minutes(j["spec"]["schedule"])
-        for a in ["boarding-api", "flight-api", "gate-api"]:
-            self.assertFalse(taken & minutes(self.render(a)["spec"]["schedule"]), a)
+        for expr in APRON_SCHEDULES:
+            taken |= minutes(expr)
+        slots = yaml.safe_load(open(os.path.join(APP, "values.yaml")))["prTokenRefresher"]["minuteSlots"]
+        self.assertGreaterEqual(len(slots), 4)
+        for m in slots:
+            self.assertFalse(taken & minutes(f"{m}-59/20 * * * *"), f"minute slot {m}")
+
+    def test_apps_pick_a_listed_slot(self):
+        slots = yaml.safe_load(open(os.path.join(APP, "values.yaml")))["prTokenRefresher"]["minuteSlots"]
+        for a in ["boarding-api", "flight-api", "gate-api", "backstage"]:
+            self.assertIn(int(self.render(a)["spec"]["schedule"].split("-")[0]), slots, a)
 
     def test_offset_zero_is_honoured(self):
         self.assertEqual(self.render("gate-api", 0)["spec"]["schedule"], "0-59/20 * * * *")
