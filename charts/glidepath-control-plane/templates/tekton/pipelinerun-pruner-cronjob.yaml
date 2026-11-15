@@ -64,7 +64,8 @@ metadata:
     hangar.io/subcomponent: "tekton"
   namespace: platform-system
 spec:
-  schedule: "0 * * * *"
+  schedule: {{ .Values.cronSchedules.pipelinerunPruner | quote }}
+  startingDeadlineSeconds: 600
   concurrencyPolicy: Forbid
   jobTemplate:
     spec:

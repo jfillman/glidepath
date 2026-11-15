@@ -123,3 +123,10 @@ PipelineRun's actual spec/status.
 - RBAC check: `kubectl auth can-i --list
   --as=system:serviceaccount:platform-system:stalled-pipeline-detector` shows exactly
   `get`/`list`/`patch` on `pipelineruns.tekton.dev` and `create` on `events`.
+
+## Schedule
+
+Every 5 minutes at minute 1 (`1-59/5 * * * *`, value `cronSchedules.stalledPipelineDetector`). All the platform-system
+CronJobs have their own minute-of-hour slot, none on :00 or :30, so they do not fire together on a small cluster;
+`charts/glidepath-control-plane/tests/cronjob_schedule_test.py` fails if two share a minute. Every CronJob here sets
+`concurrencyPolicy: Forbid` and a `startingDeadlineSeconds`.
