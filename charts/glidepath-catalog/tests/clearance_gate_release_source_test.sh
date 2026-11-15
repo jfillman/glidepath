@@ -177,8 +177,8 @@ out="$(PIPELINE_LOGINS="cicd-pac[bot]" PRAUTHOR=dana resolve)"; expect "a person
 scenario dup; jq '.items += [.items[0]]' "$FIX/records.json" > "$FIX/r" && mv "$FIX/r" "$FIX/records.json"
 out="$(resolve)"; expect "two records for one PR: none trusted" "$(q '[.resolved, (.reason | test("2 release records"))] | join(",")')" "false,true"
 scenario dotted-repo; jq '.items[0].data.gitUrl = "https://github.com/o/shop.js" | .items[1].data.gitUrl = "https://github.com/o/shop.js"' "$FIX/records.json" > "$FIX/r" && mv "$FIX/r" "$FIX/records.json"
-for f in "$FIX"/gh/o_shop_*; do cp "$f" "$FIX/gh/o_shop_js_${f##*/o_shop_}"; done; cp "$FIX/gh/o_shop" "$FIX/gh/o_shop_js"
-out="$(resolve)"; expect "a repository name with a dot is valid" "$(q '[.resolved, .sourceRepo] | join(",")')" "true,o/shop.js"
+for f in "$FIX"/gh/o_shop_*; do cp "$f" "$FIX/gh/o_shop_js_${f##*/o_shop_}"; done; cp "$FIX/gh/o_shop" "$FIX/gh/o_shop_js"; sed -i.bak 's#"full_name":"o/shop"#"full_name":"o/shop.js"#' "$FIX"/gh/o_shop_js_pulls_28[12]; rm -f "$FIX"/gh/*.bak
+out="$(resolve)"; expect "a repository name with a dot is valid" "$(q '[.resolved, (.sourceRepo // .reason)] | join(",")')" "true,o/shop.js"
 
 # 7. Unresolvable: no record for the image the environment runs now (swept), a first release, a range over the cap.
 scenario swept; jq '.items |= [.[0]]' "$FIX/records.json" > "$FIX/r" && mv "$FIX/r" "$FIX/records.json"
