@@ -442,6 +442,29 @@ allowed) and the revision, path and chart name against plain-character patterns 
 installation token only to `github.com` and only for a `github.com/<owner>/<repo>` URL, and sends nothing to any other allowed host. Every other `git clone` or
 `git fetch` in the catalog has a fixed `github.com` host with owner and repository names from parameters the admission policy binds to what Pipelines-as-Code recorded.
 
+**Credentials never travel in a URL, an argument or a log excerpt.** `git fetch https://x-access-token:<token>@github.com/...` put the installation token in a
+command's arguments, `with_retry` echoed those arguments on a failure, a repository's own configuration can make a fetch fail every time (a revision that does not
+exist), and `comment-pr-check-result` posts the tail of the failed pod's log into the pull request. Now: every git call that needs the token gets it through
+`git_auth` (an HTTP header in the environment, `http.https://<gitHost>/.extraheader`, so git sends it only to the catalog's `gitHost`, with `http.followRedirects=false`, no
+credential helper, no prompt), never in a URL or argument (`.git/config` no longer holds it either); `with_retry` prints a label (`WITH_RETRY_LABEL`, or the command word),
+never its arguments (`catalog/lib/retry.sh` is baked into the toolbox image: the toolbox must be rebuilt and `toolboxImage` bumped for this part; the change to the tasks
+does not depend on it, because no argument carries a credential any more); and every place a log excerpt leaves the cluster (the PR comment, the Slack and Backstage
+notifications) passes it through `redact_secrets` first (URL userinfo, `ghs_`/`ghp_`/`github_pat_` tokens, bearer and basic credentials, JWTs, `Authorization` lines).
+`tests/credentials_test.py` fails if a catalog script or the app chart builds a URL with a credential in it, if a failing git command shows the token or its arguments, if
+a log excerpt is not redacted before it is cut, and `tests/post_comment_test.sh` runs the real comment step with a fake token in the pod's log. What was found: the
+platform has no git host setting other than the new `gitHost` (default `github.com`); the GitHub API calls, the broker and the owner/repository parsing are GitHub's
+and stay as they are. A `curl -H "Authorization: Bearer ..."` on a command line is visible only inside its pod and was left.
+
+**Environment directories.** Only a path of the environment shape is an environment: `<cluster>/<env>/values.yaml` or `release.yaml` (or `<cluster>/base.yaml`) under a
+cluster directory whose name is a plain name (`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`). Any other changed path (a root `values.yaml`, `docs.v1/...`, `Docs/...`, a deeper path)
+is ignored as it always was; a path of the shape with an invalid environment name (`hangar-prod/Prod/values.yaml`) refuses the run without printing the name.
+A chart spec in `cicd.yaml` the resolver cannot read (`chart: "str"`) refuses the run too: it used to leave the resolved chart empty, so the gate rendered the default
+chart while Argo CD applied another.
+
+**An open availability defect (not changed here).** The digest function (`json.dumps(sort_keys=True)`) raises `TypeError` when a rendered mapping has both a YAML 1.1
+non-string key and string keys: for example a ConfigMap `data:` with `on:` or `yes:` (read as boolean `true`) beside `name:`. The check then goes red for a chart Argo CD would apply. It
+did so before this change and the digest function was not touched, because Clearance's Argo CD plugin computes the same digest and the two have to change in step.
+
 **Parser differentials that remain open.** Policy evaluation (Kyverno), the Clearance object diff and the tree digest all rest on how the gate parses the
 rendered YAML (PyYAML's SafeLoader, YAML 1.1), and the cluster applies what Argo CD's own render and the API server make of the same text. Known
 differences: a duplicate key in a mapping is last-wins here (the API server's strict decoding refuses it); YAML 1.1 scalars (`yes`, `on`, `012`, `0x1F`,
@@ -716,6 +739,11 @@ Order matters because a build run created from a `.tekton` file written before t
   Helm's error text now appears in the **render task's** log (it holds nothing), not the gate's.
 - **`values-check` is the third use of `render-manifests`** (profile `values`; `cicdRunAdmission.sourceTasks` lists `render` for it too): the
   `pull-request-values.yaml` template gains the same workspace and `taskRunSpecs`, and an advisory `values-check` goes on after a failed fetch or render (green) as before.
+- **Real-file check for the Warn period (workspace claims).** A stored PipelineRun that Pipelines-as-Code created carries the claim as a typed client writes it
+  (`volumeClaimTemplate: {metadata: {creationTimestamp: null}, spec: {...}, status: {}}`; Tekton's binding is a `corev1.PersistentVolumeClaim` and Go writes its empty struct
+  fields). The rule accepts that shape (the test has it) and refuses a name, generateName, labels, annotations, owner references or a real creationTimestamp in `metadata`, and
+  any content in `status`. I could not find a PaC run with a workspace on hangar-dev to confirm the serialised form live: before `[Deny]`, run one check on a branch
+  (`kubectl get pipelinerun -o yaml` of a gate run) and confirm the claim has no other key; in `[Warn, Audit]` the policy log shows a refusal that would have happened.
 - **Workspace volume claims are now checked by admission.** A `.tekton` file's `volumeClaimTemplate` may carry only `accessModes: [ReadWriteOnce]`, a
   storage request of 1, 2, 5, 10 or 20Gi and, if set, a `storageClassName` from `cicdRunAdmission.workspaceStorageClassNames` (empty by default: unset only). No
   `dataSource`, `dataSourceRef`, `volumeName`, `selector`, `volumeMode` or metadata. The onboarding templates and the flow generator already fit; a cluster whose

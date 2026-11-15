@@ -34,6 +34,10 @@ TEST_TASKS = ["run-integration-script"]
 ENV = celpy.Environment()
 # the volume claim shape the onboarding templates and the flow generator write
 VCT = {"spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "2Gi"}}}}
+# What a typed client (Pipelines-as-Code builds typed PipelineRuns; Tekton's WorkspaceBinding.VolumeClaimTemplate is a corev1.PersistentVolumeClaim)
+# writes for the same template: Go's encoding/json emits a struct field even when it is empty, so a stored run carries
+# `metadata: {creationTimestamp: null}` and `status: {}` (what `kubectl get pipelinerun -o yaml` shows for any run that has a volumeClaimTemplate).
+REAL_VCT = {"metadata": {"creationTimestamp": None}, "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "2Gi"}}}, "status": {}}
 
 
 def render(*extra):
@@ -476,6 +480,10 @@ class CicdRunAdmission(unittest.TestCase):
             return [{"name": "gate", "volumeClaimTemplate": body}]
         self.admitted(run(workspaces=vct()))
         self.admitted(run(workspaces=[{"name": "gate", "emptyDir": {}}]))
+        # the shape a typed client writes (Pipelines-as-Code): metadata.creationTimestamp null, empty status
+        self.admitted(run(workspaces=[{"name": "gate", "volumeClaimTemplate": copy.deepcopy(REAL_VCT)}]))
+        self.admitted(run(workspaces=[{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), metadata={})}]))
+        self.admitted(run(workspaces=[{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(VCT), status={})}]))
         for storage in ("1Gi", "5Gi", "10Gi", "20Gi"):
             self.admitted(run(workspaces=vct(resources={"requests": {"storage": storage}})))
         refusals = {
@@ -492,7 +500,14 @@ class CicdRunAdmission(unittest.TestCase):
             "a limit as well": vct(resources={"requests": {"storage": "2Gi"}, "limits": {"storage": "2Gi"}}),
             "no size": vct(resources={}),
             "no spec": [{"name": "gate", "volumeClaimTemplate": {}}],
-            "metadata": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(VCT), metadata={"annotations": {"a": "b"}})}],
+            "metadata with an annotation": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(VCT), metadata={"annotations": {"a": "b"}})}],
+            "metadata with a name": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), metadata={"name": "x", "creationTimestamp": None})}],
+            "metadata with a generateName": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), metadata={"generateName": "x-"})}],
+            "metadata with labels": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), metadata={"labels": {"a": "b"}})}],
+            "metadata with owner references": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), metadata={"ownerReferences": [{"name": "x"}]})}],
+            "a creationTimestamp that is a value": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), metadata={"creationTimestamp": "2026-01-01T00:00:00Z"})}],
+            "a status with content": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), status={"phase": "Bound"})}],
+            "a typed template that also clones a volume": [{"name": "gate", "volumeClaimTemplate": {"metadata": {"creationTimestamp": None}, "status": {}, "spec": dict(copy.deepcopy(VCT)["spec"], dataSourceRef={"kind": "PersistentVolumeClaim", "name": "x"})}}],
         }
         for what, ws in refusals.items():
             self.refused(run(workspaces=ws), msg="volumeClaimTemplate")

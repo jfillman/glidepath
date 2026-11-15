@@ -181,6 +181,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
         [[ "${PHASE}" == fetch ]] || exit 0
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
@@ -197,10 +198,12 @@ spec:
         fetch_repo() { # <repo-url> <revision> <dir>
           local url="$1" rev="$2" dir="$3" o r t clone_url
           clone_url="${url%.git}.git"
+          git_auth_clear  # no earlier token rides along; a token is set below only for the repository it was minted for
           o="$(echo "${url}" | sed -nE 's#https?://github\.com/([^/]+)/.*#\1#p')"
-          r="$(echo "${url}" | sed -nE 's#https?://github\.com/[^/]+/([^/.]+).*#\1#p')"
+          r="$(echo "${url}" | sed -nE 's#https?://github\.com/[^/]+/([^/]+).*#\1#p')"; r="${r%.git}"  # the whole repository name (it may contain a dot), not the part before the first one
           if [[ -n "${o}" ]] && t="$(github_app_installation_token "${o}" "${r}" 2>/dev/null)"; then
-            clone_url="https://x-access-token:${t}@github.com/${o}/${r}.git"
+            git_auth "${t}"
+            clone_url="https://${GIT_HOST}/${o}/${r}.git"
           fi
           mkdir -p "${dir}"
           git -C "${dir}" init --quiet
@@ -247,24 +250,34 @@ spec:
 
         mkdir -p /work/repo && cd /work/repo
         git init --quiet
-        with_retry 3 -- git fetch --quiet --depth 1 "https://x-access-token:${token}@github.com/${owner}/${repo}.git" "${REVISION}"
+        git_auth "${token}"
+        with_retry 3 -- git fetch --quiet --depth 1 "https://${GIT_HOST}/${owner}/${repo}.git" "${REVISION}"
         git checkout --quiet FETCH_HEAD
         rm -f .git/config
         fetch_repo "${REPO_URL}" "${base_sha}" /work/base
 
         # The environments this PR changes (policy-validation-gate's rule).
         : > /work/envs.txt
+        bad_env=0
         while IFS= read -r f; do
           if [[ "${f}" =~ ^([^/]+)/([^/]+)/(values|release)\.yaml$ ]]; then
-            echo "${BASH_REMATCH[1]}|${BASH_REMATCH[2]}" >> /work/envs.txt
+            rc=0; entry="$(env_entry "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")" || rc=$?
+            if (( rc == 0 )); then echo "${entry}" >> /work/envs.txt; elif (( rc != 3 )); then bad_env=1; fi
           elif [[ "${f}" =~ ^([^/]+)/base\.yaml$ ]]; then
-            for d in "${BASH_REMATCH[1]}"/*/; do
-              [[ -f "${d}values.yaml" || -f "${d}release.yaml" ]] && echo "${BASH_REMATCH[1]}|$(basename "${d}")" >> /work/envs.txt
-            done
+            cl="${BASH_REMATCH[1]}"  # before valid_name: its own regex match replaces BASH_REMATCH
+            if valid_name "${cl}"; then
+              for d in "${cl}"/*/; do
+                if [[ -f "${d}values.yaml" || -f "${d}release.yaml" ]]; then
+                  rc=0; entry="$(env_entry "${cl}" "$(basename "${d}")")" || rc=$?
+                  if (( rc == 0 )); then echo "${entry}" >> /work/envs.txt; else bad_env=1; fi
+                fi
+              done
+            fi
           fi
         done < <(jq -r '.[] | .filename' <<<"${files}")
         sort -u -o /work/envs.txt /work/envs.txt
         # names from paths in the repository: plain names only, before any use (a directory name is any string without a slash)
+        (( bad_env == 0 )) || { echo "FAIL: a changed file is under an environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1; }
         valid_env_plan /work/envs.txt || { echo "FAIL: a changed file is under a cluster or environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1; }
 
         # The app's cicd.yaml: the chart, the target, and which environments are protected (production: true).
@@ -283,6 +296,8 @@ spec:
           : > /work/envs.txt
         fi
         envs_json="$(echo "${cicd}" | yq -o json '.deploy.environments // []' 2>/dev/null || echo '[]')"
+        # fail closed on a chart spec the resolver below cannot read: it would fall back to the default chart
+        if [[ -n "${cicd}" ]]; then echo "${cicd}" | yq -o json '.' 2>/dev/null | chart_specs_ok || { echo "FAIL: cicd.yaml's deploy.chart or an environment's chart is not a mapping; the gate will not guess which chart is rendered"; exit 1; }; fi
 
         mkdir -p /work/charts
         n=0

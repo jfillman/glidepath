@@ -39,3 +39,5 @@ jobs:
       - run: python3 charts/glidepath-catalog/tests/tokenless_render_test.py
       # no repository string becomes part of a yq/jq program or chooses where a credentialed fetch goes
       - run: python3 charts/glidepath-catalog/tests/program_text_test.py
+      # no credential in a URL, an argument or a log excerpt that is posted
+      - run: python3 charts/glidepath-catalog/tests/credentials_test.py

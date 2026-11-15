@@ -178,7 +178,10 @@ spec:
       message: "Workspaces may only be emptyDir or volumeClaimTemplate."
     - expression: >-
         !has(object.spec.workspaces) || object.spec.workspaces.all(w, !has(w.volumeClaimTemplate) ||
-          (w.volumeClaimTemplate.all(k, k == 'spec') && has(w.volumeClaimTemplate.spec) &&
+          (w.volumeClaimTemplate.all(k, k in ['spec', 'metadata', 'status']) && has(w.volumeClaimTemplate.spec) &&
+           (!has(w.volumeClaimTemplate.metadata) || (w.volumeClaimTemplate.metadata.all(k, k == 'creationTimestamp') &&
+             (!has(w.volumeClaimTemplate.metadata.creationTimestamp) || w.volumeClaimTemplate.metadata.creationTimestamp == null))) &&
+           (!has(w.volumeClaimTemplate.status) || size(w.volumeClaimTemplate.status) == 0) &&
            w.volumeClaimTemplate.spec.all(k, k in ['accessModes', 'resources', 'storageClassName']) &&
            has(w.volumeClaimTemplate.spec.accessModes) && w.volumeClaimTemplate.spec.accessModes == ['ReadWriteOnce'] &&
            has(w.volumeClaimTemplate.spec.resources) && w.volumeClaimTemplate.spec.resources.all(k, k == 'requests') &&
@@ -186,7 +189,7 @@ spec:
            has(w.volumeClaimTemplate.spec.resources.requests.storage) && type(w.volumeClaimTemplate.spec.resources.requests.storage) == string &&
            w.volumeClaimTemplate.spec.resources.requests.storage.matches('^(1|2|5|10|20)Gi$') &&
            (!has(w.volumeClaimTemplate.spec.storageClassName) || w.volumeClaimTemplate.spec.storageClassName in {{ $c.workspaceStorageClassNames | default list | toJson }})))
-      message: "A workspace's volumeClaimTemplate may carry only spec.accessModes [ReadWriteOnce], spec.resources.requests.storage of 1, 2, 5, 10 or 20Gi and, if set, a storageClassName from cicdRunAdmission.workspaceStorageClassNames: no dataSource or dataSourceRef (a clone of another volume), volumeName, selector, volumeMode or metadata."
+      message: "A workspace's volumeClaimTemplate may carry only spec.accessModes [ReadWriteOnce], spec.resources.requests.storage of 1, 2, 5, 10 or 20Gi and, if set, a storageClassName from cicdRunAdmission.workspaceStorageClassNames: no dataSource or dataSourceRef (a clone of another volume), volumeName, selector or volumeMode; metadata only as a typed client writes it (absent, empty or creationTimestamp: null, no name, labels or annotations) and status only empty."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

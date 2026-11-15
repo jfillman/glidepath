@@ -111,6 +111,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
         [[ "${PHASE}" == fetch ]] || exit 0
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
@@ -126,7 +127,8 @@ spec:
         # The tree at the PR head, one commit deep: the validator reads the files from it.
         mkdir -p /work/repo && cd /work/repo
         git init --quiet
-        with_retry 3 -- git fetch --quiet --depth 1 "https://x-access-token:${token}@github.com/${owner}/${repo}.git" "${REVISION}"
+        git_auth "${token}"
+        with_retry 3 -- git fetch --quiet --depth 1 "https://${GIT_HOST}/${owner}/${repo}.git" "${REVISION}"
         git checkout --quiet FETCH_HEAD
 
         # Changed files: the PR's base...head compare (merge-base semantics, like the old `git merge-base
@@ -164,13 +166,24 @@ spec:
           cicd="$(curl -fsSL -H "Authorization: Bearer ${app_token}" -H "Accept: application/vnd.github.raw" \
             "https://api.github.com/repos/${owner}/${APP_NAME}/contents/cicd.yaml" 2>/dev/null || true)"
         fi
+        # fail closed on a chart spec the resolver below cannot read: it would fall back to the default chart
+        if [[ -n "${cicd}" ]]; then echo "${cicd}" | yq -o json '.' 2>/dev/null | chart_specs_ok || { echo "FAIL: cicd.yaml's deploy.chart or an environment's chart is not a mapping; the gate will not guess which chart is rendered"; exit 1; }; fi
         if [[ -n "${cicd}" && -s /work/files.txt ]]; then
           keep=()
           while read -r f; do
-            cluster="$(echo "${f}" | cut -d/ -f1)"; env="$(echo "${f}" | cut -d/ -f2)"
-            # names from paths in the repository: plain names only, before any use (a directory name is any string without a slash)
-            if ! valid_name "${cluster}" || { [[ "${env}" != "base.yaml" ]] && ! valid_name "${env}"; }; then
-              echo "FAIL: a changed file is under a cluster or environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1
+            # Only a path of the environment shape is an environment: <cluster>/<env>/values.yaml, or <cluster>/base.yaml, under a cluster directory
+            # that is a plain name. Any other changed values file (a root values.yaml, x/values.yaml, a deeper path, a directory that is not a name)
+            # is validated as a file and is not an environment, as before. An environment shape with an invalid name refuses the run.
+            if [[ "${f}" =~ ^([^/]+)/([^/]+)/values\.yaml$ ]]; then
+              cluster="${BASH_REMATCH[1]}"; env="${BASH_REMATCH[2]}"
+            elif [[ "${f}" =~ ^([^/]+)/base\.yaml$ ]]; then
+              cluster="${BASH_REMATCH[1]}"; env="base.yaml"
+            else
+              keep+=("${f}"); continue
+            fi
+            valid_name "${cluster}" || { keep+=("${f}"); continue; }
+            if [[ "${env}" != "base.yaml" ]] && ! valid_name "${env}"; then
+              echo "FAIL: a changed values file is under an environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1
             fi
             # A cluster's shared base.yaml has no environment, so it resolves to the app's chart. On an own chart it
             # is not a whole values file to render alone: the environments it brought in are rendered with it
@@ -209,10 +222,12 @@ spec:
           else
             path="$(echo "${chart}" | jq -r '.path // "."')"
             clone_url="${repo_url%.git}.git"
+            git_auth_clear
             gh_owner="$(echo "${repo_url}" | sed -nE 's#https?://github\.com/([^/]+)/.*#\1#p')"
-            gh_repo="$(echo "${repo_url}" | sed -nE 's#https?://github\.com/[^/]+/([^/.]+).*#\1#p')"
+            gh_repo="$(echo "${repo_url}" | sed -nE 's#https?://github\.com/[^/]+/([^/]+).*#\1#p')"; gh_repo="${gh_repo%.git}"  # the whole repository name (it may contain a dot), not the part before the first one
             if [[ -n "${gh_owner}" ]] && t="$(github_app_installation_token "${gh_owner}" "${gh_repo}" 2>/dev/null)"; then
-              clone_url="https://x-access-token:${t}@github.com/${gh_owner}/${gh_repo}.git"
+              git_auth "${t}"
+              clone_url="https://${GIT_HOST}/${gh_owner}/${gh_repo}.git"
             fi
             # One-commit fetch of the pinned revision (branch, tag or sha), not a full clone.
             mkdir -p "/work/charts/${n}"

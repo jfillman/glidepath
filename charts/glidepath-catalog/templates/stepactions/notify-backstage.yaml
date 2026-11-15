@@ -126,6 +126,7 @@ spec:
   script: |
     #!/usr/bin/env bash
     set -euo pipefail
+    {{- include "glidepath-catalog.redactSecrets" . | nindent 4 }}
     CFG="${CONFIG_JSON}"
     if [[ -n "${CONFIG_JSON_B64}" ]]; then
       CFG="$(base64 -d <<<"${CONFIG_JSON_B64}")"
@@ -259,7 +260,7 @@ spec:
       if [[ -n "${failed_taskrun}" ]]; then
         pod_name="$(kubectl get taskrun "${failed_taskrun}" -n "${APP_NAMESPACE}" -o jsonpath='{.status.podName}' 2>/dev/null || true)"
         if [[ -n "${pod_name}" ]]; then
-          log_excerpt="$(kubectl logs "${pod_name}" -n "${APP_NAMESPACE}" --all-containers --tail=15 2>/dev/null | tail -c 800 || true)"
+          log_excerpt="$(kubectl logs "${pod_name}" -n "${APP_NAMESPACE}" --all-containers --tail=15 2>/dev/null | redact_secrets | tail -c 800 || true)"
         fi
         log_excerpt="Failed task: ${failed_taskrun}"$'\n'"${log_excerpt}"
       fi

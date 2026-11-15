@@ -279,6 +279,10 @@ spec:
           echo "image ${IMAGE_REF} -> ${IMAGE_REPO} ${IMAGE_DIGEST:-(no digest)}"
         fi
 
+        # the test's name selects a file in the repository (glidepath/<name>.yaml): a plain name, checked before it is used (the admission pattern for test-name)
+        for n in "${TEST_NAME}" "${CHECK_RIDE_NAME:-}"; do
+          [[ -z "${n}" || "${n}" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "error: a test name is not a plain name (lower case letters, digits, hyphens)" >&2; exit 1; }
+        done
         SECRET_NAME="${APP_NAME}-app-secrets"
         WORKFLOW_SPEC_JSON=""   # the spec that runs, for workflow-digest
         DECLARED=""             # spec.config keys the workflow declares

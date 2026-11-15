@@ -38,7 +38,8 @@ Notable changes to Glidepath. Newest first.
   phase `decide`) around the render, on one per-run volume, and read the output as data: files opened without following links,
   digests recomputed from a `MANIFEST`, a bounded YAML parse (no tags, no recursive anchor, depth, document and alias-expansion limits).
   Findings shown in a PR comment are escaped and cut.
-- Admission: `render` is in `cicdRunAdmission.sourceTasks` for both Pipelines. The two gitops-repo check templates gain a `gate` workspace
+- A token is never in a URL or an argument any more (`git_auth`: a header scoped to `gitHost`); `with_retry` prints a label; log excerpts posted to PRs, Slack and Backstage are redacted. Names from repository paths and chart sources are validated before use, and no repository string enters a `yq`/`jq` program. `values-check` renders token-less too. Workspace claims in a `.tekton` file are restricted.
+- Admission: `render` is in `cicdRunAdmission.sourceTasks` for the three gate Pipelines. The two gitops-repo check templates gain a `gate` workspace
   and `taskRunSpecs` for `render`.
 - **Upgrade:** release the three charts together, resync every gitops repository's `.tekton/` (until then its two checks fail, they do not
   pass), check the volume is writable by `source-runner`. A chart with remote dependencies must carry its `charts/` (as before).

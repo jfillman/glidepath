@@ -108,6 +108,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
 
@@ -127,7 +128,8 @@ spec:
 
         token="$(github_app_installation_token "${owner}" "${repo}")"
         workdir="$(mktemp -d)"
-        clone_url="https://x-access-token:${token}@github.com/${owner}/${repo}.git"
+        git_auth "${token}"
+        clone_url="https://${GIT_HOST}/${owner}/${repo}.git"
         # --depth 1 --single-branch (2026-10-09, report item 7): this Task only writes on top of
         # the default branch's tip and pushes, so history is never read. GitHub accepts a push
         # from a shallow clone (it already has the boundary commit).
@@ -1008,6 +1010,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
 
         if [[ -z "${GITOPS_REPO_URL}" ]]; then
           echo "gitops repo: no gitops-repo-url param given (release stage not declared), skipping"
@@ -1031,7 +1034,8 @@ spec:
 
         token="$(github_app_installation_token "${owner}" "${repo}")"
         workdir="$(mktemp -d)"
-        clone_url="https://x-access-token:${token}@github.com/${owner}/${repo}.git"
+        git_auth "${token}"
+        clone_url="https://${GIT_HOST}/${owner}/${repo}.git"
         # --depth 1 --single-branch (2026-10-09, report item 7): this Task only writes on top of
         # the default branch's tip and pushes, so history is never read. GitHub accepts a push
         # from a shallow clone (it already has the boundary commit).

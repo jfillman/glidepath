@@ -29,7 +29,8 @@ method=GET url=""
 while (( $# )); do
   case "$1" in
     -X) method="$2"; shift ;;
-    -d|-H|--max-time|--retry|-o) shift ;;
+    -d) printf '%s\n' "$2" >> "$FX/bodies"; shift ;;
+    -H|--max-time|--retry|-o) shift ;;
     http*) url="$1" ;;
   esac
   shift
@@ -44,7 +45,10 @@ EOF
 cat > "$work/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-  "get taskrun"*|"get configmap"*) echo '{"items": []}' ;;
+  "get taskrun tr-fail"*) echo pod-fail ;;
+  "get taskrun"*) if [[ -n "${FAILED_TASKRUN:-}" ]]; then echo '{"items": [{"metadata": {"name": "tr-fail", "labels": {"tekton.dev/pipelineTask": "fetch"}}, "status": {"conditions": [{"status": "False"}]}}]}'; else echo '{"items": []}'; fi ;;
+  "get configmap"*) echo '{"items": []}' ;;
+  "logs pod-fail"*) printf 'git fetch https://x-access-token:%s@github.com/o/r.git failed\nAuthorization: Bearer %s\nfatal: unable to access\n' "$LEAK_TOKEN" "$LEAK_TOKEN" ;;
   *) echo "unexpected kubectl $*" >&2; exit 1 ;;
 esac
 EOF
@@ -53,8 +57,8 @@ chmod +x "$work/bin/"*
 run() { # <name> <post-comment>
   FX="$work/$1"; mkdir -p "$FX/gate"; export FX; : > "$FX/calls"
   ( PATH="$work/bin:$PATH" PLATFORM_LIB="$work/lib" GATE_WORK="$FX/gate" REPO_URL=https://github.com/x/y PR_NUMBER=7 \
-      REVISION=abc GATE_NAME=agent-gates PIPELINE_RUN_NAME=agent-gates-x1 STATUS=Succeeded ADVISORY_REASON=rollback \
-      NAMESPACE=app-y-cicd POST_COMMENT="$2" bash "$work/step.sh" ) > "$FX/out" 2>&1
+      REVISION=abc GATE_NAME=agent-gates PIPELINE_RUN_NAME=agent-gates-x1 STATUS="${STATUS:-Succeeded}" ADVISORY_REASON=rollback \
+      NAMESPACE=app-y-cicd POST_COMMENT="$2" FAILED_TASKRUN="${FAILED_TASKRUN:-}" LEAK_TOKEN="${LEAK_TOKEN:-}" bash "$work/step.sh" ) > "$FX/out" 2>&1
   echo $? > "$FX/rc"
 }
 
@@ -68,6 +72,12 @@ run loud true
 expect "loud: exit 0" "$(cat "$work/loud/rc")" "0"
 expect "loud: verdict recorded" "$(cat "$work/loud/gate/verdict" 2>/dev/null)" "success"
 expect "loud: comment posted" "$(grep -c '^POST .*/issues/7/comments$' "$work/loud/calls")" "1"
+
+# A failed task whose log carries a token (a failing fetch echoes what it was given): the comment posted to the PR never does.
+STATUS=Failed FAILED_TASKRUN=1 LEAK_TOKEN=ghs_FAKEtokenFAKEtokenFAKEtoken0123456789 run leak true
+expect "leak: a comment was posted" "$(grep -c '^POST .*/issues/7/comments$' "$work/leak/calls")" "1"
+expect "leak: the token is not in what was posted" "$(grep -c 'FAKEtokenFAKEtoken' "$work/leak/bodies" 2>/dev/null)" "0"
+expect "leak: the log excerpt was posted, redacted" "$(grep -c 'redacted' "$work/leak/bodies" 2>/dev/null | tr -d ' ' | sed 's/^[1-9][0-9]*$/yes/')" "yes"
 
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
   --show-only templates/pipelines/agent-gates-check.yaml > "$work/pipeline.yaml" || exit 1

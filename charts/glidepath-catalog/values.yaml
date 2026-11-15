@@ -86,6 +86,11 @@ defaultChart:
   path: charts/airframe-application
   targetRevision: ""
 
+# The git host the catalog's tasks talk to (clone, fetch, push). The installation token is sent only to it, in an HTTP header, never in a URL.
+# There is no platform-wide git host setting beyond this: the broker, the GitHub API calls and the owner/repository parsing in the tasks are
+# GitHub's, so this value names the host the git protocol runs against, github.com unless it is a GitHub Enterprise Server host.
+gitHost: github.com
+
 # Where a chart a repository names (cicd.yaml deploy.chart.repoURL) may be fetched from, by the gates that fetch it with credentials in the
 # pod. https git hosts and OCI registries; the default chart's own host is always allowed. Anything else fails the check before any fetch.
 chartSources:

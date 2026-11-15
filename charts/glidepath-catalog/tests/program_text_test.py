@@ -125,6 +125,18 @@ class Structure(unittest.TestCase):
         self.assertEqual(bad, [], "a yq/jq program with a variable in its text: pass the value with strenv()/env() or --arg")
         self.assertEqual(seen, set(SAFE_PROGRAMS), "an allowlisted program is gone: remove it from SAFE_PROGRAMS")
 
+    def test_no_jsonpath_expression_is_built_from_a_variable(self):
+        bad = []
+        for name, text in self.sources():
+            for line in text.split("\n"):
+                if re.search(r'jsonpath="[^"]*\$\{', line) and not line.strip().startswith("#"):
+                    bad.append((name, line.strip()[:100]))
+        self.assertEqual(bad, [])
+
+    def test_a_test_name_is_checked_before_it_selects_a_file(self):
+        text = "\n".join(s.get("script", "") for s in TASKS["run-testworkflow"]["spec"]["steps"])
+        self.assertLess(text.index('[[ -z "${n}" || "${n}" =~'), text.index('WORKFLOW_FILE="glidepath/${TEST_NAME}.yaml"'))
+
     def test_the_scan_sees_the_old_bug(self):
         old = '''resolved="$(echo "${cicd}" | yq -o json "{\\"a\\": (.b[] | select(.name == \\"${env}\\"))}" 2>/dev/null)"'''
         self.assertEqual([(t, q) for t, _, q in programs(old)], [("yq", '"')])
@@ -231,12 +243,110 @@ class Guards(unittest.TestCase):
         for a in hostile:
             self.assertNotEqual(self.run_guard(call, U=a[0], R=a[1], P=a[2], C=a[3]), 0, a)
 
+    def test_a_chart_spec_the_resolver_cannot_read_fails_closed(self):
+        def ok(cicd):
+            y = subprocess.run(["yq", "-o", "json", "."], input=cicd, capture_output=True, text=True).stdout
+            return subprocess.run(["bash", "-c", guards_script() + "\nchart_specs_ok"], input=y, capture_output=True, text=True).returncode == 0
+        self.assertTrue(ok("deploy:\n  chart: {repoURL: https://github.com/o/c}\n  environments:\n    - name: prod\n      chart: {path: x}\n"))
+        self.assertTrue(ok("deploy:\n  environments:\n    - name: prod\n"))
+        self.assertTrue(ok("build: {agent: nodejs-20}\n"))
+        for bad in ("deploy:\n  chart: str\n", "deploy:\n  chart: [a]\n", "deploy:\n  environments:\n    - name: prod\n      chart: str\n",
+                    "deploy:\n  environments: prod\n", "deploy: str\n", "deploy:\n  environments:\n    - prod\n"):
+            self.assertFalse(ok(bad), bad)
+
     def test_the_allowed_hosts_come_from_the_values(self):
         r = subprocess.run(["helm", "template", "c", CATALOG, "-f", os.path.join(CATALOG, "tests", "values.example.yaml"), "--set", "chartSources.gitHosts={git.example.org}",
                             "--set", "chartSources.ociHosts={registry.example.org}", "--show-only", "templates/tasks/clearance-gate.yaml"], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('ALLOWED_GIT_HOSTS="git.example.org github.com"', r.stdout)
         self.assertIn('ALLOWED_OCI_HOSTS="registry.example.org"', r.stdout)
+
+
+class PathShapes(unittest.TestCase):
+    """Only a path of the environment shape is an environment. Other changed paths are ignored as they were before; a path that has the shape
+    with an invalid environment name refuses the run. Run on the real fetch scripts' own blocks (clearance-gate, policy-validation-gate)."""
+
+    GATES = ("clearance-gate", "policy-validation-gate")
+
+    def block(self, task):
+        text = [s for s in TASKS[task]["spec"]["steps"] if s["name"] == "fetch"][0]["script"]
+        a = text.index(": > /work/envs.txt")
+        b = text.index("\n", text.index("valid_env_plan /work/envs.txt"))
+        return text[text.index("# BEGIN input-guards"):text.index("# END input-guards")] + "\n" + text[a:b]
+
+    def run_block(self, task, changed, tree=()):
+        """-> (exit code, the envs.txt it wrote, its output); `tree` are files that exist in the checkout (a cluster's environments)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for f in list(tree) + [c for c in changed if "/" in c]:
+                os.makedirs(os.path.dirname(os.path.join(tmp, f)), exist_ok=True)
+                open(os.path.join(tmp, f), "w").write("x: 1\n")
+            os.makedirs(os.path.join(tmp, "w"))
+            if task == "clearance-gate":
+                import json
+                head = "files=%s\n" % repr(json.dumps([{"filename": f} for f in changed]))
+            else:
+                head = "changed=$%s\n" % repr("\n".join(changed))
+            script = "set -euo pipefail\ncd %s\n%s%s\n" % (tmp, head, self.block(task).replace("/work", os.path.join(tmp, "w")))
+            p = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+            envs = open(os.path.join(tmp, "w", "envs.txt")).read().split()
+            return p.returncode, envs, p.stdout + p.stderr
+
+    def test_an_environment_is_read(self):
+        for task in self.GATES:
+            rc, envs, out = self.run_block(task, ["hangar-prod/prod/values.yaml", "hangar-prod/dev/release.yaml"])
+            self.assertEqual((rc, sorted(envs)), (0, ["hangar-prod|dev", "hangar-prod|prod"]), (task, out))
+
+    def test_a_path_that_is_not_an_environment_is_ignored(self):
+        for task in self.GATES:
+            for path in ("values.yaml", "docs/values.yaml", "docs.v1/guide/values.yaml", "Docs/Guide/release.yaml", "Charts/x_y/values.yaml",
+                         "a/b/c/values.yaml", "README.md", "Docs/base.yaml"):
+                rc, envs, out = self.run_block(task, [path])
+                self.assertEqual((rc, envs), (0, []), (task, path, out))
+            rc, envs, out = self.run_block(task, ["docs.v1/x/values.yaml", "hangar-prod/dev/release.yaml"])
+            self.assertEqual((rc, envs), (0, ["hangar-prod|dev"]), (task, out))
+
+    def test_an_environment_shape_with_an_invalid_name_refuses_the_run_without_printing_the_name(self):
+        for task in self.GATES:
+            for path in ("hangar-prod/Prod/values.yaml", "hangar-prod/pr_1/release.yaml", "hangar-prod/a.b/values.yaml", "hangar-prod/-x/values.yaml"):
+                rc, envs, out = self.run_block(task, [path])
+                self.assertEqual(rc, 1, (task, path))
+                self.assertIn("not a plain name", out)
+                self.assertNotIn(path.split("/")[1], out)
+
+    def test_a_cluster_base_file_brings_in_its_environments_and_a_bad_directory_name_refuses(self):
+        for task in self.GATES:
+            rc, envs, out = self.run_block(task, ["hangar-prod/base.yaml"], tree=["hangar-prod/dev/values.yaml", "hangar-prod/prod/release.yaml"])
+            self.assertEqual((rc, sorted(envs)), (0, ["hangar-prod|dev", "hangar-prod|prod"]), (task, out))
+            rc, envs, out = self.run_block(task, ["hangar-prod/base.yaml"], tree=["hangar-prod/dev/values.yaml", "hangar-prod/Bad_Dir/values.yaml"])
+            self.assertEqual(rc, 1, task)
+
+
+class ValuesCheckPathShapes(unittest.TestCase):
+    """validate-values: a changed values file that is not of the environment shape is validated as a file and is not an environment."""
+
+    def run_loop(self, files):
+        text = [s for s in TASKS["validate-values"]["spec"]["steps"] if s["name"] == "clone-and-list"][0]["script"]
+        a = text.index('if [[ -n "${cicd}" && -s /work/files.txt ]]; then')
+        b = text.index("\nfi\n", text.index("done < /work/files.txt", a)) + len("\nfi\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "w"))
+            open(os.path.join(tmp, "w", "files.txt"), "w").write("\n".join(files) + "\n")
+            cicd = "deploy:\n  environments:\n    - name: prod\n"
+            script = ("set -euo pipefail\n%s\ncicd=%s\nDEFAULT_CHART_REPO_URL=https://github.com/o/c DEFAULT_CHART_PATH=charts/x\n%s\ncat %s/w/files.txt\n"
+                      % (text[text.index("# BEGIN input-guards"):text.index("# END input-guards")], "$" + repr(cicd), text[a:b].replace("/work", os.path.join(tmp, "w")), tmp))
+            p = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+            return p.returncode, p.stdout.split(), p.stdout + p.stderr
+
+    def test_files_that_are_not_environments_are_kept_and_a_bad_environment_name_refuses(self):
+        rc, kept, out = self.run_loop(["values.yaml", "x/values.yaml", "docs.v1/guide/values.yaml", "Docs/Guide/values.yaml", "a/b/c/values.yaml", "Docs/base.yaml"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(sorted(kept), sorted(["values.yaml", "x/values.yaml", "docs.v1/guide/values.yaml", "Docs/Guide/values.yaml", "a/b/c/values.yaml", "Docs/base.yaml"]))
+        rc, kept, out = self.run_loop(["hangar-prod/prod/values.yaml"])
+        self.assertEqual((rc, kept), (0, ["hangar-prod/prod/values.yaml"]), out)
+        rc, kept, out = self.run_loop(["hangar-prod/Prod/values.yaml"])
+        self.assertEqual(rc, 1)
+        self.assertIn("not a plain name", out)
+        self.assertNotIn("Prod", out.replace("FAIL", ""))
 
 
 if __name__ == "__main__":

@@ -511,6 +511,20 @@ valid_chart_source() { # <repoURL> <targetRevision> <path> <chart>
     [[ " ${ALLOWED_GIT_HOSTS} " == *" ${host} "* ]]
   fi
 }
+# env_entry <cluster> <env>: "cluster|env" for a path of the environment shape (<cluster>/<env>/values.yaml). A first directory that is not a plain
+# name is not an environment tree at all (docs/, Docs/, a dotted directory): return 3, the path is ignored as it always was. A cluster that is a
+# name with an environment that is not has the shape and an invalid name: return 1, the run is refused.
+env_entry() {
+  valid_name "$1" || return 3
+  valid_name "$2" || return 1
+  echo "$1|$2"
+}
+# chart_specs_ok: reads cicd.yaml as JSON; every chart spec in it (deploy.chart and each environment's chart) must be a mapping. A spec the resolver cannot
+# read (`chart: "str"`) would otherwise leave the resolved chart empty, and the gate would render the default chart while Argo CD applies another.
+chart_specs_ok() {
+  jq -e '(.deploy // {}) as $d | ($d | type) == "object" and (($d.environments // []) | type) == "array"
+         and ([($d.chart // {})] + [($d.environments // [])[] | (.chart // {})] | all(type == "object"))' >/dev/null 2>&1
+}
 # every environment of a changed-files plan (<cluster>|<env> lines) has plain names; otherwise the run is refused before any is used
 valid_env_plan() { # <file>
   local c e
@@ -520,6 +534,43 @@ valid_env_plan() { # <file>
   done < "$1"
 }
 # END input-guards
+{{- end -}}
+
+{{- /*
+glidepath-catalog.gitAuth: git_auth <token>, git_auth_clear. A token never goes into a URL or an argument (a failing git command's arguments end up in a log, and
+`comment-pr-check-result` posts log excerpts into the PR): it goes in the environment as an HTTP header git sends only to GIT_HOST (the platform's
+configured git host, catalog value gitHost), with redirects off so nothing can carry it elsewhere, and no credential helper or prompt.
+*/ -}}
+{{- define "glidepath-catalog.gitAuth" -}}
+# BEGIN git-auth
+GIT_HOST={{ (.Values.gitHost | default "github.com") | quote }}
+git_auth() { # <token>
+  export GIT_CONFIG_COUNT=3 GIT_TERMINAL_PROMPT=0
+  export GIT_CONFIG_KEY_0="http.https://${GIT_HOST}/.extraheader" GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$1" | base64 | tr -d '\n')"
+  export GIT_CONFIG_KEY_1="http.followRedirects" GIT_CONFIG_VALUE_1="false"
+  export GIT_CONFIG_KEY_2="credential.helper" GIT_CONFIG_VALUE_2=""
+}
+git_auth_clear() { unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2; }
+# END git-auth
+{{- end -}}
+
+{{- /*
+glidepath-catalog.redactSecrets: redact_secrets, a filter for text that is about to be posted where people read it (a PR comment): URL userinfo,
+GitHub token shapes, bearer/basic credentials, JWTs and Authorization lines.
+*/ -}}
+{{- define "glidepath-catalog.redactSecrets" -}}
+# BEGIN redact-secrets
+redact_secrets() {
+  sed -E \
+    -e 's#(https?://)[^/@[:space:]]+@#\1[redacted]@#g' \
+    -e 's#x-access-token:[^@[:space:]]*#x-access-token:[redacted]#g' \
+    -e 's#gh[pousr]_[A-Za-z0-9]{16,}#[redacted]#g' \
+    -e 's#github_pat_[A-Za-z0-9_]{16,}#[redacted]#g' \
+    -e 's#eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(\.[A-Za-z0-9_-]*)?#[redacted]#g' \
+    -e 's#([Bb]earer|[Bb]asic|[Tt]oken)[[:space:]]+[A-Za-z0-9._~+/=-]{12,}#\1 [redacted]#g' \
+    -e 's#([Aa]uthorization:?)[[:space:]]*.*#\1 [redacted]#g'
+}
+# END redact-secrets
 {{- end -}}
 
 {{- /*
