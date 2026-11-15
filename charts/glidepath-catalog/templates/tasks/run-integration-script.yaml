@@ -1,0 +1,75 @@
+# catalog/tasks/run-integration-script.yaml
+#
+# The phase 1 test fallback: ./integration-test.sh, run in the app's own build-agent image, when the repository has no
+# glidepath/<name>.yaml TestWorkflow (run-testworkflow.yaml decides that and says so in its `fallback-needed` result).
+#
+# It is its own Task, not a step of run-testworkflow, because it is the repository's code. It runs as source-runner (the
+# Pipeline's taskRunSpecs; glidepath-app identity/pipeline-runner.yaml): no RBAC, no mounted token, no projected token, and
+# nothing of run-testworkflow's pod (that one reads this namespace's app-secrets, writes the Testkube namespace and holds
+# registry read credentials). A pull request that edits integration-test.sh can therefore build and test, and reach the
+# Kubernetes API no further than any pod on the network can. The admission policy cicd-run-source-isolation
+# (glidepath-control-plane) refuses a run of the test Pipeline that does not give this task to source-runner.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: run-integration-script
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  workspaces:
+    - name: source
+  params:
+    - name: agent-image
+      type: string
+      description: "The resolved build-agent image (stage-preflight's agent-image result); ./integration-test.sh runs inside it."
+    - name: image-ref
+      type: string
+    - name: env
+      type: string
+    - name: test-name
+      type: string
+    - name: required
+      type: string
+      default: "true"
+      description: "\"false\": a failed run is recorded (outcome failed) but this Task exits 0, so the flow continues."
+  results:
+    - name: outcome
+      description: "'passed' or 'failed', from the script's exit code (the same words run-testworkflow's outcome uses)."
+  steps:
+    - name: run
+      image: $(params.agent-image)
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: IMAGE_REF
+          value: $(params.image-ref)
+        - name: TEST_ENV
+          value: $(params.env)
+        - name: TEST_NAME
+          value: $(params.test-name)
+        - name: REQUIRED
+          value: $(params.required)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        echo -n "failed" > "$(results.outcome.path)"
+        if [[ ! -f ./integration-test.sh ]]; then
+          echo "error: ./integration-test.sh does not exist in this commit." >&2
+          exit 1
+        fi
+        echo "running '${TEST_NAME}' against env '${TEST_ENV}', image ${IMAGE_REF}"
+        chmod +x ./integration-test.sh
+        # set +e, not the whole script under set -e: `outcome` must still be written on a real failure.
+        set +e
+        ./integration-test.sh
+        EXIT_CODE=$?
+        set -e
+        if [[ "${EXIT_CODE}" -eq 0 ]]; then
+          echo -n "passed" > "$(results.outcome.path)"
+        else
+          if [[ "${REQUIRED}" == "false" ]]; then
+            echo "integration-test.sh failed, but this step is required: false - recorded as failed, the flow continues"
+            exit 0
+          fi
+        fi
+        exit "${EXIT_CODE}"

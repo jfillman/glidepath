@@ -301,6 +301,15 @@ spec:
           - pipelineTaskName: deploy-aws-ecs
             serviceAccountName: glidepath-cloud-deployer
         {{- end }}
+        {{- /* The test Pipeline's run-integration-script runs the repository's ./integration-test.sh (when it has no
+        TestWorkflow file): as source-runner, with no Kubernetes credential (identity/pipeline-runner.yaml). Build never
+        reaches here (nothing chains into it); its source tasks are in the generated .tekton build run. The same task list is
+        in the admission policy cicd-run-source-isolation (glidepath-control-plane, values sourceTasks). */ -}}
+        {{- if eq $stageName "test" }}
+        taskRunSpecs:
+          - pipelineTaskName: run-integration-script
+            serviceAccountName: source-runner
+        {{- end }}
         taskRunTemplate:
           serviceAccountName: pipeline-runner
           {{- /* Backstage's hostname may not be real DNS anywhere a pod's CoreDNS can
@@ -329,7 +338,7 @@ metadata:
     hangar.io/flow: {{ $flowName }}
     hangar.io/stage: {{ $stageName }}
 spec:
-  serviceAccountName: pipeline-runner
+  serviceAccountName: pipeline-trigger
   interceptors:
     - ref: { name: cdevents-broker-auth, kind: ClusterInterceptor }
       params: [{ name: audience, value: cdevents-broker }]

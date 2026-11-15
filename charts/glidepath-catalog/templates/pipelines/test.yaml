@@ -136,6 +136,27 @@ spec:
         - { name: required, value: $(params.test-required) }
         - { name: check-ride-name, value: {{ .Values.checkRide.workflowName | quote }} }
 
+    # ./integration-test.sh, the repository's own code, when it has no TestWorkflow file (run-testworkflow's fallback-needed
+    # result). Its own Task so it can run as source-runner: no credential of the namespace is in its pod.
+    - name: run-integration-script
+      runAfter: [run-testworkflow]
+      when:
+        - { input: $(tasks.run-testworkflow.results.fallback-needed), operator: in, values: ["true"] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: run-integration-script }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      workspaces:
+        - { name: source, workspace: source }
+      params:
+        - { name: agent-image, value: $(tasks.preflight.results.agent-image) }
+        - { name: image-ref, value: $(params.image-ref) }
+        - { name: env, value: $(params.env) }
+        - { name: test-name, value: $(params.test-name) }
+        - { name: required, value: $(params.test-required) }
+
   # One finally Task, one pod (2026-10-08) - replaces the six separate finally tasks this
   # Pipeline used to carry (end-test-stage-span, end-flow, notify, notify-backstage,
   # send-cdevent, pipelinerun-finished). Same side effects in the same order; see
