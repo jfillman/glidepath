@@ -28,7 +28,7 @@ CHART = os.path.join(ROOT, "charts", "glidepath-control-plane")
 VALUES = os.path.join(CHART, "tests", "values.example.yaml")
 PAC = "system:serviceaccount:tekton-pipelines:pipelines-as-code-controller"
 NS = "app-sample-cicd"
-SOURCE_TASKS = ["build-source", "unit-test", "build-python-wheel-artifact", "build-go-binary-artifact"]
+SOURCE_TASKS = ["build-source", "unit-test", "build-image", "build-python-wheel-artifact", "build-go-binary-artifact"]
 TEST_TASKS = ["run-integration-script"]
 ENV = celpy.Environment()
 
@@ -171,6 +171,10 @@ def render_catalog():
     return _CATALOG
 
 
+def repo_code(task):
+    return any(x.get("image") == "$(params.agent-image)" or "buildctl" in x.get("script", "") for x in task["spec"].get("steps", []))
+
+
 class CicdRunAdmission(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -293,7 +297,7 @@ class CicdRunAdmission(unittest.TestCase):
             runs_repo_code = set()
             for t in pipelines[pname]["spec"]["tasks"]:
                 ref_name = [p["value"] for p in t["taskRef"]["params"] if p["name"] == "name"][0]
-                if any(s.get("image") == "$(params.agent-image)" for s in tasks[ref_name]["spec"].get("steps", [])):
+                if repo_code(tasks[ref_name]):
                     runs_repo_code.add(t["name"])
             self.assertEqual(runs_repo_code, set(listed), pname)
         # and no other catalog Pipeline a file may start has such a task
@@ -303,7 +307,7 @@ class CicdRunAdmission(unittest.TestCase):
             for sec in ("tasks", "finally"):
                 for t in pipelines[pname]["spec"].get(sec, []):
                     ref_name = [p["value"] for p in t["taskRef"]["params"] if p["name"] == "name"][0]
-                    self.assertFalse(any(s.get("image") == "$(params.agent-image)" for s in tasks[ref_name]["spec"].get("steps", [])), (pname, t["name"]))
+                    self.assertFalse(repo_code(tasks[ref_name]), (pname, t["name"]))
 
     # ---- what is refused ----
     def test_inline_pipeline_spec_refused(self):

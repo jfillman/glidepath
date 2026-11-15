@@ -28,7 +28,7 @@ APP = os.path.join(ROOT, "charts", "glidepath-app")
 CATALOG = os.path.join(ROOT, "charts", "glidepath-catalog")
 CP = os.path.join(ROOT, "charts", "glidepath-control-plane")
 NS = "app-x-cicd"   # the chart derives the real namespace from platformIdentity.appName; rules_for reads it back
-SOURCE_TASKS = ["build-source", "unit-test", "build-python-wheel-artifact", "build-go-binary-artifact"]
+SOURCE_TASKS = ["build-source", "unit-test", "build-image", "build-python-wheel-artifact", "build-go-binary-artifact"]
 
 CICD = {
     "apiVersion": "platform/v1", "kind": "PipelineConfig",
@@ -179,6 +179,11 @@ class Identities(unittest.TestCase):
                     self.assertNotIn("source-runner", str(specs), d["metadata"]["name"])
 
 
+def runs_repo_code(task):
+    """A task whose step runs the resolved build-agent image, or the BuildKit step (the Containerfile's RUN lines)."""
+    return any(x.get("image") == "$(params.agent-image)" or "buildctl" in x.get("script", "") for x in task["spec"].get("steps", []))
+
+
 class SourceTasks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -196,7 +201,7 @@ class SourceTasks(unittest.TestCase):
     def test_the_four_pipeline_tasks_exist_and_run_the_repository_code_tasks(self):
         refs = self.build_task_refs()
         self.assertEqual({k: refs[k] for k in SOURCE_TASKS},
-                         {"build-source": "build-source", "unit-test": "run-tests",
+                         {"build-source": "build-source", "unit-test": "run-tests", "build-image": "build-image",
                           "build-python-wheel-artifact": "build-artifact", "build-go-binary-artifact": "build-artifact"})
 
     def test_every_build_task_that_runs_an_agent_image_is_on_the_list(self):
@@ -204,7 +209,7 @@ class SourceTasks(unittest.TestCase):
         # and not to the list, it would run as pipeline-runner with the repository's code in it.
         refs = self.build_task_refs()
         runs_agent_image = sorted(name for name, task in refs.items()
-                                  if any(s.get("image") == "$(params.agent-image)" for s in self.tasks[task]["spec"].get("steps", [])))
+                                  if runs_repo_code(self.tasks[task]))
         self.assertEqual(runs_agent_image, sorted(SOURCE_TASKS))
 
     def test_agent_image_steps_carry_no_credential(self):

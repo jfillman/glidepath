@@ -45,9 +45,9 @@ cicdRunAdmission:
   # pull request or a side branch, whatever the .tekton file says. The checks run on a pull request into one of these.
   protectedBranches: [main]
   # Tasks of each Pipeline that run the repository's own code (the ones whose steps run $(params.agent-image) or the
-  # repository's scripts). A run of the Pipeline must give them to source-runner. The chart test derives this from the catalog.
+  # repository's scripts, and build-image, whose Containerfile RUN lines are the repository's code). A run of the Pipeline must give them to source-runner. The chart test derives this from the catalog.
   sourceTasks:
-    build: [build-source, unit-test, build-python-wheel-artifact, build-go-binary-artifact]
+    build: [build-source, unit-test, build-image, build-python-wheel-artifact, build-go-binary-artifact]
     test: [run-integration-script]
   # Every Pipeline a .tekton file may start, and what it may pass. Anything else (release-outcome-notify, promote,
   # governance-check, ...) is started by the platform, never by a file in a repository. params: the only parameter names the

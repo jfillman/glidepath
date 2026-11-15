@@ -194,7 +194,7 @@ and write to its workspace, which is what it needs.
 What each part does.
 
 - **`source-runner`** is chosen per task in the run's `taskRunSpecs`. The generated `.tekton/` build run
-  (`deliver-onboarding-files`) carries the four entries, a test run (generated, or chained by the Trigger) carries
+  (`deliver-onboarding-files`) carries the five entries (`build-source`, `unit-test`, `build-image` and the two artifact builds), a test run (generated, or chained by the Trigger) carries
   `run-integration-script`, the Task that runs `./integration-test.sh` (it used to be a step of `run-testworkflow`, in the pod that
   reads `app-secrets` and writes the Testkube namespace). It has an `imagePullSecrets` reference so its pod can pull the toolbox image;
   nothing else.
@@ -233,13 +233,13 @@ in the build and test stages before anything is merged. After this release:
 
 | They want | Possible? | Shortest remaining path |
 |---|---|---|
-| **(a) a Kubernetes token in code they control** | **Yes.** | A `RUN` line in the `Containerfile`. `build-image` runs rootless BuildKit with `--oci-worker-no-process-sandbox`, in the same container as its push credentials and, until the next change, with `pipeline-runner`'s token mounted in that pod. A `RUN` shares the daemon's process space and user, so it can read the daemon's environment and files (`/proc/<pid>/root/...`), the token file included. Not by `build.sh`, `test.sh`, `integration-test.sh`, a dependency install, a build backend or an edited `.tekton` file: those hold none. |
-| **(b) write or delete a `release-tracking-*` record** | **Yes, with (a).** | With the token from (a): `pipeline-runner` can patch and delete every ConfigMap of its namespace. A second path needs no token of theirs: a credentialed catalog task that runs git or a tool against the workspace after their code has changed it (`sast-scan` runs while `unit-test` is still writing to the same volume) can be made to run their configuration. Both end at the same Role. |
-| **(c) read a Secret** | **Yes, two ways.** | (1) With the token from (a): `get` on `app-secrets` by name (the Secret exists only for apps that use Testkube). (2) `registry-credentials`: the `build-image` push credential sits in the BuildKit container that runs the `RUN` line (the same path as (a)); and `build-artifact`'s `build` step can write the path its `publish` step then pushes, so naming the credential file as the artifact publishes it to the registry. They cannot read Secrets through the API without the token, and cannot mount one in a run of their own any more. |
+| **(a) a Kubernetes token in code they control** | **Not through any code they run.** One lead is open. | `build.sh`, `test.sh`, `integration-test.sh`, dependency installs, build backends and the `Containerfile`'s `RUN` lines (`build-image`) all run as `source-runner`: no token is mounted. The lead: a credentialed catalog task that opens a path the repository chooses and then logs or publishes what it read, where the path is a symlink to the pod's own token. `attest-api-spec` did publish the file (closed: it refuses symlinks and `..`); `stage-preflight` (`cicd.yaml`) and `run-testworkflow` (`glidepath/<name>.yaml`) only report parse errors, and were not audited line by line for echoing content. |
+| **(b) write or delete a `release-tracking-*` record** | **No known path from code.** It needs the token, so it is only as closed as (a). | The Role that can do it is `pipeline-runner`'s, held by every catalog task. A compromise of a catalog task, or the lead in (a), reaches it. |
+| **(c) read a Secret** | **Yes: the registry push credential.** Nothing else known. | `build-image` runs rootless BuildKit with `--oci-worker-no-process-sandbox`, and its `RUN` lines run beside the daemon in the same container, which mounts `registry-credentials` (a write credential for the image repository). A `RUN` can read the daemon's files and `/proc` and so the credential. `app-secrets` and every other Secret need the API token (not held) or a mount in a run of their own (no longer possible). `build-artifact`'s publish path is closed (it refuses anything but a regular file inside its output directory). |
 
 What this release does close, and how that was checked:
 
-- **The repository's scripts and installs** (`build.sh`, `test.sh`, `integration-test.sh`, dependency installs, build backends) run
+- **The repository's scripts, installs and `RUN` lines** (`build.sh`, `test.sh`, `integration-test.sh`, dependency installs, build backends) run
   as `source-runner` with no Kubernetes credential, and the step that runs the code mounts no registry credential
   (`build-artifact`'s separate `publish` step does, see (c)). `run-integration-script` is a Task of its own: nothing of
   `run-testworkflow`'s pod is in it.
@@ -252,12 +252,20 @@ What this release does close, and how that was checked:
   and how a run looked live, but it was not exercised against a hostile file, so the upgrade note asks for it to be.
 - **Creating a run** needs `pipeline-trigger`, which no task runs as.
 
-What is not closed, in the order to do it (items 1-2 are the next change; 3-6 after):
+What is not closed, in the order to do it:
 
-1. **`build-image` and the registry credential** (the path in (a) and (c)): the push credential and the daemon share a container.
-   The fix is architectural: build in a daemon whose container holds no credential and push from a separate step or task, or use a
-   sandboxed daemon. Not attempted here. The token alone is removed next (an account with no token for `build-image`).
-2. **Credentialed tasks that run git or tools in the shared workspace** after repo code has written to it.
+1. **`build-image` and the registry credential** (c): the push credential and the daemon share a container, and `RUN` lines run
+   without a process sandbox. `build-image` now runs as `source-runner`, so the pod holds no Kubernetes token, but the credential
+   is still reachable. The fix is architectural and was not attempted here: build with `--output type=oci` (no credential in the
+   build container) and push from a separate step or task, or run the daemon with its process sandbox on. Until then a pull
+   request author can obtain a credential that can push to this application's image repository.
+2. **Workspace trust in credentialed tasks.** `sast-scan` now scans a copy without `.git` or symlinks, and `attest-api-spec` and
+   `build-artifact`'s publish step refuse symlinks and traversal. Any other task that runs git or a tool against the shared
+   workspace after the build tasks have written to it, while holding a credential, needs the same care. Enumerated: `stage-preflight`
+   runs before the repository's code and clones fresh; `build-image` reads the workspace as the BuildKit context and has no token
+   now; no other catalog task runs git there (`deliver-onboarding-files` clones into its own directory). `build-artifact` still
+   builds and publishes in one pod (different containers; only `publish` mounts the credential and it now validates the path);
+   splitting it into two tasks is not done.
 3. **`pipeline-runner` still writes every `release-tracking-*` ConfigMap, namespace-wide, and still reads `app-secrets`**, for every
    catalog task. Only the release tasks (`open-release-pr`, `mark-release-merged`, `itsm-change`, `itsm-gate`, `clearance-gate`,
    `comment-pr-check-result`, `resolve-release-tracking`) should write them. Splitting `pipeline-runner` into a release-record

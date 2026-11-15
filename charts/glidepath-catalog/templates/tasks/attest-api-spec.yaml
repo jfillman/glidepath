@@ -103,6 +103,18 @@ spec:
         outcome() { printf '%s' "$1" > "$(results.outcome.path)"; echo "outcome=$1"; exit 0; }
 
         FILE="$(workspaces.source.path)/${SPEC_PATH}"
+        # SPEC_PATH comes from the repository's cicd.yaml, and this pod holds a ServiceAccount token and signs the file's content
+        # onto the image: a spec that is (or sits behind) a symlink to the token, or climbs out with `..`, must not be read.
+        # Read only a regular file reached through no symlink, inside the checkout.
+        WS_REAL="$(cd -P -- "$(workspaces.source.path)" 2>/dev/null && pwd -P)"
+        FILE_DIR_REAL="$(cd -P -- "$(dirname -- "${FILE}")" 2>/dev/null && pwd -P)"
+        if [[ -e "${FILE}" || -L "${FILE}" ]]; then
+          if [[ -L "${FILE}" || "/${SPEC_PATH}/" == *"/../"* || -z "${WS_REAL}" || -z "${FILE_DIR_REAL}" ||
+                "${FILE_DIR_REAL}/$(basename -- "${FILE}")" != "${WS_REAL}/${SPEC_PATH#./}" ]]; then
+            echo "attest-api-spec: ${SPEC_PATH} is a symlink, behind one, or outside the checkout - not read" >&2
+            outcome invalid
+          fi
+        fi
         if [[ ! -f "${FILE}" ]]; then
           echo "attest-api-spec: no ${SPEC_PATH} in the checkout - this app publishes no API (cicd.yaml api.spec; optional)"
           outcome none
