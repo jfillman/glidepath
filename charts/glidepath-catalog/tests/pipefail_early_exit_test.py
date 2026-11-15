@@ -4,7 +4,7 @@
 Under `set -o pipefail`, `grep -q` (and `grep -m1`) quits at the first match. If the command feeding it is still writing, that
 command gets SIGPIPE (status 141), the pipeline's status is non-zero, and an `if` or `&&` reads the match as "no". 2026-11-15, on
 the lab: onboarding-resync's `git status --porcelain | grep -q .` answered "nothing changed" for a repository eleven files behind,
-twice, and no resync PR opened (docs/admin/onboarding-mechanics.md, "A resync that says nothing to deliver").
+twice, and no resync PR opened (docs/admin/onboarding-mechanics.md, "Triggering a resync, and what nothing to deliver means").
 
 Decide from a value instead: capture the producer's output first (`out="$(cmd)"`, a failing command stops the script under set -e),
 then test the variable (`[[ -n "${out}" ]]`, `[[ "${out}" == *x* ]]`, `grep -q x <<<"${out}"`, which is not a pipe).
