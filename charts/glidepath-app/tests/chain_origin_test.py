@@ -51,10 +51,13 @@ class ChainOrigin(unittest.TestCase):
             run = templates[name]["spec"]["resourcetemplates"][0]
             ann = run["metadata"]["annotations"]
             self.assertEqual(ann["glidepath.io/origin-ref"], "$(tt.params.origin-ref)", name)
-            self.assertEqual(ann["glidepath.io/origin-sha"], "$(tt.params.git-revision)", name)
+            # the origin sha is the event's own origin-sha, not the revision the run is started for: the guard compares the two
+            self.assertEqual(ann["glidepath.io/origin-sha"], "$(tt.params.origin-sha)", name)
+            self.assertIn("origin-sha", [p["name"] for p in templates[name]["spec"]["params"]], name)
             self.assertIn("origin-ref", [p["name"] for p in templates[name]["spec"]["params"]], name)
             b = {p["name"]: p["value"] for p in bindings[name.replace("-template", "-binding")]["spec"]["params"]}
             self.assertEqual(b["origin-ref"], "$(body.subject.content.origin-ref)", name)
+            self.assertEqual(b["origin-sha"], "$(body.subject.content.origin-sha)", name)
             self.assertEqual(b["git-revision"], "$(body.subject.content.revision)", name)
 
     def test_nothing_chains_off_a_test_run_that_did_not_succeed(self):
