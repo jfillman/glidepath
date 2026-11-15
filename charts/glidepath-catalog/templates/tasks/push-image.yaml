@@ -18,7 +18,8 @@
 #     (build-image's `version` result is untrusted data: it is read from the repository's package.json, pom.xml and so on).
 #     Nothing in the workspace names a registry, a repository or a tag.
 #   - The digest it reports is the one it computed from the validated layout and the registry then confirmed with
-#     `oras resolve` on the tag it pushed. A result the build task wrote is never read.
+#     `oras resolve` on the tag it pushed. A main tag that already exists is never overwritten: the run reuses the published image
+#     (its digest, `image: reused`) and attests no build of it (see step 3). A result the build task wrote is never read.
 #
 # Cache. A pull request's build never writes a cache: it imports the main cache (a read) and exports nothing, and even if its
 # workspace holds a cache layout, pr-tag-only=true means this Task does not look at it. Only a main build (pr-tag-only=false, a
@@ -71,6 +72,8 @@ spec:
       description: "<image-repo>:<tag> as pushed. A tag can be re-pointed: for display and for chaining only. Tasks that scan, describe, attest or release use image-pinned-ref."
     - name: image-pinned-ref
       description: "<image-repo>@<digest> of what was validated and pushed. What every later task in the build Pipeline consumes."
+    - name: image
+      description: "built, or reused (tag already published): a main build whose tag already exists pushes nothing and reports the published digest."
     - name: cache
       description: "published, or skipped: <why>. A main build's cache never fails this Task."
     - name: version
@@ -80,7 +83,7 @@ spec:
     - name: IMAGE_URL
       description: Same as image-repo, under Tekton Chains' and Conforma's exact-cased type-hint name (docs/admin/image-signing.md, provenance-policy.md).
     - name: IMAGE_DIGEST
-      description: Same as image-digest, under the same type-hint name.
+      description: "Same as image-digest, under the same type-hint name. EMPTY when the image was reused: Chains then attests no build by this run for that digest."
   # The registry push credential: a kubernetes.io/dockerconfigjson Secret named registry-credentials in the Application's own
   # -cicd namespace. Only this Task's pod mounts it for the image; DOCKER_CONFIG points oras at it.
   volumes:
@@ -162,30 +165,53 @@ spec:
         DIGEST="${OCI_LAYOUT_DIGEST}"
         echo "image layout valid: ${DIGEST}"
 
-        # 3. A main build's tag (<version>-<sha7>) is not overwritten with a different image. A re-run that produced the same digest is
-        # fine. This is a check, not a lock: another push can land between the resolve and the copy, and a registry error
-        # reads as "absent". Registry-side tag immutability is the real control (docs/admin/security.md). A pull request's tag
-        # is replaced by each push to the PR, so it is not held to this.
+        # 3. A tag that exists is never overwritten. For a main build (<version>-<sha7>) whose tag is already published, this run does
+        # NOT push and does not fail: the published image is authoritative, its digest is the one every later task uses, and the
+        # freshly built layout is discarded (a rerun of a commit rebuilds a different digest: BuildKit is not reproducible). Both
+        # digests are logged. Who published it may be anyone holding the shared push credential, or whoever could start a build of
+        # that commit (a v* tag push before slice T3); reuse means the pipeline scans, describes, attests and releases THAT image,
+        # which is the right thing to gate. It is a check, not a lock: a push can land between the resolve and the copy, and a
+        # registry error reads as "absent". Registry-side tag immutability is the real control (docs/admin/security.md).
+        # A pull request's tag lives in the -pr repository, is deployed to an ephemeral environment by its tag, and is never released:
+        # each push or rerun of the PR replaces it with the newest build, so it is not held to this.
+        REUSED=false
         if [[ "${PR_TAG_ONLY}" == "false" ]]; then
           if EXISTING="$(oras resolve "${IMAGE_REF}" 2>/dev/null | tr -d '[:space:]')" && [[ -n "${EXISTING}" ]]; then
-            [[ "${EXISTING}" == "${DIGEST}" ]] || fail "${IMAGE_REF} already exists in the registry with digest ${EXISTING}, not ${DIGEST}: refusing to overwrite it (push a new commit, or ask the registry owner to delete the tag)"
+            [[ "${EXISTING}" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "${IMAGE_REF} resolves to '${EXISTING:0:80}', which is not a digest"
+            REUSED=true
           fi
         fi
-
-        # 4. Push the image: a copy of bytes by digest, nothing is executed or extracted.
-        oras cp --from-oci-layout "${IMAGE_DIR}@${DIGEST}" "${IMAGE_REF}"
-        # 5. The registry's own answer for the tag must be the digest validated above.
-        RESOLVED="$(oras resolve "${IMAGE_REF}" | tr -d '[:space:]')"
-        [[ "${RESOLVED}" == "${DIGEST}" ]] || fail "${IMAGE_REF} resolves to '${RESOLVED}' in the registry, not the validated ${DIGEST}"
-        printf '%s' "${DIGEST}" > "$(results.image-digest.path)"
-        printf '%s' "${DIGEST}" > "$(results.IMAGE_DIGEST.path)"
+        if [[ "${REUSED}" == "true" ]]; then
+          echo "note: ${IMAGE_REF} is already published; reusing it, pushing nothing. published digest: ${EXISTING}; digest of this run's build: ${DIGEST}$([[ "${EXISTING}" == "${DIGEST}" ]] && echo ' (identical)' || echo ' (different: discarded)')" >&2
+          PUSHED="${EXISTING}"
+          IMAGE_STATE="reused (tag already published)"
+        else
+          # 4. Push the image: a copy of bytes by digest, nothing is executed or extracted.
+          oras cp --from-oci-layout "${IMAGE_DIR}@${DIGEST}" "${IMAGE_REF}"
+          # 5. The registry's own answer for the tag must be the digest validated above.
+          RESOLVED="$(oras resolve "${IMAGE_REF}" | tr -d '[:space:]')"
+          [[ "${RESOLVED}" == "${DIGEST}" ]] || fail "${IMAGE_REF} resolves to '${RESOLVED}' in the registry, not the validated ${DIGEST}"
+          PUSHED="${DIGEST}"
+          IMAGE_STATE="built"
+        fi
+        printf '%s' "${PUSHED}" > "$(results.image-digest.path)"
+        printf '%s' "${IMAGE_STATE}" > "$(results.image.path)"
         printf '%s' "${IMAGE_REF}" > "$(results.image-ref.path)"
         # what every later task uses: a tag can be re-pointed after the push, a digest cannot
-        printf '%s' "${IMAGE_REPO}@${DIGEST}" > "$(results.image-pinned-ref.path)"
+        printf '%s' "${IMAGE_REPO}@${PUSHED}" > "$(results.image-pinned-ref.path)"
         printf '%s' "${IMAGE_REPO}" > "$(results.image-repo.path)"
-        printf '%s' "${IMAGE_REPO}" > "$(results.IMAGE_URL.path)"
         printf '%s' "${VERSION}" > "$(results.version.path)"
-        echo "image-digest=${DIGEST}"
+        # Tekton Chains attests the subject these two type-hint results name as built by this run. A reused image was not built by
+        # this run, so they are empty: this run attests no build for it. The original run's provenance for that digest is what the
+        # release gates verify (verify-image-provenance fails if there is none).
+        if [[ "${REUSED}" == "true" ]]; then
+          printf '' > "$(results.IMAGE_DIGEST.path)"
+          printf '' > "$(results.IMAGE_URL.path)"
+        else
+          printf '%s' "${PUSHED}" > "$(results.IMAGE_DIGEST.path)"
+          printf '%s' "${IMAGE_REPO}" > "$(results.IMAGE_URL.path)"
+        fi
+        echo "image-digest=${PUSHED} (${IMAGE_STATE})"
         echo "image-ref=${IMAGE_REF}"
 
         # 6. The main build's cache. Never fails the task and never blocks the image (which is already pushed): a cache that is absent,

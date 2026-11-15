@@ -280,7 +280,23 @@ image scan, SBOM, API-spec attestation, the artifact builds' version, the Pipeli
 Conforma, the build notifications) takes the image reference, repository and digest from `push-image`. The tag form (`image-ref`) is kept for display and for the `artifact.published` event that chains into later flows; the tasks outside the build Pipeline that read an image (`resolve-image-ref`, `qa-gate`, `verify-image-provenance`, `verify-sast-attestation`, `open-release-pin-pr`, `api-compat-gate`, `deploy-*`) are not part of the build run: they start from a release record or a chained event, and `resolve-image-ref` resolves the tag to a digest with `oras resolve` (and pins it when `promotion.pinDigest` is on). A tag re-pointed between a build and those later flows is the registry-immutability question below, not something this change closes. The only result of `build-image`
 is `version`, which `push-image` validates and re-reports; a test fails if anything else reads a `build-image` result.
 
-**Tag overwrite.** Before pushing a main build's tag (`<version>-<sha7>`), `push-image` resolves it: an existing tag with a *different* digest is refused (a re-run of the same commit that produced the same digest is fine; note BuildKit builds are not bit-for-bit reproducible, so a re-run usually produces a new digest and is refused until the tag is deleted or a new commit is pushed). A pull request's tag is replaced by each push and is not checked. This is a check, not a lock: a push can land between the resolve and the copy, a registry error reads as "absent", and a seven-character sha prefix is what the tag has always carried (not changed here: other tasks and ephemeral environments reconstruct it). **Registry-side tag immutability is the real control**; where the registry offers it, turn it on for the application repositories.
+**Tag overwrite and reruns.** A tag that exists is never overwritten. Before pushing a main build's tag (`<version>-<sha7>`),
+`push-image` resolves it. If it is already published, the run **pushes nothing and does not fail**: the published image is authoritative,
+its digest is what every later task uses (`repo@digest`), the result `image` says `reused (tag already published)`, both digests (published
+and this run's) are logged, and the freshly built layout is discarded. This is what makes a rerun of a main build for the same commit
+work (BuildKit builds are not reproducible, so the rebuilt digest differs). Who published the existing tag may be anyone holding the
+shared push credential, or whoever could start a build of that commit (a `v*` tag push, until slice T3 verifies ref protection); reuse
+means the pipeline then scans, describes (SBOM), attests the API spec of, and releases **that** image, which is the image that should be
+gated. The build provenance is the other side: Tekton Chains attests whatever digest the Pipeline's `IMAGE_URL`/`IMAGE_DIGEST` results
+name as built by the run, and a reused image was not built by it, so for a reused image those two results are **empty** and this run
+attests no build of it. The release gates verify the provenance attached to the digest (`verify-image-provenance` fails when there is
+none from the build Pipeline), which is the original run's; a reused digest with no original provenance therefore fails that gate rather
+than being vouched for here. The cache is not the image and may still be published. A pull request's tag (`<app>-pr`, the sha12) is
+replaced by each push or rerun of the PR: it lives in the -pr repository, is deployed to an ephemeral environment by that tag and is never
+released, so the newest build is the one wanted. The check is not a lock (a push can land between the resolve and the copy, and a registry
+error reads as "absent"), and a seven-character sha prefix is what the tag has always carried (not changed: other tasks and ephemeral
+environments reconstruct it). **Registry-side tag immutability is the real control**; where the registry offers it, turn it on for the
+application repositories.
 
 **Pull credential.** BuildKit still has to pull base images and import the cache. Anonymous pulls work for public bases; a private base
 image, a private cache package or a rate-limited registry needs a credential, and the build pod is where repository code can read it.
@@ -494,7 +510,8 @@ Order matters because a build run created from a `.tekton` file written before t
   10. The workspace volume is big enough for the source, the image layout and the cache layout (`build.sourceVolume.size`).
   11. Tekton Chains signs the PipelineRun's results from `push-image` (`IMAGE_URL`, `IMAGE_DIGEST`) and `verify-image-provenance` still
       finds the build provenance.
-  12. The second main build imports the published cache, and `image-scan`, `generate-sbom` and `attest-api-spec` ran against the
+  12. A rerun of a main build for the same commit logs `reused`, pushes nothing, and its scan, SBOM and attestations use the published `repo@sha256:`; Chains attests no subject for it.
+  13. The second main build imports the published cache, and `image-scan`, `generate-sbom` and `attest-api-spec` ran against the
       `repo@sha256:` reference.
 - Rollback: re-release the previous catalog and app charts; `build-image` then builds and pushes in one pod as before (with the push
   credential in it again).

@@ -52,9 +52,9 @@ spec:
   # See docs/image-signing.md and docs/provenance-policy.md.
   results:
     - name: IMAGE_URL
-      value: $(tasks.push-image.results.image-repo)
+      value: $(tasks.push-image.results.IMAGE_URL)
     - name: IMAGE_DIGEST
-      value: $(tasks.push-image.results.image-digest)
+      value: $(tasks.push-image.results.IMAGE_DIGEST)
     - name: CHAINS-GIT_URL
       value: $(tasks.preflight.results.url)
     - name: CHAINS-GIT_COMMIT

@@ -701,26 +701,54 @@ class PushStep(unittest.TestCase):
         self.assertEqual(results["image-pinned-ref"], "registry.example/o/app@" + digest)
         self.assertEqual(results["image-ref"], "registry.example/o/app:1.2.3-" + SHA[:7])
 
-    def test_an_existing_main_tag_with_another_digest_is_refused(self):
-        code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r), extra_env={"FAKE_RESOLVE_PRE": "sha256:" + "9" * 64})
-        self.assertNotEqual(code, 0)
-        self.assertEqual([c for c in calls if c.startswith("cp ")], [])
-        self.assertEqual(results, {})
-        self.assertIn("already exists", err)
+    def test_a_rerun_with_the_main_tag_already_published_reuses_that_image_and_pushes_nothing(self):
+        other = "sha256:" + "9" * 64
+        code, calls, results, err, local = self.run_push(lambda r, d: make_image(r), cache=lambda r, d: make_cache(r),
+                                                        extra_env={"FAKE_RESOLVE_PRE": other})
+        self.assertEqual(code, 0, err)
+        # the freshly built layout is discarded: the image is never pushed, the tag never overwritten
+        self.assertEqual([c for c in calls if c.startswith("cp ") and "buildcache" not in c], [])
+        # everything downstream uses the digest that is already published
+        self.assertEqual(results["image-digest"], other)
+        self.assertEqual(results["image-pinned-ref"], "registry.example/o/app@" + other)
+        self.assertEqual(results["image-ref"], "registry.example/o/app:1.2.3-" + SHA[:7])
+        self.assertEqual(results["image"], "reused (tag already published)")
+        # both digests are logged so the difference is visible
+        self.assertIn(other, err + "")
+        self.assertIn(local, err)
+        # this run built nothing it can vouch for: Chains' type-hint results are empty, so it attests no subject for that digest
+        self.assertEqual(results["IMAGE_DIGEST"], "")
+        self.assertEqual(results["IMAGE_URL"], "")
+        # the cache is not the image: it may still be published
+        self.assertEqual(results["cache"], "published")
+        self.assertEqual(len([c for c in calls if "buildcache" in c and c.startswith("cp ")]), 1)
 
-    def test_an_existing_main_tag_with_the_same_digest_is_a_harmless_rerun(self):
-        def setup(r, d):
-            return make_image(r)
-        code, calls, results, err, digest = self.run_push(setup, resolve=None, extra_env={})
-        # FAKE_RESOLVE_PRE must equal the layout's digest, known only after setup: run once to learn it
-        code2, calls2, results2, err2, _ = self.run_push(setup, extra_env={"FAKE_RESOLVE_PRE": digest})
+    def test_a_rerun_that_produced_the_same_digest_is_also_reused(self):
+        code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r))
+        code2, calls2, results2, err2, _ = self.run_push(lambda r, d: make_image(r), extra_env={"FAKE_RESOLVE_PRE": digest})
         self.assertEqual(code2, 0, err2)
         self.assertEqual(results2["image-digest"], digest)
+        self.assertEqual([c for c in calls2 if c.startswith("cp ")], [])
 
-    def test_a_pull_request_tag_may_be_replaced(self):
-        # PR images are rebuilt per push to the PR (not reproducible), so their tag is not held to the check
+    def test_a_fresh_main_build_reports_built_and_the_chains_hints(self):
+        code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r))
+        self.assertEqual(results["image"], "built")
+        self.assertEqual(results["IMAGE_DIGEST"], digest)
+        self.assertEqual(results["IMAGE_URL"], "registry.example/o/app")
+
+    def test_a_published_tag_that_is_not_a_digest_is_refused(self):
+        code, calls, results, err, _ = self.run_push(lambda r, d: make_image(r), extra_env={"FAKE_RESOLVE_PRE": "latest"})
+        self.assertNotEqual(code, 0)
+        self.assertEqual([c for c in calls if c.startswith("cp ")], [])
+
+    def test_a_pull_request_tag_is_replaced_by_a_rerun(self):
+        # PR images live in the -pr repository, are rebuilt for each push or rerun of the PR and deployed to an ephemeral environment
+        # by their tag (the sha12), never released: the newest build of the commit is the one wanted, so the tag is replaced.
         code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r), pr=True, extra_env={"FAKE_RESOLVE_PRE": "sha256:" + "9" * 64})
         self.assertEqual(code, 0, err)
+        self.assertEqual(len([c for c in calls if c.startswith("cp ")]), 1)
+        self.assertEqual(results["image-digest"], digest)
+        self.assertEqual(results["image"], "built")
 
     def test_a_symlinked_output_directory_is_refused(self):
         def mutate(ws, d):
@@ -878,7 +906,7 @@ class RenderedTasks(unittest.TestCase):
 
     def test_the_push_task_reports_the_trusted_results(self):
         names = {r["name"] for r in TASKS["push-image"]["spec"]["results"]}
-        self.assertEqual(names, {"image-digest", "image-ref", "image-pinned-ref", "image-repo", "version", "IMAGE_URL", "IMAGE_DIGEST", "cache"})
+        self.assertEqual(names, {"image-digest", "image-ref", "image-pinned-ref", "image-repo", "version", "IMAGE_URL", "IMAGE_DIGEST", "cache", "image"})
 
     def test_the_image_limits_are_values(self):
         docs = render("--set", "imagePush.maxImageBytes=123", "--set", "imagePush.maxCacheBytes=456")
@@ -925,8 +953,8 @@ class BuildPipeline(unittest.TestCase):
             version = [p["value"] for p in self.tasks[name]["params"] if p["name"] == "version"][0]
             self.assertEqual(version, "$(tasks.push-image.results.version)", name)
         results = {r["name"]: r["value"] for r in PIPELINES["build"]["spec"]["results"]}
-        self.assertEqual(results["IMAGE_DIGEST"], "$(tasks.push-image.results.image-digest)")
-        self.assertEqual(results["IMAGE_URL"], "$(tasks.push-image.results.image-repo)")
+        self.assertEqual(results["IMAGE_DIGEST"], "$(tasks.push-image.results.IMAGE_DIGEST)")
+        self.assertEqual(results["IMAGE_URL"], "$(tasks.push-image.results.IMAGE_URL)")
         debrief = PIPELINES["build"]["spec"]["finally"][0]
         self.assertEqual([p["value"] for p in debrief["params"] if p["name"] == "image-ref-from-task"], ["push-image"])
 

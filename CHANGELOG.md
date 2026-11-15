@@ -17,7 +17,7 @@ Notable changes to Glidepath. Newest first.
   `buildPullCredential.secretName`, control-plane `buildPullCredential.remoteKey` (the push credential is refused for both).
 - Admission: `image-pusher` only on `push-image` of the `build` Pipeline (`cicdRunAdmission.pusherTasks`), required by
   `cicd-run-source-isolation`; a build that a push did not start must pass `pr-tag-only=true`, which needs the `-pr` repository.
-- `push-image` hardening: exact-key allowlists and duplicate-key detection for every JSON document it interprets (a `Layers` next to `layers` refuses), symlink checks on the whole path, whole-string name matching, tag-overwrite refusal for main tags, `image-pinned-ref` (`repo@digest`) for every later task, and a main cache that fails validation is skipped with a warning instead of failing the task.
+- `push-image` hardening: exact-key allowlists and duplicate-key detection for every JSON document it interprets (a `Layers` next to `layers` refuses), symlink checks on the whole path, whole-string name matching, a main tag that already exists is never overwritten (a rerun reuses the published image, reports its digest, and attests no build of it), `image-pinned-ref` (`repo@digest`) for every later task, and a main cache that fails validation is skipped with a warning instead of failing the task.
 - **Upgrade:** release the three charts together, resync every app's `.tekton/`, supply the pull credential where bases are private, raise
   `build.sourceVolume.size` for large images (the workspace now holds the image and cache layouts). docs/admin/security.md,
   "Image build and push" and the upgrade note.
