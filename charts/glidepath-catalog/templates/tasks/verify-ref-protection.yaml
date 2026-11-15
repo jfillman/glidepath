@@ -118,9 +118,17 @@ spec:
         [[ "${NAMESPACE}" =~ ^(app|infra)-([a-z0-9-]+)-cicd$ ]] || refuse "namespace ${NAMESPACE} is not an app's -cicd namespace"
         app="${BASH_REMATCH[2]}"
 
+        # The environment and cluster this run is releasing to, from its own parameters (a .tekton file cannot set them: admission binds
+        # them): the baseline of the range must be a release of the same target. A run with no such parameter has no single target.
+        target=()
+        for t in env cluster; do
+          v="$(param "${t}")"
+          [[ -z "${v}" ]] || target+=(--data-urlencode "${t}=${v}")
+        done
+
         out="$(mktemp)"
         code="$(curl --silent --show-error --max-time 30 --retry 3 --retry-connrefused -o "${out}" -w '%{http_code}' -G \
-          --data-urlencode "repo=${repo}" --data-urlencode "ref=${ref}" --data-urlencode "sha=${sha}" \
+          --data-urlencode "repo=${repo}" --data-urlencode "ref=${ref}" --data-urlencode "sha=${sha}" ${target[@]+"${target[@]}"} \
           -H "Authorization: Bearer $(cat "${TOKEN_PATH}")" -H "Accept: application/json" \
           "${GLIDEPATH_API_URL}/v1/apps/${app}/ref-protection")" || code=000
         if [[ "${code}" != 200 ]]; then

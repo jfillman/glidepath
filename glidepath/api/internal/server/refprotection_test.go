@@ -44,6 +44,14 @@ func newRPHost(t *testing.T) *rpHost {
 			return
 		}
 		h.calls = append(h.calls, r.URL.RequestURI())
+		if r.URL.Path == "/graphql" {
+			if r.Header.Get("Authorization") != "Bearer ghs-shop" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			io.WriteString(w, `{"data":{"repository":{"pullRequest":{"reviews":{"pageInfo":{"hasNextPage":false,"endCursor":"c"},"nodes":[{"state":"APPROVED","author":{"login":"bob","__typename":"User"},"authorCanPushToRepository":true,"commit":{"oid":"`+rpHead+`"}}]}}}}}`)
+			return
+		}
 		if r.URL.Path == "/repos/jfillman/gitops-shop/pulls" && r.Header.Get("Authorization") == "Bearer ghs-gitops-shop" {
 			io.WriteString(w, `[]`) // no release yet: a first release
 			return
@@ -55,8 +63,6 @@ func newRPHost(t *testing.T) *rpHost {
 		switch {
 		case r.URL.Path == "/repos/jfillman/shop/commits/"+rpSHA:
 			io.WriteString(w, `{"sha":"`+rpSHA+`","parents":[{"sha":"9999999999999999999999999999999999999999"}],"author":{"login":"alice","type":"User"},"committer":{"login":"web-flow","type":"User"},"commit":{"author":{"name":"Alice"},"committer":{"name":"GitHub"},"verification":{"verified":true}}}`)
-		case r.URL.Path == "/repos/jfillman/shop/collaborators/bob/permission":
-			io.WriteString(w, `{"permission":"write","role_name":"write"}`)
 		case strings.HasPrefix(r.URL.Path, "/repos/jfillman/shop/rules/branches/main"):
 			io.WriteString(w, `[{"type":"deletion","ruleset_source_type":"Repository","ruleset_source":"jfillman/shop","ruleset_id":100},
 			 {"type":"non_fast_forward","ruleset_source_type":"Repository","ruleset_source":"jfillman/shop","ruleset_id":100},
@@ -74,8 +80,6 @@ func newRPHost(t *testing.T) *rpHost {
 			io.WriteString(w, rpPull[1:len(rpPull)-1])
 		case r.URL.Path == "/repos/jfillman/shop/pulls/5/commits":
 			io.WriteString(w, `[{"sha":"`+rpHead+`","author":{"login":"alice","type":"User"},"committer":{"login":"alice","type":"User"},"parents":[],"commit":{"author":{"name":"Alice"},"committer":{"name":"Alice"}}}]`)
-		case r.URL.Path == "/repos/jfillman/shop/pulls/5/reviews":
-			io.WriteString(w, `[{"id":1,"user":{"login":"bob","type":"User"},"state":"APPROVED","commit_id":"`+rpHead+`","submitted_at":"2026-11-01T10:00:00Z"}]`)
 		default:
 			w.WriteHeader(http.StatusInternalServerError)
 		}
@@ -186,5 +190,18 @@ func TestRefProtectionUnconfigured(t *testing.T) {
 	defer done()
 	if code, _, _ := getRP(t, s, "repo=jfillman/shop&ref=refs/heads/main&sha="+rpSHA); code != http.StatusServiceUnavailable {
 		t.Fatalf("%d", code)
+	}
+}
+
+// env and cluster name the target the baseline must belong to: plain names only.
+func TestRefProtectionTargetParameters(t *testing.T) {
+	s, _ := withRefProtection(t, refReader)
+	if code, out, _ := getRP(t, s, "repo=jfillman/shop&ref=refs/heads/main&sha="+rpSHA+"&env=prod&cluster=hangar-prod"); code != http.StatusOK || out["verdict"] != "protected" {
+		t.Fatalf("%d %v", code, out)
+	}
+	for _, q := range []string{"env=../x", "env=a/b", "cluster=a%20b", "env=" + strings.Repeat("a", 64)} {
+		if code, out, _ := getRP(t, s, "repo=jfillman/shop&ref=refs/heads/main&sha="+rpSHA+"&"+q); code != http.StatusBadRequest {
+			t.Fatalf("%s: %d %v", q, code, out)
+		}
 	}
 }

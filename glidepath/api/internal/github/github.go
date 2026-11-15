@@ -253,6 +253,52 @@ func (s *Session) GetJSON(ctx context.Context, owner, repo, path string) (int, [
 	}
 }
 
+// GraphQL is one POST to GitHub's GraphQL endpoint with the token minted for owner/repo (read-only: the query is a read), for the
+// few facts REST does not carry (internal/refprotection: whether a review's author has push access). The status and body are
+// returned like GetJSON's, with the same bounded rate-limit retries; a 200 body with an `errors` list is the caller's to refuse.
+func (s *Session) GraphQL(ctx context.Context, owner, repo, query string, vars map[string]any) (int, []byte, error) {
+	payload, err := json.Marshal(map[string]any{"query": query, "variables": vars})
+	if err != nil {
+		return 0, nil, err
+	}
+	var last time.Duration
+	for attempt := 1; ; attempt++ {
+		t, err := s.token(ctx, owner, repo)
+		if err != nil {
+			return 0, nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.b.api()+"/graphql", bytes.NewReader(payload))
+		if err != nil {
+			return 0, nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+t)
+		res, err := s.b.HTTP.Do(req)
+		if err != nil {
+			return 0, nil, err
+		}
+		body, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+		res.Body.Close()
+		if err != nil {
+			return res.StatusCode, body, err
+		}
+		limited, wait := rateLimitWait(res, body, time.Now())
+		if !limited {
+			return res.StatusCode, body, nil
+		}
+		last = wait
+		if attempt >= maxRateAttempts || wait > maxRateWait {
+			return res.StatusCode, nil, RateLimited{Wait: last}
+		}
+		if wait <= 0 {
+			wait = time.Duration(attempt) * time.Second
+		}
+		if err := s.sleep(ctx, min(wait, maxRateWait)); err != nil {
+			return 0, nil, err
+		}
+	}
+}
+
 func escapePath(p string) string {
 	parts := strings.Split(p, "/")
 	for i, x := range parts {

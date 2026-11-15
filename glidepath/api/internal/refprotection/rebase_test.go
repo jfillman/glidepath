@@ -159,6 +159,10 @@ func TestRecordedCompareFilesShape(t *testing.T) {
 
 type fixedReader []byte
 
+func (f fixedReader) GraphQL(context.Context, string, string, string, map[string]any) (int, []byte, error) {
+	return 200, []byte(f), nil
+}
+
 func (f fixedReader) GetJSON(context.Context, string, string, string) (int, []byte, error) {
 	return 200, []byte(f), nil
 }

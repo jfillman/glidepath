@@ -20,7 +20,7 @@ func (s *Server) getRefProtection(ctx context.Context, w http.ResponseWriter, r 
 		return &auth.Error{Status: http.StatusServiceUnavailable, Rule: "GP-API-503", Msg: "ref protection is not configured on this glidepath-api"}
 	}
 	q := r.URL.Query()
-	v, err := s.RefProtection.Verify(ctx, app, q.Get("repo"), q.Get("ref"), q.Get("sha"))
+	v, err := s.RefProtection.Verify(ctx, app, q.Get("repo"), q.Get("ref"), q.Get("sha"), q.Get("env"), q.Get("cluster"))
 	if err != nil {
 		return err
 	}

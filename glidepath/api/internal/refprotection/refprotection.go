@@ -17,8 +17,8 @@
 //     are not consulted: the pipeline's ServiceAccount can write and delete them.
 //   - Pull request: each commit must belong to a pull request MERGED INTO THE PROTECTED BRANCH of THIS repository (the
 //     commit is its merge commit, one of its commits, or one of the commits a rebase merge landed from it).
-//   - Review: that pull request needs an approving review, on its final head, not dismissed, from an account with write
-//     access to the repository that is not a bot, not its opener and not the author or committer of any of its commits.
+//   - Review: that pull request needs an approving review, on its final head, not dismissed, from an account that may push
+//     to the repository that is not a bot, not its opener and not the author or committer of any of its commits.
 //     A merge commit that is not the head is accepted only if GitHub made it (committer web-flow, verified signature).
 //
 // Verdicts: protected (every commit has the evidence), unreviewed (some commit does not: they are listed), unverifiable
@@ -46,6 +46,8 @@ import (
 // Reader is one bounded GET of a repo-relative path (github.Session.GetJSON).
 type Reader interface {
 	GetJSON(ctx context.Context, owner, repo, path string) (int, []byte, error)
+	// GraphQL is one read-only query (github.Session.GraphQL), with the token minted for owner/repo.
+	GraphQL(ctx context.Context, owner, repo, query string, vars map[string]any) (int, []byte, error)
 }
 
 // Limits a check never exceeds. Beyond one the answer is "unverifiable" with the reason, never "protected".
@@ -87,6 +89,7 @@ type Candidate struct {
 	Sha     string `json:"sha"`
 	Release string `json:"release,omitempty"` // the gitops release pull request, <gitops repo>#<number>
 	Env     string `json:"env,omitempty"`
+	Cluster string `json:"cluster,omitempty"`
 	At      string `json:"at,omitempty"`
 }
 
@@ -159,11 +162,11 @@ type PullEvidence struct {
 	// Unlinked counts commits whose author or committer GitHub could not link to an account.
 	Unlinked  int      `json:"unlinked,omitempty"`
 	Approvers []string `json:"approvers"` // accounts whose approval counts
-	// ApproverPermissions is what GitHub says each approver (before the write-access rule) may do on the repository now:
-	// admin, write, maintain, read, none, or "association:X" when the permission could not be read (see evidence.go).
-	ApproverPermissions map[string]string `json:"approverPermissions,omitempty"`
-	Reviewed            bool              `json:"reviewed"`
-	Missing             string            `json:"missing,omitempty"`
+	// ApproverCanPush is GitHub's authorCanPushToRepository for each approver (before the push-access rule): only an approval
+	// from an account that may push counts.
+	ApproverCanPush map[string]bool `json:"approverCanPush,omitempty"`
+	Reviewed        bool            `json:"reviewed"`
+	Missing         string          `json:"missing,omitempty"`
 }
 
 // UnreviewedCommit is a commit without review evidence.
@@ -204,7 +207,7 @@ func (c *Checker) Check(ctx context.Context, rd Reader, owner, repo, ref, sha st
 	if strings.Trim(sha, "0") == "" {
 		return nil, Invalid{"sha is the all-zero sha: the run recorded no commit"}
 	}
-	e := &engine{c: c, rd: rd, owner: owner, repo: repo, hist: hist, prs: map[int]*prState{}, perms: map[string]string{}, infos: map[string]*commitInfo{}}
+	e := &engine{c: c, rd: rd, owner: owner, repo: repo, hist: hist, prs: map[int]*prState{}, infos: map[string]*commitInfo{}}
 	switch {
 	case branchRefRE.MatchString(ref):
 		v.Kind = "branch"
@@ -308,9 +311,6 @@ func (c *Checker) decide(ctx context.Context, e *engine, v *Verdict, sha string)
 		}
 	}
 	e.summarize(ev)
-	if e.assocUsed {
-		ev.Notes = append(ev.Notes, "GitHub did not let the read token read collaborator permissions: a reviewer's write access was taken from the review's author_association (OWNER, COLLABORATOR or MEMBER), which is weaker (an organization member need not have write access to this repository)")
-	}
 	where := fmt.Sprintf("%s, %s", v.Branch, rangeText(ev))
 	if len(ev.Unreviewed) > 0 {
 		v.finish(Unreviewed, fmt.Sprintf("review evidence is incomplete: %d of %d commits have no approved pull request (%s)", len(ev.Unreviewed), len(ev.Commits), where))

@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 )
@@ -21,10 +20,8 @@ type engine struct {
 	owner, repo string
 	hist        *History
 	calls       int
-	prs         map[int]*prState  // pull requests read in THIS check, by number (never kept across requests)
-	perms       map[string]string // reviewer login (lower case) -> repository permission read in THIS check
+	prs         map[int]*prState // pull requests read in THIS check, by number (never kept across requests)
 	infos       map[string]*commitInfo
-	assocUsed   bool // a reviewer's write access was taken from author_association, not read
 }
 
 // commitInfo is what the merge-commit rule needs of one commit.
@@ -144,9 +141,7 @@ type ghReview struct {
 	User     *ghUser `json:"user"`
 	State    string  `json:"state"`
 	CommitID string  `json:"commit_id"`
-	// AuthorAssociation is GitHub's word for the reviewer's relationship to the repository (OWNER, MEMBER, COLLABORATOR,
-	// CONTRIBUTOR, NONE ...). It is only a fallback for write access when the permission read is not allowed.
-	AuthorAssociation string `json:"author_association"`
+	CanPush  bool    // GraphQL authorCanPushToRepository
 }
 
 // ---- ancestry and range
@@ -636,30 +631,26 @@ func (e *engine) pr(ctx context.Context, n int, branch string) (*prState, error)
 		e.prs[n] = st
 		return st, nil
 	}
-	// Its reviews.
+	// Its reviews, through GraphQL: REST does not say whether a reviewer may push to the repository (an approval from anyone who can
+	// see the pull request is recorded, and does not count toward GitHub's own required reviews).
+	reviews, err := e.reviews(ctx, n)
+	if err != nil {
+		return nil, err
+	}
 	latest := map[string]ghReview{}
 	var order []string
-	if err := e.paged(ctx, fmt.Sprintf("pulls/%d/reviews", n), maxReviewPages, func(b []byte) (int, error) {
-		var page []ghReview
-		if err := json.Unmarshal(b, &page); err != nil {
-			return 0, err
+	for _, r := range reviews {
+		if r.User == nil || r.User.Login == "" {
+			continue
 		}
-		for _, r := range page {
-			if r.User == nil || r.User.Login == "" {
-				continue
+		switch r.State {
+		case "APPROVED", "CHANGES_REQUESTED", "DISMISSED": // a comment or a pending review changes nothing
+			k := strings.ToLower(r.User.Login)
+			if _, ok := latest[k]; !ok {
+				order = append(order, k)
 			}
-			switch r.State {
-			case "APPROVED", "CHANGES_REQUESTED", "DISMISSED": // a comment or a pending review changes nothing
-				k := strings.ToLower(r.User.Login)
-				if _, ok := latest[k]; !ok {
-					order = append(order, k)
-				}
-				latest[k] = r
-			}
+			latest[k] = r
 		}
-		return len(page), nil
-	}); err != nil {
-		return nil, err
 	}
 	var dismissed, stale, own, bots, changes, noWrite []string
 	var cand []ghReview
@@ -681,19 +672,14 @@ func (e *engine) pr(ctx context.Context, n int, branch string) (*prState, error)
 			cand = append(cand, r)
 		}
 	}
-	// An approval from an account that cannot write to the repository is not a review: GitHub records one from anyone who can see
-	// the pull request, and it does not count toward its own branch protection. Read each distinct approver's permission now.
-	pe.ApproverPermissions = map[string]string{}
+	// An approval counts only from an account that may push to the repository (GitHub's authorCanPushToRepository, as of now).
+	pe.ApproverCanPush = map[string]bool{}
 	for _, r := range cand {
-		perm, err := e.permission(ctx, r)
-		if err != nil {
-			return nil, err
-		}
-		pe.ApproverPermissions[r.User.Login] = perm
-		if writes(perm) {
+		pe.ApproverCanPush[r.User.Login] = r.CanPush
+		if r.CanPush {
 			pe.Approvers = append(pe.Approvers, r.User.Login)
 		} else {
-			noWrite = append(noWrite, fmt.Sprintf("%s (%s)", r.User.Login, perm))
+			noWrite = append(noWrite, r.User.Login)
 		}
 	}
 	sort.Strings(pe.Approvers)
@@ -721,7 +707,7 @@ func (e *engine) pr(ctx context.Context, n int, branch string) (*prState, error)
 		why = append(why, fmt.Sprintf("approved only by %s, who is %s", strings.Join(own, ", "), who))
 	}
 	if len(noWrite) > 0 {
-		why = append(why, "approved only by an account without write access to the repository ("+strings.Join(noWrite, ", ")+"): GitHub records an approval from anyone who can see a pull request, and it is not a review")
+		why = append(why, "approved only by an account without push access to the repository ("+strings.Join(noWrite, ", ")+"): GitHub records an approval from anyone who can see a pull request, and it is not a review")
 	}
 	if len(bots) > 0 {
 		why = append(why, "approved only by a bot ("+strings.Join(bots, ", ")+")")
@@ -751,54 +737,84 @@ func (e *engine) isBot(u *ghUser) bool {
 	return false
 }
 
-// writes: the repository permissions that may review for the branch (GitHub's legacy names: maintain reads as write).
-func writes(perm string) bool {
-	return perm == "admin" || perm == "write" || perm == "maintain" || perm == "association:OWNER" || perm == "association:COLLABORATOR" || perm == "association:MEMBER"
-}
+const reviewsQuery = `query($o:String!,$r:String!,$n:Int!,$after:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviews(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{state author{login __typename} authorCanPushToRepository commit{oid}}}}}}`
 
-// permission is the reviewer's permission on this repository now: GET collaborators/{login}/permission (documented to need
-// Metadata: read). When GitHub says the integration may not read it (403), the review's own author_association is used instead
-// and recorded as "association:<X>": OWNER, COLLABORATOR and MEMBER count. That is weaker: an organization MEMBER need not hold
-// write on this repository. A failure of any other kind is unverifiable.
-func (e *engine) permission(ctx context.Context, r ghReview) (string, error) {
-	k := strings.ToLower(r.User.Login)
-	if p, ok := e.perms[k]; ok {
-		return p, nil
+// reviews reads the pull request's reviews through GraphQL, oldest first, at most maxReviewPages x 100. HTTP 200 with an
+// `errors` list is an error (unverifiable), as is a missing pull request or a list that goes on past the bound.
+func (e *engine) reviews(ctx context.Context, n int) ([]ghReview, error) {
+	var out []ghReview
+	after := any(nil)
+	for page := 1; page <= maxReviewPages; page++ {
+		if e.calls >= maxEvidenceCalls {
+			return nil, &unverifiable{fmt.Sprintf("the evidence needs more than %d GitHub reads: the range or its pull requests are too large to verify in one check", maxEvidenceCalls)}
+		}
+		e.calls++
+		st, body, err := e.rd.GraphQL(ctx, e.owner, e.repo, reviewsQuery, map[string]any{"o": e.owner, "r": e.repo, "n": n, "after": after})
+		if err != nil {
+			return nil, err
+		}
+		if st != http.StatusOK {
+			return nil, &unverifiable{fmt.Sprintf("GitHub answered %d to the reviews of #%d: %s", st, n, hostMessage(body))}
+		}
+		var resp struct {
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+			Data struct {
+				Repository struct {
+					PullRequest *struct {
+						Reviews struct {
+							PageInfo struct {
+								HasNextPage bool   `json:"hasNextPage"`
+								EndCursor   string `json:"endCursor"`
+							} `json:"pageInfo"`
+							Nodes []struct {
+								State  string `json:"state"`
+								Author *struct {
+									Login string `json:"login"`
+									Type  string `json:"__typename"`
+								} `json:"author"`
+								CanPush *bool `json:"authorCanPushToRepository"`
+								Commit  *struct {
+									Oid string `json:"oid"`
+								} `json:"commit"`
+							} `json:"nodes"`
+						} `json:"reviews"`
+					} `json:"pullRequest"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, &unverifiable{fmt.Sprintf("GitHub's reviews of #%d could not be read: %v", n, err)}
+		}
+		if len(resp.Errors) > 0 {
+			return nil, &unverifiable{fmt.Sprintf("GitHub's GraphQL answered an error to the reviews of #%d: %s", n, resp.Errors[0].Message)}
+		}
+		pr := resp.Data.Repository.PullRequest
+		if pr == nil {
+			return nil, &unverifiable{fmt.Sprintf("GitHub's GraphQL shows no pull request #%d", n)}
+		}
+		for _, nd := range pr.Reviews.Nodes {
+			r := ghReview{State: nd.State}
+			if nd.Commit != nil {
+				r.CommitID = nd.Commit.Oid
+			}
+			if nd.Author != nil {
+				r.User = &ghUser{Login: nd.Author.Login, Type: nd.Author.Type}
+			}
+			if nd.CanPush == nil {
+				if r.User != nil && (nd.State == "APPROVED") {
+					return nil, &unverifiable{fmt.Sprintf("GitHub's GraphQL did not say whether %s may push to the repository", nd.Author.Login)}
+				}
+			} else {
+				r.CanPush = *nd.CanPush
+			}
+			out = append(out, r)
+		}
+		if !pr.Reviews.PageInfo.HasNextPage {
+			return out, nil
+		}
+		after = pr.Reviews.PageInfo.EndCursor
 	}
-	st, body, err := e.do(ctx, "collaborators/"+url.PathEscape(r.User.Login)+"/permission")
-	if err != nil {
-		return "", err
-	}
-	var perm string
-	switch st {
-	case http.StatusOK:
-		var out struct {
-			Permission string `json:"permission"`
-			RoleName   string `json:"role_name"`
-		}
-		if err := json.Unmarshal(body, &out); err != nil {
-			return "", &unverifiable{fmt.Sprintf("GitHub's permission of %s could not be read: %v", r.User.Login, err)}
-		}
-		perm = out.Permission
-		if out.RoleName == "maintain" || out.RoleName == "write" || out.RoleName == "admin" {
-			perm = out.RoleName
-		}
-		if perm == "" {
-			return "", &unverifiable{fmt.Sprintf("GitHub's permission of %s is empty", r.User.Login)}
-		}
-	case http.StatusNotFound:
-		perm = "none" // not a user GitHub knows (deleted): no access
-	case http.StatusForbidden:
-		// "Resource not accessible by integration" (an App token without the permission) and "Must have push access to view
-		// collaborator permission" (what GitHub answered a token without push access, recorded in testdata) both mean: not readable.
-		if m := strings.ToLower(hostMessage(body)); !strings.Contains(m, "not accessible") && !strings.Contains(m, "push access") {
-			return "", &unverifiable{fmt.Sprintf("GitHub answered 403 to the permission of %s: %s", r.User.Login, hostMessage(body))}
-		}
-		perm = "association:" + strings.ToUpper(r.AuthorAssociation)
-		e.assocUsed = true
-	default:
-		return "", &unverifiable{fmt.Sprintf("GitHub answered %d to the permission of %s: %s", st, r.User.Login, hostMessage(body))}
-	}
-	e.perms[k] = perm
-	return perm, nil
+	return nil, &unverifiable{fmt.Sprintf("the reviews of #%d have more than %d entries: not read further", n, maxReviewPages*100)}
 }

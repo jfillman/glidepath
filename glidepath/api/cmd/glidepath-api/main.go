@@ -206,6 +206,12 @@ func main() {
 		}
 	}
 	logger := server.NewLogger()
+	if len(splitList(env("PIPELINE_LOGINS", ""))) == 0 {
+		// Review evidence starts a range at the newest release the gitops history corroborates, and only a pull request opened by
+		// one of these accounts is a release. Empty is fine while the catalog's refProtection.mode is off; under required every
+		// check where a gitops repository shows releases is unverifiable.
+		logger.Warn("PIPELINE_LOGINS is empty (the chart's api.pipelineLogins): with refProtection.mode required, every ref-protection check for an app whose gitops history shows a release is unverifiable. Set it to the login of the GitHub App that opens release pull requests")
+	}
 	// People's ID tokens from people-dex, for calls over the Gateway route (auth/oidc.go). Off without OIDC_ISSUER.
 	var people *auth.OIDC
 	if iss := os.Getenv("OIDC_ISSUER"); iss != "" {

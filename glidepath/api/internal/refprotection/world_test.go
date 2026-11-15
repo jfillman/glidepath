@@ -6,6 +6,7 @@ package refprotection
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -30,7 +31,6 @@ type wCommit struct {
 
 type wReview struct {
 	user, typ, state, commit string
-	assoc                    string // author_association; default MEMBER
 }
 
 type wPR struct {
@@ -50,18 +50,21 @@ type wPR struct {
 }
 
 type world struct {
-	t        *testing.T
-	main     []string // first-parent history of the protected branch, oldest first
-	commits  map[string]*wCommit
-	prs      map[int]*wPR
-	assoc    map[string][]int // commit sha -> pull request numbers GitHub associates with it
-	side     map[string]bool  // commits that exist but are not on main
-	override map[string]resp  // path (without query) -> forced answer
-	calls    []string
-	errs     map[string]error  // path (without query) -> transport error
-	perms    map[string]string // reviewer login -> repository permission (default write)
-	permsAs  map[string]resp   // reviewer login -> forced answer of the permission read
-	gitops   []*gRelease       // pull requests of gitops-app
+	t                    *testing.T
+	main                 []string // first-parent history of the protected branch, oldest first
+	commits              map[string]*wCommit
+	prs                  map[int]*wPR
+	assoc                map[string][]int // commit sha -> pull request numbers GitHub associates with it
+	side                 map[string]bool  // commits that exist but are not on main
+	override             map[string]resp  // path (without query) -> forced answer
+	calls                []string
+	errs                 map[string]error  // path (without query) -> transport error
+	perms                map[string]string // reviewer login -> repository permission (default write)
+	gql                  *resp             // forced answer of the GraphQL reviews read
+	gqlErr               error
+	gqlCalls             int
+	gitops               []*gRelease // pull requests of gitops-app
+	histEnv, histCluster string      // the target of the check
 }
 
 // gRelease is a pull request of the gitops repository gitops-app.
@@ -72,12 +75,18 @@ type gRelease struct {
 	mergedAt string // "" = not merged
 	commits  int    // commits of the pull request
 	message  string
-	files    []string // filenames (default one manifest)
-	patch    string
+	files    []string // changed files
+	tag      string   // the image tag the manifest sets as merged
+	headSha  string
+	prHead   string // the head the pull request reports, when it is not the one commit (a push after the commit listing)
+	mergeSha string
+	// commitLogin is the account GitHub resolved the commit's author and committer to ("" = unlinked, as the platform's own are)
+	commitLogin  string
+	env, cluster string
 }
 
 func newWorld(t *testing.T) *world {
-	return &world{t: t, commits: map[string]*wCommit{}, prs: map[int]*wPR{}, assoc: map[string][]int{}, side: map[string]bool{}, override: map[string]resp{}, errs: map[string]error{}, perms: map[string]string{}, permsAs: map[string]resp{}}
+	return &world{t: t, commits: map[string]*wCommit{}, prs: map[int]*wPR{}, assoc: map[string][]int{}, side: map[string]bool{}, override: map[string]resp{}, errs: map[string]error{}, perms: map[string]string{}}
 }
 
 // land adds commits to main in order (each the child of the one before).
@@ -283,21 +292,6 @@ func (w *world) GetJSON(_ context.Context, _, repo, path string) (int, []byte, e
 			items = append(items, w.commits[s].json())
 		}
 		return reply(page(items, q))
-	case strings.HasPrefix(p, "pulls/") && strings.HasSuffix(p, "/reviews"):
-		n, _ := strconv.Atoi(strings.Split(p, "/")[1])
-		pr, ok := w.prs[n]
-		if !ok {
-			return 404, []byte(`{"message":"Not Found"}`), nil
-		}
-		var items []string
-		for i, r := range pr.reviews {
-			assoc := r.assoc
-			if assoc == "" {
-				assoc = "MEMBER"
-			}
-			items = append(items, fmt.Sprintf(`{"id":%d,"user":%s,"state":%q,"commit_id":%q,"author_association":%q,"submitted_at":"2026-11-0%dT10:00:00Z"}`, i+1, user(r.user, r.typ), r.state, r.commit, assoc, 1+i%9))
-		}
-		return reply(page(items, q))
 	case strings.HasPrefix(p, "pulls/"):
 		n, _ := strconv.Atoi(strings.TrimPrefix(p, "pulls/"))
 		pr, ok := w.prs[n]
@@ -305,16 +299,6 @@ func (w *world) GetJSON(_ context.Context, _, repo, path string) (int, []byte, e
 			return 404, []byte(`{"message":"Not Found"}`), nil
 		}
 		return reply(pr.json())
-	case strings.HasPrefix(p, "collaborators/") && strings.HasSuffix(p, "/permission"):
-		login := strings.TrimSuffix(strings.TrimPrefix(p, "collaborators/"), "/permission")
-		if r, ok := w.permsAs[login]; ok {
-			return r.st, []byte(r.body), nil
-		}
-		perm, ok := w.perms[login]
-		if !ok {
-			perm = "write"
-		}
-		return reply(fmt.Sprintf(`{"permission":%q,"role_name":%q,"user":{"login":%q}}`, perm, perm, login))
 	case strings.HasPrefix(p, "commits/") && !strings.Contains(strings.TrimPrefix(p, "commits/"), "/"):
 		c, ok := w.commits[strings.TrimPrefix(p, "commits/")]
 		if !ok {
@@ -382,12 +366,14 @@ func j(v any) string { b, _ := json.Marshal(v); return string(b) }
 
 // ---- the gitops repository's history
 
-// release adds a merged release pull request for the app commit sha (each one merged after the one before).
+// release adds a merged release pull request for the app commit sha (each one merged after the one before): one commit, the
+// pull request's head, with the trailers, one manifest hangar-dev/dev/release.yaml whose tag ends in the commit's sha.
 func (w *world) release(sha string) *gRelease {
 	n := 900 + len(w.gitops)
 	g := &gRelease{n: n, title: fmt.Sprintf("Release: app to dev @ sha-%s", short(sha)), login: "pipeline[bot]", mergedAt: fmt.Sprintf("2026-11-%02dT10:00:00Z", 1+len(w.gitops)%28), commits: 1,
 		message: fmt.Sprintf("Release: promote app to dev @ x:sha-%s\n\nX-App-Repo: https://github.com/o/app\nX-App-Commit: %s", short(sha), sha),
-		patch:   fmt.Sprintf("@@ -1,3 +1,3 @@\n release:\n   image:\n-    tag: sha-0000000\n+    tag: sha-%s", short(sha))}
+		tag:     "sha-" + short(sha), headSha: sh(7000 + n), mergeSha: sh(8000 + n), cluster: "hangar-dev", env: "dev"}
+	g.files = []string{g.cluster + "/" + g.env + "/release.yaml"}
 	w.gitops = append(w.gitops, g)
 	return g
 }
@@ -396,7 +382,11 @@ func (w *world) release(sha string) *gRelease {
 func (w *world) setReleases(cands []Candidate) {
 	w.gitops = nil
 	for i := len(cands) - 1; i >= 0; i-- { // oldest merged first
-		w.release(cands[i].Sha)
+		g := w.release(cands[i].Sha)
+		if cands[i].Env != "" {
+			g.env = cands[i].Env
+			g.files = []string{g.cluster + "/" + g.env + "/release.yaml"}
+		}
 	}
 }
 
@@ -418,6 +408,7 @@ func (w *world) gitopsJSON(path string) (int, []byte, error) {
 		}
 		return nil
 	}
+	userJSON := func(login string) string { return fmt.Sprintf(`{"login":%q,"type":"Bot"}`, login) }
 	switch {
 	case p == "pulls":
 		var items []string
@@ -426,7 +417,7 @@ func (w *world) gitopsJSON(path string) (int, []byte, error) {
 			if g.mergedAt != "" {
 				m = fmt.Sprintf("%q", g.mergedAt)
 			}
-			items = append(items, fmt.Sprintf(`{"number":%d,"title":%q,"merged_at":%s,"user":{"login":%q,"type":"Bot"},"base":{"ref":"main","repo":{"default_branch":"main"}}}`, g.n, g.title, m, g.login))
+			items = append(items, fmt.Sprintf(`{"number":%d,"title":%q,"merged_at":%s,"user":%s,"base":{"ref":"main","repo":{"default_branch":"main"}}}`, g.n, g.title, m, userJSON(g.login)))
 		}
 		return 200, []byte(page(items, q)), nil
 	case strings.HasPrefix(p, "pulls/") && strings.HasSuffix(p, "/commits"):
@@ -435,9 +426,17 @@ func (w *world) gitopsJSON(path string) (int, []byte, error) {
 		if g == nil {
 			return 404, []byte(`{"message":"Not Found"}`), nil
 		}
+		who := "null"
+		if g.commitLogin != "" {
+			who = userJSON(g.commitLogin)
+		}
 		var items []string
 		for i := 0; i < g.commits; i++ {
-			items = append(items, fmt.Sprintf(`{"sha":%q,"commit":{"message":%q}}`, sh(7000+i), g.message))
+			sha := g.headSha
+			if i > 0 {
+				sha = sh(7500 + i)
+			}
+			items = append(items, fmt.Sprintf(`{"sha":%q,"author":%s,"committer":%s,"commit":{"message":%q}}`, sha, who, who, g.message))
 		}
 		return 200, []byte("[" + strings.Join(items, ",") + "]"), nil
 	case strings.HasPrefix(p, "pulls/") && strings.HasSuffix(p, "/files"):
@@ -446,22 +445,36 @@ func (w *world) gitopsJSON(path string) (int, []byte, error) {
 		if g == nil {
 			return 404, []byte(`{"message":"Not Found"}`), nil
 		}
-		names := g.files
-		if names == nil {
-			names = []string{"hangar-dev/dev/release.yaml"}
-		}
 		var items []string
-		for _, f := range names {
-			items = append(items, fmt.Sprintf(`{"filename":%q,"status":"modified","patch":%q}`, f, g.patch))
+		for _, f := range g.files {
+			items = append(items, fmt.Sprintf(`{"filename":%q,"status":"modified"}`, f))
 		}
-		return 200, []byte("[" + strings.Join(items, ",") + "]"), nil
+		return 200, []byte(page(items, q)), nil
+	case strings.HasPrefix(p, "pulls/"):
+		n, _ := strconv.Atoi(strings.TrimPrefix(p, "pulls/"))
+		g := find(n)
+		if g == nil {
+			return 404, []byte(`{"message":"Not Found"}`), nil
+		}
+		return 200, []byte(fmt.Sprintf(`{"number":%d,"merged":true,"merged_at":%q,"merge_commit_sha":%q,"user":%s,"head":{"sha":%q}}`, g.n, g.mergedAt, g.mergeSha, userJSON(g.login), firstNonEmpty(g.prHead, g.headSha))), nil
+	case strings.HasPrefix(p, "contents/"):
+		ref := q.Get("ref")
+		for _, g := range w.gitops {
+			if g.mergeSha == ref {
+				yml := fmt.Sprintf("release:\n  image:\n    repository: x\n    tag: %s\n", g.tag)
+				return 200, []byte(fmt.Sprintf(`{"encoding":"base64","content":%q}`, base64.StdEncoding.EncodeToString([]byte(yml)))), nil
+			}
+		}
+		return 404, []byte(`{"message":"Not Found"}`), nil
 	}
 	w.t.Fatalf("unexpected gitops GET %s", path)
 	return 0, nil, nil
 }
 
-// withHistory is where the gitops history of the world is read from.
-func withHistory(w *world) *History { return &History{GitopsRepo: "gitops-app", App: "app"} }
+// withHistory is where the gitops history of the world is read from, for the target the world names (none: no single target).
+func withHistory(w *world) *History {
+	return &History{GitopsRepo: "gitops-app", App: "app", Env: w.histEnv, Cluster: w.histCluster}
+}
 
 // ---- trees and compare files
 
@@ -547,4 +560,55 @@ func (w *world) diffFiles(a, b string) []string {
 		}
 	}
 	return out
+}
+
+// GraphQL answers the reviews query the way GitHub does: the pull request's reviews oldest first, 100 to a page, with
+// authorCanPushToRepository from the reviewer's permission (write when not set).
+func (w *world) GraphQL(_ context.Context, _, _, query string, vars map[string]any) (int, []byte, error) {
+	w.gqlCalls++
+	w.calls = append(w.calls, "graphql")
+	if w.gqlErr != nil {
+		return 0, nil, w.gqlErr
+	}
+	if w.gql != nil {
+		return w.gql.st, []byte(w.gql.body), nil
+	}
+	n := vars["n"].(int)
+	pr, ok := w.prs[n]
+	if !ok {
+		return 200, []byte(`{"data":{"repository":{"pullRequest":null}}}`), nil
+	}
+	start := 0
+	if after, ok := vars["after"].(string); ok {
+		start, _ = strconv.Atoi(strings.TrimPrefix(after, "c"))
+	}
+	end := start + 100
+	if end > len(pr.reviews) {
+		end = len(pr.reviews)
+	}
+	var nodes []string
+	for _, r := range pr.reviews[start:end] {
+		author := "null"
+		if r.user != "" {
+			typ := r.typ
+			if typ == "" {
+				typ = "User"
+			}
+			author = fmt.Sprintf(`{"login":%q,"__typename":%q}`, r.user, typ)
+		}
+		perm, ok := w.perms[r.user]
+		if !ok {
+			perm = "write"
+		}
+		can := perm == "write" || perm == "maintain" || perm == "admin"
+		nodes = append(nodes, fmt.Sprintf(`{"state":%q,"author":%s,"authorCanPushToRepository":%v,"commit":{"oid":%q}}`, r.state, author, can, r.commit))
+	}
+	return 200, []byte(fmt.Sprintf(`{"data":{"repository":{"pullRequest":{"reviews":{"pageInfo":{"hasNextPage":%v,"endCursor":"c%d"},"nodes":[%s]}}}}}`, end < len(pr.reviews), end, strings.Join(nodes, ","))), nil
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

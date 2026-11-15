@@ -218,6 +218,18 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
         self.assertIn(f"sha={SHA}", calls)
         self.assertIn("Authorization: Bearer sa-token", calls)
 
+    def test_the_target_environment_and_cluster_go_with_the_question(self):
+        params = [{"name": "env", "value": "prod"}, {"name": "cluster", "value": "hangar-prod"}]
+        p, res, _, calls = self.run_task(api=self.PROTECTED, params=params)
+        self.assertEqual((p.returncode, res), (0, "verified"), p.stderr)
+        self.assertIn("env=prod", calls)
+        self.assertIn("cluster=hangar-prod", calls)
+        # a run with no target parameter sends neither (the API then reads the strictest history)
+        p, res, _, calls = self.run_task(api=self.PROTECTED)
+        self.assertEqual((p.returncode, res), (0, "verified"))
+        self.assertNotIn("env=", calls)
+        self.assertNotIn("cluster=", calls)
+
     def test_a_tag_run_asks_about_the_tag_ref(self):
         p, res, _, calls = self.run_task(ref="refs/tags/v1.2.3", api=self.PROTECTED)
         self.assertEqual((p.returncode, res), (0, "verified"))

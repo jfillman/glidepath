@@ -536,7 +536,7 @@ token ([below](#the-github-read-token); contents, pull requests and metadata). E
 one of `api.pipelineLogins` opened, with `X-App-Repo`/`X-App-Commit` trailers and a manifest whose image tag ends in that commit; it must be an ancestor of `to`
 per GitHub and its own commit must have review evidence. Release records (`release-tracking-*` ConfigMaps) are **not** read: the pipeline's account can write and
 delete them. A gitops history that shows an earlier release but yields no baseline is `unverifiable`, never `first` (security.md, "The range", says what stays open).
-An approver's write access is read per distinct approver (`approverPermissions`); a merge commit that is not the pull request's head must be GitHub's (web-flow, verified), and a rebase-merged pull request's landed commits must have the reviewed head's content, file by file (security.md; 3 more reads per rebase-merged pull request).
+An approval counts only if GitHub says its author may push to the repository (GraphQL `authorCanPushToRepository`, recorded as `approverCanPush`); a merge commit that is not the pull request's head must be GitHub's (web-flow, verified), and a rebase-merged pull request's landed commits must have the reviewed head's content, file by file (security.md; 3 more reads per rebase-merged pull request).
 
 **What the Clearance gate's proposer can read.** The same endpoint, called for a release's source commit (`repo` the source repository, `ref` the protected
 branch, `sha` the released commit): `evidence.commits` (each commit and the merged `pullRequest` that brought it into the branch), `evidence.pullRequests` (opener,
@@ -557,8 +557,7 @@ their guard: a rerun copies the original run's, promote and rollback stamp the r
 chart's `cicdRunAdmission.protectedBranches`) is `unverifiable` with no GitHub read; a tag's range is read against the first protected branch that holds its commit.
 `PIPELINE_LOGINS` (the chart's `api.pipelineLogins`) names pipeline accounts whose approval never counts, besides every account GitHub types Bot or names `[bot]`.
 
-GitHub endpoints used, all with the one token of the request: `GET /repos/{o}/{r}/compare/{base}...{head}`, `commits/{sha}/pulls`, `pulls/{n}`, `pulls/{n}/commits`
-and `pulls/{n}/reviews` (**Contents** and **Pull requests: read**), and, for the informational configuration, `rules/branches/{branch}`, `rulesets`,
+GitHub endpoints used, all with the one token of the request: `GET /repos/{o}/{r}/compare/{base}...{head}`, `commits?sha=`, `commits/{sha}`, `commits/{sha}/pulls`, `pulls/{n}`, `pulls/{n}/commits`, and in the gitops repository `pulls`, `pulls/{n}/files` and `contents/{path}?ref=` (**Contents** and **Pull requests: read**), plus one read-only GraphQL query, `POST /graphql`, for each pull request's reviews (`state`, `author`, `authorCanPushToRepository`, `commit{oid}`), and, for the informational configuration, `rules/branches/{branch}`, `rulesets`,
 `rulesets/{id}` and `branches/{branch}/protection` (**Metadata: read**; classic protection needs Administration: read, so it is reported as not shown).
 The count per check is in security.md ("Calls per check"). `ref` may not contain empty, `.` or `..` segments or encoded characters (400); the all-zero sha and a sha
 that is not a commit (an annotated tag object) are refused (400 / `unverifiable`).

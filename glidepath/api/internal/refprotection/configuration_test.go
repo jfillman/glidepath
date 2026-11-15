@@ -34,6 +34,11 @@ func (s *stub) GetJSON(_ context.Context, _, _, path string) (int, []byte, error
 	return r.st, []byte(r.body), nil
 }
 
+func (s *stub) GraphQL(context.Context, string, string, string, map[string]any) (int, []byte, error) {
+	s.t.Fatal("unexpected GraphQL")
+	return 0, nil, nil
+}
+
 func keys(m map[string]resp) []string {
 	var k []string
 	for x := range m {

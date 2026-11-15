@@ -269,3 +269,31 @@ func TestGetJSONRateLimitGivesUpActionably(t *testing.T) {
 		t.Fatalf("reset: %d %v slept=%v", st, err, *slept)
 	}
 }
+
+// GraphQL is one POST to /graphql with the token minted for that repository, the query and its variables in the body.
+func TestGraphQLPostsTheQueryWithTheRepositoryToken(t *testing.T) {
+	var got struct {
+		Auth, Method, Path string
+		Body               map[string]any
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/github-read-token" {
+			io.WriteString(w, `{"token":"ghs-shop"}`)
+			return
+		}
+		got.Auth, got.Method, got.Path = r.Header.Get("Authorization"), r.Method, r.URL.Path
+		json.NewDecoder(r.Body).Decode(&got.Body)
+		io.WriteString(w, `{"data":{}}`)
+	}))
+	defer srv.Close()
+	tok := filepath.Join(t.TempDir(), "token")
+	os.WriteFile(tok, []byte("sa\n"), 0o600)
+	b := &Broker{URL: srv.URL, TokenPath: tok, HTTP: srv.Client(), API: srv.URL}
+	st, body, err := b.Session("shop").GraphQL(context.Background(), "o", "shop", "query($n:Int!){x}", map[string]any{"n": 5})
+	if err != nil || st != 200 || string(body) != `{"data":{}}` {
+		t.Fatalf("%d %s %v", st, body, err)
+	}
+	if got.Method != "POST" || got.Path != "/graphql" || got.Auth != "Bearer ghs-shop" || got.Body["query"] != "query($n:Int!){x}" || got.Body["variables"].(map[string]any)["n"] != float64(5) {
+		t.Fatalf("%+v", got)
+	}
+}

@@ -6,75 +6,81 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/glidepath/api/internal/github"
 )
 
-// ---- approvers need write access
+// ---- approvers need push access (GraphQL authorCanPushToRepository)
 
-func TestApproverWithoutWriteAccessDoesNotCount(t *testing.T) {
-	for perm, want := range map[string]string{"none": "rando (none)", "read": "rando (read)", "triage": "rando (triage)"} {
+func TestApproverWithoutPushAccessDoesNotCount(t *testing.T) {
+	for _, perm := range []string{"none", "read", "triage"} {
 		t.Run(perm, func(t *testing.T) {
 			v := reviewCase(t, func(p *wPR, w *world) {
 				w.perms["rando"] = perm
 				p.reviews = approved("rando", p.head)
 			})
-			needVerdict(t, v, Unreviewed, "approved only by an account without write access to the repository ("+want+")", "GitHub records an approval from anyone who can see a pull request")
+			needVerdict(t, v, Unreviewed, "approved only by an account without push access to the repository (rando)", "GitHub records an approval from anyone who can see a pull request")
 		})
 	}
-	// ... a write, maintain or admin collaborator counts, and the permission is recorded in the evidence
+	// ... an account that may push counts, and the fact is recorded in the evidence
 	for _, perm := range []string{"write", "maintain", "admin"} {
 		v := reviewCase(t, func(p *wPR, w *world) {
 			w.perms["bob"] = perm
 			p.reviews = approved("bob", p.head)
 		})
 		needVerdict(t, v, Protected)
-		if got := v.Evidence.PullRequests[0].ApproverPermissions["bob"]; got != perm {
-			t.Fatalf("permission recorded %q, want %q", got, perm)
+		if got := v.Evidence.PullRequests[0].ApproverCanPush["bob"]; !got {
+			t.Fatalf("canPush not recorded: %+v", v.Evidence.PullRequests[0])
 		}
 	}
-	// the outsider's approval does not stand in for an insider's: with both, the insider's counts
+	// the outsider's approval does not stand in for an insider's
 	v := reviewCase(t, func(p *wPR, w *world) {
 		w.perms["rando"] = "none"
 		p.reviews = []wReview{{user: "rando", state: "APPROVED", commit: p.head}, {user: "bob", state: "APPROVED", commit: p.head}}
 	})
 	needVerdict(t, v, Protected)
-	if j(v.Evidence.PullRequests[0].Approvers) != `["bob"]` {
-		t.Fatalf("%v", v.Evidence.PullRequests[0].Approvers)
+	if j(v.Evidence.PullRequests[0].Approvers) != `["bob"]` || v.Evidence.PullRequests[0].ApproverCanPush["rando"] {
+		t.Fatalf("%+v", v.Evidence.PullRequests[0])
 	}
 }
 
-func TestPermissionIsReadOncePerApprover(t *testing.T) {
+func TestReviewsAreReadOncePerPullRequestAndNoRESTPermissionIsRead(t *testing.T) {
 	w := newWorld(t)
 	w.land(&wCommit{sha: sh(1), author: "root", committer: "root"})
 	w.squash(1, sh(2), "alice", "bob")
 	w.squash(2, sh(3), "carol", "bob")
 	mustCheck(t, checker(), w, "refs/heads/main", sh(3), []Candidate{{Sha: sh(2)}})
-	if n := w.count("collaborators/bob/permission"); n != 1 {
-		t.Fatalf("one read for one approver, got %d", n)
+	if w.gqlCalls != 2 || w.count("collaborators/") != 0 || w.count("/reviews") != 0 {
+		t.Fatalf("graphql %d: %v", w.gqlCalls, w.calls)
 	}
 }
 
-func TestPermissionReadFailuresFailClosed(t *testing.T) {
+func TestGraphQLFailuresFailClosed(t *testing.T) {
 	cases := map[string]struct {
-		r    resp
-		err  error
-		want string
+		set  func(w *world)
+		want string // "" = an error is returned
 	}{
-		"500":             {r: resp{500, `{"message":"boom"}`}, want: Unverifiable + "|GitHub answered 500 to the permission of bob"},
-		"another 403":     {r: resp{403, `{"message":"Bad credentials"}`}, want: Unverifiable + "|GitHub answered 403 to the permission of bob"},
-		"no permission":   {r: resp{200, `{"user":{"login":"bob"}}`}, want: Unverifiable + "|is empty"},
-		"unknown account": {r: resp{404, `{"message":"Not Found"}`}, want: Unreviewed + "|approved only by an account without write access to the repository (bob (none))"},
-		"transport":       {err: errors.New("connection reset")},
+		"500": {func(w *world) { w.gql = &resp{500, `{"message":"boom"}`} }, Unverifiable + "|GitHub answered 500 to the reviews of #1"},
+		"200 with errors": {func(w *world) {
+			w.gql = &resp{200, `{"data":null,"errors":[{"message":"Resource not accessible by integration"}]}`}
+		}, Unverifiable + "|GraphQL answered an error|not accessible"},
+		"errors beside data": {func(w *world) {
+			w.gql = &resp{200, `{"data":{"repository":{"pullRequest":null}},"errors":[{"message":"x"}]}`}
+		}, Unverifiable + "|GraphQL answered an error"},
+		"no pull request": {func(w *world) { w.gql = &resp{200, `{"data":{"repository":{"pullRequest":null}}}`} }, Unverifiable + "|shows no pull request #1"},
+		"garbage":         {func(w *world) { w.gql = &resp{200, `not json`} }, Unverifiable + "|could not be read"},
+		"no push answer": {func(w *world) {
+			w.gql = &resp{200, `{"data":{"repository":{"pullRequest":{"reviews":{"pageInfo":{"hasNextPage":false},"nodes":[{"state":"APPROVED","author":{"login":"bob","__typename":"User"},"commit":{"oid":"x"}}]}}}}}`}
+		}, Unverifiable + "|did not say whether bob may push"},
+		"transport":    {func(w *world) { w.gqlErr = errors.New("connection reset") }, ""},
+		"rate limited": {func(w *world) { w.gqlErr = github.RateLimited{} }, ""},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
 			w.land(&wCommit{sha: sh(1), author: "root", committer: "root"})
 			w.squash(1, sh(2), "alice", "bob")
-			if tc.err != nil {
-				w.errs["collaborators/bob/permission"] = tc.err
-			} else {
-				w.permsAs["bob"] = tc.r
-			}
+			tc.set(w)
 			w.setReleases(nil)
 			v, err := checker().Check(context.Background(), w, "o", "app", "refs/heads/main", sh(2), withHistory(w))
 			if tc.want == "" {
@@ -90,29 +96,10 @@ func TestPermissionReadFailuresFailClosed(t *testing.T) {
 			for _, h := range strings.Split(has, "|") {
 				needVerdict(t, v, verdict, h)
 			}
+			if v.Evidence != nil {
+				t.Fatalf("no partial evidence: %+v", v.Evidence)
+			}
 		})
-	}
-}
-
-// When GitHub does not let the token read permissions, the review's own author_association is the fallback, weaker, and said so.
-func TestPermissionFallsBackToAssociationAndSaysSo(t *testing.T) {
-	for assoc, ok := range map[string]bool{"OWNER": true, "COLLABORATOR": true, "MEMBER": true, "CONTRIBUTOR": false, "NONE": false, "FIRST_TIME_CONTRIBUTOR": false} {
-		for _, msg := range []string{"Resource not accessible by integration", "Must have push access to view collaborator permission."} {
-			t.Run(assoc+"/"+msg[:5], func(t *testing.T) {
-				v := reviewCase(t, func(p *wPR, w *world) {
-					w.permsAs["bob"] = resp{403, `{"message":"` + msg + `"}`}
-					p.reviews = []wReview{{user: "bob", state: "APPROVED", commit: p.head, assoc: assoc}}
-				})
-				if ok {
-					needVerdict(t, v, Protected)
-					if v.Evidence.PullRequests[0].ApproverPermissions["bob"] != "association:"+assoc || len(v.Evidence.Notes) == 0 || !strings.Contains(strings.Join(v.Evidence.Notes, " "), "author_association") {
-						t.Fatalf("%+v", v.Evidence)
-					}
-				} else {
-					needVerdict(t, v, Unreviewed, "bob (association:"+assoc+")")
-				}
-			})
-		}
 	}
 }
 
@@ -223,12 +210,13 @@ func TestForgedForwardBaselineCannotHideAnUnreviewedCommit(t *testing.T) {
 func TestNoReleaseInTheGitopsHistoryIsAFirstRelease(t *testing.T) {
 	w := baselineWorld(t)
 	for name, mut := range map[string]func(){
-		"no pull requests at all": func() {},
-		"unmerged release":        func() { g := w.release(sh(2)); g.mergedAt = "" },
-		"not a release":           func() { g := w.release(sh(2)); g.title = "Bump chart" },
+		"no pull requests at all":                func() {},
+		"unmerged release":                       func() { g := w.release(sh(2)); g.mergedAt = "" },
+		"merged but changes no release manifest": func() { g := w.release(sh(2)); g.files = []string{"README.md"} },
+		"a release of another environment":       func() { w.histEnv = "prod"; w.release(sh(2)) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			w.gitops = nil
+			w.gitops, w.histEnv = nil, ""
 			mut()
 			v, err := checker().Check(context.Background(), w, "o", "app", "refs/heads/main", sh(5), withHistory(w))
 			if err != nil {
@@ -247,16 +235,42 @@ func TestNoReleaseInTheGitopsHistoryIsAFirstRelease(t *testing.T) {
 	}
 }
 
-// If the gitops history shows an earlier release the answer is never "a first release".
+// Retitling or re-describing release pull requests hides nothing: the history is decided from what they changed, and a release is
+// identified by what was merged. (Anyone with write or triage rights on the gitops repository can edit a title, even after a merge.)
+func TestRetitlingReleasePullRequestsHidesNoHistory(t *testing.T) {
+	w := baselineWorld(t)
+	g := w.release(sh(2))
+	base := mustCheck2(t, w, sh(5))
+	needVerdict(t, base, Unreviewed, short(sh(3))+": no pull request") // the direct push after the real release
+	for _, title := range []string{"Bump chart", "", "Release: other to dev @ x", "docs"} {
+		g.title = title
+		v := mustCheck2(t, w, sh(5))
+		if v.Verdict != base.Verdict || v.Evidence == nil || v.Evidence.From != sh(2) || v.Evidence.Mode != "range" {
+			t.Fatalf("title %q changed the answer: %+v", title, v)
+		}
+	}
+	// ... and when the retitled pull request cannot be corroborated, the history still shows a release: unverifiable, never a first release
+	g.title = "Bump chart"
+	g.message = "Bump chart"
+	v := mustCheck2(t, w, sh(5))
+	needVerdict(t, v, Unverifiable, "cannot establish which commits this release carries")
+	if v.Evidence != nil {
+		t.Fatalf("%+v", v.Evidence)
+	}
+}
+
+// A release pull request is identified by what was merged, each fact read at the merge.
 func TestHistoryThatShowsReleasesButNoBaselineIsUnverifiable(t *testing.T) {
 	cases := map[string]func(g *gRelease){
-		"opened by someone else":               func(g *gRelease) { g.login = "mallory" },
-		"no trailers":                          func(g *gRelease) { g.message = "Release: promote app to dev" },
-		"another repository":                   func(g *gRelease) { g.message = strings.ReplaceAll(g.message, "github.com/o/app", "github.com/o/other") },
-		"the manifest's tag is not the commit": func(g *gRelease) { g.patch = "@@\n-    tag: sha-1\n+    tag: sha-deadbee" },
-		"two files":                            func(g *gRelease) { g.files = []string{"a/dev/release.yaml", "a/dev/values.yaml"} },
-		"not a manifest":                       func(g *gRelease) { g.files = []string{"README.md"} },
-		"two commits":                          func(g *gRelease) { g.commits = 2 },
+		"opened by someone else":                  func(g *gRelease) { g.login = "mallory" },
+		"no trailers":                             func(g *gRelease) { g.message = "Release: promote app to dev" },
+		"another repository":                      func(g *gRelease) { g.message = strings.ReplaceAll(g.message, "github.com/o/app", "github.com/o/other") },
+		"the manifest as merged sets another tag": func(g *gRelease) { g.tag = "sha-deadbee" },
+		"two files":                               func(g *gRelease) { g.files = append(g.files, "hangar-dev/dev/values.yaml") },
+		"a file besides the manifest":             func(g *gRelease) { g.files = append(g.files, "README.md") },
+		"two commits":                             func(g *gRelease) { g.commits = 2 },
+		"its one commit is not its head":          func(g *gRelease) { g.prHead = sh(1234) },
+		"the commit is a person's":                func(g *gRelease) { g.commitLogin = "mallory" },
 	}
 	for name, mut := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -267,7 +281,7 @@ func TestHistoryThatShowsReleasesButNoBaselineIsUnverifiable(t *testing.T) {
 				t.Fatal(err)
 			}
 			needVerdict(t, v, Unverifiable)
-			if v.Evidence != nil && v.Evidence.Mode == "first" {
+			if v.Evidence != nil {
 				t.Fatalf("never a first release: %+v", v.Evidence)
 			}
 		})
@@ -283,7 +297,28 @@ func TestHistoryThatShowsReleasesButNoBaselineIsUnverifiable(t *testing.T) {
 	needVerdict(t, v, Unreviewed, short(sh(3))+": no pull request") // the direct push after it is in the range
 }
 
+// Forging a baseline: take an open pull request the platform's account opened, push a replacement commit naming a reviewed commit R
+// above an unreviewed U, and merge it. The opener is still the account, but a person's commit is not the pipeline's.
+func TestAReplacementCommitByAPersonIsNotARelease(t *testing.T) {
+	w := baselineWorld(t)
+	w.release(sh(2))
+	forged := w.release(sh(4)) // R, above the unreviewed U (sh(3))
+	forged.commitLogin = "mallory"
+	v := mustCheck2(t, w, sh(5))
+	if v.Evidence == nil || v.Evidence.From != sh(2) {
+		t.Fatalf("the forged release does not start the range: %+v", v)
+	}
+	needVerdict(t, v, Unreviewed, short(sh(3))+": no pull request")
+	// the replacement's trailer names R but its manifest as merged does not
+	forged.commitLogin, forged.tag = "", "sha-"+short(sh(3))
+	v = mustCheck2(t, w, sh(5))
+	if v.Evidence == nil || v.Evidence.From != sh(2) {
+		t.Fatalf("%+v", v)
+	}
+}
+
 func mustCheck2(t *testing.T, w *world, to string) *Verdict {
+	t.Helper()
 	v, err := checker().Check(context.Background(), w, "o", "app", "refs/heads/main", to, withHistory(w))
 	if err != nil {
 		t.Fatal(err)
@@ -291,13 +326,43 @@ func mustCheck2(t *testing.T, w *world, to string) *Verdict {
 	return v
 }
 
+// The baseline is a release of the SAME environment (and cluster) the run is releasing to; with no single target the strictest
+// reading applies: the oldest of the environments' newest releases.
+func TestTheBaselineIsARereleaseOfTheSameEnvironment(t *testing.T) {
+	w := baselineWorld(t)
+	w.release(sh(2)).env = "prod"
+	w.gitops[0].files = []string{"hangar-dev/prod/release.yaml"}
+	dev := w.release(sh(4)) // a newer release, to dev
+	_ = dev
+	for env, from := range map[string]string{"prod": sh(2), "dev": sh(4), "": sh(2)} {
+		t.Run("env="+env, func(t *testing.T) {
+			w.histEnv = env
+			v := mustCheck2(t, w, sh(5))
+			if v.Evidence == nil || v.Evidence.From != from {
+				t.Fatalf("env %q: from %v, want %s: %v %v", env, v.Evidence, short(from), v.Reasons, v.Missing)
+			}
+		})
+	}
+	// an environment with no release: a first release (its history shows none); another cluster is another target
+	w.histEnv = "staging"
+	if v := mustCheck2(t, w, sh(5)); v.Evidence.Mode != "first" {
+		t.Fatalf("%+v", v.Evidence)
+	}
+	w.histEnv, w.histCluster = "dev", "hangar-prod"
+	if v := mustCheck2(t, w, sh(5)); v.Evidence.Mode != "first" {
+		t.Fatalf("%+v", v.Evidence)
+	}
+}
+
 func TestUnreadableGitopsHistoryIsUnverifiable(t *testing.T) {
 	for name, set := range map[string]func(w *world){
-		"500":     func(w *world) { w.override["gitops:pulls"] = resp{500, `{"message":"boom"}`} },
-		"404":     func(w *world) { w.override["gitops:pulls"] = resp{404, `{"message":"Not Found"}`} },
-		"garbage": func(w *world) { w.override["gitops:pulls"] = resp{200, `{"not":"a list"}`} },
-		"commits": func(w *world) { w.override["gitops:pulls/900/commits"] = resp{500, ``} },
-		"files":   func(w *world) { w.override["gitops:pulls/900/files"] = resp{403, `{"message":"no"}`} },
+		"list 500":     func(w *world) { w.override["gitops:pulls"] = resp{500, `{"message":"boom"}`} },
+		"list 404":     func(w *world) { w.override["gitops:pulls"] = resp{404, `{"message":"Not Found"}`} },
+		"list garbage": func(w *world) { w.override["gitops:pulls"] = resp{200, `{"not":"a list"}`} },
+		"files":        func(w *world) { w.override["gitops:pulls/900/files"] = resp{403, `{"message":"no"}`} },
+		"pull":         func(w *world) { w.override["gitops:pulls/900"] = resp{500, ``} },
+		"commits":      func(w *world) { w.override["gitops:pulls/900/commits"] = resp{500, ``} },
+		"contents":     func(w *world) { w.override["gitops:contents/hangar-dev/dev/release.yaml"] = resp{500, ``} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := baselineWorld(t)
@@ -305,7 +370,7 @@ func TestUnreadableGitopsHistoryIsUnverifiable(t *testing.T) {
 			set(w)
 			v := mustCheck2(t, w, sh(5))
 			needVerdict(t, v, Unverifiable)
-			if v.Evidence != nil && len(v.Evidence.Commits) > 0 {
+			if v.Evidence != nil {
 				t.Fatalf("no evidence for a range that was not established: %+v", v.Evidence)
 			}
 		})
@@ -317,22 +382,35 @@ func TestUnreadableGitopsHistoryIsUnverifiable(t *testing.T) {
 	}
 }
 
-func TestGitopsHistoryPaging(t *testing.T) {
-	// the release is on page 2 behind 120 other closed pull requests
+func TestGitopsHistoryWindow(t *testing.T) {
+	// the release is behind 20 merged pull requests that change other files: within the scan window, found
 	w := baselineWorld(t)
-	for i := 0; i < 120; i++ {
-		g := w.release(sh(2))
-		g.title = fmt.Sprintf("Bump %d", i)
-	}
 	w.release(sh(2))
+	for i := 0; i < 20; i++ {
+		g := w.release(sh(2))
+		g.files = []string{fmt.Sprintf("docs/%d.md", i)}
+	}
 	v := mustCheck2(t, w, sh(5))
 	if v.Evidence == nil || v.Evidence.From != sh(2) {
 		t.Fatalf("%+v %v", v.Evidence, v.Reasons)
 	}
-	// 300 closed pull requests and none is a release of this app: the history is not read in full, never "a first release"
+	// ... behind more merged pull requests than the window reads: the history is not read in full, never "a first release"
 	w = baselineWorld(t)
-	for i := 0; i < 300; i++ {
-		w.release(sh(2)).title = fmt.Sprintf("Bump %d", i)
+	w.release(sh(2))
+	for i := 0; i < 40; i++ {
+		g := w.release(sh(2))
+		g.files = []string{fmt.Sprintf("docs/%d.md", i)}
 	}
 	needVerdict(t, mustCheck2(t, w, sh(5)), Unverifiable, "not read in full")
+	// more than 100 closed pull requests are paged
+	w = baselineWorld(t)
+	for i := 0; i < 120; i++ {
+		g := w.release(sh(2))
+		g.mergedAt = ""
+	}
+	w.release(sh(2))
+	v = mustCheck2(t, w, sh(5))
+	if v.Evidence == nil || v.Evidence.From != sh(2) {
+		t.Fatalf("%+v %v", v.Evidence, v.Reasons)
+	}
 }

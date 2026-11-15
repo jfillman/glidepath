@@ -548,7 +548,7 @@ func TestPullListAndReviewPaginationBounds(t *testing.T) {
 	if w.count("commits/"+sh(2)+"/pulls") != 2 {
 		t.Fatalf("a full first page asks for the second: %v", w.calls)
 	}
-	// 500 reviews: all five pages read, an approval on page 5 counts; 501st page is not asked for
+	// 500 reviews are five pages, all read: an approval on page 5 counts. A 501st review is more than one check reads.
 	w = newWorld(t)
 	w.land(&wCommit{sha: sh(1), author: "root", committer: "root"})
 	p := w.squash(10, sh(2), "alice", "bob")
@@ -557,10 +557,9 @@ func TestPullListAndReviewPaginationBounds(t *testing.T) {
 		p.reviews = append(p.reviews, wReview{user: fmt.Sprintf("c%d", i), state: "COMMENTED", commit: p.head})
 	}
 	p.reviews = append(p.reviews, wReview{user: "bob", state: "APPROVED", commit: p.head})
-	needVerdict(t, mustCheck(t, checker(), w, "refs/heads/main", sh(2), nil), Unverifiable, "GET pulls/10/reviews has more than 500 entries")
-	p.reviews = p.reviews[:len(p.reviews)-2] // 498 entries, approval gone: 5 pages, last one short
-	p.reviews = append(p.reviews, wReview{user: "bob", state: "APPROVED", commit: p.head})
 	needVerdict(t, mustCheck(t, checker(), w, "refs/heads/main", sh(2), nil), Protected)
+	p.reviews = append(p.reviews, wReview{user: "late", state: "COMMENTED", commit: p.head})
+	needVerdict(t, mustCheck(t, checker(), w, "refs/heads/main", sh(2), nil), Unverifiable, "reviews of #10 have more than 500 entries")
 }
 
 func TestHostFailuresFailClosed(t *testing.T) {
@@ -576,7 +575,6 @@ func TestHostFailuresFailClosed(t *testing.T) {
 		"associations 404":   {path: "commits/" + sh(4) + "/pulls", r: resp{404, `{"message":"No commit found"}`}, want: Unverifiable + "|GitHub answered 404 to GET commits/"},
 		"associations 403":   {path: "commits/" + sh(4) + "/pulls", r: resp{403, `{"message":"Resource not accessible by integration"}`}, want: Unverifiable + "|Resource not accessible"},
 		"commits garbage":    {path: "pulls/3/commits", r: resp{200, `{"not":"a list"}`}, want: Unverifiable + "|GET pulls/3/commits could not be read"},
-		"reviews 500":        {path: "pulls/3/reviews", r: resp{500, ``}, want: Unverifiable + "|GitHub answered 500 to GET pulls/3/reviews"},
 		"compare 500":        {path: "compare/" + sh(3) + "..." + sh(4), r: resp{500, ``}, want: Unverifiable + "|GitHub answered 500"},
 		"branch compare 500": {path: "compare/main..." + sh(4), r: resp{500, ``}, want: Unverifiable + "|GitHub answered 500 to the compare of main"},
 		"transport":          {path: "pulls/3", err: errors.New("connection reset"), want: ""},
@@ -631,9 +629,9 @@ func TestNothingIsCachedBetweenChecks(t *testing.T) {
 func TestEvidenceCallsAreReported(t *testing.T) {
 	w := rangeWorld(t)
 	v := mustCheck(t, checker(), w, "refs/heads/main", sh(4), nil)
-	// ref compare + gitops closed pull requests + commit's pulls + pull + its commits + its reviews + the approver's permission
-	// + the merge commit itself (it is not in a range list) = 8 reads for a lone squashed commit
-	if v.Evidence.Calls != 8 {
+	// ref compare + gitops closed pull requests + commit's pulls + pull + its commits + its reviews (GraphQL)
+	// + the merge commit itself (it is not in a range list) = 7 reads for a lone squashed commit
+	if v.Evidence.Calls != 7 {
 		t.Fatalf("calls %d: %v", v.Evidence.Calls, w.calls)
 	}
 }
@@ -660,10 +658,10 @@ func TestConfigurationNeverDecides(t *testing.T) {
 
 type recordedHost struct {
 	t *testing.T
-	// permission403: the permission read answers GitHub's recorded 403 (the token may not read it) instead of "write"
-	permission403 bool
 	// dropState removes the recorded reviews of that state (to show the verdict rests on them)
 	dropState string
+	// noPush answers authorCanPushToRepository false for every reviewer
+	noPush bool
 }
 
 func (r recordedHost) GetJSON(_ context.Context, _, _, path string) (int, []byte, error) {
@@ -684,31 +682,8 @@ func (r recordedHost) GetJSON(_ context.Context, _, _, path string) (int, []byte
 		return read("real_pull.json")
 	case p == "pulls/15041/commits":
 		return read("real_pull_commits.json")
-	case p == "pulls/15041/reviews":
-		st, b, err := read("real_pull_reviews.json")
-		if r.dropState == "" {
-			return st, b, err
-		}
-		var all []map[string]any
-		if err := json.Unmarshal(b, &all); err != nil {
-			r.t.Fatal(err)
-		}
-		kept := []map[string]any{}
-		for _, rv := range all {
-			if rv["state"] != r.dropState {
-				kept = append(kept, rv)
-			}
-		}
-		out, _ := json.Marshal(kept)
-		return 200, out, nil
 	case strings.HasPrefix(p, "commits/") && !strings.HasSuffix(p, "/pulls"):
 		return read("real_commit.json")
-	case strings.HasPrefix(p, "collaborators/") && strings.HasSuffix(p, "/permission"):
-		if r.permission403 {
-			_, b, _ := read("real_permission_403.json")
-			return 403, b, nil
-		}
-		return 200, []byte(`{"permission":"write","role_name":"write"}`), nil
 	case strings.HasPrefix(p, "rules/") || strings.HasPrefix(p, "rulesets"):
 		return 200, []byte(`[]`), nil
 	case strings.HasPrefix(p, "branches/"):
@@ -716,6 +691,33 @@ func (r recordedHost) GetJSON(_ context.Context, _, _, path string) (int, []byte
 	}
 	r.t.Fatalf("unexpected GET %s", path)
 	return 0, nil, nil
+}
+
+// GraphQL answers with GitHub's recorded response (testdata/real_reviews_graphql.json), filtered as the test asks.
+func (r recordedHost) GraphQL(context.Context, string, string, string, map[string]any) (int, []byte, error) {
+	b, err := os.ReadFile("testdata/real_reviews_graphql.json")
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(b, &doc); err != nil {
+		r.t.Fatal(err)
+	}
+	reviews := doc["data"].(map[string]any)["repository"].(map[string]any)["pullRequest"].(map[string]any)["reviews"].(map[string]any)
+	kept := []any{}
+	for _, n := range reviews["nodes"].([]any) {
+		nd := n.(map[string]any)
+		if nd["state"] == r.dropState {
+			continue
+		}
+		if r.noPush {
+			nd["authorCanPushToRepository"] = false
+		}
+		kept = append(kept, nd)
+	}
+	reviews["nodes"] = kept
+	out, _ := json.Marshal(doc)
+	return 200, out, nil
 }
 
 func TestRecordedShapes(t *testing.T) {
@@ -732,28 +734,24 @@ func TestRecordedShapes(t *testing.T) {
 	if err := json.Unmarshal(b0, &rc); err != nil || rc.Committer.Login != "web-flow" || !rc.Commit.Verification.Verified || len(rc.Parents) != 2 {
 		t.Fatalf("the recorded shape: %v %+v", err, rc)
 	}
-	if pe.Number != 15041 || pe.Opener != "BagToad" || pe.Merger != "BagToad" || j(pe.Approvers) != `["tidy-dev"]` {
+	if pe.Number != 15041 || pe.Opener != "BagToad" || pe.Merger != "BagToad" || j(pe.Approvers) != `["tidy-dev"]` || !pe.ApproverCanPush["tidy-dev"] {
 		t.Fatalf("%+v", pe)
 	}
-	// the Copilot reviewer (type Bot, [bot] suffix) only commented: without the human's approval nothing counts
-	b, _ := os.ReadFile("testdata/real_pull_reviews.json")
-	if !strings.Contains(string(b), "copilot-pull-request-reviewer[bot]") {
+	// the reviewer GitHub's own association calls a CONTRIBUTOR may push: the fact that counts is authorCanPushToRepository
+	b, _ := os.ReadFile("testdata/real_reviews_graphql.json")
+	if !strings.Contains(string(b), "copilot-pull-request-reviewer") || !strings.Contains(string(b), `"authorCanPushToRepository":true`) {
 		t.Fatal("the recorded reviews are the real ones")
 	}
+	// the Copilot reviewer (a Bot) only commented: without the human's approval nothing counts
 	v, err = c.Check(context.Background(), recordedHost{t: t, dropState: "APPROVED"}, "cli", "cli", "refs/heads/trunk", "e1110093f516b3e595cae3bef8a20c7bf39c2d14", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	needVerdict(t, v, Unreviewed, "no approving review")
-}
-
-// The recorded 403 (what GitHub answered a token that may not read collaborator permissions) makes the check use the review's
-// author_association; the real reviewer there is a CONTRIBUTOR, which does not count as write access: refused, and it says so.
-func TestRecordedPermissionRefusalFallsBackToAssociation(t *testing.T) {
-	c := &Checker{ProtectedBranches: []string{"trunk"}}
-	v, err := c.Check(context.Background(), recordedHost{t: t, permission403: true}, "cli", "cli", "refs/heads/trunk", "e1110093f516b3e595cae3bef8a20c7bf39c2d14", nil)
+	// and without push access, the same approval does not count
+	v, err = c.Check(context.Background(), recordedHost{t: t, noPush: true}, "cli", "cli", "refs/heads/trunk", "e1110093f516b3e595cae3bef8a20c7bf39c2d14", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	needVerdict(t, v, Unreviewed, "approved only by an account without write access", "tidy-dev (association:CONTRIBUTOR)")
+	needVerdict(t, v, Unreviewed, "without push access to the repository (tidy-dev)")
 }
