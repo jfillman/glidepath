@@ -94,7 +94,7 @@ whichever stage is genuinely last for a given flow closes the span, and only tha
 
 A promotion from Tower (or `POST .../promote`) is its own flow with its own chain id, but the person asking wants to see
 it next to the build that made the image. glidepath-api resolves that build ([api.md](api.md#promotion-lineage)) and
-stamps its trace context on the promotion run (`glidepath.io/origin-traceparent`, `origin-flow-start-time`,
+stamps its trace context on the promotion run (`glidepath.io/origin-traceparent` and
 `origin-finished-at`). The release Pipeline's `preflight` task (`stage-preflight.yaml`) reads them from the run itself,
 never from a parameter, and:
 
@@ -108,8 +108,10 @@ never from a parameter, and:
   finish time is missing or unreadable, the window is not `<n>s|m|h|d`): the promotion starts **its own trace**, as
   before, and says why in the task log. A failed read is never a join. The origin's trace id is still on the release
   record (`originTraceId`) and in the API, so the two traces are one lookup apart.
-- `preflight` also accepts an incoming trace context **without** an incoming chain id: a new chain in the existing
-  trace. That is the same join, entered with a `flow-traceparent` parameter instead of the annotations.
+- **Nothing else changes.** `stage-preflight` is the first task of every stage of every Pipeline; only a run that starts a new
+  chain **and** carries validated origin annotations joins a foreign trace. An incoming trace context without a chain id
+  mints a fresh root, exactly as before (`tests/promotion_lineage_test.py` holds every run without origin annotations to a
+  frozen copy of the previous behaviour over every chain id / traceparent / start time combination).
 
 **Span links are not emitted.** Checked, not recalled: `otel-cli span --help` in the toolbox image the catalog pins
 (`glidepath-toolbox:2026-10-31-checks-only`, otel-cli 0.4.5 from `catalog/toolbox/Dockerfile`) lists no link option (the word

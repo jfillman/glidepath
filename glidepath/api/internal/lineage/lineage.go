@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/glidepath/api/internal/live"
+	"github.com/glidepath/api/internal/pipelineruns"
 	"github.com/glidepath/api/internal/results"
 )
 
@@ -44,14 +45,13 @@ type Source interface {
 
 // Origin is the build a release came from.
 type Origin struct {
-	ChainID       string
-	ChainSlug     string
-	TraceID       string
-	Traceparent   string // the build flow's root traceparent (what a promotion joins)
-	FlowStartTime string // the flow root span's start
-	FinishedAt    string // when the build run finished (RFC 3339)
-	Run           string // the build PipelineRun's name
-	Digest        string // the image digest that build pushed
+	ChainID     string
+	ChainSlug   string
+	TraceID     string
+	Traceparent string // the build flow's root traceparent (what a promotion joins)
+	FinishedAt  string // when the build run finished (RFC 3339)
+	Run         string // the build PipelineRun's name
+	Digest      string // the image digest that build pushed
 }
 
 // Resolution is an answer: an Origin, or Unknown with why there is none.
@@ -64,11 +64,8 @@ type Resolution struct {
 type Resolver struct{ Sources []Source }
 
 var (
-	uuidRE        = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-	traceparentRE = regexp.MustCompile(`^00-([0-9a-f]{32})-[0-9a-f]{16}-0[01]$`)
-	slugRE        = regexp.MustCompile(`^[a-z]{2,20}-[a-z]{2,20}$`)
-	digestRE      = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	commitRE      = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	digestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
 // ImageRepo is imageRef without its tag or digest: ghcr.io/o/app:1.0.0-abc1234 is ghcr.io/o/app.
@@ -139,12 +136,13 @@ func buildOf(r Run, repo, commit string) (b build, ok bool, why string) {
 		}
 	}
 	pres := resultsOf(pre)
-	tp := traceparentRE.FindStringSubmatch(pres["traceparent"])
-	if pre == nil || !uuidRE.MatchString(pres["chain-id"]) || tp == nil {
+	// Values are held to Shapes (the admission policy's own patterns): a build whose context is outside them is no origin.
+	tp := pres["traceparent"]
+	if pre == nil || !Valid(pipelineruns.AnnotationOriginChainID, pres["chain-id"]) || !Valid(pipelineruns.AnnotationOriginTraceparent, tp) {
 		return b, false, fmt.Sprintf("build %s has no readable chain id and trace (its preflight record is missing or malformed)", name)
 	}
 	slug := pres["chain-slug"]
-	if !slugRE.MatchString(slug) {
+	if !Valid(pipelineruns.AnnotationOriginChainSlug, slug) {
 		slug = ""
 	}
 	fin := str(mp(pr["status"]), "completionTime")
@@ -152,8 +150,12 @@ func buildOf(r Run, repo, commit string) (b build, ok bool, why string) {
 	if err != nil {
 		return b, false, fmt.Sprintf("build %s has no completion time", name)
 	}
-	return build{Origin: Origin{ChainID: pres["chain-id"], ChainSlug: slug, TraceID: tp[1], Traceparent: pres["traceparent"],
-		FlowStartTime: pres["start-time"], FinishedAt: t.UTC().Format(time.RFC3339Nano), Run: name, Digest: res["IMAGE_DIGEST"]}, finished: t}, true, ""
+	finished := t.UTC().Format(time.RFC3339Nano)
+	if !Valid(pipelineruns.AnnotationOriginFinishedAt, finished) {
+		return b, false, fmt.Sprintf("build %s has a completion time outside the shape the cluster accepts", name)
+	}
+	return build{Origin: Origin{ChainID: pres["chain-id"], ChainSlug: slug, TraceID: tp[3:35], Traceparent: tp,
+		FinishedAt: finished, Run: name, Digest: res["IMAGE_DIGEST"]}, finished: t}, true, ""
 }
 
 // Resolve finds the build of imageRef at commit (a full 40-hex sha) in namespace. digest is the manifest digest the image
@@ -269,9 +271,20 @@ func (s ClusterSource) Runs(ctx context.Context, namespace, commit string) ([]Ru
 	return out, nil
 }
 
+// Archive is the part of Tekton Results the lineage lookup reads (*results.Client).
+type Archive interface {
+	List(ctx context.Context, parent string, since, appStart time.Time, limit int) ([]results.Row, error)
+	Get(ctx context.Context, parent, result string) (*results.Run, error)
+}
+
+// ListLimit is how many of the namespace's most recently finished runs (every Pipeline, newest first) the archive lookup
+// lists to find the build of a commit. In a namespace that finishes more runs than this between the build and the promotion,
+// the build is not in the list and the origin is unknown.
+const ListLimit = 500
+
 // ArchiveSource reads Tekton Results (30 days). At most maxCandidates candidate builds are read in full.
 type ArchiveSource struct {
-	Results *results.Client
+	Results Archive
 	Window  time.Duration // how far back to look; 30 days when zero
 }
 
@@ -284,7 +297,7 @@ func (s ArchiveSource) Runs(ctx context.Context, namespace, commit string) ([]Ru
 	if w <= 0 {
 		w = 30 * 24 * time.Hour
 	}
-	rows, err := s.Results.List(ctx, namespace, time.Now().Add(-w), time.Time{}, 500)
+	rows, err := s.Results.List(ctx, namespace, time.Now().Add(-w), time.Time{}, ListLimit)
 	if err != nil {
 		return nil, err
 	}

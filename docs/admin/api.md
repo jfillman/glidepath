@@ -395,6 +395,13 @@ field naming an origin is ignored):
   produced the content. Two builds with DIFFERENT digests: nothing is resolved, because the tag could be either. A
   source that cannot be read (Results down) also resolves nothing, with the error; a failed read is never answered as
   "no build".
+- **Limits.** The whole lookup runs under a deadline (`LINEAGE_TIMEOUT_SECONDS`, default 5): a Results service that does
+  not answer in time resolves nothing (`origin unknown: lineage lookup timed out`) and the promotion starts. At most 20
+  archived builds of a commit are read (more is a failed read, never a truncation: an unread build could have pushed a
+  different digest). The archive is searched through the namespace's **500 most recently finished runs** (every Pipeline,
+  newest first, within 30 days): in a busy namespace that finishes more runs than that between the build and the promotion,
+  the build is not in the list and the origin is unknown. The build is found on the cluster first, so this only matters for
+  builds older than about an hour.
 - **Unresolved is not refused.** Lineage is information, not a gate. With no origin the promotion starts as before and
   the answer says `"originUnknown": "origin unknown: <why>"`; the run carries no origin annotations and the record no
   origin fields. A build older than the archive (30 days) and the first promotion of an image built elsewhere are the
@@ -409,7 +416,10 @@ The answer of promote and rollback:
 ```
 
 The run carries it as annotations the API sets (`glidepath.io/origin-chain-id`, `origin-chain-slug`, `origin-trace-id`,
-and for the trace join `origin-traceparent`, `origin-flow-start-time`, `origin-finished-at`). Admission refuses every
+and for the trace join `origin-traceparent` and `origin-finished-at`). Every value is held to one table of shapes
+(`lineage.Shapes`: a UUID, two lowercase words, 32 hex, a W3C traceparent ending `-01`, an RFC 3339 UTC time) that is
+identical to the cluster policy's, so a value the API stamps is never one admission refuses; an origin outside the table
+is not stamped and the answer says `origin unknown`. Admission refuses every
 `glidepath.io/` annotation on a run a `.tekton` file creates (`cicd-run-shape`), so a repository cannot claim another
 flow's lineage; the catalog's trusted tasks read them from the run itself, never from a parameter.
 
@@ -424,6 +434,13 @@ flow's lineage; the catalog's trusted tasks read them from the run itself, never
 - **Rollback** gets the same lineage: the origin is the build of the image being rolled back to (the target's own image
   and commit). A rerun keeps `rerun-of` and is unchanged.
 - **The trace** is joined by `stage-preflight`; see [tracing.md](tracing.md#promotions-join-the-builds-trace).
+
+**What the cluster policy checks.** The value-shape rule in the apron policy (`glidepath-api-pipelinerun-shape`) is
+create-only, like the allowlist beside it (`isCreate`): glidepath-api never changes a run's annotations afterwards, and the
+policy refuses it if it tried. glidepath-api retries a refused run without the lineage **only** when the refusal is the
+annotation allowlist or the lineage shape rule (Forbidden or Invalid, naming "may carry only the annotations" or
+"promotion-lineage"); any other refusal or error is reported as it is, and the run it resubmits is the same run less the
+lineage annotations.
 
 **Order of upgrades.** Each side tolerates the other being old. A new API against an old catalog stamps annotations
 nothing reads: the promotion runs, with its own trace and no origin on its record (the API's answer and the run view

@@ -2,8 +2,12 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/glidepath/api/internal/lineage"
 	"github.com/glidepath/api/internal/pipelineruns"
@@ -35,7 +39,7 @@ func (f *fakeLineage) Resolve(_ context.Context, ns, image, commit, digest strin
 
 func anOrigin() lineage.Resolution {
 	return lineage.Resolution{Origin: &lineage.Origin{ChainID: buildChain, ChainSlug: "ornate-ram", TraceID: "98f0963d6bc08cb69e6051852fc528de",
-		Traceparent: buildTP, FlowStartTime: "2026-11-15T20:53:01.775206426Z", FinishedAt: "2026-11-15T20:56:00Z", Run: "ci-0-build-nm682"}}
+		Traceparent: buildTP, FinishedAt: "2026-11-15T20:56:00Z", Run: "ci-0-build-nm682"}}
 }
 
 func annotationsOf(store *fakeStore, name string) map[string]any {
@@ -65,7 +69,7 @@ func TestPromoteCarriesTheBuildsLineage(t *testing.T) {
 	for k, v := range map[string]string{
 		pipelineruns.AnnotationOriginChainID: buildChain, pipelineruns.AnnotationOriginChainSlug: "ornate-ram",
 		pipelineruns.AnnotationOriginTraceID: "98f0963d6bc08cb69e6051852fc528de", pipelineruns.AnnotationOriginTraceparent: buildTP,
-		pipelineruns.AnnotationOriginFlowStart: "2026-11-15T20:53:01.775206426Z", pipelineruns.AnnotationOriginFinishedAt: "2026-11-15T20:56:00Z",
+		pipelineruns.AnnotationOriginFinishedAt: "2026-11-15T20:56:00Z",
 	} {
 		if ann[k] != v {
 			t.Errorf("%s = %v, want %s", k, ann[k], v)
@@ -112,7 +116,7 @@ type strictAnnotations struct{ *fakeStore }
 func (f strictAnnotations) Create(ctx context.Context, ns string, obj map[string]any, dryRun bool) error {
 	for k := range obj["metadata"].(map[string]any)["annotations"].(map[string]any) {
 		if strings.HasPrefix(k, "glidepath.io/origin-chain") {
-			return apierrors.NewForbidden(pipelineruns.GVR.GroupResource(), "x", context.Canceled)
+			return apierrors.NewForbidden(pipelineruns.GVR.GroupResource(), "x", errors.New("A run glidepath-api starts may carry only the annotations glidepath.io/origin-ref, origin-sha and origin-event"))
 		}
 	}
 	return f.fakeStore.Create(ctx, ns, obj, dryRun)
@@ -202,5 +206,125 @@ func TestReleaseRunShowsItsOrigin(t *testing.T) {
 	o, _ := out["origin"].(map[string]any)
 	if o["chainId"] != buildChain || o["chainSlug"] != "ornate-ram" || out["chainId"] != chain {
 		t.Fatalf("the run keeps its own chain and shows the build's: %v", out)
+	}
+}
+
+// recordingStore refuses every create with refuse (when set) and keeps a copy of each submitted run.
+type recordingStore struct {
+	*fakeStore
+	refuse  func(obj map[string]any) error
+	mu      sync.Mutex
+	creates []map[string]any
+}
+
+func (r *recordingStore) Create(ctx context.Context, ns string, obj map[string]any, dryRun bool) error {
+	r.mu.Lock()
+	r.creates = append(r.creates, copyObj(obj))
+	r.mu.Unlock()
+	if r.refuse != nil {
+		if err := r.refuse(obj); err != nil {
+			return err
+		}
+	}
+	return r.fakeStore.Create(ctx, ns, obj, dryRun)
+}
+
+func hasLineage(obj map[string]any) bool {
+	for k := range obj["metadata"].(map[string]any)["annotations"].(map[string]any) {
+		if strings.HasPrefix(k, "glidepath.io/origin-chain") || k == pipelineruns.AnnotationOriginTraceID || k == pipelineruns.AnnotationOriginTraceparent || k == pipelineruns.AnnotationOriginFinishedAt {
+			return true
+		}
+	}
+	return false
+}
+
+// The retry fires only on the admission refusal that is about these annotations, and resubmits the same run less them.
+func TestTheLineageRetryIsOnlyForTheAdmissionRefusalOfTheseAnnotations(t *testing.T) {
+	older := apierrors.NewForbidden(pipelineruns.GVR.GroupResource(), "x", errors.New("A run glidepath-api starts may carry only the annotations glidepath.io/origin-ref, origin-sha and origin-event"))
+	cases := []struct {
+		name    string
+		err     error
+		creates int
+		status  int
+	}{
+		{"older policy: allowlist refusal", older, 2, 201},
+		{"the new shape rule", apierrors.NewForbidden(pipelineruns.GVR.GroupResource(), "x", errors.New("The promotion-lineage annotations must have the shape glidepath-api writes")), 2, 201},
+		{"another forbidden", apierrors.NewForbidden(pipelineruns.GVR.GroupResource(), "x", errors.New("taskRunTemplate.serviceAccountName must be pipeline-runner")), 1, 422},
+		{"a bad request", apierrors.NewBadRequest("nope"), 1, 422},
+		{"the API server down", apierrors.NewServiceUnavailable("down"), 1, 502},
+		{"an internal error", apierrors.NewInternalError(errors.New("boom")), 1, 502},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, store, _, _ := withEnvs(t, releaser)
+			rec := &recordingStore{fakeStore: store, refuse: func(obj map[string]any) error {
+				if hasLineage(obj) || c.creates == 1 {
+					return c.err
+				}
+				return nil
+			}}
+			s.Envs.Runs = rec
+			s.Envs.Lineage = &fakeLineage{res: anOrigin()}
+			st, _, body := postJSON(t, s, "/v1/apps/shop/environments/staging/promote", hdr("rel", "k1"), `{"cluster":"hangar-prod","sourceEnv":"dev","sourceCluster":"hangar-dev"}`)
+			if len(rec.creates) != c.creates || st != c.status {
+				t.Fatalf("%d creates, status %d, want %d and %d: %s", len(rec.creates), st, c.creates, c.status, body)
+			}
+			if c.creates == 2 {
+				first, second := rec.creates[0], rec.creates[1]
+				if !hasLineage(first) || hasLineage(second) {
+					t.Fatal("the first try carries the lineage, the second does not")
+				}
+				ann := first["metadata"].(map[string]any)["annotations"].(map[string]any)
+				for k := range ann {
+					if strings.HasPrefix(k, "glidepath.io/origin-chain") || k == pipelineruns.AnnotationOriginTraceID || k == pipelineruns.AnnotationOriginTraceparent || k == pipelineruns.AnnotationOriginFinishedAt {
+						delete(ann, k)
+					}
+				}
+				a, _ := json.Marshal(first)
+				b, _ := json.Marshal(second)
+				if string(a) != string(b) {
+					t.Fatalf("the retry is the same run less the lineage:\n%s\n%s", a, b)
+				}
+			}
+		})
+	}
+}
+
+// A lookup that does not answer in time is "origin unknown", and the promotion starts.
+type slowLineage struct{ release chan struct{} }
+
+func (l slowLineage) Resolve(context.Context, string, string, string, string) lineage.Resolution {
+	<-l.release // ignores its context, like a source that is stuck
+	return anOrigin()
+}
+
+func TestASlowLineageLookupDoesNotStallThePromotion(t *testing.T) {
+	s, store, _, _ := withEnvs(t, releaser)
+	release := make(chan struct{})
+	defer close(release)
+	s.Envs.Lineage = slowLineage{release}
+	s.Envs.LineageTimeout = 50 * time.Millisecond
+	start := time.Now()
+	st, out, body := postJSON(t, s, "/v1/apps/shop/environments/staging/promote", hdr("rel", "k1"), `{"cluster":"hangar-prod","sourceEnv":"dev","sourceCluster":"hangar-dev"}`)
+	if st != 201 || out["originUnknown"] != "origin unknown: lineage lookup timed out" || out["origin"] != nil {
+		t.Fatalf("%d %s", st, body)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Fatalf("stalled %v", time.Since(start))
+	}
+	if hasLineage(store.objs[out["pipelineRun"].(string)]) {
+		t.Fatal("no lineage was resolved, none is stamped")
+	}
+}
+
+// An origin whose values the policy would refuse is never stamped.
+func TestAnOriginOutsideTheAdmissionShapesIsNotStamped(t *testing.T) {
+	s, store, _, _ := withEnvs(t, releaser)
+	bad := anOrigin()
+	bad.Origin.Traceparent = "00-98f0963d6bc08cb69e6051852fc528de-a71828a66b3e8c7d-00"
+	s.Envs.Lineage = &fakeLineage{res: bad}
+	st, out, body := postJSON(t, s, "/v1/apps/shop/environments/staging/promote", hdr("rel", "k1"), `{"cluster":"hangar-prod","sourceEnv":"dev","sourceCluster":"hangar-dev"}`)
+	if st != 201 || !strings.Contains(out["originUnknown"].(string), "outside the shape") || hasLineage(store.objs[out["pipelineRun"].(string)]) {
+		t.Fatalf("%d %s", st, body)
 	}
 }

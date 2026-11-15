@@ -51,7 +51,6 @@ const (
 	AnnotationOriginChainSlug   = "glidepath.io/origin-chain-slug"
 	AnnotationOriginTraceID     = "glidepath.io/origin-trace-id"
 	AnnotationOriginTraceparent = "glidepath.io/origin-traceparent"
-	AnnotationOriginFlowStart   = "glidepath.io/origin-flow-start-time"
 	AnnotationOriginFinishedAt  = "glidepath.io/origin-finished-at"
 
 	// maxGeneratedPrefix is the API server's own limit on a generateName prefix (63 - 5 random

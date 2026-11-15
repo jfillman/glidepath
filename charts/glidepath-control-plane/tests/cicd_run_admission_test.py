@@ -658,7 +658,7 @@ class CicdRunAdmission(unittest.TestCase):
         # trust them): a file can no more claim another flow's lineage than another commit's origin.
         for key in ("glidepath.io/origin-ref", "glidepath.io/origin-sha", "glidepath.io/anything",
                     "glidepath.io/origin-chain-id", "glidepath.io/origin-chain-slug", "glidepath.io/origin-trace-id",
-                    "glidepath.io/origin-traceparent", "glidepath.io/origin-flow-start-time", "glidepath.io/origin-finished-at"):
+                    "glidepath.io/origin-traceparent", "glidepath.io/origin-finished-at"):
             md = meta("push", "main")
             md["annotations"] = dict(md["annotations"], **{key: "refs/heads/main"})
             self.refused(run("release", metadata=md, taskRunSpecs=None), msg="glidepath.io")

@@ -300,7 +300,8 @@ func main() {
 			Records:   releases.Reader{CS: cs},
 			// The build a promoted image came from: the build run on the cluster, else its copy in Tekton Results
 			// (docs/admin/api.md#promotion-lineage). Information only: a release is never refused for lacking it.
-			Lineage: &lineage.Resolver{Sources: []lineage.Source{lineage.ClusterSource{Live: liveRuns}, lineage.ArchiveSource{Results: runArchive}}},
+			LineageTimeout: time.Duration(envInt("LINEAGE_TIMEOUT_SECONDS", 5)) * time.Second,
+			Lineage:        &lineage.Resolver{Sources: []lineage.Source{lineage.ClusterSource{Live: liveRuns}, lineage.ArchiveSource{Results: runArchive}}},
 		},
 		// A cicd.yaml change, validated by the glidepath-validate sidecar (`glidepath validate --serve`, the chart's
 		// cicdValidatorImage) on the pod's loopback: one copy of the rules, the one the PR check runs.

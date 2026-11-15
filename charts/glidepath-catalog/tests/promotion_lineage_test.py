@@ -117,7 +117,7 @@ class Preflight(unittest.TestCase):
         put(os.path.join(bin_, "kubectl"), '#!/usr/bin/env bash\n[[ -f "$FX/run.json" ]] || { echo "forbidden" >&2; exit 1; }\ncat "$FX/run.json"\n')
         os.chmod(os.path.join(bin_, "kubectl"), 0o755)
 
-    def run_seg(self, annotations=None, window="12h", chain="", tp="", terminal="true", unreadable=False):
+    def run_seg(self, annotations=None, window="12h", chain="", tp="", terminal="true", unreadable=False, start=None):
         fx = tempfile.mkdtemp(dir=self.tmp)
         if not unreadable:
             put(os.path.join(fx, "run.json"), json.dumps({"metadata": {"annotations": annotations or {}}}))
@@ -125,7 +125,7 @@ class Preflight(unittest.TestCase):
             if os.path.exists(os.path.join(self.tmp, "r-" + r)):
                 os.remove(os.path.join(self.tmp, "r-" + r))
         env = dict(os.environ, FX=fx, PATH=os.path.join(self.tmp, "bin") + os.pathsep + os.environ["PATH"], PLATFORM_LIB=LIB,
-                   ORIGIN_TRACE_WINDOW=window, INCOMING_CHAIN_ID=chain, INCOMING_TRACEPARENT=tp, INCOMING_FLOW_START_TIME="2026-11-15T20:00:00Z" if chain else "",
+                   ORIGIN_TRACE_WINDOW=window, INCOMING_CHAIN_ID=chain, INCOMING_TRACEPARENT=tp, INCOMING_FLOW_START_TIME=(start if start is not None else ("2026-11-15T20:00:00Z" if chain else "")),
                    IS_FLOW_TERMINAL=terminal, PIPELINE_RUN_NAME="promote-staging-e65cefae-7ef9ab", NAMESPACE="app-gate-api-cicd", STAGE_NAME="release")
         p = subprocess.run(["bash", os.path.join(self.tmp, "seg.sh")], capture_output=True, text=True, env=env)
         self.assertEqual(p.returncode, 0, p.stderr)
@@ -188,16 +188,77 @@ class Preflight(unittest.TestCase):
         self.assertEqual(self.run_seg(self.origin(), window="99999999999999999999h")["trace-joined"], "false")
         self.assertEqual(self.run_seg(self.origin(extra={"glidepath.io/origin-finished-at": "2026-13-45T99:99:99Z"}))["trace-joined"], "false")
 
-    def test_an_incoming_trace_without_a_chain_is_a_new_chain_in_the_same_trace(self):
+    def test_an_incoming_trace_without_a_chain_still_mints_a_fresh_root(self):
+        # as origin/main does: only validated origin annotations make a run join a foreign trace
         r = self.run_seg({}, window="", tp=TP)
-        self.assertEqual((r["traceparent"], r["trace-joined"], r["flow-terminal"]), (TP, "true", "false"))
-        self.assertRegex(r["chain-id"], r"^[0-9a-fA-F-]{36}$")
+        self.assertEqual((r["trace-joined"], r["flow-terminal"]), ("false", "true"))
+        self.assertNotEqual(r["traceparent"], TP)
 
     def test_an_event_chained_stage_is_unchanged(self):
         other = "00-" + "ab" * 16 + "-" + "cd" * 8 + "-01"
         r = self.run_seg(self.origin(), chain="11111111-1111-4111-8111-111111111111", tp=other, terminal="true")
         self.assertEqual((r["chain-id"], r["traceparent"], r["start-time"], r["trace-joined"], r["flow-terminal"]),
                          ("11111111-1111-4111-8111-111111111111", other, "2026-11-15T20:00:00Z", "false", "true"))
+
+
+class Baseline(unittest.TestCase):
+    """A run WITHOUT origin annotations behaves exactly as origin/main's stage-preflight does, over every combination of
+    chain id, traceparent and flow start time: this task is the first of every stage of every Pipeline, and only a
+    promotion that carries validated origin annotations may join a trace. tests/fixtures/preflight-chain-block-main.sh is
+    origin/main's chain and trace block, frozen."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        base = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "preflight-chain-block-main.sh")).read()
+        for r in ("traceparent", "start-time", "chain-id", "chain-slug"):
+            base = base.replace(f"$(results.{r}.path)", os.path.join(cls.tmp, "m-" + r))
+        put(os.path.join(cls.tmp, "main.sh"), "set -euo pipefail\nsource \"${PLATFORM_LIB}/otel.sh\"\nsource \"${PLATFORM_LIB}/chain-slug.sh\"\n" + base)
+        cls.branch = Preflight
+        Preflight.setUpClass.__func__(Preflight)
+
+    def run_main(self, chain, tp, start):
+        for r in ("traceparent", "start-time", "chain-id", "chain-slug"):
+            f = os.path.join(self.tmp, "m-" + r)
+            if os.path.exists(f):
+                os.remove(f)
+        env = dict(os.environ, PLATFORM_LIB=LIB, INCOMING_CHAIN_ID=chain, INCOMING_TRACEPARENT=tp, INCOMING_FLOW_START_TIME=start,
+                   STAGE_NAME="release")
+        p = subprocess.run(["bash", os.path.join(self.tmp, "main.sh")], capture_output=True, text=True, env=env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        out = {r: get(os.path.join(self.tmp, "m-" + r)) for r in ("traceparent", "start-time", "chain-id", "chain-slug")}
+        out["stdout"] = p.stdout
+        return out
+
+    def test_without_origin_annotations_every_input_gives_origin_mains_results(self):
+        other = "00-" + "ab" * 16 + "-" + "cd" * 8 + "-01"
+        n = 0
+        for chain in ("", "11111111-1111-4111-8111-111111111111"):
+            for tp in ("", other):
+                for start in ("", "2026-11-15T20:00:00Z"):
+                    for terminal in ("true", "false"):
+                        for window in ("12h", ""):
+                            label = dict(chain=chain, tp=tp, start=start, terminal=terminal, window=window)
+                            with self.subTest(**label):
+                                m = self.run_main(chain, tp, start)
+                                b = Preflight.run_seg(Preflight(), {}, window=window, chain=chain, tp=tp, terminal=terminal, start=start)
+                                if chain:
+                                    for k in ("chain-id", "traceparent", "start-time", "chain-slug"):
+                                        self.assertEqual(b[k], m[k], k)
+                                else:
+                                    # a flow root: a fresh trace and start (never the incoming trace), a new chain, its own slug
+                                    for out in (m, b):
+                                        self.assertRegex(out["traceparent"], r"^00-[0-9a-f]{32}-[0-9a-f]{16}-01$")
+                                        self.assertNotEqual(out["traceparent"], tp)
+                                        self.assertTrue(out["start-time"])
+                                        self.assertRegex(out["chain-id"], r"^[0-9a-fA-F-]{36}$")
+                                        self.assertTrue(out["chain-slug"])
+                                self.assertEqual(b["stdout"].split(":")[0], m["stdout"].split(":")[0])
+                                # the decision about closing the flow-root span is the param's, as before
+                                self.assertEqual(b["flow-terminal"], terminal)
+                                self.assertEqual(b["trace-joined"], "false")
+                                n += 1
+        self.assertEqual(n, 32)
 
 
 class Record(unittest.TestCase):

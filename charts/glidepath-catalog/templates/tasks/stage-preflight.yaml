@@ -120,9 +120,9 @@ spec:
         another flow's trace never closes that flow's root span, so the result is "false" there.
   results:
     - name: trace-joined
-      description: "'true' when this run's stage span is a sibling under ANOTHER flow's root span (an incoming trace with no incoming chain id, or a promotion joining its build's trace); 'false' when it minted its own or continued its own flow's."
+      description: "'true' only when this run's stage span is a sibling under ANOTHER flow's root span: a promotion that joined its build's trace through validated origin annotations. 'false' for every other run (it minted its own trace or continued its own flow's)."
     - name: flow-terminal
-      description: "The is-flow-terminal param, or 'false' when trace-joined (the root span is not this run's to close)."
+      description: "The is-flow-terminal param, unchanged for every run except one that joined another flow's trace (trace-joined), where it is 'false': the root span is not this run's to close."
     - name: traceparent
       description: W3C traceparent of the flow-root span - minted here for a flow root, passed through otherwise.
     - name: chain-id
@@ -273,22 +273,25 @@ spec:
           printf '%s' "${tp}"
         }
 
+        # ONLY a run that starts a new chain AND carries validated origin annotations (a promotion glidepath-api started, with the
+        # window set) joins a foreign trace. Every other run behaves as it always did: an incoming chain id continues its flow, and
+        # anything else, an incoming traceparent without a chain id included, mints a fresh root.
         trace_joined=false
-        incoming_tp="${INCOMING_TRACEPARENT}"
-        if [[ -z "${INCOMING_CHAIN_ID}" && -z "${incoming_tp}" ]]; then
-          incoming_tp="$(origin_traceparent)"
+        origin_tp=""
+        if [[ -z "${INCOMING_CHAIN_ID}" ]]; then
+          origin_tp="$(origin_traceparent)"
         fi
         if [[ -n "${INCOMING_CHAIN_ID}" ]]; then
           chain_id="${INCOMING_CHAIN_ID}"
           printf '%s' "${INCOMING_TRACEPARENT}" > "$(results.traceparent.path)"
           printf '%s' "${INCOMING_FLOW_START_TIME}" > "$(results.start-time.path)"
           printf '%s' "${chain_id}" > "$(results.chain-id.path)"
-        elif [[ -n "${incoming_tp}" ]]; then
+        elif [[ -n "${origin_tp}" ]]; then
           # A NEW chain in an EXISTING trace (a promotion joining its build's): this run's own chain id, the other flow's trace.
           # The flow start is this run's own (what lead time and the release record measure from); the other flow's root span
           # is not this run's to send or close.
           trace_joined=true
-          printf '%s' "${incoming_tp}" > "$(results.traceparent.path)"
+          printf '%s' "${origin_tp}" > "$(results.traceparent.path)"
           printf '%s' "$(otel_now)" > "$(results.start-time.path)"
           chain_id="$(uuidgen)"
           printf '%s' "${chain_id}" > "$(results.chain-id.path)"

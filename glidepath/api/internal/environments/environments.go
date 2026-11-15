@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/lineage"
@@ -99,11 +100,12 @@ func (k kubeTemplates) Get(ctx context.Context, namespace, name string) (map[str
 
 // Client promotes and rolls back.
 type Client struct {
-	Owner     string                  // the GitHub owner of every app repo (the chart's githubOwner)
-	OriginRef string                  // the full ref promote and rollback runs claim as their origin (refs/heads/<first protected branch>); "" stamps none
-	GitHub    func(app string) GitHub // a new Session per request
-	Templates Templates               //
-	Runs      pipelineruns.Store      //
+	Owner          string                  // the GitHub owner of every app repo (the chart's githubOwner)
+	OriginRef      string                  // the full ref promote and rollback runs claim as their origin (refs/heads/<first protected branch>); "" stamps none
+	GitHub         func(app string) GitHub // a new Session per request
+	Templates      Templates               //
+	Runs           pipelineruns.Store      //
+	LineageTimeout time.Duration           // overall deadline of the origin lookup; LineageTimeout (5 s) when zero
 	// Lineage resolves the build a release's image came from (internal/lineage); nil resolves none, and a release run
 	// then carries no origin and its answer says nothing about one.
 	Lineage interface {
@@ -243,17 +245,19 @@ func originOf(o *lineage.Origin) *Origin {
 
 // lineageKeys are the annotations stampOrigin sets, so a refused run can have them taken off again.
 var lineageKeys = []string{pipelineruns.AnnotationOriginChainID, pipelineruns.AnnotationOriginChainSlug, pipelineruns.AnnotationOriginTraceID,
-	pipelineruns.AnnotationOriginTraceparent, pipelineruns.AnnotationOriginFlowStart, pipelineruns.AnnotationOriginFinishedAt}
+	pipelineruns.AnnotationOriginTraceparent, pipelineruns.AnnotationOriginFinishedAt}
 
-func stampOrigin(ann map[string]any, o *lineage.Origin) {
-	ann[pipelineruns.AnnotationOriginChainID] = o.ChainID
-	if o.ChainSlug != "" {
-		ann[pipelineruns.AnnotationOriginChainSlug] = o.ChainSlug
+// stampOrigin sets the lineage annotations, each checked against lineage.Shapes first; false (nothing set) when a value is
+// outside its shape, because admission would refuse the whole set.
+func stampOrigin(ann map[string]any, o *lineage.Origin) bool {
+	a, ok := o.Annotations()
+	if !ok {
+		return false
 	}
-	ann[pipelineruns.AnnotationOriginTraceID] = o.TraceID
-	ann[pipelineruns.AnnotationOriginTraceparent] = o.Traceparent
-	ann[pipelineruns.AnnotationOriginFlowStart] = o.FlowStartTime
-	ann[pipelineruns.AnnotationOriginFinishedAt] = o.FinishedAt
+	for k, v := range a {
+		ann[k] = v
+	}
+	return true
 }
 
 // startRun is Tower's startReleaseRun with a derived name: read the template, fill its params, create the run (a
@@ -315,10 +319,11 @@ func (c *Client) startRun(ctx context.Context, app *apps.App, p releaseRun, keyH
 	var origin *lineage.Origin
 	unknown := ""
 	if c.Lineage != nil {
-		res := c.Lineage.Resolve(ctx, app.Namespace, p.imageRef, p.gitRevision, p.digest)
-		if res.Origin != nil {
+		res := c.resolveOrigin(ctx, app.Namespace, p.imageRef, p.gitRevision, p.digest)
+		if res.Origin != nil && stampOrigin(ann, res.Origin) {
 			origin = res.Origin
-			stampOrigin(ann, origin)
+		} else if res.Origin != nil {
+			unknown = "the resolved origin has a value outside the shape the cluster's admission accepts"
 		} else {
 			unknown = res.Unknown
 		}
@@ -327,9 +332,10 @@ func (c *Client) startRun(ctx context.Context, app *apps.App, p releaseRun, keyH
 	run["metadata"] = meta
 
 	err = c.Runs.Create(ctx, app.Namespace, run, dryRun)
-	if origin != nil && (apierrors.IsForbidden(err) || apierrors.IsInvalid(err)) {
+	if origin != nil && lineageRefused(err) {
 		// An older admission policy for this API's runs lists the annotations a run may carry and does not know these
-		// yet: the release goes ahead without its lineage, never refused for it.
+		// yet: the release goes ahead without its lineage, never refused for it. Only that refusal is retried, and the run
+		// resubmitted is the same run less the lineage annotations.
 		for _, k := range lineageKeys {
 			delete(ann, k)
 		}
@@ -386,6 +392,39 @@ func ExtractShortSha(tag string) (string, error) {
 		return "", Refused{fmt.Sprintf(`could not extract a git sha from image tag "%s" - unrecognized tagging convention`, tag), ""}
 	}
 	return m[1], nil
+}
+
+// lineageRefused reports an admission refusal (Forbidden or Invalid) that is about the annotations a run may carry: the older
+// policy's allowlist message, or the newer one's lineage shape rule. Any other refusal, or any other error, is not retried.
+func lineageRefused(err error) bool {
+	if err == nil || !(apierrors.IsForbidden(err) || apierrors.IsInvalid(err)) {
+		return false
+	}
+	m := err.Error()
+	return strings.Contains(m, "may carry only the annotations") || strings.Contains(m, "promotion-lineage")
+}
+
+// LineageTimeout is how long one promote or rollback waits for the origin lookup (Client.LineageTimeout overrides it).
+const LineageTimeout = 5 * time.Second
+
+// resolveOrigin is Lineage.Resolve under an overall deadline: the lookup can read several archived runs one after another, and a
+// slow Results service must not stall a release it only annotates. The lookup runs on its own goroutine so a source that ignores
+// its context cannot hold the request either.
+func (c *Client) resolveOrigin(ctx context.Context, namespace, imageRef, commit, digest string) lineage.Resolution {
+	d := c.LineageTimeout
+	if d <= 0 {
+		d = LineageTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+	done := make(chan lineage.Resolution, 1)
+	go func() { done <- c.Lineage.Resolve(ctx, namespace, imageRef, commit, digest) }()
+	select {
+	case r := <-done:
+		return r
+	case <-ctx.Done():
+		return lineage.Resolution{Unknown: "lineage lookup timed out"}
+	}
 }
 
 // unknownText is the answer's "origin unknown: <why>", or "" when nothing was asked.
