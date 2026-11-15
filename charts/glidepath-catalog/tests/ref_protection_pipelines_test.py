@@ -116,6 +116,39 @@ class Order(unittest.TestCase):
         self.assertNotIn("$(params.git", script)
         self.assertNotIn("$(params.revision", script)
 
+    def test_the_guard_reads_its_run_name_from_the_pod_label(self):
+        # Live failure 2026-11-15: the env was $(context.pipelineRun.name), which a Task never substitutes, so every
+        # build was refused with "could not read this run ($(context.pipelineRun.name))".
+        task = next(d for d in CAT if d["kind"] == "Task" and d["metadata"]["name"] == GUARD)
+        env = {e["name"]: e for e in task["spec"]["steps"][0]["env"]}
+        self.assertEqual(env["PIPELINE_RUN_NAME"].get("valueFrom", {}).get("fieldRef", {}).get("fieldPath"),
+                         "metadata.labels['tekton.dev/pipelineRun']")
+
+    def test_no_task_uses_a_pipeline_only_context_variable(self):
+        # $(context.pipelineRun.*) and $(context.pipeline.*) resolve only in a Pipeline. In a Task or StepAction they
+        # stay literal text. Descriptions may mention them.
+        bad = []
+
+        def walk(node, where):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if k != "description":
+                        walk(v, where)
+            elif isinstance(node, list):
+                for v in node:
+                    walk(v, where)
+            elif isinstance(node, str):
+                for line in node.splitlines():
+                    if line.lstrip().startswith("#"):
+                        continue
+                    if "$(context.pipelineRun." in line or "$(context.pipeline." in line:
+                        bad.append(f"{where}: {line.strip()}")
+
+        for d in CAT:
+            if d["kind"] in ("Task", "StepAction"):
+                walk(d["spec"], f'{d["kind"]}/{d["metadata"]["name"]}')
+        self.assertEqual(bad, [])
+
     def test_the_release_record_gets_the_summary(self):
         rel = {t["name"]: t for t in PIPELINES["release"]["spec"]["tasks"]}["open-release-pr"]
         v = {p["name"]: p["value"] for p in rel["params"]}["ref-protection"]
@@ -137,7 +170,7 @@ class Order(unittest.TestCase):
 class Setting(unittest.TestCase):
     def mode(self, *args):
         d = [x for x in docs(CATALOG, *args) if x["kind"] == "Task" and x["metadata"]["name"] == GUARD][0]
-        return {e["name"]: e["value"] for e in d["spec"]["steps"][0]["env"]}["REF_PROTECTION_MODE"]
+        return {e["name"]: e.get("value") for e in d["spec"]["steps"][0]["env"]}["REF_PROTECTION_MODE"]
 
     def test_required_by_default_off_only_when_set(self):
         self.assertEqual(self.mode(), "required")
@@ -159,7 +192,7 @@ class Script(unittest.TestCase):
             script = script.replace("$(results.ref-protection.path)", os.path.join(cls.tmp, "res-" + mode)) \
                            .replace("$(results.ref-protection-summary.path)", os.path.join(cls.tmp, "sum-" + mode))
             put(os.path.join(cls.tmp, f"{mode}.sh"), script)
-            cls.env_of = {e["name"]: e["value"] for e in task["spec"]["steps"][0]["env"]}
+            cls.env_of = {e["name"]: e.get("value") for e in task["spec"]["steps"][0]["env"]}
         bin_ = os.path.join(cls.tmp, "bin")
         os.makedirs(bin_)
         kubectl = '#!/usr/bin/env bash\n[[ -f "$FX/run.json" ]] || { echo "not found" >&2; exit 1; }\ncat "$FX/run.json"\n'
