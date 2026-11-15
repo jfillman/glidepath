@@ -169,6 +169,12 @@ spec:
     - { name: is-flow-terminal, value: {{ $isLast | quote }} }
     - { name: git-url, value: "$(body.subject.content.git-url)" }
     - { name: git-revision, value: "$(body.subject.content.revision)" }
+    {{/* Where the commit came from (stage-debrief puts the originating run's ref and sha in every domain event, from that
+    run's own Pipelines-as-Code annotations or its stamp). The Trigger stamps them on the chained run as
+    glidepath.io/origin-* annotations, which verify-ref-protection (the first task of the chained Pipeline) verifies itself;
+    a run with none is refused. Always present in the event (possibly empty), so the JSONPath never errors. */}}
+    - { name: origin-ref, value: "$(body.subject.content.origin-ref)" }
+    - { name: origin-sha, value: "$(body.subject.content.origin-sha)" }
     - { name: image-ref, value: "$(body.subject.content.{{ $imageField }})" }
     {{/* No "outcome" param: a binding param's $(body...) JSONPath is evaluated
     unconditionally, and build/deploy/release events have no subject.content.outcome
@@ -214,6 +220,8 @@ spec:
     - name: is-flow-terminal
     - name: git-url
     - name: git-revision
+    - name: origin-ref
+    - name: origin-sha
     - name: image-ref
     - name: chain-id
     - name: traceparent
@@ -226,6 +234,11 @@ spec:
       kind: PipelineRun
       metadata:
         name: $(tt.params.pipeline-run-name)
+        annotations:
+          # Set by this Trigger from the verified event, never by a repository file (admission refuses glidepath.io/
+          # annotations on a run a .tekton file creates): the ref this chain's commit was pushed to, and the commit.
+          glidepath.io/origin-ref: $(tt.params.origin-ref)
+          glidepath.io/origin-sha: $(tt.params.origin-sha)
         labels:
           # hangar.io/app (2026-09-05): matches the same label the Rollout/Deployment
           # this app's own ApplicationEnvironment renders already carries

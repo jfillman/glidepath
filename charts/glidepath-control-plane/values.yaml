@@ -50,7 +50,9 @@ cicdRunAdmission:
   # A tag a push may start those Pipelines from, as the full ref. A branch named like a tag (refs/heads/refs/tags/x) does not match:
   # the decision is made on the full ref Pipelines-as-Code records as source-branch. A name is all this can check; whether
   # the ref is PROTECTED on the git host (who may push the tag, review on the branch) is not something an admission policy
-  # can see. docs/admin/security.md, "What remains possible", says what that leaves open.
+  # can see. That is the second layer: the catalog's verify-ref-protection task (refProtection.mode, default required)
+  # asks glidepath-api, which is given these two values (PROTECTED_BRANCHES, TAG_REF_PATTERN). docs/admin/security.md,
+  # "Ref protection", says what that leaves open when it is off.
   tagRefPattern: '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
   # The prefixes an app's image repository may start with (registry host and namespace, ending in /). The repository must be
   # <prefix><app-name> or <prefix><app-name>-pr. Empty: <host>/<the repository's owner>/<app-name>[-pr], any host. Set it to the
@@ -162,12 +164,12 @@ tektonResultsRelayImage: ghcr.io/jfillman/glidepath-tekton-results-relay:latest
 
 # templates/api/glidepath-api.yaml (docs/admin/api.md). Empty renders nothing; api-ci.yaml sets it
 # to an immutable sha- tag on main after pushing a multi-arch image.
-apiImage: ghcr.io/jfillman/glidepath-api:sha-9cecd73
+apiImage: ghcr.io/jfillman/glidepath-api:sha-2d06e4d
 # The glidepath-validate image (tools/validate.Containerfile), run beside the API as `glidepath validate --serve
 # 127.0.0.1:8081` for POST /v1/apps/{app}/cicd/validations (docs/admin/api.md#validate-a-cicdyaml-change): the same
 # validator the catalog's cicd-validate check runs, so the API has no second copy of the rules. validate-image-ci sets
 # this line and the catalog's to the same sha- tag; not hand-edited.
-cicdValidatorImage: ghcr.io/jfillman/glidepath-validate:sha-9cecd73
+cicdValidatorImage: ghcr.io/jfillman/glidepath-validate:sha-2d06e4d
 api:
   replicas: 2
   # Usernames (as TokenReview reports them) that may send X-Glidepath-On-Behalf-Of: Tower's
@@ -556,6 +558,21 @@ itsm:
 # empty: it answers 503. glidepath-api's promote and rollback need it.
 githubRead:
   callers:
+    - system:serviceaccount:platform-system:glidepath-api
+  # Extra repository permissions the broker adds to the token it mints for glidepath-api's GET /ref-protection call, and
+  # to no other token. Default {}: today's read-only set (contents, pull_requests, metadata), with which a ruleset's
+  # bypass_actors list is NOT visible, so refProtection.mode required reports every ref unverifiable. GitHub returns
+  # bypass_actors only to a token with write access to the ruleset (REST docs, "Get a repository ruleset"): the platform's
+  # GitHub App must first be granted the repository permission Administration: write by its owner, then set
+  # {administration: write} here. Only administration (read|write) is accepted. docs/admin/security.md, Ref protection.
+  #
+  # ONLY IF YOU ACCEPT THIS RISK, and the recommendation is not to: see "Ref protection" in docs/admin/security.md for the blast
+  # radius. In short: while this is set, glidepath-api (and anything that can act as it) can obtain a token with repository
+  # Administration: write on any app's source repository for about an hour per mint: edit or disable rulesets and branch
+  # protection, add deploy keys, change settings. The broker mints it only for the identities in refProtectionCallers, for the
+  # ref-protection purpose, one source repository per token (never a gitops repository), and logs every mint.
+  refProtectionPermissions: {}
+  refProtectionCallers:
     - system:serviceaccount:platform-system:glidepath-api
 
 # The broker's /agent-installation-token (agenttoken.go, Autopilot AP-B1, hangar D4): a token for the agents' own GitHub

@@ -151,7 +151,7 @@ the prod cluster arrive as `hangar:<cluster>:<serviceaccount>`).
 
 **What you may read** is a SubjectAccessReview in the app's `-cicd` namespace, on a group nothing
 serves: `glidepath.hangar.io`, resources `runs`, `runs/logs`, `releases`, `evidence`, `tests`, `environments`,
-`events` and `cicd` (verb `validate`). RBAC
+`events`, `cicd` (verb `validate`) and `refprotection` (see [Ref protection](#ref-protection)). RBAC
 only needs the strings, so access is ordinary RBAC:
 
 - `api.readers` binds the chart's `glidepath-api-reader` ClusterRole cluster-wide (users, groups,
@@ -497,6 +497,55 @@ sidecar doesn't answer, the call is `GP-API-502`.
 
 Refusals are `GP-API-400`: neither or both of `patch` and `content`, a patch that isn't an object, a `baseRef` that
 isn't a ref of the repo, or a base file a patch can't be applied to (not a YAML mapping).
+
+## Ref protection
+
+`GET /v1/apps/{app}/ref-protection?repo=<owner>/<name>&ref=<full ref>&sha=<commit>` (API 0.12.0, tier T0) says whether
+the git host protects that ref so the commit could only have arrived through review. It is the platform's second
+layer behind the admission policy's name check (security.md, [Ref protection](security.md#ref-protection)): the
+privileged Pipelines call it as their first task, with the repository, ref and sha Pipelines-as-Code recorded on the run,
+and refuse the run unless the verdict is `protected`. It needs `get` on `refprotection.glidepath.hangar.io` in the app's
+namespace: `glidepath-app` grants it to that app's `pipeline-runner`, nothing else. `repo` must be one of the app's own
+repositories under the platform's owner (a source repo, its gitops repo, or where its `cicd.yaml` lives).
+
+```json
+{"verdict": "unprotected", "repo": "jfillman/shop", "ref": "refs/heads/main", "sha": "7f3c…", "kind": "branch", "mainLike": true,
+ "reasons": ["branch main is not protected as required: missing blocking deletion"],
+ "missing": ["blocking deletion"],
+ "bypass": [{"source": "ruleset 100 (Repository)", "actorType": "RepositoryRole", "actorId": 5, "mode": "always", "moot": false, "note": "repository administrators"}],
+ "protectedBy": ["ruleset 100 (Repository)"]}
+```
+
+`verdict` is one of `protected`, `unprotected`, `unavailable` (the host says its plan has no rulesets or branch
+protection for this repository: its own answer, never read as protected), or `unverifiable` (the host did not show enough:
+a ruleset that cannot be read, a bypass list the token is not shown). Only `protected` is a yes. A host that does not
+answer is 502, never a verdict, and the caller refuses on it too. The answer is always 200 otherwise, carries `reasons`
+a person can act on, and is never cached: every call reads the host again with the broker's per-request read token
+([below](#the-github-read-token)); each list is paged and bounded.
+
+What "protected" means, from what the host reports:
+
+| Ref | Needs | Bypass |
+|---|---|---|
+| Branch | an active ruleset (or classic branch protection) on it: pull requests with at least one approving review (`required_approving_review_count` >= 1) and `dismiss_stale_reviews_on_push` or `require_last_push_approval` (classic: `dismiss_stale_reviews` / `require_last_push_approval`), blocking force pushes (`non_fast_forward`) and deletion, all summed over every rule that applies; the commit is on the branch. `require_code_owner_review` and `required_review_thread_resolution` come back in `notes` | A write or maintain role, a custom role, a team, a deploy key or a named user may not bypass it (**moot**: anyone with push rights). Repository administrators, organization administrators and GitHub Apps may: they are reported in `bypass`, not counted. A bypass list the host does not return to the token is `unverifiable`, never "none" |
+| Tag | active tag rulesets matching the tag (`include`/`exclude`, `~ALL`, globs) that between them restrict `creation`, `update` and `deletion`, and the tagged commit is on a configured protected branch (`PROTECTED_BRANCHES`, the chart's `cicdRunAdmission.protectedBranches`) that is itself protected as above | as for a branch: whoever can still create the tag must not be a push-rights class |
+
+Reruns, promotes and rollbacks started through this API carry a stamped origin (`glidepath.io/origin-ref`, `origin-sha`) that this endpoint verifies for
+their guard: a rerun copies the original run's, promote and rollback stamp the release's commit and the first protected branch (security.md, Ref protection).
+
+`mainLike` says whether the ref is a protected branch name or matches `TAG_REF_PATTERN` (the chart's
+`cicdRunAdmission.tagRefPattern`): a build of any other ref (a side branch) writes no main image, so the build's
+task passes it; a privileged Pipeline ignores it.
+
+GitHub endpoints used, all with the one token of the request (the broker's `ref-protection` purpose): `GET /repos/{o}/{r}/rules/branches/{branch}`,
+`GET /repos/{o}/{r}/rulesets?includes_parents=true`, `GET /repos/{o}/{r}/rulesets/{id}` (**Metadata: read** to call; but GitHub returns a ruleset's
+`bypass_actors` only to a token with **write access to the ruleset**, i.e. the App permission Administration: write), `GET /repos/{o}/{r}/compare/{base}...{head}`
+(**Contents: read**) and `GET /repos/{o}/{r}/branches/{branch}/protection` (classic protection, **Administration: read**). A bypass list the token is not shown is
+`unverifiable` with a reason naming the permission; there is no way to read it as "none". The default token (contents, pull requests, metadata read)
+cannot see bypass lists: the owner grants the App Administration: write and the cluster sets `githubRead.refProtectionPermissions` (security.md, Ref protection). About 4 to 6 GitHub
+calls per branch check and 8 to 10 per tag check (counted there); a 429 or rate-limit 403 is retried three times within a 10 s cap, then 502. `ref` may not contain empty, `.` or `..`
+segments or encoded characters (400); the all-zero sha and a sha that is not a commit (an annotated tag object) are refused. Rulesets on a private repository need
+GitHub Team or Enterprise (or a public repository); on a plan without them the host answers 403 with an upgrade message, the `unavailable` verdict.
 
 ## Live and archived reads
 

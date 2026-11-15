@@ -35,6 +35,14 @@ const (
 	AnnotationRerunOf = "glidepath.hangar.io/rerun-of"
 	AnnotationKeyHash = "glidepath.hangar.io/idempotency-key-sha256"
 
+	// The origin of a run's commit (pipeline trust T3): the ref and sha the chain started from, which the first task of the
+	// run's Pipeline (verify-ref-protection) verifies against the git host. Stamped by the platform only (the Triggers on a
+	// chained run, this API on a rerun, promote and rollback); admission refuses glidepath.io/ annotations on a run a
+	// repository file creates. AnnotationOriginEvent marks the rerun of a run that was not a push (a pull request build).
+	AnnotationOriginRef   = "glidepath.io/origin-ref"
+	AnnotationOriginSha   = "glidepath.io/origin-sha"
+	AnnotationOriginEvent = "glidepath.io/origin-event"
+
 	// maxGeneratedPrefix is the API server's own limit on a generateName prefix (63 - 5 random
 	// characters), kept so a re-run's name is as long as the one Tower's generateName got.
 	maxGeneratedPrefix = 58
@@ -117,6 +125,20 @@ func str(m map[string]any, path ...string) string {
 	return v
 }
 
+// Origin is where run's commit came from: the ref and sha Pipelines-as-Code recorded when it started from a push, the
+// event type when it started from anything else (a pull request), else the stamp a platform creator put on it. Read from
+// the run itself, never from the caller. A run with no origin has none ("", "", "").
+func Origin(run map[string]any) (ref, sha, event string) {
+	ann, _, _ := unstructured.NestedStringMap(run, "metadata", "annotations")
+	if et := ann["pipelinesascode.tekton.dev/event-type"]; et != "" {
+		if et == "push" {
+			return ann["pipelinesascode.tekton.dev/source-branch"], ann["pipelinesascode.tekton.dev/sha"], ""
+		}
+		return "", "", et
+	}
+	return ann[AnnotationOriginRef], ann[AnnotationOriginSha], ann[AnnotationOriginEvent]
+}
+
 // Body is Tower's rerunBody, ported: a new PipelineRun with the original's spec. Tekton has no
 // "restart", only "submit the same spec again" (what `tkn pipelinerun start --use-pipelinerun` does).
 // Only the kept labels survive; the Pipelines-as-Code annotations and trigger label are dropped, since
@@ -138,15 +160,27 @@ func Body(run map[string]any) map[string]any {
 			}
 		}
 	}
+	meta := map[string]any{
+		"generateName": str(run, "metadata", "name") + "-rerun-",
+		"namespace":    str(run, "metadata", "namespace"),
+		"labels":       labels,
+	}
+	// The origin, and no other annotation: the Pipelines-as-Code ones are dropped (see above), so the re-run's guard
+	// verifies the origin of the run it repeats, which the caller cannot choose.
+	if ref, sha, event := Origin(run); ref != "" || event != "" {
+		ann := map[string]any{}
+		if ref != "" {
+			ann[AnnotationOriginRef], ann[AnnotationOriginSha] = ref, sha
+		} else {
+			ann[AnnotationOriginEvent] = event
+		}
+		meta["annotations"] = ann
+	}
 	return map[string]any{
 		"apiVersion": "tekton.dev/v1",
 		"kind":       "PipelineRun",
-		"metadata": map[string]any{
-			"generateName": str(run, "metadata", "name") + "-rerun-",
-			"namespace":    str(run, "metadata", "namespace"),
-			"labels":       labels,
-		},
-		"spec": spec,
+		"metadata":   meta,
+		"spec":       spec,
 	}
 }
 
@@ -246,7 +280,12 @@ func (c *Client) Rerun(ctx context.Context, namespace, app, name, key string, dr
 	meta := body["metadata"].(map[string]any)
 	delete(meta, "generateName")
 	meta["name"] = newName
-	meta["annotations"] = map[string]any{AnnotationRerunOf: name, AnnotationKeyHash: keyHash}
+	ann, _ := meta["annotations"].(map[string]any)
+	if ann == nil {
+		ann = map[string]any{}
+	}
+	ann[AnnotationRerunOf], ann[AnnotationKeyHash] = name, keyHash
+	meta["annotations"] = ann
 	err = c.Store.Create(ctx, namespace, body, dryRun)
 	if apierrors.IsAlreadyExists(err) {
 		r, err := c.existing(ctx, namespace, name, keyHash, newName, dryRun)

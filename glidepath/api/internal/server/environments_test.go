@@ -195,6 +195,7 @@ func withEnvs(t *testing.T, allow map[string]bool) (*Server, *fakeStore, *ghStub
 	)
 	s.Envs = &environments.Client{
 		Owner:     "jfillman",
+		OriginRef: "refs/heads/main",
 		GitHub:    func(app string) environments.GitHub { return broker.Session(app) },
 		Templates: fakeTemplates{},
 		Runs:      store,
@@ -283,6 +284,11 @@ func TestPromoteFromGround(t *testing.T) {
 		if strings.HasPrefix(k, "pipelinesascode.tekton.dev/") {
 			t.Fatal("glidepath-api-pipelinerun-shape refuses PaC annotations")
 		}
+	}
+	// The release run's guard verifies this origin: the protected branch the platform is configured with, and the commit the
+	// source release file names (never the client's).
+	if ann[pipelineruns.AnnotationOriginRef] != "refs/heads/main" || ann[pipelineruns.AnnotationOriginSha] != devSHA {
+		t.Fatalf("a promote run carries the origin the guard verifies: %v", ann)
 	}
 
 	// The same key again: one run, answered as a replay.
@@ -452,6 +458,12 @@ func TestRollbackPlanAndRollback(t *testing.T) {
 			t.Errorf("param %s = %v, want %s", p, param(run, p), v)
 		}
 	}
+	// A rollback goes to an older reviewed commit: its sha is the target's, the ref the configured protected branch, and the
+	// guard accepts it by design when that commit is on the protected branch.
+	rann := run["metadata"].(map[string]any)["annotations"].(map[string]any)
+	if rann[pipelineruns.AnnotationOriginRef] != "refs/heads/main" || rann[pipelineruns.AnnotationOriginSha] != "1111111aaaa" {
+		t.Fatalf("a rollback run carries its target's origin: %v", rann)
+	}
 	if st, out, _ := postJSON(t, s, path, hdr("rel", "k1"), `{"cluster":"hangar-prod","targetReleaseId":"rel-1","reason":"error budget"}`); st != 200 || out["replayed"] != true || out["pipelineRun"] != name {
 		t.Fatalf("replay: %d %v", st, out)
 	}
@@ -538,5 +550,26 @@ func TestEnvironmentAuthorization(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), `"caller":"tower","onBehalfOf":"user:default/jfillman"`) {
 		t.Fatalf("audit names both: %s", logs)
+	}
+}
+
+// The origin is never the caller's: a body that names one is ignored, and with no configured protected branch nothing is stamped
+// (the run's guard then refuses it as having no origin).
+func TestPromoteOriginIsNotTheCallers(t *testing.T) {
+	s, store, _, _ := withEnvs(t, releaser)
+	st, out, body := postJSON(t, s, "/v1/apps/shop/environments/staging/promote", hdr("rel", "k9"),
+		`{"cluster":"hangar-prod","sourceEnv":"dev","sourceCluster":"hangar-dev","originRef":"refs/heads/evil","originSha":"`+strings.Repeat("9", 40)+`","annotations":{"glidepath.io/origin-ref":"refs/heads/evil"}}`)
+	if st != 201 {
+		t.Fatalf("%d %s", st, body)
+	}
+	ann := store.objs[out["pipelineRun"].(string)]["metadata"].(map[string]any)["annotations"].(map[string]any)
+	if ann[pipelineruns.AnnotationOriginRef] != "refs/heads/main" || ann[pipelineruns.AnnotationOriginSha] != devSHA {
+		t.Fatalf("%v", ann)
+	}
+	s.Envs.OriginRef = ""
+	_, out, _ = postJSON(t, s, "/v1/apps/shop/environments/staging/promote", hdr("rel", "k10"), `{"cluster":"hangar-prod","sourceEnv":"dev","sourceCluster":"hangar-dev"}`)
+	ann = store.objs[out["pipelineRun"].(string)]["metadata"].(map[string]any)["annotations"].(map[string]any)
+	if _, has := ann[pipelineruns.AnnotationOriginRef]; has {
+		t.Fatalf("no configured protected branch, no stamp: %v", ann)
 	}
 }

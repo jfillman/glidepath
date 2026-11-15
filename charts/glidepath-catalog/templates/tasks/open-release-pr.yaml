@@ -109,6 +109,13 @@ spec:
       type: string
       default: ""
       description: For a rollback, why.
+    - name: ref-protection
+      type: string
+      default: ""
+      description: >-
+        verify-ref-protection's one-line summary for this run (verified, or "ref protection: Off here ..." where the
+        platform has set refProtection.mode off), written into the release record as refProtection so the gap or the
+        proof is in the evidence (docs/admin/security.md, Ref protection).
     - name: change-request-id
       type: string
       default: ""
@@ -182,6 +189,8 @@ spec:
           value: $(params.rollback-of)
         - name: ROLLBACK_REASON
           value: $(params.rollback-reason)
+        - name: REF_PROTECTION
+          value: $(params.ref-protection)
         - name: NAMESPACE
           # For the release-tracking ConfigMap (this cluster, this Application's own
           # namespace) - $(context.taskRun.namespace) is the correct Task-level
@@ -262,6 +271,7 @@ spec:
             --from-literal="image=${IMAGE_REF}" \
             --from-literal="rollbackOf=${ROLLBACK_OF}" \
             --from-literal="rollbackReason=${ROLLBACK_REASON}" \
+            --from-literal="refProtection=${REF_PROTECTION}" \
             --from-literal="appNamespace=${APP_NAMESPACE}" \
             --from-literal="appName=${APP_NAME}" \
             --from-literal="env=${ENV}" \

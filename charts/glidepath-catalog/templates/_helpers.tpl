@@ -567,6 +567,15 @@ echo "published for the render: $(find /publish/inputs -type f | wc -l) files; t
 {{- end -}}
 
 {{- /*
+glidepath-catalog.refProtectionMode: refProtection.mode, required (default) or off, nothing else.
+*/ -}}
+{{- define "glidepath-catalog.refProtectionMode" -}}
+{{- $m := (.Values.refProtection | default dict).mode | default "required" -}}
+{{- if not (has $m (list "required" "off")) }}{{ fail (printf "refProtection.mode must be required or off, not %q" $m) }}{{ end -}}
+{{ $m }}
+{{- end -}}
+
+{{- /*
 glidepath-catalog.ociLayoutLib: files/lib/oci-layout.sh (oci_layout_validate), to splice into the push-image step. Structural validation of
 the OCI layout the build pod wrote: the registry push credential is only used after it passes (docs/admin/security.md).
 */ -}}

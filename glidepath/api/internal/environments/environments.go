@@ -99,6 +99,7 @@ func (k kubeTemplates) Get(ctx context.Context, namespace, name string) (map[str
 // Client promotes and rolls back.
 type Client struct {
 	Owner     string                  // the GitHub owner of every app repo (the chart's githubOwner)
+	OriginRef string                  // the full ref promote and rollback runs claim as their origin (refs/heads/<first protected branch>); "" stamps none
 	GitHub    func(app string) GitHub // a new Session per request
 	Templates Templates               //
 	Runs      pipelineruns.Store      //
@@ -261,6 +262,13 @@ func (c *Client) startRun(ctx context.Context, app *apps.App, p releaseRun, keyH
 		ann = map[string]any{}
 	}
 	ann[pipelineruns.AnnotationKeyHash] = keyHash
+	// The origin the run's guard (verify-ref-protection) verifies: stamped here, by the API, from the commit this release is
+	// built from (a release file or record the platform wrote) and the platform's configured protected branch; nothing the
+	// caller sent. The guard checks the claim against the git host (the ref protected, the commit on it), so a rollback to an
+	// older reviewed commit of that branch passes by design and a commit that never reached it is refused.
+	if c.OriginRef != "" && p.gitRevision != "" {
+		ann[pipelineruns.AnnotationOriginRef], ann[pipelineruns.AnnotationOriginSha] = c.OriginRef, p.gitRevision
+	}
 	meta["annotations"] = ann
 	run["metadata"] = meta
 

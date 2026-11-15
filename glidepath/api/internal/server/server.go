@@ -30,6 +30,7 @@ import (
 	"github.com/glidepath/api/internal/metrics"
 	"github.com/glidepath/api/internal/pipelineruns"
 	"github.com/glidepath/api/internal/previews"
+	"github.com/glidepath/api/internal/refprotection"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
 	"github.com/glidepath/api/internal/testkube"
@@ -53,9 +54,11 @@ type Server struct {
 	Envs     *environments.Client
 	Previews *previews.Client // GET /v1/apps/{app}/previews
 	Cicd     *cicd.Client     // POST /v1/apps/{app}/cicd/validations
-	Events   *events.Store    // nil: no event routes
-	Tap      http.Handler     // the broker's ClusterInterceptor glidepath-api-events (events.Tap)
-	Peer     http.Handler     // the other replicas (events.PeerHandler)
+	// GET /v1/apps/{app}/ref-protection: nil answers 503 (the route is registered but unconfigured).
+	RefProtection *refprotection.Client
+	Events        *events.Store // nil: no event routes
+	Tap           http.Handler  // the broker's ClusterInterceptor glidepath-api-events (events.Tap)
+	Peer          http.Handler  // the other replicas (events.PeerHandler)
 	// Heartbeat is how often an idle event stream gets a comment line; ResumeGrace how far before a
 	// Last-Event-ID a resume also replays (events.Resume).
 	Heartbeat   time.Duration
@@ -119,6 +122,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/apps/{app}/environments/{env}/rollback", s.wrap(op{"rollbackEnvironment", "T2", "environments", "", "rollback", false}, s.rollbackEnvironment))
 	mux.Handle("GET /v1/events", s.wrap(op{"streamEvents", "T0", "events", "", "list", true}, s.streamEvents))
 	mux.Handle("GET /v1/events/recent", s.wrap(op{"listRecentEvents", "T0", "events", "", "list", true}, s.listRecentEvents))
+	mux.Handle("GET /v1/apps/{app}/ref-protection", s.wrap(op{"getRefProtection", "T0", "refprotection", "", "get", false}, s.getRefProtection))
 	// A POST that writes nothing: T0, so a delegate needs no on-behalf-of and the audit line has no dryRun.
 	mux.Handle("POST /v1/apps/{app}/cicd/validations", s.wrap(op{"validateCicd", "T0", "cicd", "", "validate", false}, s.validateCicd))
 	// Not /v1: the broker's interceptor call and the replicas' fan-out. Each authenticates its caller
@@ -173,11 +177,14 @@ func classify(err error) (int, apiError) {
 		lvInv  live.Invalid
 		lvGone live.Gone
 		ciInv  cicd.Invalid
+		rpInv  refprotection.Invalid
 	)
 	var pgInv pageInvalid
 	switch {
 	case errors.As(err, &pgInv):
 		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", "page with limit, then pass the answer's continue back with the same limit"}
+	case errors.As(err, &rpInv):
+		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
 	case errors.As(err, &ciInv):
 		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
 	case errors.Is(err, live.ErrBusy):

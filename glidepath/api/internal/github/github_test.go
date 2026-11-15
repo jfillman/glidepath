@@ -3,11 +3,13 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -159,5 +161,109 @@ func TestFailedMintIsRetried(t *testing.T) {
 	}
 	if _, err := s.OpenPR(context.Background(), "o", "shop", "b"); err != nil || calls != 2 {
 		t.Fatalf("second: %v after %d mints", err, calls)
+	}
+}
+
+// A session for a purpose sends it to the broker (and only then), so the broker can mint that purpose's token.
+func TestSessionForPurposeSendsIt(t *testing.T) {
+	var bodies []map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/github-read-token" {
+			var req map[string]string
+			json.NewDecoder(r.Body).Decode(&req)
+			bodies = append(bodies, req)
+			json.NewEncoder(w).Encode(map[string]string{"token": "ghs-x"})
+			return
+		}
+		io.WriteString(w, `[]`)
+	}))
+	defer srv.Close()
+	tok := filepath.Join(t.TempDir(), "token")
+	os.WriteFile(tok, []byte("sa\n"), 0o600)
+	b := &Broker{URL: srv.URL, TokenPath: tok, HTTP: srv.Client(), API: srv.URL}
+	b.SessionFor("shop", "ref-protection").GetJSON(context.Background(), "o", "shop", "rulesets")
+	b.Session("shop").GetJSON(context.Background(), "o", "shop", "rulesets")
+	if len(bodies) != 2 || bodies[0]["purpose"] != "ref-protection" {
+		t.Fatalf("%v", bodies)
+	}
+	if _, has := bodies[1]["purpose"]; has {
+		t.Fatalf("a plain session sends no purpose: %v", bodies[1])
+	}
+}
+
+func rateStub(t *testing.T, statuses []int, hdr map[string]string, msg string) (*Broker, *int, *[]time.Duration) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/github-read-token" {
+			io.WriteString(w, `{"token":"ghs-x"}`)
+			return
+		}
+		st := statuses[min(calls, len(statuses)-1)]
+		calls++
+		for k, v := range hdr {
+			w.Header().Set(k, v)
+		}
+		w.WriteHeader(st)
+		if st == 200 {
+			io.WriteString(w, `[]`)
+			return
+		}
+		io.WriteString(w, `{"message":"`+msg+`"}`)
+	}))
+	t.Cleanup(srv.Close)
+	tok := filepath.Join(t.TempDir(), "token")
+	os.WriteFile(tok, []byte("sa\n"), 0o600)
+	var slept []time.Duration
+	return &Broker{URL: srv.URL, TokenPath: tok, HTTP: srv.Client(), API: srv.URL, Sleep: func(d time.Duration) { slept = append(slept, d) }}, &calls, &slept
+}
+
+// 429 and the secondary rate limit (403) are retried a bounded number of times, waiting what GitHub asked up to a cap.
+func TestGetJSONRetriesRateLimits(t *testing.T) {
+	b, calls, slept := rateStub(t, []int{429, 200}, map[string]string{"Retry-After": "2"}, "rate limited")
+	st, _, err := b.Session("shop").GetJSON(context.Background(), "o", "shop", "rulesets")
+	if err != nil || st != 200 || *calls != 2 || len(*slept) != 1 || (*slept)[0] != 2*time.Second {
+		t.Fatalf("429 then 200: %d %v calls=%d slept=%v", st, err, *calls, *slept)
+	}
+	b, calls, slept = rateStub(t, []int{403, 200}, map[string]string{"Retry-After": "1"}, "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.")
+	if st, _, err := b.Session("shop").GetJSON(context.Background(), "o", "shop", "rulesets"); err != nil || st != 200 || *calls != 2 {
+		t.Fatalf("secondary limit: %d %v calls=%d", st, err, *calls)
+	}
+	// An ordinary 403 (a permission, a plan) is an answer, never retried.
+	b, calls, _ = rateStub(t, []int{403, 200}, nil, "Resource not accessible by integration")
+	if st, _, err := b.Session("shop").GetJSON(context.Background(), "o", "shop", "rulesets"); err != nil || st != 403 || *calls != 1 {
+		t.Fatalf("plain 403: %d %v calls=%d", st, err, *calls)
+	}
+}
+
+func TestGetJSONRateLimitGivesUpActionably(t *testing.T) {
+	// Asked to wait longer than the cap: not waited for at all, and the caller is told how long.
+	b, calls, slept := rateStub(t, []int{429}, map[string]string{"Retry-After": "3600"}, "rate limited")
+	_, _, err := b.Session("shop").GetJSON(context.Background(), "o", "shop", "rulesets")
+	var rl RateLimited
+	if !errors.As(err, &rl) || rl.Wait != time.Hour || *calls != 1 || len(*slept) != 0 {
+		t.Fatalf("over the cap: %v calls=%d slept=%v", err, *calls, *slept)
+	}
+	// A short limit that does not lift: bounded tries, each wait within the cap.
+	b, calls, slept = rateStub(t, []int{429}, map[string]string{"Retry-After": "5"}, "rate limited")
+	_, _, err = b.Session("shop").GetJSON(context.Background(), "o", "shop", "rulesets")
+	if !errors.As(err, &rl) {
+		t.Fatalf("want RateLimited, got %v", err)
+	}
+	if *calls != maxRateAttempts || len(*slept) != maxRateAttempts-1 {
+		t.Fatalf("calls %d slept %v, bound %d", *calls, *slept, maxRateAttempts)
+	}
+	for _, d := range *slept {
+		if d > maxRateWait {
+			t.Fatalf("waited %s, cap %s", d, maxRateWait)
+		}
+	}
+	if !strings.Contains(err.Error(), "rate limit") || !strings.Contains(err.Error(), "retry") {
+		t.Fatalf("the message must say what to do: %v", err)
+	}
+	// x-ratelimit-reset (epoch seconds) is honoured when there is no Retry-After.
+	reset := strconv.FormatInt(time.Now().Add(2*time.Second).Unix()+1, 10)
+	b, calls, slept = rateStub(t, []int{403, 200}, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}, "API rate limit exceeded")
+	if st, _, err := b.Session("shop").GetJSON(context.Background(), "o", "shop", "rulesets"); err != nil || st != 200 || len(*slept) != 1 || (*slept)[0] <= 0 || (*slept)[0] > maxRateWait {
+		t.Fatalf("reset: %d %v slept=%v", st, err, *slept)
 	}
 }
