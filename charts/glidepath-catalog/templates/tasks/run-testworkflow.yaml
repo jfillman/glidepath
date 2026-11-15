@@ -121,7 +121,7 @@ spec:
       description: "The check ride's name suffix: the synced TestWorkflow is <app-name>-<check-ride-name>. From the catalog's checkRide.workflowName."
   results:
     - name: fallback-needed
-      description: "'true' when the repository has no glidepath/<name>.yaml but has ./integration-test.sh. The Pipeline then runs run-integration-script (as source-runner, with no Kubernetes credential) after this Task; this Task records nothing else for that case. 'false' otherwise."
+      description: "'true' when the repository has no glidepath/<name>.yaml but has ./integration-test.sh. The Pipeline then runs run-integration-script (as source-runner, with no Kubernetes credential) after this Task. For that case this Task also writes workflow-source=script and outcome=delegated (the verdict is run-integration-script's own outcome) and no other result. 'false' otherwise."
     - name: outcome
       description: "'passed'/'failed'/'timeout'/'skipped' - from the Testkube TestWorkflowExecution's own result.status (aborted-but-really-passed already corrected below), 'delegated' when the repository has no workflow file and ./integration-test.sh runs instead: that runs in run-integration-script, a Task of its own, and its own outcome result is the verdict. 'skipped' only ever means cicd.yaml's test.enabled is false; a missing workflow is 'failed'. Same outcome/findings-summary shape as catalog/tasks/sast-scan.yaml and image-scan.yaml, not a new convention."
     - name: step-summary

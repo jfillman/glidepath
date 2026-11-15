@@ -251,7 +251,14 @@ class SourceTasks(unittest.TestCase):
         self.assertNotIn("kubectl", text)
         self.assertNotIn("secret", text.lower().replace("secrets", ""))
         self.assertFalse(task.get("volumes"))
-        self.assertIn("fallback-needed", [r["name"] for r in self.tasks["run-testworkflow"]["spec"]["results"]])
+        results = {r["name"]: r.get("description", "") for r in self.tasks["run-testworkflow"]["spec"]["results"]}
+        self.assertIn("fallback-needed", results)
+        # the description must say what the step really writes for that case
+        script = "\n".join(x.get("script", "") for x in steps)
+        for written in ("workflow-source", "outcome=delegated"):
+            self.assertIn(written, results["fallback-needed"])
+        self.assertIn('echo -n "script" > "$(results.workflow-source.path)"', script)
+        self.assertIn('echo -n "delegated" > "$(results.outcome.path)"', script)
 
     def test_generated_test_run_hands_the_script_task_to_source_runner(self):
         script = "\n".join(s.get("script", "") for s in self.tasks["deliver-onboarding-files"]["spec"]["steps"])
