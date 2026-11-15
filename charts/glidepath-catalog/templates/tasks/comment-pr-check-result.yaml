@@ -490,8 +490,10 @@ spec:
         # next attempt gets a new id. The attempts are counted over EVERY image-promotion check run on the commit
         # (filter=all): the default listing (filter=latest) holds only the newest run per check name, so a count taken
         # from it never passed 1 and every later attempt reused the second id, whose PipelineRun already existed
-        # (gitops-backstage#303, 2026-11-14). A promotion that failed before it opened a check run is not counted
-        # there, so a completed promote-<id> run in the namespace also moves the attempt on.
+        # (gitops-backstage#303, 2026-11-14). Each promote run sets its check run's external_id to its TaskRun's name
+        # (promote-<id>-promote), so an id whose run already finished (a count that did not move) is skipped too. The runs
+        # themselves live in the catalog namespace, which a gate has no grant to read; a promotion that refused before
+        # it could open a check run leaves neither (docs/admin/registries.md).
         all_runs="[]"
         for page in $(seq 1 10); do
           chunk="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100&filter=all&page=${page}")" \
@@ -503,7 +505,7 @@ spec:
         prior=""
         for _ in $(seq 1 10); do
           id="$(printf '%s' "${owner}/${repo}#${pr_number}@${head_sha}#${attempts}" | sha256sum | cut -c1-20)"
-          prior="$(kubectl get pipelinerun "promote-${id}" -n "${NAMESPACE}" -o json 2>/dev/null | jq -r '.status.completionTime // empty' 2>/dev/null || true)"
+          prior="$(jq -r --arg x "promote-${id}" '[.[] | select(((.external_id // "") | startswith($x + "-")) and .status == "completed")] | .[0].completed_at // empty' <<<"${all_runs}")"
           [[ -n "${prior}" ]] || break
           echo "promote-${id} already ran and finished at ${prior}: moving to the next attempt"
           attempts=$(( attempts + 1 ))

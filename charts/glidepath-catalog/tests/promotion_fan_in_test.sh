@@ -76,7 +76,6 @@ cat > "$work/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   "get configmap"*) cat "$FX/records.json" ;;
-  "get pipelinerun promote-"*) [[ -f "$FX/runs/$3" ]] && cat "$FX/runs/$3" || { echo "not found" >&2; exit 1; } ;;
   "get pipelinerun"*) [[ -f "$FX/pipelinerun.json" ]] && cat "$FX/pipelinerun.json" || { echo "not found" >&2; exit 1; } ;;
   "patch configmap"*)
     for a in "$@"; do [[ "$prev" == -p ]] && p="$a"; prev="$a"; done
@@ -198,25 +197,28 @@ expect "paged: two pages read" "$(grep -c 'filter=all' "$FX/check-urls")" 2
 scenario count-fails; failed_run 1; touch "$FX/fail-all"; run
 expect "count-fails: no event" "$(events)" 0
 expect "count-fails: exit 0" "$(cat "$FX/rc")" 0
-# a promotion that failed before opening a check run (no image-promotion run) left a finished promote-<id>: the next attempt moves on.
-scenario early-refusal
-id0="$(printf '%s' "jfillman/gitops-gate-api#53@${SHA}#0" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-20)"
-mkdir -p "$FX/runs"; echo '{"status":{"completionTime":"2026-10-28T10:06:00Z"}}' > "$FX/runs/promote-${id0}"
+# a finished promote run whose id the count did not move past (its check run is not named like a gate, or the listing lags): the
+# check run's external_id is the promote TaskRun's name (promote-<id>-promote), so the next attempt skips that id.
+finished_run() { # <attempt>: a completed check run left by the promote run of this attempt's id
+  local idk
+  idk="$(printf '%s' "jfillman/gitops-gate-api#53@${SHA}#$1" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-20)"
+  jq --arg e "promote-${idk}-promote" '.check_runs += [{name: "Other / left-over", status: "completed", conclusion: "failure", external_id: $e, completed_at: "2026-10-28T10:06:00Z", started_at: "2026-10-28T10:05:00Z"}]' \
+    "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+  echo "${idk}"
+}
+scenario id-finished; id0="$(finished_run 0)"
 run
-expect "early refusal: one event" "$(events)" 1
-[[ "$(jq -r .context.id "$FX/events")" != "${id0}" ]] && echo "ok   early refusal: not the finished run's id" || { echo "FAIL early refusal: reused ${id0}"; fail=1; }
-# a promote run with this id still running: the same id (the Trigger's refusal is the right outcome).
+expect "id finished: one event" "$(events)" 1
+[[ "$(jq -r .context.id "$FX/events")" != "${id0}" ]] && echo "ok   id finished: not the finished run's id" || { echo "FAIL id finished: reused ${id0}"; fail=1; }
+# a promote run with this id that has not finished (in progress): the same id (the Trigger's refusal is the right outcome).
 scenario still-running
-mkdir -p "$FX/runs"; echo '{"status":{"startTime":"2026-10-28T10:06:00Z"}}' > "$FX/runs/promote-${id0}"
+id0="$(printf '%s' "jfillman/gitops-gate-api#53@${SHA}#0" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-20)"
+jq --arg e "promote-${id0}-promote" '.check_runs += [{name: "Other / left-over", status: "in_progress", conclusion: null, external_id: $e, started_at: "2026-10-28T10:05:00Z"}]' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
 run
 expect "still running: same id" "$(jq -r .context.id "$FX/events")" "${id0}"
 # ten finished runs: no event, and the PR says so.
 scenario exhausted
-mkdir -p "$FX/runs"
-for k in 0 1 2 3 4 5 6 7 8 9; do
-  idk="$(printf '%s' "jfillman/gitops-gate-api#53@${SHA}#${k}" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-20)"
-  echo '{"status":{"completionTime":"2026-10-28T10:06:00Z"}}' > "$FX/runs/promote-${idk}"
-done
+for k in 0 1 2 3 4 5 6 7 8 9; do finished_run "$k" >/dev/null; done
 run
 expect "exhausted: no event" "$(events)" 0
 expect "exhausted: the PR is told" "$(grep -c 'was not started again' "$FX/posted")" 1
