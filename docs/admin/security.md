@@ -681,14 +681,22 @@ verified):
   Testkube namespace, and a main or tag `build`, which pushes to the main image repository and the build cache.
 - A pull request still cannot start any of these (admission), and nothing in A changes.
 
+**The target comes from the run itself.** `env` and `cluster` are read from the run's own parameters, the same ones the release task uses for its real target, so the guard and the target agree; admission pins their pattern, not their value. An omitted target uses the widest range (the strictest reading above).
+
+**Push access is read when the check runs.** `authorCanPushToRepository` is GitHub's answer now, not at review time: a reviewer who later gains push access starts counting, one who loses it stops. **It MUST be verified with the platform's real App installation token before any cluster runs `required`** (it was checked live with a user token only): if the App cannot see the field, every check is `unverifiable`.
+
+**A release pull request must be untouched.** A baseline candidate's timeline (`GET issues/{n}/timeline`, event names recorded in testdata from real pull requests) must show no `head_ref_force_pushed`, `reopened` or `head_ref_restored` and exactly one `committed` event: replacing the pipeline's one commit needs a force push, adding to it a second commit, both show there. A refused pull request still counts as history, so with no other usable baseline the answer is `unverifiable`, never a first release. 1 to 3 more reads per candidate.
+
+**Open follow-up:** the release commits should be created through the git host's API so they are signed as the App; the baseline could then require the App's verified identity instead of "unlinked and unsigned".
+
 **No elevated permission.** The platform holds no Administration permission for this: the broker's `/github-read-token` mints only contents, pull
 requests and metadata read, whatever a request or a value says (a test posts `administration: write` in the request body and as a leftover environment
 setting, and the token stays read-only). `githubRead.refProtectionPermissions` and `githubRead.refProtectionCallers` are gone from the control plane
 chart; a cluster values file that still sets them is ignored. glidepath-api no longer sends a purpose; one that still does (older than this change) is
 served the same read-only token.
 
-**Calls per check.** One check reads, with the one token of the request and nothing cached: 1 compare (the commit is on the branch); on the gitops repository 1 to 3 pages of closed pull requests, `pulls/{n}/files` for each of the 30 newest merged ones until the target's releases are found, then 3 reads
-(`pulls/{n}`, `pulls/{n}/commits`, the manifest at the merge commit) per release looked at (up to 8, stopping at 5 corroborated), 1 compare per candidate and the baseline's own evidence (below);
+**Calls per check.** One check reads, with the one token of the request and nothing cached: 1 compare (the commit is on the branch); on the gitops repository 1 to 3 pages of closed pull requests, `pulls/{n}/files` for each of the 30 newest merged ones until the target's releases are found, then 4 reads
+(`pulls/{n}`, `pulls/{n}/commits`, `issues/{n}/timeline`, the manifest at the merge commit) per release looked at (up to 8, stopping at 5 corroborated), 1 compare per candidate and the baseline's own evidence (below);
 1 compare per 100 commits to list the range (at most 3 pages); then for each commit not yet covered, 1 `commits/{sha}/pulls`, and for each pull request found once:
 `pulls/{n}` and `pulls/{n}/commits` (1 page each unless a pull request has more than 100 commits), plus one GraphQL query for its reviews (100 to a page, at most 5 pages), and 1 `commits/{sha}` for a merge commit that is not in a range list (a lone commit). A first release of one squash-merged commit is 7 reads;
 a range of 20 commits in 5 pull requests is about 50; each rebase-merged pull request in it adds 3 (see the merge-commit rule). **The evidence stops at 400 reads** (`unverifiable`: "the evidence needs more than 400 GitHub reads"); the response says how many

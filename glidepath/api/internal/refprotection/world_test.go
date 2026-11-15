@@ -69,17 +69,19 @@ type world struct {
 
 // gRelease is a pull request of the gitops repository gitops-app.
 type gRelease struct {
-	n        int
-	title    string
-	login    string
-	mergedAt string // "" = not merged
-	commits  int    // commits of the pull request
-	message  string
-	files    []string // changed files
-	tag      string   // the image tag the manifest sets as merged
-	headSha  string
-	prHead   string // the head the pull request reports, when it is not the one commit (a push after the commit listing)
-	mergeSha string
+	n          int
+	title      string
+	login      string
+	mergedAt   string // "" = not merged
+	commits    int    // commits of the pull request
+	message    string
+	files      []string // changed files
+	tag        string   // the image tag the manifest sets as merged
+	headSha    string
+	events     []string // timeline events besides the one commit (default none)
+	manyEvents int      // that many extra "labeled" events
+	prHead     string   // the head the pull request reports, when it is not the one commit (a push after the commit listing)
+	mergeSha   string
 	// commitLogin is the account GitHub resolved the commit's author and committer to ("" = unlinked, as the platform's own are)
 	commitLogin  string
 	env, cluster string
@@ -439,6 +441,20 @@ func (w *world) gitopsJSON(path string) (int, []byte, error) {
 			items = append(items, fmt.Sprintf(`{"sha":%q,"author":%s,"committer":%s,"commit":{"message":%q}}`, sha, who, who, g.message))
 		}
 		return 200, []byte("[" + strings.Join(items, ",") + "]"), nil
+	case strings.HasPrefix(p, "issues/") && strings.HasSuffix(p, "/timeline"):
+		n, _ := strconv.Atoi(strings.Split(p, "/")[1])
+		g := find(n)
+		if g == nil {
+			return 404, []byte(`{"message":"Not Found"}`), nil
+		}
+		items := []string{fmt.Sprintf(`{"event":"committed","sha":%q}`, g.headSha)}
+		for _, ev := range g.events {
+			items = append(items, fmt.Sprintf(`{"event":%q}`, ev))
+		}
+		for i := 0; i < g.manyEvents; i++ {
+			items = append(items, `{"event":"labeled"}`)
+		}
+		return 200, []byte(page(items, q)), nil
 	case strings.HasPrefix(p, "pulls/") && strings.HasSuffix(p, "/files"):
 		n, _ := strconv.Atoi(strings.Split(p, "/")[1])
 		g := find(n)

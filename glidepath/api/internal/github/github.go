@@ -69,6 +69,16 @@ func (s *Session) Prefetch(ctx context.Context, owner string, repos ...string) {
 	}
 }
 
+// graphqlURL is GitHub's GraphQL endpoint for the configured API base: <base>/graphql on github.com, and on GitHub Enterprise
+// Server (REST base ending in /api/v3) /api/graphql.
+func (b *Broker) graphqlURL() string {
+	base := strings.TrimRight(b.api(), "/")
+	if strings.HasSuffix(base, "/api/v3") {
+		return strings.TrimSuffix(base, "/api/v3") + "/api/graphql"
+	}
+	return base + "/graphql"
+}
+
 func (b *Broker) api() string {
 	if b.API != "" {
 		return b.API
@@ -267,7 +277,7 @@ func (s *Session) GraphQL(ctx context.Context, owner, repo, query string, vars m
 		if err != nil {
 			return 0, nil, err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.b.api()+"/graphql", bytes.NewReader(payload))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.b.graphqlURL(), bytes.NewReader(payload))
 		if err != nil {
 			return 0, nil, err
 		}

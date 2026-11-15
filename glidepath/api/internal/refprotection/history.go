@@ -284,6 +284,12 @@ func (e *engine) corroborate(ctx context.Context, p ghHistoryPull) (*Candidate, 
 			return nil, "its commit was authored or committed by " + who.Login + ", a person's account, not the pipeline's", nil
 		}
 	}
+	// The pull request was not changed after it was opened. The pipeline opens it with one commit and nothing touches it again: a
+	// force push to its head (the only way to replace that commit), a reopen or a restored head branch, or a commit added to it,
+	// shows in its timeline. Anyone with write access to the gitops repository could do those; the pipeline never does.
+	if why, err := e.timelineWhy(ctx, h.GitopsRepo, p.Number); err != nil || why != "" {
+		return nil, why, err
+	}
 	cm, rm := trailerCommitRE.FindStringSubmatch(c.Commit.Message), trailerRepoRE.FindStringSubmatch(c.Commit.Message)
 	if cm == nil || rm == nil {
 		return nil, "its commit has no X-App-Repo and X-App-Commit trailers", nil
@@ -340,4 +346,42 @@ func (e *engine) isPipelineLogin(login string) bool {
 		}
 	}
 	return false
+}
+
+// timelineWhy reads the pull request's timeline (REST issues/{n}/timeline: events head_ref_force_pushed, reopened,
+// head_ref_restored, committed ... recorded in testdata) and says why it is not the untouched pull request the pipeline opened,
+// or "". A timeline that cannot be read in full is unverifiable.
+func (e *engine) timelineWhy(ctx context.Context, repo string, n int) (string, error) {
+	committed := 0
+	why := ""
+	sep := fmt.Sprintf("issues/%d/timeline", n)
+	for page := 1; page <= maxListPages; page++ {
+		body, err := e.doIn(ctx, repo, fmt.Sprintf("%s?per_page=100&page=%d", sep, page))
+		if err != nil {
+			return "", err
+		}
+		var events []struct {
+			Event string `json:"event"`
+		}
+		if err := json.Unmarshal(body, &events); err != nil {
+			return "", &unverifiable{fmt.Sprintf("gitops #%d's timeline could not be read: %v", n, err)}
+		}
+		for _, ev := range events {
+			switch ev.Event {
+			case "committed":
+				committed++
+			case "head_ref_force_pushed", "reopened", "head_ref_restored":
+				if why == "" {
+					why = "its timeline shows " + ev.Event + ": the pull request was changed after it was opened"
+				}
+			}
+		}
+		if len(events) < 100 {
+			if why == "" && committed != 1 {
+				why = fmt.Sprintf("its timeline shows %d commits, the pipeline opens it with one", committed)
+			}
+			return why, nil
+		}
+	}
+	return "", &unverifiable{fmt.Sprintf("gitops #%d's timeline has more than %d events: not read in full", n, maxListPages*100)}
 }

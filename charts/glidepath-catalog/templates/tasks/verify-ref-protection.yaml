@@ -118,8 +118,9 @@ spec:
         [[ "${NAMESPACE}" =~ ^(app|infra)-([a-z0-9-]+)-cicd$ ]] || refuse "namespace ${NAMESPACE} is not an app's -cicd namespace"
         app="${BASH_REMATCH[2]}"
 
-        # The environment and cluster this run is releasing to, from its own parameters (a .tekton file cannot set them: admission binds
-        # them): the baseline of the range must be a release of the same target. A run with no such parameter has no single target.
+        # The environment and cluster this run is releasing to, from its own parameters: the same ones the release task uses for its real
+        # target, so the guard and the target agree (admission pins their pattern, not their value). The baseline of the range must
+        # be a release of the same target; a run with no such parameter has no single target and the widest range applies.
         target=()
         for t in env cluster; do
           v="$(param "${t}")"

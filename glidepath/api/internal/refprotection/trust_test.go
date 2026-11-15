@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -412,5 +413,74 @@ func TestGitopsHistoryWindow(t *testing.T) {
 	v = mustCheck2(t, w, sh(5))
 	if v.Evidence == nil || v.Evidence.From != sh(2) {
 		t.Fatalf("%+v %v", v.Evidence, v.Reasons)
+	}
+}
+
+// ---- a release pull request that was changed after it was opened is not a baseline
+
+func TestAChangedReleasePullRequestIsHistoryButNotABaseline(t *testing.T) {
+	for name, events := range map[string][]string{
+		"force pushed to its head": {"head_ref_force_pushed"},
+		"reopened":                 {"reopened"},
+		"head branch restored":     {"head_ref_deleted", "head_ref_restored"},
+		"a commit added":           {"committed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := baselineWorld(t)
+			w.release(sh(2)).events = events
+			v := mustCheck2(t, w, sh(5))
+			needVerdict(t, v, Unverifiable, "cannot establish which commits this release carries", "its timeline shows")
+			if v.Evidence != nil {
+				t.Fatalf("never a first release: %+v", v.Evidence)
+			}
+		})
+	}
+	// events a normal release has (labels, the head branch deleted after the merge, a force push of the BASE) change nothing
+	w := baselineWorld(t)
+	w.release(sh(2)).events = []string{"labeled", "base_ref_force_pushed", "merged", "head_ref_deleted", "closed"}
+	if v := mustCheck2(t, w, sh(5)); v.Evidence == nil || v.Evidence.From != sh(2) {
+		t.Fatalf("%+v", v)
+	}
+	// an older untouched release is still a baseline behind a changed one
+	w = baselineWorld(t)
+	w.release(sh(2))
+	w.release(sh(4)).events = []string{"head_ref_force_pushed"}
+	if v := mustCheck2(t, w, sh(5)); v.Evidence == nil || v.Evidence.From != sh(2) {
+		t.Fatalf("%+v", v)
+	}
+}
+
+func TestTimelineReadFailuresAreUnverifiable(t *testing.T) {
+	for name, set := range map[string]func(w *world){
+		"500":      func(w *world) { w.override["gitops:issues/900/timeline"] = resp{500, ``} },
+		"garbage":  func(w *world) { w.override["gitops:issues/900/timeline"] = resp{200, `{"x":1}`} },
+		"too long": func(w *world) { w.gitops[0].manyEvents = 300 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := baselineWorld(t)
+			w.release(sh(2))
+			set(w)
+			v := mustCheck2(t, w, sh(5))
+			needVerdict(t, v, Unverifiable)
+			if v.Evidence != nil {
+				t.Fatalf("%+v", v.Evidence)
+			}
+		})
+	}
+}
+
+// GitHub's own timelines (testdata): a force-pushed pull request shows head_ref_force_pushed beside one committed event, a clean
+// one just the one commit.
+func TestRecordedTimelines(t *testing.T) {
+	for file, want := range map[string]string{"real_timeline_force_pushed.json": "head_ref_force_pushed", "real_timeline_clean.json": ""} {
+		b, err := os.ReadFile("testdata/" + file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e := &engine{rd: fixedReader(b), owner: "cli", repo: "cli"}
+		why, err := e.timelineWhy(context.Background(), "cli", 1)
+		if err != nil || (want == "") != (why == "") || !strings.Contains(why, want) {
+			t.Fatalf("%s: %q %v", file, why, err)
+		}
 	}
 }

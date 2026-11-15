@@ -297,3 +297,19 @@ func TestGraphQLPostsTheQueryWithTheRepositoryToken(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+// github.com serves GraphQL at <api>/graphql; GitHub Enterprise Server's REST base ends in /api/v3 and its GraphQL is /api/graphql.
+func TestGraphQLURLFromTheAPIBase(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                                "https://api.github.com/graphql",
+		"https://api.github.com":          "https://api.github.com/graphql",
+		"https://api.github.com/":         "https://api.github.com/graphql",
+		"https://ghe.example.com/api/v3":  "https://ghe.example.com/api/graphql",
+		"https://ghe.example.com/api/v3/": "https://ghe.example.com/api/graphql",
+		"http://127.0.0.1:5555":           "http://127.0.0.1:5555/graphql",
+	} {
+		if got := (&Broker{API: base}).graphqlURL(); got != want {
+			t.Errorf("%q: %s, want %s", base, got, want)
+		}
+	}
+}
