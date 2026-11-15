@@ -47,7 +47,7 @@ func newRPHost(t *testing.T) *rpHost {
 		case strings.HasPrefix(r.URL.Path, "/repos/jfillman/shop/rules/branches/main"):
 			io.WriteString(w, `[{"type":"deletion","ruleset_source_type":"Repository","ruleset_source":"jfillman/shop","ruleset_id":100},
 			 {"type":"non_fast_forward","ruleset_source_type":"Repository","ruleset_source":"jfillman/shop","ruleset_id":100},
-			 {"type":"pull_request","parameters":{"required_approving_review_count":1},"ruleset_source_type":"Repository","ruleset_source":"jfillman/shop","ruleset_id":100}]`)
+			 {"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true},"ruleset_source_type":"Repository","ruleset_source":"jfillman/shop","ruleset_id":100}]`)
 		case r.URL.Path == "/repos/jfillman/shop/rulesets/100":
 			io.WriteString(w, `{"id":100,"target":"branch","enforcement":"active","bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}`)
 		case strings.HasSuffix(r.URL.Path, "/protection"):

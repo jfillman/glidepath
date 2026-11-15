@@ -90,6 +90,8 @@ type Verdict struct {
 	Reasons  []string `json:"reasons"`
 	Missing  []string `json:"missing,omitempty"`
 	Bypass   []Bypass `json:"bypass,omitempty"`
+	// Notes report review settings that are not required for "protected" but a person may care about.
+	Notes []string `json:"notes,omitempty"`
 	// ProtectedBy names what protects the ref (rulesets, classic protection), for the record.
 	ProtectedBy []string `json:"protectedBy,omitempty"`
 }
@@ -107,6 +109,12 @@ func (c *Checker) Check(ctx context.Context, rd Reader, owner, repo, ref, sha st
 	if !shaRE.MatchString(sha) {
 		return nil, Invalid{"sha must be a full 40-character lowercase commit sha"}
 	}
+	if !cleanRef(ref) {
+		return nil, Invalid{"ref must be a full ref without empty, . or .. segments or encoded characters: refs/heads/<branch> or refs/tags/<tag>"}
+	}
+	if strings.Trim(sha, "0") == "" {
+		return nil, Invalid{"sha is the all-zero sha: the run recorded no commit"}
+	}
 	switch {
 	case branchRefRE.MatchString(ref):
 		v.Kind = "branch"
@@ -120,6 +128,20 @@ func (c *Checker) Check(ctx context.Context, rd Reader, owner, repo, ref, sha st
 		return c.tag(ctx, rd, owner, repo, strings.TrimPrefix(ref, "refs/tags/"), sha, v)
 	}
 	return nil, Invalid{"ref must be a full ref: refs/heads/<branch> or refs/tags/<tag>"}
+}
+
+// cleanRef: no empty, "." or ".." segment (a path that climbs, or a name the host would normalise to another ref).
+func cleanRef(ref string) bool {
+	rest := strings.TrimPrefix(strings.TrimPrefix(ref, "refs/heads/"), "refs/tags/")
+	if rest == ref || rest == "" {
+		return false
+	}
+	for _, seg := range strings.Split(rest, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return !strings.ContainsAny(ref, "%\\")
 }
 
 func (v *Verdict) finish(verdict string, reasons ...string) *Verdict {
@@ -153,8 +175,11 @@ func upgradeAnswer(status int, body []byte) bool {
 
 // branchFacts is what one branch's protection shows, before the verdict.
 type branchFacts struct {
-	approvals    int // the most approving reviews any source requires
-	prBy         []string
+	approvals    int  // the most approving reviews any source requires
+	staleDismiss bool // dismiss_stale_reviews_on_push (rulesets) / dismiss_stale_reviews (classic)
+	lastPush     bool // require_last_push_approval
+	codeOwner    bool // reported only
+	threads      bool // reported only
 	noForcePush  bool
 	noDelete     bool
 	protectedBy  []string
@@ -177,8 +202,13 @@ func (c *Checker) branch(ctx context.Context, rd Reader, owner, repo, branch, sh
 		return v.finish(Unavailable, fmt.Sprintf("%s/%s: the git host offers no rulesets or branch protection for this repository on its plan (it said so), so nothing can be verified; set refProtection.mode to off only if that is accepted (docs/admin/security.md)", owner, repo)), nil
 	}
 	if f.approvals < 1 {
-		v.Missing = append(v.Missing, "pull requests with at least one approving review")
+		v.Missing = append(v.Missing, "pull requests with at least one approving review (required_approving_review_count >= 1)")
 	}
+	if !f.staleDismiss && !f.lastPush {
+		// Without one of these an approval given to a harmless commit still counts after a malicious one is pushed.
+		v.Missing = append(v.Missing, "dismiss_stale_reviews_on_push or require_last_push_approval (an approval must not survive a later push)")
+	}
+	v.Notes = append(v.Notes, onOff("require_code_owner_review", f.codeOwner), onOff("required_review_thread_resolution", f.threads))
 	if !f.noForcePush {
 		v.Missing = append(v.Missing, "blocking force pushes")
 	}
@@ -201,6 +231,13 @@ func (c *Checker) branch(ctx context.Context, rd Reader, owner, repo, branch, sh
 		return v.finish(Unprotected, fmt.Sprintf("commit %s is not on branch %s (%s)", short(sha), branch, why)), nil
 	}
 	return v.finish(Protected, fmt.Sprintf("branch %s requires a reviewed pull request (>=%d approving), blocks force pushes and deletion, and no push-rights actor class may bypass it; %s is on it", branch, f.approvals, short(sha))), nil
+}
+
+func onOff(name string, on bool) string {
+	if on {
+		return name + ": on"
+	}
+	return name + ": off"
 }
 
 func short(sha string) string {
@@ -235,7 +272,11 @@ func modeStr(m string) string {
 type ruleEntry struct {
 	Type       string `json:"type"`
 	Parameters struct {
-		Approvals int `json:"required_approving_review_count"`
+		Approvals    int  `json:"required_approving_review_count"`
+		StaleDismiss bool `json:"dismiss_stale_reviews_on_push"`
+		LastPush     bool `json:"require_last_push_approval"`
+		CodeOwner    bool `json:"require_code_owner_review"`
+		Threads      bool `json:"required_review_thread_resolution"`
 	} `json:"parameters"`
 	RulesetID         int64  `json:"ruleset_id"`
 	RulesetSourceType string `json:"ruleset_source_type"`
@@ -278,10 +319,12 @@ func (c *Checker) branchFacts(ctx context.Context, rd Reader, owner, repo, branc
 			if r.Parameters.Approvals > f.approvals {
 				f.approvals = r.Parameters.Approvals
 			}
-			if r.Parameters.Approvals >= 1 {
-				f.prBy = append(f.prBy, fmt.Sprint(r.RulesetID))
-				contributing[r.RulesetID] = r.RulesetSourceType
-			}
+			f.staleDismiss = f.staleDismiss || r.Parameters.StaleDismiss
+			f.lastPush = f.lastPush || r.Parameters.LastPush
+			f.codeOwner = f.codeOwner || r.Parameters.CodeOwner
+			f.threads = f.threads || r.Parameters.Threads
+			// Every ruleset that supplies a review requirement is one whose bypass list matters.
+			contributing[r.RulesetID] = r.RulesetSourceType
 		case "non_fast_forward":
 			f.noForcePush = true
 			contributing[r.RulesetID] = r.RulesetSourceType
@@ -327,6 +370,10 @@ func (c *Checker) branchFacts(ctx context.Context, rd Reader, owner, repo, branc
 			if c.approvals > f.approvals {
 				f.approvals = c.approvals
 			}
+			f.staleDismiss = f.staleDismiss || c.staleDismiss
+			f.lastPush = f.lastPush || c.lastPush
+			f.codeOwner = f.codeOwner || c.codeOwner
+			f.threads = f.threads || c.threads
 			f.noForcePush = f.noForcePush || c.noForcePush
 			f.noDelete = f.noDelete || c.noDelete
 			f.bypass = append(f.bypass, c.bypass...)
@@ -364,22 +411,30 @@ func (c *Checker) branchFacts(ctx context.Context, rd Reader, owner, repo, branc
 }
 
 type classic struct {
-	approvals             int
-	noForcePush, noDelete bool
-	bypass                []Bypass
-	err                   string
+	staleDismiss, lastPush bool
+	codeOwner, threads     bool
+	approvals              int
+	noForcePush, noDelete  bool
+	bypass                 []Bypass
+	err                    string
 }
 
 func classicFacts(body []byte, branch string) classic {
 	var p struct {
 		Reviews *struct {
-			Approvals int `json:"required_approving_review_count"`
-			Allow     *struct {
+			Approvals    int  `json:"required_approving_review_count"`
+			StaleDismiss bool `json:"dismiss_stale_reviews"`
+			LastPush     bool `json:"require_last_push_approval"`
+			CodeOwner    bool `json:"require_code_owner_reviews"`
+			Allow        *struct {
 				Users []json.RawMessage `json:"users"`
 				Teams []json.RawMessage `json:"teams"`
 				Apps  []json.RawMessage `json:"apps"`
 			} `json:"bypass_pull_request_allowances"`
 		} `json:"required_pull_request_reviews"`
+		Conversations *struct {
+			Enabled bool `json:"enabled"`
+		} `json:"required_conversation_resolution"`
 		EnforceAdmins *struct {
 			Enabled bool `json:"enabled"`
 		} `json:"enforce_admins"`
@@ -396,6 +451,7 @@ func classicFacts(body []byte, branch string) classic {
 	out := classic{}
 	if p.Reviews != nil {
 		out.approvals = p.Reviews.Approvals
+		out.staleDismiss, out.lastPush, out.codeOwner = p.Reviews.StaleDismiss, p.Reviews.LastPush, p.Reviews.CodeOwner
 		if a := p.Reviews.Allow; a != nil {
 			for range a.Users {
 				out.bypass = append(out.bypass, Bypass{Source: "branch protection", ActorType: "User", Moot: true, Note: "may bypass pull request reviews"})
@@ -408,6 +464,7 @@ func classicFacts(body []byte, branch string) classic {
 			}
 		}
 	}
+	out.threads = p.Conversations != nil && p.Conversations.Enabled
 	// An absent flag is the host's default: force pushes and deletions are off. Only an explicit enabled: true allows them.
 	out.noForcePush = p.AllowForcePushes == nil || !p.AllowForcePushes.Enabled
 	out.noDelete = p.AllowDeletions == nil || !p.AllowDeletions.Enabled
@@ -450,7 +507,7 @@ func parseBypass(body []byte, src string) ([]Bypass, string, error) {
 	}
 	if rs.BypassActors == nil {
 		// The host leaves bypass_actors out for a reader that may not see it. Guessing "none" would be the unsafe answer.
-		return nil, fmt.Sprintf("%s: the host did not return its bypass actors to this token, so who may bypass it is unknown", src), nil
+		return nil, fmt.Sprintf("%s: the host did not return its bypass actors to this token, so who may bypass it is unknown. GitHub returns bypass_actors only to a token with write access to the ruleset (REST docs, Get a repository ruleset): grant the platform GitHub App repository permission Administration: write (an organization ruleset needs the organization permission Administration: write, which a repository token cannot carry), then set githubRead.refProtectionPermissions to {administration: write} in the control plane values so the broker asks for it for this call only. Until then set refProtection.mode to off in the catalog values (docs/admin/security.md, Ref protection)", src), nil
 	}
 	var out []Bypass
 	for _, a := range *rs.BypassActors {
@@ -497,8 +554,8 @@ func reachable(ctx context.Context, rd Reader, owner, repo, branch, sha string) 
 			return true, "", nil
 		}
 		return false, "the host reports it " + c.Status + " of the branch", nil
-	case http.StatusNotFound:
-		return false, "the host does not know that commit or branch", nil
+	case http.StatusNotFound, http.StatusUnprocessableEntity:
+		return false, "the host does not know that sha as a commit of this repository: it is not a commit (an annotated tag's own object sha is refused: the run must record the commit it points at) or the branch is missing", nil
 	}
 	return false, "", fmt.Errorf("GET compare %s...%s failed with %d: %s", branch, short(sha), st, hostMessage(body))
 }

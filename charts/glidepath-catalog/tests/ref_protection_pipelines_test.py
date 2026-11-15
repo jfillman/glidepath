@@ -175,7 +175,7 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
         put(os.path.join(cls.tmp, "token"), "sa-token")
 
     def run_task(self, *, mode="required", kind="privileged", event="push", ref="refs/heads/main", anns=None, api=None, code="200",
-                 no_run=False, curl_fail=False, namespace="app-shop-cicd"):
+                 no_run=False, curl_fail=False, namespace="app-shop-cicd", params=None):
         fx = tempfile.mkdtemp(dir=self.tmp)
         a = {"pipelinesascode.tekton.dev/sha": SHA, "pipelinesascode.tekton.dev/repo-url": "https://github.com/jfillman/shop",
              "pipelinesascode.tekton.dev/source-branch": ref}
@@ -183,7 +183,7 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
             a["pipelinesascode.tekton.dev/event-type"] = event
         a.update(anns or {})
         if not no_run:
-            put(os.path.join(fx, "run.json"), json.dumps({"metadata": {"annotations": a}}))
+            put(os.path.join(fx, "run.json"), json.dumps({"metadata": {"annotations": a}, "spec": {"params": params or []}}))
         put(os.path.join(fx, "api-body.json"), json.dumps(api if api is not None else {}))
         put(os.path.join(fx, "api-code"), code)
         if curl_fail:
@@ -261,10 +261,6 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
         # The build passes a pull request (it writes no main image) without asking.
         p, res, _, calls = self.run_task(kind="build", event="pull_request", api=self.PROTECTED)
         self.assertEqual((p.returncode, res, calls), (0, "not-push", ""))
-        # A run the platform chained (no Pipelines-as-Code annotation).
-        p, res, summ, calls = self.run_task(event="", api={})
-        self.assertEqual((p.returncode, res, calls), (0, "chained", ""))
-        self.assertIn("chained", summ)
         # The build on a side branch: no main image, so nothing to verify; on main or a tag it must be protected.
         side = {"verdict": "unprotected", "mainLike": False, "reasons": ["no"]}
         p, res, _, _ = self.run_task(kind="build", ref="refs/heads/feature/x", api=side)
@@ -277,6 +273,58 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
         # A privileged Pipeline never takes the side-ref exit.
         p, res, _, _ = self.run_task(kind="privileged", ref="refs/heads/feature/x", api=side)
         self.assertEqual((p.returncode, res), (1, "refused"))
+
+    # ---- chained runs: the guard verifies the origin the Trigger stamped, never a free pass.
+    CHAIN_PARAMS = [{"name": "git-url", "value": "https://github.com/jfillman/shop"}, {"name": "git-revision", "value": SHA}]
+
+    def chained(self, **kw):
+        anns = {"glidepath.io/origin-ref": "refs/heads/main", "glidepath.io/origin-sha": SHA}
+        anns.update(kw.pop("anns", {}))
+        return self.run_task(event="", anns=anns, params=kw.pop("params", self.CHAIN_PARAMS), **kw)
+
+    def test_a_chained_run_verifies_its_origin(self):
+        p, res, summ, calls = self.chained(api=self.PROTECTED)
+        self.assertEqual((p.returncode, res), (0, "chained-verified"), p.stderr)
+        self.assertIn("chained: origin refs/heads/main", summ)
+        self.assertIn("ref=refs/heads/main", calls)
+        self.assertIn(f"sha={SHA}", calls)
+        self.assertIn("repo=jfillman/shop", calls)
+
+    def test_a_chained_run_from_an_unprotected_origin_is_refused(self):
+        p, res, _, calls = self.chained(ref="refs/heads/feature/x", anns={"glidepath.io/origin-ref": "refs/heads/feature/x"},
+                                        api={"verdict": "unprotected", "mainLike": False, "reasons": ["no"]})
+        self.assertEqual((p.returncode, res), (1, "refused"))
+        self.assertIn("ref=refs/heads/feature/x", calls)  # asked, and refused: a side ref never takes the build's exit
+
+    def test_a_chained_run_with_no_verifiable_origin_is_refused(self):
+        for name, kw in {
+            "no origin at all": dict(anns={"glidepath.io/origin-ref": "", "glidepath.io/origin-sha": ""}),
+            "no origin sha": dict(anns={"glidepath.io/origin-sha": ""}),
+            "origin is not the revision": dict(anns={"glidepath.io/origin-sha": "4" * 40}),
+            "no revision param": dict(params=[self.CHAIN_PARAMS[0]]),
+            "no git-url param": dict(params=[self.CHAIN_PARAMS[1]]),
+        }.items():
+            with self.subTest(name):
+                p, res, _, _ = self.chained(api=self.PROTECTED, **kw)
+                self.assertEqual((p.returncode, res), (1, "refused"), p.stdout)
+        # a run with neither a Pipelines-as-Code event nor an origin stamp
+        p, res, _, _ = self.run_task(event="", api=self.PROTECTED)
+        self.assertEqual((p.returncode, res), (1, "refused"))
+        # a build is never chained
+        p, res, _, _ = self.run_task(kind="build", event="", anns={"glidepath.io/origin-ref": "refs/heads/main", "glidepath.io/origin-sha": SHA}, api=self.PROTECTED)
+        self.assertEqual((p.returncode, res), (1, "refused"))
+
+    def test_the_failure_says_what_a_misordered_upgrade_needs(self):
+        p, _, summ, _ = self.run_task(api={"error": "no route"}, code="404")
+        self.assertIn("no ref-protection endpoint", p.stderr)
+        self.assertIn("glidepath-api, then glidepath-app", p.stderr)
+        self.assertIn("refProtection.mode: off", p.stderr)
+        p, _, _, _ = self.run_task(api={"error": "forbidden"}, code="403")
+        self.assertIn("may not read ref protection", p.stderr)
+        self.assertIn("refprotection grant", p.stderr)
+        self.assertIn("glidepath-api, then glidepath-app, then the catalog", p.stderr)
+        p, _, _, _ = self.run_task(curl_fail=True)
+        self.assertIn("could not be reached", p.stderr)
 
     def test_off_asks_nothing_and_records_the_gap(self):
         for kind in ("privileged", "build"):
@@ -292,6 +340,72 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
         self.assertEqual((p.returncode, res), (1, "refused"))
         p, res, _, _ = self.run_task(mode="required", api=self.PROTECTED)  # sanity: required still passes
         self.assertEqual(p.returncode, 0)
+
+
+class BrokerSetting(unittest.TestCase):
+    """The broker adds Administration to the ref-protection call's token only when the cluster configured it."""
+
+    def env(self, *args):
+        d = [x for x in docs(CP, *args) if x["kind"] == "Deployment" and x["metadata"]["name"] == "cdevents-broker-auth"][0]
+        return {e["name"]: e.get("value") for c in d["spec"]["template"]["spec"]["containers"] for e in c.get("env", [])}
+
+    def test_default_is_today_s_permissions(self):
+        self.assertEqual(json.loads(self.env()["GITHUB_READ_REF_PROTECTION_PERMISSIONS"]), {})
+
+    def test_the_setting_reaches_the_broker(self):
+        e = self.env("--set", "githubRead.refProtectionPermissions.administration=write")
+        self.assertEqual(json.loads(e["GITHUB_READ_REF_PROTECTION_PERMISSIONS"]), {"administration": "write"})
+
+    def test_the_api_asks_for_the_purpose_and_gets_the_admission_values(self):
+        d = [x for x in docs(CP, "--set", "apiImage=x:1") if x["kind"] == "Deployment" and x["metadata"]["name"] == "glidepath-api"][0]
+        env = {e["name"]: e.get("value") for c in d["spec"]["template"]["spec"]["containers"] for e in c.get("env", [])}
+        self.assertEqual(env["PROTECTED_BRANCHES"], "main")
+        self.assertIn("refs/tags/v", env["TAG_REF_PATTERN"])
+
+
+class Debrief(unittest.TestCase):
+    """stage-debrief puts the originating ref and sha into the domain event, from the run's own annotations."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        task = TASKS["stage-debrief"]
+        step = [x for x in task["spec"]["steps"] if x["name"] == "resolve"][0]
+        script = step["script"]
+        for r in ("status", "image-ref", "config-json-b64", "subject-content-json-b64"):
+            script = script.replace(f"$(step.results.{r}.path)", os.path.join(cls.tmp, r))
+        put(os.path.join(cls.tmp, "resolve.sh"), script)
+        bin_ = os.path.join(cls.tmp, "bin")
+        os.makedirs(bin_)
+        put(os.path.join(bin_, "kubectl"), '#!/usr/bin/env bash\ncase "$*" in *"-o json"*) cat "$FX/run.json" ;; *) exit 0 ;; esac\n')
+        put(os.path.join(bin_, "base64"), '#!/usr/bin/env bash\nexec /usr/bin/base64 | tr -d "\\n"\n')
+        for n in ("kubectl", "base64"):
+            os.chmod(os.path.join(bin_, n), 0o755)
+
+    def content(self, annotations):
+        fx = tempfile.mkdtemp(dir=self.tmp)
+        put(os.path.join(fx, "run.json"), json.dumps({"metadata": {"annotations": annotations}}))
+        env = dict(os.environ, FX=fx, PATH=os.path.join(self.tmp, "bin") + os.pathsep + os.environ["PATH"], PIPELINE_STATUS="Succeeded",
+                   APP_NAMESPACE="app-shop-cicd", PIPELINE_RUN_NAME="ci-0-build-x", IMAGE_REF_PARAM="r/i:1", IMAGE_REF_FROM_TASK="",
+                   CONFIG_JSON_PARAM="{}", CONFIG_JSON_FROM_TASK="", CONTENT_TEMPLATE='{"revision":"abc","image":"${IMAGE_REF}"}')
+        p = subprocess.run(["bash", os.path.join(self.tmp, "resolve.sh")], capture_output=True, text=True, env=env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        import base64
+        return json.loads(base64.b64decode(get(os.path.join(self.tmp, "subject-content-json-b64"))))
+
+    def test_a_push_run_carries_its_own_ref_and_sha(self):
+        c = self.content({"pipelinesascode.tekton.dev/event-type": "push", "pipelinesascode.tekton.dev/source-branch": "refs/heads/main",
+                          "pipelinesascode.tekton.dev/sha": SHA, "glidepath.io/origin-ref": "refs/heads/forged"})
+        self.assertEqual((c["origin-ref"], c["origin-sha"], c["revision"], c["image"]), ("refs/heads/main", SHA, "abc", "r/i:1"))
+
+    def test_a_chained_run_passes_its_stamp_on(self):
+        c = self.content({"glidepath.io/origin-ref": "refs/tags/v1.2.3", "glidepath.io/origin-sha": SHA})
+        self.assertEqual((c["origin-ref"], c["origin-sha"]), ("refs/tags/v1.2.3", SHA))
+
+    def test_a_pull_request_has_no_origin_to_pass_on(self):
+        c = self.content({"pipelinesascode.tekton.dev/event-type": "pull_request", "pipelinesascode.tekton.dev/source-branch": "feature",
+                          "pipelinesascode.tekton.dev/sha": SHA, "glidepath.io/origin-ref": "refs/heads/main"})
+        self.assertEqual((c["origin-ref"], c["origin-sha"]), ("", ""))
 
 
 if __name__ == "__main__":

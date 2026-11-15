@@ -535,6 +535,13 @@ itsm:
 githubRead:
   callers:
     - system:serviceaccount:platform-system:glidepath-api
+  # Extra repository permissions the broker adds to the token it mints for glidepath-api's GET /ref-protection call, and
+  # to no other token. Default {}: today's read-only set (contents, pull_requests, metadata), with which a ruleset's
+  # bypass_actors list is NOT visible, so refProtection.mode required reports every ref unverifiable. GitHub returns
+  # bypass_actors only to a token with write access to the ruleset (REST docs, "Get a repository ruleset"): the platform's
+  # GitHub App must first be granted the repository permission Administration: write by its owner, then set
+  # {administration: write} here. Only administration (read|write) is accepted. docs/admin/security.md, Ref protection.
+  refProtectionPermissions: {}
 
 # The broker's /agent-installation-token (agenttoken.go, Autopilot AP-B1, hangar D4): a token for the agents' own GitHub
 # App on one of an app's own repos (the /github-read-token rule), contents and pull_requests write, metadata read; never

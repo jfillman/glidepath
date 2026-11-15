@@ -48,6 +48,33 @@ type githubReadRequest struct {
 	Owner string `json:"owner"`
 	Repo  string `json:"repo"`
 	App   string `json:"app"`
+	// Purpose is "" (the read-only set above) or "ref-protection": glidepath-api's GET /ref-protection, the one call that
+	// may be minted with the extra permissions the cluster configured for it (loadRefProtectionPermissions).
+	Purpose string `json:"purpose,omitempty"`
+}
+
+const purposeRefProtection = "ref-protection"
+
+// loadRefProtectionPermissions reads GITHUB_READ_REF_PROTECTION_PERMISSIONS (the chart's
+// githubRead.refProtectionPermissions): a JSON object of extra repository permissions for the ref-protection purpose
+// only. Empty (the default): that purpose gets exactly today's read-only set. Only "administration" with read or write
+// is accepted. GitHub returns a ruleset's bypass_actors only to a token with write access to the ruleset (REST docs,
+// "Get a repository ruleset"), so write is what a bypass list needs (docs/admin/security.md, Ref protection).
+func loadRefProtectionPermissions() (map[string]string, error) {
+	raw := strings.TrimSpace(os.Getenv("GITHUB_READ_REF_PROTECTION_PERMISSIONS"))
+	if raw == "" {
+		return nil, nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil, fmt.Errorf("GITHUB_READ_REF_PROTECTION_PERMISSIONS is not a JSON object of strings: %w", err)
+	}
+	for k, v := range m {
+		if k != "administration" || (v != "read" && v != "write") {
+			return nil, fmt.Errorf("GITHUB_READ_REF_PROTECTION_PERMISSIONS: only administration: read|write is accepted, got %s: %s", k, v)
+		}
+	}
+	return m, nil
 }
 
 // loadGitHubReadCallers reads GITHUB_READ_CALLERS: comma-separated usernames as TokenReview names them
@@ -70,6 +97,9 @@ func githubReadCheck(callers map[string]bool, caller string, req githubReadReque
 	}
 	if !callers[caller] {
 		return http.StatusForbidden, fmt.Errorf("%s may not ask for GitHub read tokens", caller)
+	}
+	if req.Purpose != "" && req.Purpose != purposeRefProtection {
+		return http.StatusBadRequest, fmt.Errorf("purpose must be empty or %q", purposeRefProtection)
 	}
 	if !ownerPattern.MatchString(req.Owner) || !githubReadRepoRE.MatchString(req.Repo) || !githubReadAppRE.MatchString(req.App) {
 		return http.StatusBadRequest, fmt.Errorf("request body must be {\"owner\":..., \"repo\":..., \"app\":...}, each a plain name")
@@ -102,7 +132,7 @@ func githubReadOwns(dynClient dynamic.Interface, req githubReadRequest) error {
 	return fmt.Errorf("no Repository CR in app-%[1]s-cicd or infra-%[1]s-cicd maps to %s/%s", req.App, req.Owner, req.Repo)
 }
 
-func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Interface, appCreds *githubapp.Creds, callers map[string]bool) http.HandlerFunc {
+func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Interface, appCreds *githubapp.Creds, callers map[string]bool, refProtectionExtra map[string]string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var caller string
@@ -149,12 +179,19 @@ func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Int
 			fail(http.StatusBadGateway, installationLookupMessage("the GitHub App", req, err))
 			return
 		}
-		instToken, expiresAt, err := githubapp.MintRepoReadToken(appJWT, installationID, req.Repo)
+		perms := githubapp.RepoReadPermissions()
+		if req.Purpose == purposeRefProtection {
+			// Only this purpose, only what the cluster configured for it, and only for this one token.
+			for k, v := range refProtectionExtra {
+				perms[k] = v
+			}
+		}
+		instToken, expiresAt, err := githubapp.MintScopedToken(appJWT, installationID, req.Repo, perms)
 		if err != nil {
 			fail(http.StatusBadGateway, err.Error())
 			return
 		}
-		log.Printf("github read token: %s for %s/%s (app %s)", caller, req.Owner, req.Repo, req.App)
+		log.Printf("github read token: %s for %s/%s (app %s, purpose %q, permissions %v)", caller, req.Owner, req.Repo, req.App, req.Purpose, perms)
 		_ = json.NewEncoder(w).Encode(githubInstallationTokenResponse{Token: instToken, ExpiresAt: expiresAt})
 	}
 }

@@ -340,7 +340,7 @@ its results, and the run ends red.
 
 | Ref | What the host must show |
 |---|---|
-| a protected branch (push) | an active ruleset or branch protection: pull requests with at least one approving review, force pushes blocked, deletion blocked; the commit on the branch; no write/maintain/custom role, team, deploy key or named user able to bypass it (administrators, organization administrators and GitHub Apps are reported, not counted) |
+| a protected branch (push) | an active ruleset or branch protection: pull requests with at least one approving review **and** approvals that do not survive a later push (`dismiss_stale_reviews_on_push` or `require_last_push_approval`; without one, an approval on a harmless commit still counts after a malicious one is pushed and merged), force pushes blocked, deletion blocked; the commit on the branch; no write/maintain/custom role, team, deploy key or named user able to bypass it (administrators, organization administrators and GitHub Apps are reported, not counted). `require_code_owner_review` and `required_review_thread_resolution` are reported in the verdict's `notes`, not required. The requirements add up across every ruleset and classic protection that apply |
 | a release tag (push) | active tag rulesets restricting creation, update and deletion, with the same bypass rule, and the tagged commit on a protected branch that is itself protected as above |
 
 A host that answers "not on this plan" is the verdict `unavailable`, not protected. A host that fails to answer, a ruleset that cannot be read or a
@@ -349,8 +349,17 @@ With `required`, a main or tag build that fails the check does not run `build-im
 writes nothing to the build cache (no task of the build runs before the check; with the build/push split of glidepath#250, `push-image`
 runs after `build-image`, which runs after `preflight`, which runs after the check, so it is covered the same way and nothing in this change
 depends on that split). A build for a pull request or a side branch passes as "not a push" / "side ref": it writes no main image.
-A run the platform chained (the next stage, started by its Trigger from the previous stage's event, with no Pipelines-as-Code annotations)
-records "chained": the first stage was checked.
+**Chained stages are verified too, against their origin.** `test`, `deploy`, `release` and `gitops-image-bump` are usually started by a Trigger from the
+previous stage's CDEvent, not by Pipelines-as-Code, so they have no push annotations of their own. Every stage's `stage-debrief` puts the ref and
+sha the chain started from into its domain event (`origin-ref`, `origin-sha`: from that run's own Pipelines-as-Code annotations, or, for a chained
+run, the stamp it was given), and the Trigger stamps them on the run it creates as `glidepath.io/origin-ref` and `glidepath.io/origin-sha`. The chained
+Pipeline's `verify-ref-protection` verifies *that* ref and sha through glidepath-api exactly as for a push, and refuses a chained run that has no origin,
+whose origin sha is not the revision it was started for, or whose origin is not protected. A build of a side branch therefore cannot start a
+chain that runs: the next stage asks about the side branch and is refused. The admission policy refuses any `glidepath.io/` annotation on a run a
+`.tekton` file creates, so a file cannot stamp an origin. Nothing chains off a refused `test` run either: a guard failure makes the run Failed, its
+`testcaserun.finished` carries outcome Failed, and the from-test Trigger requires `Succeeded` (chart tests check the Trigger filter, the
+stamp and the debrief). Events emitted by a run started before this release have no origin: their chained stage is refused, so drain in-flight
+chains before enabling `required`.
 
 **The setting.** `refProtection.mode` in the catalog values: `required` (the default) or `off`. Nothing else is accepted, and no
 hostname or plan is detected in code: only this setting decides. A cluster on a host plan without rulesets (this lab: GitHub Free) sets
@@ -366,15 +375,43 @@ A verified run records the proof the same way.
   Testkube namespace, and a main or tag `build`, which pushes to the main image repository and the build cache.
 - A pull request still cannot start any of these (admission), and nothing in A changes.
 
-**Reading the answer's limits.** Rulesets are read with Metadata: read, reachability with Contents: read; classic branch protection needs
-Administration: read, which the broker's read token does not request, so a branch guarded only by classic protection is `unverifiable`
-until that permission is granted to the platform's GitHub App and requested by the broker (follow-up 1 below). GitHub leaves `bypass_actors` out of a ruleset it
-returns to a reader that may not see them (checked against public repositories); if the platform's token is not shown them the
-verdict is `unverifiable`, never "no bypass". Neither was exercised against a live GitHub App installation on a plan with rulesets: the
-lab has none. Not built: an allowlist for a named bypass team or App, per-app settings, and a `verify-ref-protection` record on the
+**Reading the bypass list needs more than read access: say so before choosing `required`.** GitHub's REST documentation for "Get a repository
+ruleset" (and the organization one) states: *the `bypass_actors` property is only returned if the user making the API request has write access to
+the ruleset*. The endpoint itself needs only Metadata: read, which is why the ruleset is returned without the field (checked live against public
+repositories as an anonymous reader). For a GitHub App installation token the permission that gives write access to a repository ruleset is
+**repository Administration: write**; for a ruleset defined at the organization the organization permission **Administration: write**, which a
+repository-scoped token cannot carry (so a branch protected only by an organization ruleset stays `unverifiable`). With today's token (contents,
+pull requests, metadata read) every ruleset-protected ref is therefore `unverifiable`, and `required` refuses everything on every plan, until the
+owner of the platform's GitHub App grants it Administration: write on the installation. The platform does not change the App. Then set the control
+plane value `githubRead.refProtectionPermissions: {administration: write}`: the broker adds that permission to the token it mints for glidepath-api's
+ref-protection call (purpose `ref-protection`) and to no other token; the default is `{}`, today's read-only set. **There is no mode that treats an
+unreadable bypass list as "no bypass"**: the verdict stays `unverifiable`, and its reason names the permission and these steps. Without the
+App permission, set `refProtection.mode: off` and read the section above for what that leaves open. Classic branch protection needs Administration: read
+and is read with the same token, so it is readable once the above is in place. Rulesets on a private repository need GitHub Team or Enterprise.
+
+**Calls per check.** A branch: `rules/branches/{b}` (1 page of 100 rules), one `rulesets/{id}` per ruleset that supplies a requirement (typically 1 to 3),
+`branches/{b}/protection` (1), `compare` (1); one more `rulesets?per_page=1` only when the host says classic protection is unavailable. About 4 to 6 in
+all. A tag: `rulesets` (1 page of 100), one `rulesets/{id}` per active tag ruleset (typically 2), `compare` (1), then the branch calls above for the
+protected branch: about 8 to 10. Bounds: 5 pages of rules, 3 pages of rulesets, 25 ruleset reads; beyond them the verdict is `unverifiable`. A GitHub
+429, or a 403 that is a rate limit, is retried up to three times honouring `Retry-After` and `x-ratelimit-reset` (never waiting more than 10 s at once; a
+longer ask is not waited for), then the call is a 502 saying GitHub is rate limiting and when to retry; the task refuses on it.
+
+**Annotated tags.** Pipelines-as-Code records, for a push, the `head_commit.id` of the event (`parse_payload.go`, `case *github.PushEvent`), which GitHub fills
+with the commit a tag points at, not the tag object. If it ever recorded a tag object's sha (or the all-zero sha, its fallback when the event has no head
+commit), the endpoint refuses: the all-zero sha is rejected at once, and a sha the host does not know as a commit is reported "not a commit (a tag
+object)" and never reaches `protected`. A ref with an empty, `.` or `..` segment, or with an encoded character, is a 400.
+
+**Not built:** an allowlist for a named bypass team or App, per-app settings, organization-level bypass lists, and a `verify-ref-protection` record on the
 `open-release-pin-pr` (cloud) path, which does not write the release record.
 
 ### Upgrade note
+
+**Ref protection (T3): `required` is the default and needs more than a release.** Order: (1) glidepath-api (the endpoint; the control plane chart also
+carries the broker setting); (2) glidepath-app (the `refprotection` grant for `pipeline-runner`); (3) the catalog. A mis-ordered upgrade explains itself: the
+task's refusal says "no ref-protection endpoint (404)" or "may not read ref protection (403)" and names this order. **Before step 3 every cluster decides:**
+set `refProtection.mode: off` in the catalog values (the lab, GitHub Free: no rulesets), or have the owner of the platform's GitHub App grant it
+Administration: write and set `githubRead.refProtectionPermissions: {administration: write}` (see "Reading the bypass list" above). `required` without
+that App permission refuses every run. Then drain in-flight chains (a chained run with no origin is refused).
 
 Order matters because a build run created from a `.tekton` file written before this release has no `taskRunSpecs`.
 

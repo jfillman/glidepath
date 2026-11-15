@@ -295,7 +295,7 @@ func main() {
 		RefProtection: &refprotection.Client{
 			Owner:   githubOwner,
 			Checker: &refprotection.Checker{ProtectedBranches: splitList(env("PROTECTED_BRANCHES", "main")), TagRefPattern: tagPattern},
-			GitHub:  func(app string) refprotection.Reader { return broker.Session(app) },
+			GitHub:  func(app string) refprotection.Reader { return broker.SessionFor(app, "ref-protection") },
 		},
 		Events: store,
 		Tap: &events.Tap{

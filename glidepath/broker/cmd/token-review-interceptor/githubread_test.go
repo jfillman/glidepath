@@ -84,15 +84,15 @@ func TestGitHubReadOwns(t *testing.T) {
 		req githubReadRequest
 		ok  bool
 	}{
-		{githubReadRequest{"jfillman", "boarding-api", "boarding-api"}, true},
+		{githubReadRequest{"jfillman", "boarding-api", "boarding-api", ""}, true},
 		// No gitops CR of its own: the app's CR maps gitops-<name>, as appNamespaceOwnsRepo does.
-		{githubReadRequest{"jfillman", "gitops-boarding-api", "boarding-api"}, true},
-		{githubReadRequest{"JFillman", "gitops-gate-api", "gate-api"}, true},
-		{githubReadRequest{"jfillman", "gitops-infra-broker", "broker"}, true},
+		{githubReadRequest{"jfillman", "gitops-boarding-api", "boarding-api", ""}, true},
+		{githubReadRequest{"JFillman", "gitops-gate-api", "gate-api", ""}, true},
+		{githubReadRequest{"jfillman", "gitops-infra-broker", "broker", ""}, true},
 		// The same repo name under another owner is not the app's.
-		{githubReadRequest{"someone-else", "boarding-api", "boarding-api"}, false},
+		{githubReadRequest{"someone-else", "boarding-api", "boarding-api", ""}, false},
 		// An app with no namespace on this cluster.
-		{githubReadRequest{"jfillman", "gitops-ghost", "ghost"}, false},
+		{githubReadRequest{"jfillman", "gitops-ghost", "ghost", ""}, false},
 	} {
 		if err := githubReadOwns(dyn, c.req); (err == nil) != c.ok {
 			t.Errorf("%+v: %v, want ok=%v", c.req, err, c.ok)
@@ -152,7 +152,7 @@ func TestGitHubReadTokenEndpoint(t *testing.T) {
 			Authenticated: true, User: authenticationv1.UserInfo{Username: user}}}, nil
 	})
 	dyn := repos(repoCR("app-boarding-api-cicd", "boarding-api", "https://github.com/jfillman/boarding-api"))
-	h := handleGitHubReadToken(cs, dyn, testCreds(t), map[string]bool{apiSA: true})
+	h := handleGitHubReadToken(cs, dyn, testCreds(t), map[string]bool{apiSA: true}, nil)
 
 	call := func(token, body string) (int, githubInstallationTokenResponse) {
 		req := httptest.NewRequest(http.MethodPost, "/github-read-token", strings.NewReader(body))
@@ -194,5 +194,80 @@ func TestGitHubReadTokenEndpoint(t *testing.T) {
 	}
 	if len(mints) != 1 {
 		t.Fatalf("a refused request minted: %v", mints)
+	}
+}
+
+// purpose "ref-protection" is the one call that may carry the extra permissions the cluster configured for it
+// (githubRead.refProtectionPermissions); no other call, and no cluster that configured nothing, gets more than the
+// read-only set.
+func TestGitHubReadTokenRefProtectionPurpose(t *testing.T) {
+	var mints []map[string]any
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/jfillman/boarding-api/installation":
+			io.WriteString(w, `{"id": 42}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/42/access_tokens":
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			mints = append(mints, body)
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"token": "ghs_read", "expires_at": "2026-10-28T13:00:00Z"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gh.Close()
+	defer githubapp.SetAPIBaseForTest(gh.URL)()
+	cs := fake.NewSimpleClientset()
+	cs.PrependReactor("create", "tokenreviews", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		tr := a.(k8stesting.CreateAction).GetObject().(*authenticationv1.TokenReview)
+		return true, &authenticationv1.TokenReview{Status: authenticationv1.TokenReviewStatus{
+			Authenticated: true, User: authenticationv1.UserInfo{Username: strings.TrimPrefix(tr.Spec.Token, "t-")}}}, nil
+	})
+	dyn := repos(repoCR("app-boarding-api-cicd", "boarding-api", "https://github.com/jfillman/boarding-api"))
+	perms := func(extra map[string]string, body string) string {
+		mints = nil
+		h := handleGitHubReadToken(cs, dyn, testCreds(t), map[string]bool{apiSA: true}, extra)
+		req := httptest.NewRequest(http.MethodPost, "/github-read-token", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer t-"+apiSA)
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		if rec.Code != 200 {
+			return "status " + rec.Result().Status
+		}
+		raw, _ := json.Marshal(mints[0]["permissions"])
+		return string(raw)
+	}
+	plain := `{"owner":"jfillman","repo":"boarding-api","app":"boarding-api"}`
+	rp := `{"owner":"jfillman","repo":"boarding-api","app":"boarding-api","purpose":"ref-protection"}`
+	extra := map[string]string{"administration": "write"}
+	readOnly := `{"contents":"read","metadata":"read","pull_requests":"read"}`
+	if got := perms(extra, rp); got != `{"administration":"write","contents":"read","metadata":"read","pull_requests":"read"}` {
+		t.Fatalf("ref-protection purpose with the setting: %s", got)
+	}
+	if got := perms(extra, plain); got != readOnly {
+		t.Fatalf("a call with no purpose must not get the extra permission: %s", got)
+	}
+	if got := perms(nil, rp); got != readOnly {
+		t.Fatalf("with nothing configured the purpose gets today's permissions: %s", got)
+	}
+	if got := perms(extra, `{"owner":"jfillman","repo":"boarding-api","app":"boarding-api","purpose":"admin"}`); !strings.HasPrefix(got, "status 400") {
+		t.Fatalf("an unknown purpose is refused: %s", got)
+	}
+}
+
+func TestLoadRefProtectionPermissions(t *testing.T) {
+	for in, want := range map[string]string{"": "", `{"administration":"write"}`: "administration=write", `{"administration":"read"}`: "administration=read"} {
+		t.Setenv("GITHUB_READ_REF_PROTECTION_PERMISSIONS", in)
+		got, err := loadRefProtectionPermissions()
+		if err != nil || (len(got) == 0) != (want == "") || (want != "" && got["administration"] != strings.TrimPrefix(want, "administration=")) {
+			t.Fatalf("%q: %v %v", in, got, err)
+		}
+	}
+	for _, bad := range []string{`{"contents":"write"}`, `{"administration":"admin"}`, `not json`, `{"administration":"write","members":"read"}`} {
+		t.Setenv("GITHUB_READ_REF_PROTECTION_PERMISSIONS", bad)
+		if _, err := loadRefProtectionPermissions(); err == nil {
+			t.Fatalf("%q must be refused", bad)
+		}
 	}
 }

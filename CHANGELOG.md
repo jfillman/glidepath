@@ -6,6 +6,12 @@ Notable changes to Glidepath. Newest first.
 
 ### Pipeline trust T3: verified ref protection
 
+- Review settings count: a protected branch needs approvals AND `dismiss_stale_reviews_on_push` or `require_last_push_approval`. Chained stages verify the
+  origin ref and sha the Trigger stamps on them (`glidepath.io/origin-*`; admission refuses those annotations from a `.tekton` file); a chained run with no
+  origin is refused, so drain in-flight chains. `required` needs the platform's GitHub App to hold Administration: write (GitHub shows a ruleset's bypass
+  list only to a token with write access to it) and `githubRead.refProtectionPermissions: {administration: write}` (broker, ref-protection call only);
+  without that, set `off`. Upgrade order: glidepath-api, glidepath-app, catalog.
+
 - glidepath-api 0.12.0: `GET /v1/apps/{app}/ref-protection?repo=&ref=&sha=` answers whether the git host protects a pushed ref (rulesets or classic
   branch protection requiring a reviewed pull request, blocking force pushes and deletion, with no push-rights bypass; tag rulesets
   restricting creation, update and deletion, and the tagged commit on a protected branch). Verdicts `protected`, `unprotected`,

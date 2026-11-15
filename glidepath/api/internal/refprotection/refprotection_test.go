@@ -194,7 +194,7 @@ func TestBranchNoProtectionAtAll(t *testing.T) {
 		"rules/branches/main?per_page=100&page=1": ok(`[]`), "branches/main/protection": {404, notProt404}})
 	v := check(t, s, "refs/heads/main")
 	want(t, v, Unprotected, "missing pull requests")
-	if v.Verdict == Protected || len(v.Missing) != 3 {
+	if v.Verdict == Protected || len(v.Missing) != 4 {
 		t.Fatalf("%+v", v)
 	}
 }
@@ -314,7 +314,7 @@ func TestRulesPagedAndBounded(t *testing.T) {
 	// The pull_request rule is on page 2: it is found.
 	s := newStub(t, map[string]resp{
 		"rules/branches/main?per_page=100&page=1": ok(page(100, false)),
-		"rules/branches/main?per_page=100&page=2": ok(`[{"type":"pull_request","parameters":{"required_approving_review_count":1},"ruleset_source_type":"Repository","ruleset_source":"o/app","ruleset_id":100},{"type":"deletion","ruleset_source_type":"Repository","ruleset_source":"o/app","ruleset_id":100},{"type":"non_fast_forward","ruleset_source_type":"Repository","ruleset_source":"o/app","ruleset_id":100}]`),
+		"rules/branches/main?per_page=100&page=2": ok(`[{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true},"ruleset_source_type":"Repository","ruleset_source":"o/app","ruleset_id":100},{"type":"deletion","ruleset_source_type":"Repository","ruleset_source":"o/app","ruleset_id":100},{"type":"non_fast_forward","ruleset_source_type":"Repository","ruleset_source":"o/app","ruleset_id":100}]`),
 		"rulesets/100": ok(mainRulesetAdminAndApp), "branches/main/protection": {404, notProt404}})
 	want(t, check(t, s, "refs/heads/main"), Protected)
 	// Never more than the bound, and a repository past it is not "protected".
@@ -476,4 +476,121 @@ func TestMainLike(t *testing.T) {
 			t.Fatalf("%s: mainLike %v verdict %s", tc.ref, v.MainLike, v.Verdict)
 		}
 	}
+}
+
+// ---- review parameters: an approval on a benign commit must not carry to a malicious later push.
+
+func rulesWith(params string) string {
+	return `[{"type":"deletion","ruleset_source_type":"Repository","ruleset_source":"o/app","ruleset_id":100},
+	 {"type":"non_fast_forward","ruleset_source_type":"Repository","ruleset_source":"o/app","ruleset_id":100},
+	 {"type":"pull_request","parameters":{` + params + `},"ruleset_source_type":"Repository","ruleset_source":"o/app","ruleset_id":100}]`
+}
+
+func branchWith(t *testing.T, rules string) *Verdict {
+	s := newStub(t, map[string]resp{"rules/branches/main?per_page=100&page=1": ok(rules), "rulesets/100": ok(mainRulesetAdminAndApp), "branches/main/protection": {404, notProt404}})
+	return check(t, s, "refs/heads/main")
+}
+
+func TestReviewParametersAreRequired(t *testing.T) {
+	// approvals alone: a stale approval survives a later push
+	v := branchWith(t, rulesWith(`"required_approving_review_count":1`))
+	want(t, v, Unprotected, "dismiss_stale_reviews_on_push", "require_last_push_approval")
+	if len(v.Missing) != 1 {
+		t.Fatalf("%v", v.Missing)
+	}
+	// explicit false for both
+	want(t, branchWith(t, rulesWith(`"required_approving_review_count":2,"dismiss_stale_reviews_on_push":false,"require_last_push_approval":false`)), Unprotected, "dismiss_stale_reviews_on_push")
+	// either one is enough
+	want(t, branchWith(t, rulesWith(`"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true`)), Protected)
+	want(t, branchWith(t, rulesWith(`"required_approving_review_count":1,"require_last_push_approval":true`)), Protected)
+	// the stale protection without an approval is still not a review
+	want(t, branchWith(t, rulesWith(`"required_approving_review_count":0,"dismiss_stale_reviews_on_push":true`)), Unprotected, "at least one approving review")
+}
+
+func TestCodeOwnerAndThreadResolutionAreReportedNotRequired(t *testing.T) {
+	v := branchWith(t, rulesWith(`"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true,"require_code_owner_review":true,"required_review_thread_resolution":true`))
+	want(t, v, Protected)
+	got := strings.Join(v.Notes, "|")
+	if !strings.Contains(got, "require_code_owner_review: on") || !strings.Contains(got, "required_review_thread_resolution: on") {
+		t.Fatalf("notes %v", v.Notes)
+	}
+	v = branchWith(t, rulesWith(`"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true`))
+	want(t, v, Protected)
+	if !strings.Contains(strings.Join(v.Notes, "|"), "require_code_owner_review: off") {
+		t.Fatalf("off is reported too: %v", v.Notes)
+	}
+}
+
+// The requirements add up across the rulesets that apply: approvals in one, stale dismissal in another.
+func TestReviewParametersAcrossRulesets(t *testing.T) {
+	rules := `[{"type":"deletion","ruleset_source_type":"Repository","ruleset_source":"o/app","ruleset_id":100},
+	 {"type":"non_fast_forward","ruleset_source_type":"Repository","ruleset_source":"o/app","ruleset_id":100},
+	 {"type":"pull_request","parameters":{"required_approving_review_count":1},"ruleset_source_type":"Repository","ruleset_source":"o/app","ruleset_id":100},
+	 {"type":"pull_request","parameters":{"required_approving_review_count":0,"dismiss_stale_reviews_on_push":true},"ruleset_source_type":"Organization","ruleset_source":"o","ruleset_id":101}]`
+	s := newStub(t, map[string]resp{"rules/branches/main?per_page=100&page=1": ok(rules), "rulesets/100": ok(mainRulesetAdminAndApp),
+		"rulesets/101": ok(strings.Replace(mainRulesetAdminAndApp, `"id":100`, `"id":101`, 1)), "branches/main/protection": {404, notProt404}})
+	v := check(t, s, "refs/heads/main")
+	want(t, v, Protected)
+	if len(v.ProtectedBy) != 2 {
+		t.Fatalf("both rulesets' bypass lists were read: %v", v.ProtectedBy)
+	}
+}
+
+func TestClassicReviewParameters(t *testing.T) {
+	noStale := strings.Replace(classicOK, `"dismiss_stale_reviews":true`, `"dismiss_stale_reviews":false`, 1)
+	s := newStub(t, map[string]resp{"rules/branches/main?per_page=100&page=1": ok(`[]`), "branches/main/protection": ok(noStale)})
+	want(t, check(t, s, "refs/heads/main"), Unprotected, "dismiss_stale_reviews_on_push")
+	lastPush := strings.Replace(noStale, `"require_code_owner_reviews":false`, `"require_code_owner_reviews":true,"require_last_push_approval":true`, 1)
+	s = newStub(t, map[string]resp{"rules/branches/main?per_page=100&page=1": ok(`[]`), "branches/main/protection": ok(lastPush)})
+	v := check(t, s, "refs/heads/main")
+	want(t, v, Protected)
+	if !strings.Contains(strings.Join(v.Notes, "|"), "require_code_owner_review: on") {
+		t.Fatalf("%v", v.Notes)
+	}
+}
+
+// ---- refs: dot segments, empty segments, encoded slashes
+
+func TestRefSegmentsAreRejected(t *testing.T) {
+	c := &Checker{}
+	for _, ref := range []string{
+		"refs/heads/..", "refs/heads/.", "refs/heads/a/../main", "refs/heads/a/./b", "refs/heads/../x", "refs/heads/a//b", "refs/heads/a/", "refs/heads//a",
+		"refs/tags/..", "refs/tags/v1/../v2", "refs/heads/a%2Fb", "refs/heads/a%2f..%2fb", "refs/tags/v1%2F2", "refs/heads/a\\b",
+	} {
+		_, err := c.Check(context.Background(), &stub{t: t}, "o", "app", ref, sha)
+		var inv Invalid
+		if !errors.As(err, &inv) {
+			t.Errorf("%q: want Invalid, got %v", ref, err)
+		}
+	}
+	// a legitimate nested name still passes validation (it reaches the host)
+	s := &stub{t: t, routes: map[string]resp{"rules/branches/release/1.x?per_page=100&page=1": ok(`[]`), "branches/release/1.x/protection": {404, notProt404}}}
+	if v, err := c.Check(context.Background(), s, "o", "app", "refs/heads/release/1.x", sha); err != nil || v.Verdict == Protected {
+		t.Fatalf("%v %+v", err, v)
+	}
+}
+
+// ---- annotated tags: the commit is what Pipelines-as-Code records (head_commit.id); a tag object's sha is refused.
+
+func TestTagObjectShaIsRefused(t *testing.T) {
+	for _, st := range []int{404, 422} {
+		s := tagStub(t, map[string]resp{"compare/main..." + sha + "?per_page=1": {st, `{"message":"No common ancestor between main and ` + sha + `"}`}})
+		v := check(t, s, "refs/tags/v1.2.3")
+		want(t, v, Unprotected, "not a commit", "tag's own object")
+	}
+	// the all-zero sha (a push event with no head commit) is refused up front
+	_, err := (&Checker{}).Check(context.Background(), &stub{t: t}, "o", "app", "refs/tags/v1.2.3", strings.Repeat("0", 40))
+	var inv Invalid
+	if !errors.As(err, &inv) {
+		t.Fatalf("zero sha: %v", err)
+	}
+}
+
+// ---- an unreadable bypass list says exactly which App permission is missing and how to grant it.
+
+func TestBypassUnreadableNamesThePermission(t *testing.T) {
+	anon := `{"id":100,"target":"branch","enforcement":"active","rules":[{"type":"deletion"}]}`
+	s := newStub(t, map[string]resp{"rules/branches/main?per_page=100&page=1": ok(rulesMain), "rulesets/100": ok(anon), "branches/main/protection": {404, notProt404}})
+	v := check(t, s, "refs/heads/main")
+	want(t, v, Unverifiable, "write access to the ruleset", "Administration: write", "githubRead.refProtectionPermissions", "refProtection.mode")
 }

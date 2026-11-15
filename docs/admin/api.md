@@ -527,22 +527,22 @@ What "protected" means, from what the host reports:
 
 | Ref | Needs | Bypass |
 |---|---|---|
-| Branch | an active ruleset (or classic branch protection) on it, requiring pull requests with at least one approving review, blocking force pushes (`non_fast_forward`) and deletion; the commit is on the branch | A write or maintain role, a custom role, a team, a deploy key or a named user may not bypass it (**moot**: anyone with push rights). Repository administrators, organization administrators and GitHub Apps may: they are reported in `bypass`, not counted. A bypass list the host does not return to the token is `unverifiable`, never "none" |
+| Branch | an active ruleset (or classic branch protection) on it: pull requests with at least one approving review (`required_approving_review_count` >= 1) and `dismiss_stale_reviews_on_push` or `require_last_push_approval` (classic: `dismiss_stale_reviews` / `require_last_push_approval`), blocking force pushes (`non_fast_forward`) and deletion, all summed over every rule that applies; the commit is on the branch. `require_code_owner_review` and `required_review_thread_resolution` come back in `notes` | A write or maintain role, a custom role, a team, a deploy key or a named user may not bypass it (**moot**: anyone with push rights). Repository administrators, organization administrators and GitHub Apps may: they are reported in `bypass`, not counted. A bypass list the host does not return to the token is `unverifiable`, never "none" |
 | Tag | active tag rulesets matching the tag (`include`/`exclude`, `~ALL`, globs) that between them restrict `creation`, `update` and `deletion`, and the tagged commit is on a configured protected branch (`PROTECTED_BRANCHES`, the chart's `cicdRunAdmission.protectedBranches`) that is itself protected as above | as for a branch: whoever can still create the tag must not be a push-rights class |
 
 `mainLike` says whether the ref is a protected branch name or matches `TAG_REF_PATTERN` (the chart's
 `cicdRunAdmission.tagRefPattern`): a build of any other ref (a side branch) writes no main image, so the build's
 task passes it; a privileged Pipeline ignores it.
 
-GitHub endpoints used, all with the one read token of the request: `GET /repos/{o}/{r}/rules/branches/{branch}`,
-`GET /repos/{o}/{r}/rulesets?includes_parents=true`, `GET /repos/{o}/{r}/rulesets/{id}` (all **Metadata: read**),
-`GET /repos/{o}/{r}/compare/{base}...{head}` (**Contents: read**) and `GET /repos/{o}/{r}/branches/{branch}/protection`
-(classic branch protection, **Administration: read**). The broker's read token carries contents, pull requests and
-metadata read, so rulesets and reachability work with it as it is. Classic protection needs Administration: read,
-which that token does not request: where only classic protection guards a branch, the verdict is `unverifiable` and says
-so, until the platform's GitHub App is granted that permission and the broker's read permissions include it
-(a follow-up). Rulesets on a private repository need GitHub Team or Enterprise (or a public repository); on a plan
-without them the host answers 403 with an upgrade message, which is the `unavailable` verdict.
+GitHub endpoints used, all with the one token of the request (the broker's `ref-protection` purpose): `GET /repos/{o}/{r}/rules/branches/{branch}`,
+`GET /repos/{o}/{r}/rulesets?includes_parents=true`, `GET /repos/{o}/{r}/rulesets/{id}` (**Metadata: read** to call; but GitHub returns a ruleset's
+`bypass_actors` only to a token with **write access to the ruleset**, i.e. the App permission Administration: write), `GET /repos/{o}/{r}/compare/{base}...{head}`
+(**Contents: read**) and `GET /repos/{o}/{r}/branches/{branch}/protection` (classic protection, **Administration: read**). A bypass list the token is not shown is
+`unverifiable` with a reason naming the permission; there is no way to read it as "none". The default token (contents, pull requests, metadata read)
+cannot see bypass lists: the owner grants the App Administration: write and the cluster sets `githubRead.refProtectionPermissions` (security.md, Ref protection). About 4 to 6 GitHub
+calls per branch check and 8 to 10 per tag check (counted there); a 429 or rate-limit 403 is retried three times within a 10 s cap, then 502. `ref` may not contain empty, `.` or `..`
+segments or encoded characters (400); the all-zero sha and a sha that is not a commit (an annotated tag object) are refused. Rulesets on a private repository need
+GitHub Team or Enterprise (or a public repository); on a plan without them the host answers 403 with an upgrade message, the `unavailable` verdict.
 
 ## Live and archived reads
 

@@ -725,7 +725,8 @@ paths:
         pipeline-runner has it). `repo` is `<owner>/<name>` and must be one of the app's own repositories; `ref` is a full
         ref (`refs/heads/<branch>` or `refs/tags/<tag>`), `sha` the full commit; the caller sends the ones Pipelines-as-Code
         recorded on the run. A branch is `protected` when an active ruleset (or classic branch protection) requires pull
-        requests with at least one approving review and blocks force pushes and deletion, no push-rights actor class
+        requests with at least one approving review that a later push does not leave standing (`dismiss_stale_reviews_on_push` or
+        `require_last_push_approval`) and blocks force pushes and deletion, no push-rights actor class
         (write or maintain role, custom role, team, deploy key, named user) may bypass it, and the commit is on the
         branch; bypass by administrators, organization administrators and GitHub Apps is reported in `bypass`, not
         counted against it. A tag is `protected` when active tag rulesets matching it restrict creation, update and
@@ -1188,6 +1189,7 @@ components:
         mainLike: { type: boolean, description: "The ref is a configured protected branch or matches the release tag pattern; a build of any other ref writes no main image" }
         reasons: { type: array, items: { type: string }, description: Why, in words a person can act on }
         missing: { type: array, items: { type: string }, description: What a protected ref would have and this one lacks }
+        notes: { type: array, items: { type: string }, description: "Review settings reported, not required: require_code_owner_review and required_review_thread_resolution, on or off" }
         protectedBy: { type: array, items: { type: string }, description: "The rulesets, branch protection or protected branch that protect it" }
         bypass:
           type: array
