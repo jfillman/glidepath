@@ -5,7 +5,7 @@
 # change being released. The change was written in the app repo. This resolves who wrote it and what Clearance's
 # provenance says about it, from what the pipeline recorded and can verify, never from text the PR carries:
 #
-#   release_source_resolve <owner> <repo> <pr> <files json> <head dir> <base dir> <PR author>     prints one JSON object
+#   release_source_resolve <owner> <repo> <pr> <files json> <head dir> <base dir> <PR author login> <PR author account type>     prints one JSON object
 #
 # Reads: the release record (release-tracking-<chainId> in this namespace, written by open-release-pr; only the
 # pipeline's ServiceAccount can write it), the PR's commit count, the manifest at base and head (checked out), the
@@ -47,7 +47,7 @@ _rs_pages() { # <token> <url without paging> <jq filter turning a page into an a
 }
 
 release_source_resolve() {
-  local owner="$1" repo="$2" prn="$3" files="$4" hdir="$5" bdir="$6" pr_author="${7:-}"
+  local owner="$1" repo="$2" prn="$3" files="$4" hdir="$5" bdir="$6" pr_author="${7:-}" pr_author_type="${8:-}"
   local pr_url="https://github.com/${owner}/${repo}/pull/${prn}" records rec tok n
   records="$(kubectl get configmap -n "${NAMESPACE}" -l "hangar.io/subcomponent=release-tracking,hangar.io/app=${APP_NAME}" -o json)" \
     || { echo "could not read the release records in ${NAMESPACE}: cannot tell whether ${pr_url} is a pipeline release" >&2; return 1; }
@@ -69,7 +69,11 @@ release_source_resolve() {
         return 0
       fi
     done
-    jq -nc '{applicable: false}'
+    if [[ "${pr_author_type}" == Bot && -z "${PIPELINE_LOGINS:-}" ]]; then
+      jq -nc '{applicable: false, warning: "the PR is authored by a Bot account and no release record names it, but clearanceGate.pipelineLogins is empty, so it is treated as a person'"'"'s change. If this is the pipeline'"'"'s GitHub App, set clearanceGate.pipelineLogins to its REST login (name[bot])."}'
+    else
+      jq -nc '{applicable: false}'
+    fi
     return 0
   fi
   local rkind renv rcluster rimage rdigest rrev rurl rinit rid rtag base_info rrepo rsource rappns
@@ -85,8 +89,9 @@ release_source_resolve() {
   # 1. Is this PR what the pipeline wrote for that record? One commit; one file, <cluster>/<env>/{release,values}.yaml;
   #    nothing in it differs from base but the image fields; the head's image is the record's.
   tok="$(github_app_installation_token "${owner}" "${repo}")" || { _rs_fail "no GitHub token for ${owner}/${repo}"; return 0; }
-  n="$(_rs_api "${tok}" "https://api.github.com/repos/${owner}/${repo}/pulls/${prn}" | jq -r '.commits')" \
-    || { _rs_fail "could not read the release PR"; return 0; }
+  local prj
+  prj="$(_rs_api "${tok}" "https://api.github.com/repos/${owner}/${repo}/pulls/${prn}")" || { _rs_fail "could not read the release PR"; return 0; }
+  n="$(jq -r '.commits' <<<"${prj}")" || { _rs_fail "could not read the release PR"; return 0; }
   if [[ "${n}" != 1 ]]; then
     _rs_fail "the release PR has ${n} commits, the pipeline writes exactly one: it was changed after the pipeline opened it"; return 0
   fi
@@ -135,6 +140,12 @@ release_source_resolve() {
   #    commit is that commit alone too. Otherwise previous release -> this release.
   local stok mode="range" prev="" prev_rec base_tag base_digest cmp status commits='[]' total
   stok="$(github_app_installation_token "${sowner}" "${srepo}")" || { _rs_fail "no GitHub token for ${sowner}/${srepo}"; return 0; }
+  # The released branch: the source repo's default branch, from GitHub (the pipeline records no branch, and the PR's own
+  # claim is never used). A covering PR must have been merged into it.
+  local meta rbranch
+  meta="$(_rs_api "${stok}" "https://api.github.com/repos/${sowner}/${srepo}")" || { _rs_fail "could not read ${sowner}/${srepo}"; return 0; }
+  rbranch="$(jq -r '.default_branch // ""' <<<"${meta}")" || rbranch=""
+  [[ -n "${rbranch}" ]] || { _rs_fail "could not tell the released branch of ${sowner}/${srepo}"; return 0; }
   if [[ "${rkind}" == rollback ]]; then
     mode=rollback
   else
@@ -172,8 +183,9 @@ release_source_resolve() {
     esac
   fi
   if [[ "${mode}" != range ]]; then   # rollback, single, first
-    commits="$(_rs_api "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/commits/${rrev}" | jq -c '[.]')" \
+    commits="$(_rs_api "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/commits/${rrev}")" \
       || { _rs_fail "could not read ${sowner}/${srepo}@${rrev:0:7}"; return 0; }
+    commits="$(jq -c '[.]' <<<"${commits}")" || { _rs_fail "could not read ${sowner}/${srepo}@${rrev:0:7}"; return 0; }
   fi
   commits="$(jq -c '[.[] | {sha}]' <<<"${commits}")"
   if [[ "$(jq 'length' <<<"${commits}")" == 0 ]]; then
@@ -203,9 +215,17 @@ release_source_resolve() {
         || { _rs_fail "could not read the commits of ${sowner}/${srepo}#${pn}"; return 0; }
       pfiles="$(_rs_pages "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/pulls/${pn}/files" '[.[] | .filename, (.previous_filename // empty)]' 30)" \
         || { _rs_fail "could not read the files of ${sowner}/${srepo}#${pn}"; return 0; }
+      # Only a PR merged INTO the released branch of THIS repository covers a commit: a PR from a branch containing the
+      # commit merged into a side branch, or into another repository, proves nothing about the commit on the released branch.
+      if [[ "$(jq -r --arg b "${rbranch}" --arg r "${sowner}/${srepo}" '(.merged_at != null) and (.base.ref == $b) and ((.base.repo.full_name // "" | ascii_downcase) == ($r | ascii_downcase))' <<<"${p}")" != true ]]; then
+        continue
+      fi
       phead="$(jq -r '.head.sha' <<<"${p}")"; popener="$(jq -r '.user.login // ""' <<<"${p}")"
       pmerger="$(jq -r '.merged_by.login // ""' <<<"${p}")"; pmerged="$(jq -r '.merged_at // ""' <<<"${p}")"
       pmsha="$(jq -r '.merge_commit_sha // ""' <<<"${p}")"
+      local poType pmType plines
+      poType="$(jq -r '.user.type // ""' <<<"${p}")"; pmType="$(jq -r '.merged_by.type // ""' <<<"${p}")"
+      plines="$(jq -r '(.additions // 0) + (.deletions // 0)' <<<"${p}")"
       for login in "${popener}" "${pmerger}"; do
         # Clearance's principal pattern: letters, digits and : / _ . @ [ ] -  (so dependabot[bot] and dotted logins fit).
         if [[ ! "${login}" =~ ^[]A-Za-z0-9_.@[-]{1,190}$ ]]; then
@@ -233,8 +253,8 @@ release_source_resolve() {
         fi
       fi
       case "${ident}" in confirmed|not-agent|unattested) ;; *) ident=unknown ;; esac
-      prs="$(jq -c --argjson n "${pn}" --arg a "${popener}" --arg m "${pmerger}" --arg t "${pmerged}" --arg i "${ident}" --arg g "${agent}" \
-        '. + [{number: $n, author: $a, merger: $m, mergedAt: $t, identity: $i, agent: $g}]' <<<"${prs}")"
+      prs="$(jq -c --argjson n "${pn}" --arg a "${popener}" --arg at "${poType}" --arg m "${pmerger}" --arg mt "${pmType}" --arg t "${pmerged}" --argjson l "${plines}" --arg i "${ident}" --arg g "${agent}" \
+        '. + [{number: $n, author: $a, authorType: $at, merger: $m, mergerType: $mt, mergedAt: $t, lines: $l, identity: $i, agent: $g}]' <<<"${prs}")"
     done
     jq -e --arg s "${sha}" 'index($s) != null' <<<"${covered}" >/dev/null || nopr="$(jq -c --arg s "${sha}" '. + [$s]' <<<"${nopr}")"
   done < <(jq -r '.[].sha' <<<"${commits}")
@@ -247,19 +267,29 @@ release_source_resolve() {
   #    AI co-author trailer Clearance has no record of makes the release `unattested`; a release of only PRs with no AI
   #    signal is `not-agent` (a person's change); a commit no merged PR contains, a forged trailer, a modified agent PR or
   #    an answer Clearance could not give (any verdict that is not one of the three) makes it `unknown`.
-  #    The proposer is the opener of the newest merged source PR (by merge time, then number): deterministic, and not
-  #    steerable by commit counts. Every opener and every merger is listed.
+  #    The proposer is ONE human, chosen so the cheapest steers fail: bot accounts (a login ending [bot], an account of API
+  #    type Bot, or one in PIPELINE_LOGINS) are never chosen; among human openers, the opener of the source PR with the most
+  #    changed lines (ties: the newest merged); if every opener is a bot, the human merger of the newest PR; with no human
+  #    at all the kind is unknown. Clearance takes one proposer, so the other openers and every merger are recorded
+  #    (authors, mergers) but not yet excluded.
+  local pl
+  pl="$(jq -nc --arg s "${PIPELINE_LOGINS:-}" '$s | ascii_downcase | split(",") | map(select(. != ""))')"
   jq -nc --argjson base "${base_info}" --arg mode "${mode}" --arg repo "${sowner}/${srepo}" --arg prev "${prev}" --arg head "${rrev}" \
-    --argjson commits "${commits}" --argjson prs "${prs}" --argjson nopr "${nopr}" '
+    --argjson commits "${commits}" --argjson prs "${prs}" --argjson nopr "${nopr}" --argjson pl "${pl}" '
     def rank: {"unknown": 0, "unattested": 1, "not-agent": 2, "confirmed": 3}[.];
     def tally(f): group_by(f) | map({login: (.[0] | f), prs: length}) | sort_by(.login);
+    def isbot($login; $type): ($login | ascii_downcase) as $l | ($l | endswith("[bot]")) or ($type == "Bot") or ($pl | index($l) != null);
     ($prs | map(.identity) + (if ($nopr | length) > 0 then ["unknown"] else [] end) | sort_by(rank) | .[0]) as $prov
     | ($prs | map(select(.identity == "confirmed" and .agent != "") | .agent) | unique) as $agents
-    | ($prs | sort_by(.mergedAt, .number) | last | .author) as $proposer
+    | ($prs | map(select(isbot(.author; .authorType) | not)) | sort_by(.lines, .mergedAt, .number) | last) as $byOpener
+    | ($prs | map(select(.merger != "" and (isbot(.merger; .mergerType) | not))) | sort_by(.mergedAt, .number) | last) as $byMerger
+    | (if $byOpener != null then {who: $byOpener.author, rule: "opener of the source PR with the most changed lines"}
+       elif $byMerger != null then {who: $byMerger.merger, rule: "human merger of the newest source PR (every opener is a bot)"}
+       else {who: ($prs | sort_by(.mergedAt, .number) | last | .author), rule: "none: no human opened or merged any source PR"} end) as $pick
     | $base + {applicable: true, resolved: true, mode: $mode, sourceRepo: $repo, previousCommit: $prev, releasedCommit: $head,
         commits: ($commits | length), authors: ($prs | tally(.author)), mergers: ($prs | tally(.merger)), prs: $prs, noPr: $nopr,
-        provenance: $prov, agents: $agents,
-        proposerKind: (if $prov == "confirmed" then "agent" elif $prov == "unknown" then "unknown" else "person" end)}
-    | .proposer = (if .proposerKind == "agent" and ($agents | length) > 0 then "autopilot-runs/" + $agents[0] else "user:" + $proposer end)
+        provenance: $prov, agents: $agents, proposerRule: $pick.rule,
+        proposerKind: (if $pick.rule | startswith("none") then "unknown" elif $prov == "confirmed" then "agent" elif $prov == "unknown" then "unknown" else "person" end)}
+    | .proposer = (if .proposerKind == "agent" and ($agents | length) > 0 then "autopilot-runs/" + $agents[0] else "user:" + $pick.who end)
     | .agent = (if .proposerKind == "agent" and ($agents | length) > 0 then $agents[0] else null end)'
 }

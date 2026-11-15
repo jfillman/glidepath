@@ -287,12 +287,13 @@ spec:
         # that source (files/lib/release-source.sh; docs/admin/clearance-gate.md, "Who proposed a release"). A release PR's
         # own author is the pipeline's GitHub App and says nothing about the change. Nothing here is read from the PR's text:
         # the pipeline's release record names the source, and the PR must be exactly what the record says it wrote.
-        release_source_resolve "${owner}" "${repo}" "${PR_NUMBER}" "${files}" /work/repo /work/base "${author}" > /work/source.json \
+        release_source_resolve "${owner}" "${repo}" "${PR_NUMBER}" "${files}" /work/repo /work/base "${author}" "$(jq -r '.user.type // ""' <<<"${pr}")" > /work/source.json \
           || { echo "FAIL: could not tell whether this is a pipeline release PR (the release records are unreadable)"; exit 1; }
         if [[ "$(jq -r .applicable /work/source.json)" == true ]]; then
           echo "release source: $(jq -r 'if .resolved then "\(.mode) \(.sourceRepo)@\(.releasedCommit[0:7]) (\(.commits) commit(s)), proposer \(.proposer), openers \([.authors[] | .login] | join(", ")), provenance \(.provenance)" else "UNRESOLVED: \(.reason)" end' /work/source.json)"
         else
           echo "release source: no release record names this PR; the PR's own author is the proposer"
+          jq -r '.warning // empty | "warning: " + .' /work/source.json
         fi
 
         # The repo's clearance.yaml at head (tighten-only; Clearance validates it), as JSON for the render step, and
@@ -732,13 +733,17 @@ spec:
           echo "|---|---|---|---|---|---|---|---|"
           jq -r '"| \(if .state == "cleared" then "✅" elif .state == "holding" then "⏳" else "❌" end) | \(.env) | \(.tier // "") | \(.state)\(if .state == "error" then ": " + .detail else "" end) | \(.admission // "") | \((.why // "") | .[0:200]) | \(.requirement // "") | \(if .cleared_by == "policy" then "policy" elif (.approvals // "") != "" then .approvals else "" end)\(if .deny_reason then " · denied: " + .deny_reason else "" end) |"' /work/rows.jsonl
           links="$(jq -r 'select(.link != "") | "[\(.env)](\(.link))"' /work/rows.jsonl | paste -sd ' ' -)"
+          if [[ -s /work/source.json ]] && jq -e '.warning' /work/source.json >/dev/null; then
+            echo
+            jq -r '"> **Warning:** " + .warning' /work/source.json
+          fi
           if [[ -s /work/source.json && "$(jq -r '.applicable // false' /work/source.json)" == true ]]; then
             echo
-            echo "**Source of this release** (the pipeline opened this PR, so the proposer is the author of the change it releases, not the PR's author):"
+            echo "**Source of this release** (the pipeline opened this PR, so the proposer is a person who wrote the change it releases, not the PR's author):"
             jq -r '
               if .resolved then
-                "- Registered with Clearance as proposer `\(.proposer)` (\(.proposerKind)), provenance `\(.provenance)`: the opener of the newest merged source PR. Released: `\(.sourceRepo)` \(if .mode == "range" then "`\(.previousCommit[0:7])`..`\(.releasedCommit[0:7])`, \(.commits) commit(s)" elif .mode == "rollback" then "`\(.releasedCommit[0:7])` alone (a rollback restores one earlier commit)" elif .mode == "first" then "`\(.releasedCommit[0:7])` alone (the first release to this environment)" else "`\(.releasedCommit[0:7])` alone (the same commit as the release it replaces)" end)."
-                + "\n- Openers of the source PRs: \([.authors[] | "`\(.login)` (\(.prs))"] | join(", ")); mergers: \([.mergers[] | "`\(.login)` (\(.prs))"] | join(", ")). Clearance holds one proposer, so only the proposer is kept from clearing it today; every opener and merger is in the change'"'"'s `sourceAuthors` and `sourceMergers` checks. Identity is the PR'"'"'s opener and merger, never a commit'"'"'s author (a pusher chooses that)."
+                "- Registered with Clearance as proposer `\(.proposer)` (\(.proposerKind)), provenance `\(.provenance)`: the \(.proposerRule). Released: `\(.sourceRepo)` \(if .mode == "range" then "`\(.previousCommit[0:7])`..`\(.releasedCommit[0:7])`, \(.commits) commit(s)" elif .mode == "rollback" then "`\(.releasedCommit[0:7])` alone (a rollback restores one earlier commit)" elif .mode == "first" then "`\(.releasedCommit[0:7])` alone (the first release to this environment)" else "`\(.releasedCommit[0:7])` alone (the same commit as the release it replaces)" end)."
+                + "\n- Openers of the source PRs: \([.authors[] | "`\(.login)` (\(.prs))"] | join(", ")); mergers: \([.mergers[] | "`\(.login)` (\(.prs))"] | join(", ")). **An owner other than the proposer must clear; the other openers and the mergers are recorded in the change'"'"'s `sourceAuthors` and `sourceMergers` checks but are not yet excluded** (Clearance takes one proposer). Identity is the PR'"'"'s opener and merger, never a commit'"'"'s author (a pusher chooses that)."
                 + "\n- Source pull requests: \([.prs[] | "#\(.number) by `\(.author)` merged by `\(.merger)`: \(.identity)\(if .agent != "" then " (agent \(.agent))" else "" end)"] | join("; ")). The release is only as attested as its weakest source PR (unknown, then unattested, then not-agent, then confirmed)."
                 + (if (.noPr | length) > 0 then "\n- **No merged pull request contains " + ([.noPr[] | "`" + . + "`"] | join(", ")) + ":** a direct push, or a merge commit made outside a PR. Nobody can vouch for it, so provenance is `unknown` and Clearance denies the release while it is in the range. It stays in the range of every later release until an owner decides how to baseline it." else "" end)
               else

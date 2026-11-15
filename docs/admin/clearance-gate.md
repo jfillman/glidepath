@@ -111,13 +111,21 @@ gate now registers **the source change's** author and provenance instead
 (`charts/glidepath-catalog/files/lib/release-source.sh`, run in the `fetch` step; tested by
 `tests/clearance_gate_release_source_test.sh`).
 
-**What it trusts, and why.** Only things the pipeline wrote or can verify:
+> **Caveat: the release record is not yet authenticated.** The record is a ConfigMap in the app's `-cicd` namespace, and
+> `pipeline-runner` (the ServiceAccount every PipelineRun there uses, token mounted) may create, patch and delete
+> ConfigMaps namespace-wide. Tasks that run code from the app repo (`build-source`, `run-tests`, the app's own `build.sh`
+> / `test.sh`, dependency install scripts) run as it, so that code can forge or delete a release record. The source
+> resolution below is only as trustworthy as that code. A separate hardening change will follow (source-executing tasks
+> under a ServiceAccount with no ConfigMap rights or no token, and an admission policy that lets only `open-release-pr`
+> and `mark-release-merged` write `release-tracking-*`).
+
+**What it uses, and why.** Things the pipeline wrote and GitHub's own account facts:
 
 | Trusted | Why |
 |---|---|
-| The **release record** (`release-tracking-<chainId>`, the one whose `prUrl` is this PR; two records for one PR are trusted as neither): image, `imageRepository`, `imageSource` and `imageDigest` (the last two only when the release pins a digest), `gitUrl` and `gitRevision` (the source commit), `kind`, `initiator` | written by `open-release-pr`; a release PR's author cannot write it. **Caveat, see "The record's own trust" below** |
+| The **release record** (`release-tracking-<chainId>`, the one whose `prUrl` is this PR; two records for one PR are trusted as neither): image, `imageRepository`, `imageSource` and `imageDigest` (the last two only when the release pins a digest), `gitUrl` and `gitRevision` (the source commit), `kind`, `initiator` | written by `open-release-pr`; a release PR's author cannot write it, but code run by the app's own build and test tasks can (see the caveat above) |
 | The **previous release's record** (same app, environment and cluster, merged, whose image is what the base manifest runs) | same |
-| The app repo's **merged pull requests** (which PR contains each commit, who opened it, who merged it), read with the GitHub App's token | authenticated GitHub account facts. A **commit's author or committer is never used**: GitHub derives a commit's author login from the author email, which whoever pushes the commit chooses |
+| The app repo's **merged pull requests** (which PR contains each commit, who opened it, who merged it), read with the GitHub App's token. A PR covers a commit only if it was **merged into the released branch of the source repository itself** (the source repo's default branch, from GitHub: the pipeline records no branch, and the PR's own claim is never used) and the commit is that PR's `merge_commit_sha` or one of its commits | authenticated GitHub account facts. A **commit's author or committer is never used**: GitHub derives a commit's author login from the author email, which whoever pushes the commit chooses |
 | **Clearance's provenance verdict** per source PR (`POST /v1/provenance`) | Clearance's own receipts decide `confirmed`; nothing here reimplements it |
 
 Not trusted for anything: the release PR's author, title, body, branch name or commit message, and any text in it. The
@@ -133,7 +141,7 @@ extra file or a changed field fails this: the source is **unresolved**, never bo
 
 | | |
 |---|---|
-| `proposer` | `user:<login>` of the **opener of the newest merged source PR** (by merge time, then PR number): deterministic and not steerable by commit counts or commit metadata |
+| `proposer` | one **human**: bot accounts (a login ending `[bot]`, an account of API type `Bot`, or one in `clearanceGate.pipelineLogins`) are never chosen; among human openers, the opener of the source PR with the **most changed lines** (additions plus deletions; ties: the newest merged); if every opener is a bot, the human merger of the newest source PR; with no human at all the kind is `unknown` |
 | `proposerKind`, `agent`, `checks.provenance` | from the **weakest** source PR (below) |
 | `checks.sourceAuthors`, `checks.sourceMergers` | every PR opener and every PR merger, comma-separated: Clearance's request has one proposer, so the rest ride in `checks`, which Clearance stores with the change |
 | `checks.sourceRange` | `<repo>@<previous>..<released> (<mode>, <n> commits)` |
@@ -150,6 +158,7 @@ becomes `proposerKind: unknown`, which Clearance **denies** (`DG-PROVENANCE`); `
 |---|---|
 | Normal release | previous release's commit `..` this release's commit in the app repo. **Every** commit, merge commits included, must be the merge commit of, or a commit in, a merged PR (paginated; 300 or more associated PRs is not trusted); those PRs are the sources |
 | Several openers or mergers | none dropped: all in `checks.sourceAuthors` / `checks.sourceMergers` and the comment. **Until Clearance excludes them, only the proposer is kept from clearing the change**: another opener or a merger of a source PR can still clear it as owner |
+| Merge methods | merge commit: the merge commit is the PR's `merge_commit_sha`, its commits are in the PR. Squash: the one commit on the branch is `merge_commit_sha`. **Rebase merge**: GitHub documents `merge_commit_sha` as the resulting tip commit only; the earlier rebased commits have new shas that cannot be tied to the PR, so they count as no PR (fail closed: a multi-commit rebase-merged PR makes the release `unknown`) |
 | First release to an environment | the single released commit, resolved through its merged PR like any other (the earlier history was never released here) |
 | A commit no merged PR contains (a direct push, or a merge commit made outside a PR) | provenance `unknown` (Clearance denies); the comment names each such commit in full. It stays in the range of **every later release** (previous release `..` next), so that environment cannot advance until an owner decides how to baseline it: this is deliberately not designed here. A login Clearance cannot record as a principal is unresolved, never altered |
 | Source cannot be resolved (record swept, first release to the environment, over 250 commits, an author with no GitHub account, GitHub unreadable) | proposer `user:<PR author>`, kind **`unknown`** (never `person`), provenance `unknown`; `checks.sourceUnresolved` and the comment say why. Clearance denies it: fix the cause and `/retest`, or release again |
@@ -159,14 +168,18 @@ becomes `proposerKind: unknown`, which Clearance **denies** (`DG-PROVENANCE`); `
 | PR authored by the pipeline's App (`clearanceGate.pipelineLogins`, a setting; empty = off) but no record names it | not a person's change: kind `unknown`, with the reason |
 | Release records unreadable | the check fails: it cannot tell which of the above this is |
 
+**The guarantee, exactly:** an owner other than the chosen proposer must clear a tier-2 or tier-3 change. Other source authors and mergers are recorded (`checks.sourceAuthors`, `checks.sourceMergers`) and will be excluded once Clearance supports a set; today they are not, and nothing more than that is claimed.
+
+**Upgrade.** A release PR that was opened before this version has a record without `imageRepository` (and `imageSource`), so its source is unresolved and Clearance denies it. Re-running `open-release-pr` on the same chain rewrites the record in place (it re-applies every key, keeping `state`), but a re-triggered release run mints a *new* chain, which leaves a second record for the same PR, and two records for one PR are trusted as neither. So the operator closes the stale release PR and releases again (a closed PR is not reused: a fresh PR and a fresh record), then `/retest clearance-gate-`. Not verified live.
+
+**`clearanceGate.pipelineLogins`** is the pipeline's GitHub App as GitHub's REST API names it in `user.login`, e.g. `name[bot]` (not the App's display name, and not the GraphQL form without `[bot]`). It is empty by default; Hangar sets it. While it is empty and a PR's author account is a Bot with no record naming the PR, the gate prints a warning and treats the PR as a person's.
+
 **The promoter** (who triggered the promotion; the bot only opens the PR for them) is Tower's `initiator`, which
 `open-release-pr` now keeps on the release record (`initiator`, with `imageDigest`). It is empty for a release a flow
 started rather than a person. Clearance has no field for it, so the gate names it in its comment and does not send it.
 Clearance would need a `promoter` on the change request, stored with the change like `proposer`, and the "not the
 proposer" rule (`DG-PROPOSER`, tier 2 and 3 approvers) refusing the proposer, **every** source author and the promoter,
 with `sourceAuthors` and `sourceMergers` as real lists.
-
-**The record's own trust.** The record is a ConfigMap in the app's `-cicd` namespace, and `pipeline-runner` (the ServiceAccount every PipelineRun there uses, token mounted) may create, patch and delete ConfigMaps namespace-wide. Tasks that run code from the app repo (`build-source`, `run-tests`, the app's own `build.sh` / `test.sh` and dependency install scripts) run as that ServiceAccount, so that code can forge or delete a release record. Until that is closed, "only the pipeline writes the record" holds for a repo whose build and test code is trusted. The smallest fix is to run the source-executing tasks as a ServiceAccount with no ConfigMap rights (or `automountServiceAccountToken: false`), and add a ValidatingAdmissionPolicy that lets only `open-release-pr` and `mark-release-merged` write `release-tracking-*` ConfigMaps.
 
 ## Required or advisory
 
