@@ -96,7 +96,7 @@ Why it works without a polling pod or a lock:
   2026-10-29 such a run recorded success and started a promotion that PROM-03 refused (gitops-backstage#159).
 - **Exactly once.** The event id is a hash of repository, PR, head commit and the number of earlier
   `image-promotion-` check runs on it; the PipelineRun is named after it, so two gates that both see the set complete
-  start one run. After a refused or failed attempt, the next gate to finish asks again under a new id.
+  start one run. After a refused or failed attempt, the next gate to finish asks again under a new id. The id counts every `image-promotion` check run on the commit (`filter=all`, up to 1000 runs; GitHub's default listing keeps only the newest per name, which made every retry after the second reuse one id and the Trigger refuse the name), and a finished `promote-<id>` run also moves the attempt on, so a promotion that failed before opening its check run is retried too. After ten finished promotions on one commit nothing starts and the PR carries a comment saying so; a new commit starts over.
 - **Skipped:** a stale commit (the PR moved on), a merged or closed PR, a branch that is not `release-*`, a PR that
   changes no `<cluster>/<env>/release.yaml` (cloud pin PRs copy at deploy), a commit already promoted or promoting.
 - **A gate advisory for this app only** (catalog `releaseGuardrailOverridesByApp`,

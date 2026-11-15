@@ -450,7 +450,7 @@ spec:
         [[ "${verdict}" == success ]] || gate_advisory_for_app "${app}" "${GATE_NAME}" \
           || { echo "${GATE_NAME} is not green: no promotion"; exit 0; }
 
-        checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")" || exit 0
+        checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100&filter=latest")" || exit 0
         # A gate's check is "<PaC application name> / <gate>-", under the current name or an earlier one (catalog
         # pipelinesAsCode).
         pac_apps={{ include "glidepath-catalog.pacAppNames" . | squote }}
@@ -471,7 +471,7 @@ spec:
               case "${c}" in
                 missing|queued|in_progress)
                   sleep 5
-                  checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")" || break
+                  checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100&filter=latest")" || break
                   c="$(newest "${gate}")" ;;
                 *) break ;;
               esac
@@ -486,10 +486,41 @@ spec:
         esac
 
         # One event id per commit and attempt: two gates that both see the set complete send the same id, and the
-        # Trigger names the PipelineRun after it, so only one runs; after a refused or failed promotion the next
-        # attempt (a new image-promotion check run) gets a new id.
-        attempts="$(jq -r --argjson apps "${pac_apps}" --argjson ext "${ext_checks}" --arg g image-promotion '[.check_runs[] | select({{ include "glidepath-catalog.checkMatchJq" . }}) | {{ include "glidepath-catalog.neutralOkJq" . }}] | length' <<<"${checks}")"
-        id="$(printf '%s' "${owner}/${repo}#${pr_number}@${head_sha}#${attempts}" | sha256sum | cut -c1-20)"
+        # Trigger names the PipelineRun after it, so only one runs; after a completed (failed or refused) promotion the
+        # next attempt gets a new id. The attempts are counted over EVERY image-promotion check run on the commit
+        # (filter=all): the default listing (filter=latest) holds only the newest run per check name, so a count taken
+        # from it never passed 1 and every later attempt reused the second id, whose PipelineRun already existed
+        # (gitops-backstage#303, 2026-11-14). A promotion that failed before it opened a check run is not counted
+        # there, so a completed promote-<id> run in the namespace also moves the attempt on.
+        all_runs="[]"
+        for page in $(seq 1 10); do
+          chunk="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100&filter=all&page=${page}")" \
+            || { echo "warn: could not count the earlier promotion attempts on ${head_sha:0:7}: no promotion asked" >&2; exit 0; }
+          all_runs="$(jq -c --argjson more "$(jq -c '.check_runs' <<<"${chunk}")" '. + $more' <<<"${all_runs}")"
+          [[ "$(jq -r '.check_runs | length' <<<"${chunk}")" -ge 100 ]] || break
+        done
+        attempts="$(jq -r --argjson apps "${pac_apps}" --argjson ext "${ext_checks}" --arg g image-promotion '[.[] | select({{ include "glidepath-catalog.checkMatchJq" . }}) | {{ include "glidepath-catalog.neutralOkJq" . }}] | length' <<<"${all_runs}")"
+        prior=""
+        for _ in $(seq 1 10); do
+          id="$(printf '%s' "${owner}/${repo}#${pr_number}@${head_sha}#${attempts}" | sha256sum | cut -c1-20)"
+          prior="$(kubectl get pipelinerun "promote-${id}" -n "${NAMESPACE}" -o json 2>/dev/null | jq -r '.status.completionTime // empty' 2>/dev/null || true)"
+          [[ -n "${prior}" ]] || break
+          echo "promote-${id} already ran and finished at ${prior}: moving to the next attempt"
+          attempts=$(( attempts + 1 ))
+        done
+        if [[ -n "${prior}" ]]; then
+          # Ten finished promotions on one commit: say so on the PR instead of leaving the Trigger to refuse the name.
+          marker="<!-- glidepath:promotion-retry-exhausted -->"
+          note="$(printf '%s\n### ❌ `image-promotion` was not started again\n\nTen promotion runs have already finished on `%s`, so no new one is started. Push a new commit to the release branch (a new commit is a new set of attempts), or ask the platform team to look at the earlier `promote-*` runs in `%s`.' "${marker}" "${head_sha:0:7}" "${NAMESPACE}")"
+          cid="$(gh_ "https://api.github.com/repos/${owner}/${repo}/issues/${pr_number}/comments?per_page=100" | jq -r --arg m "${marker}" '[.[] | select(.body | startswith($m))][0].id // empty')"
+          if [[ -n "${cid}" ]]; then
+            gh_ -X PATCH "https://api.github.com/repos/${owner}/${repo}/issues/comments/${cid}" -d "$(jq -n --arg b "${note}" '{body: $b}')" >/dev/null || true
+          else
+            gh_ -X POST "https://api.github.com/repos/${owner}/${repo}/issues/${pr_number}/comments" -d "$(jq -n --arg b "${note}" '{body: $b}')" >/dev/null || true
+          fi
+          echo "promotion not asked: ten finished attempts on ${head_sha:0:7}"
+          exit 0
+        fi
         event="$(jq -nc --arg id "${id}" --arg ns "${NAMESPACE}" --arg pr "${PIPELINE_RUN_NAME}" --arg app "${app}" \
           --arg url "https://github.com/${owner}/${repo}" --arg n "${pr_number}" --arg sha "${head_sha}" --arg g "${GATE_NAME}" \
           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \

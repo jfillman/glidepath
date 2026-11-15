@@ -55,7 +55,19 @@ case "$method $url" in
   "GET "*/pulls/53) cat "$FX/pr.json" ;;
   "GET "*/check-runs*)
     # a check that lands later: the first read is checks.json, every read after it later.json
-    if [[ -f "$FX/later.json" && -f "$FX/served" ]]; then cat "$FX/later.json"; else touch "$FX/served"; cat "$FX/checks.json"; fi ;;
+    src="$FX/checks.json"
+    if [[ -f "$FX/later.json" && -f "$FX/served" ]]; then src="$FX/later.json"; else touch "$FX/served"; fi
+    echo "$url" >> "$FX/check-urls"
+    # GitHub's default listing (filter=latest) holds only the newest run per check name; filter=all holds every run.
+    # checks.json is the full history, so a read that does not ask for filter=all gets the reduced listing.
+    case "$url" in
+      *filter=all*) [[ ! -f "$FX/fail-all" ]] || exit 22
+        page="${url##*page=}"; [[ "$url" == *page=* ]] || page=1
+        jq --argjson p "$page" '.check_runs |= .[(($p - 1) * 100):($p * 100)]' "$src" ;;
+      *) jq '.check_runs |= (group_by(.name) | map(sort_by(.started_at) | last))' "$src" ;;
+    esac ;;
+  "GET "*/issues/53/comments*) cat "$FX/comments.json" 2>/dev/null || echo '[]' ;;
+  "POST "*/issues/53/comments|"PATCH "*/issues/comments/*) printf '%s\n' "$data" >> "$FX/posted" ;;
   *) echo "unexpected $method $url" >&2; exit 22 ;;
 esac
 EOF
@@ -64,6 +76,7 @@ cat > "$work/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   "get configmap"*) cat "$FX/records.json" ;;
+  "get pipelinerun promote-"*) [[ -f "$FX/runs/$3" ]] && cat "$FX/runs/$3" || { echo "not found" >&2; exit 1; } ;;
   "get pipelinerun"*) [[ -f "$FX/pipelinerun.json" ]] && cat "$FX/pipelinerun.json" || { echo "not found" >&2; exit 1; } ;;
   "patch configmap"*)
     for a in "$@"; do [[ "$prev" == -p ]] && p="$a"; prev="$a"; done
@@ -156,6 +169,57 @@ jq '.check_runs += [{name: "Pipelines as Code CI / image-promotion-", status: "c
 run
 expect "retry: one event" "$(events)" 1
 [[ "$(jq -r .context.id "$FX/events")" != "${id_first}" ]] && echo "ok   retry: a new attempt id" || { echo "FAIL retry: same id as the first attempt"; fail=1; }
+
+# ---- the attempt id (gitops-backstage#303, 2026-11-14): every image-promotion check run on the commit counts, not only the
+# newest per name, so each new attempt after a failed one gets a new id.
+failed_run() { # <n> <fx>: n earlier failed image-promotion check runs
+  jq --argjson n "$1" '.check_runs += [range($n) | {name: "Pipelines as Code CI / image-promotion-", status: "completed", conclusion: "failure",
+      started_at: ("2026-10-28T10:0" + (. + 5 | tostring) + ":00Z")}]' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+}
+ids=""
+for n in 0 1 2 3; do
+  scenario "attempt$n"; failed_run "$n"; run
+  expect "attempt$n: one event" "$(events)" 1
+  ids="${ids}$(jq -r .context.id "$FX/events")"$'\n'
+done
+expect "0,1,2,3 prior attempts: four distinct ids" "$(printf '%s' "${ids}" | sort -u | grep -c .)" 4
+# the same state read by two gates finishing at the same moment: the same id (one run).
+scenario concurrent-a; failed_run 2; run; a="$(jq -r .context.id "$FX/events")"
+scenario concurrent-b; failed_run 2; run; b="$(jq -r .context.id "$FX/events")"
+expect "two concurrent gates, 2 prior attempts: same id" "$a" "$b"
+expect "attempts counted over filter=all" "$(grep -c 'filter=all' "$FX/check-urls")" 1
+# more than one page of check runs (100 per page): all pages are read.
+scenario paged; failed_run 2
+jq '.check_runs = ([range(120) | {name: "Other / noise", status: "completed", conclusion: "success", started_at: "2026-10-28T09:00:00Z"}] + .check_runs)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+run
+expect "paged: same id as 2 prior attempts" "$(jq -r .context.id "$FX/events")" "$a"
+expect "paged: two pages read" "$(grep -c 'filter=all' "$FX/check-urls")" 2
+# a listing that cannot be read: nothing asked (never a guessed id).
+scenario count-fails; failed_run 1; touch "$FX/fail-all"; run
+expect "count-fails: no event" "$(events)" 0
+expect "count-fails: exit 0" "$(cat "$FX/rc")" 0
+# a promotion that failed before opening a check run (no image-promotion run) left a finished promote-<id>: the next attempt moves on.
+scenario early-refusal
+id0="$(printf '%s' "jfillman/gitops-gate-api#53@${SHA}#0" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-20)"
+mkdir -p "$FX/runs"; echo '{"status":{"completionTime":"2026-10-28T10:06:00Z"}}' > "$FX/runs/promote-${id0}"
+run
+expect "early refusal: one event" "$(events)" 1
+[[ "$(jq -r .context.id "$FX/events")" != "${id0}" ]] && echo "ok   early refusal: not the finished run's id" || { echo "FAIL early refusal: reused ${id0}"; fail=1; }
+# a promote run with this id still running: the same id (the Trigger's refusal is the right outcome).
+scenario still-running
+mkdir -p "$FX/runs"; echo '{"status":{"startTime":"2026-10-28T10:06:00Z"}}' > "$FX/runs/promote-${id0}"
+run
+expect "still running: same id" "$(jq -r .context.id "$FX/events")" "${id0}"
+# ten finished runs: no event, and the PR says so.
+scenario exhausted
+mkdir -p "$FX/runs"
+for k in 0 1 2 3 4 5 6 7 8 9; do
+  idk="$(printf '%s' "jfillman/gitops-gate-api#53@${SHA}#${k}" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-20)"
+  echo '{"status":{"completionTime":"2026-10-28T10:06:00Z"}}' > "$FX/runs/promote-${idk}"
+done
+run
+expect "exhausted: no event" "$(events)" 0
+expect "exhausted: the PR is told" "$(grep -c 'was not started again' "$FX/posted")" 1
 
 # the record changed underneath: the patch is retried with the new resourceVersion read again.
 scenario conflict; touch "$FX/conflict-once"; run
