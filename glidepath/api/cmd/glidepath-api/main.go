@@ -30,8 +30,9 @@
 //	GITHUB_OWNER        the GitHub owner of the apps' repos, for promote and rollback (the chart's githubOwner)
 //	PROTECTED_BRANCHES  comma-separated branches a release must come from, for GET /v1/apps/{app}/ref-protection
 //	                    (the chart's cicdRunAdmission.protectedBranches; default main)
-//	PIPELINE_LOGINS     comma-separated GitHub logins of the pipeline's own accounts whose approval never counts (the chart's
-//	                    api.pipelineLogins; bots, typed Bot or named [bot], never count either)
+//	PIPELINE_LOGINS     comma-separated GitHub logins of the pipeline's own accounts (the chart's api.pipelineLogins): the accounts
+//	                    that open release pull requests in the gitops repositories (they establish where a range starts), and
+//	                    whose approval never counts (bots, typed Bot or named [bot], never count either)
 //	TAG_REF_PATTERN     the release tags' full-ref pattern (the chart's cicdRunAdmission.tagRefPattern; unset: every tag)
 //	BROKER_URL          the token broker, for per-request GitHub read tokens (default http://cdevents-broker-auth.platform-system.svc.cluster.local:8080)
 //	BROKER_TOKEN_PATH   this pod's projected ServiceAccount token for the broker, audience github-read-token
@@ -304,7 +305,7 @@ func main() {
 		},
 		// Whether every commit being released was reviewed (review evidence: its merged pull request and an approval from
 		// someone else on the final head): read per request with the broker's read-only token (contents, pull requests,
-		// metadata), never cached. The last verified release is read from the app's release records.
+		// metadata), never cached. The last release (the start of the range) is read from the app's gitops repository history.
 		RefProtection: &refprotection.Client{
 			Owner: githubOwner,
 			Checker: &refprotection.Checker{
@@ -313,9 +314,6 @@ func main() {
 				BotLogins:         splitList(env("PIPELINE_LOGINS", "")),
 			},
 			GitHub: func(app string) refprotection.Reader { return broker.Session(app) },
-			Records: func(ctx context.Context, app *apps.App) ([]releases.Record, error) {
-				return releases.Reader{CS: cs}.List(ctx, app.Namespace, app.Name)
-			},
 		},
 		Events: store,
 		Tap: &events.Tap{

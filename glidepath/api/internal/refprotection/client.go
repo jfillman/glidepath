@@ -2,12 +2,10 @@ package refprotection
 
 import (
 	"context"
-	"sort"
 	"strings"
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/environments"
-	"github.com/glidepath/api/internal/releases"
 )
 
 // Client is what the API route calls: it ties a request to the app's own repository before asking the host.
@@ -16,9 +14,6 @@ type Client struct {
 	Checker *Checker
 	// GitHub opens one request's reads for the app (github.Broker.Session): one token minted for this call, never kept.
 	GitHub func(app string) Reader
-	// Records lists the app's release records (the release-tracking ConfigMaps). nil: no release is known, so every check is
-	// a first release (the commit alone).
-	Records func(ctx context.Context, app *apps.App) ([]releases.Record, error)
 }
 
 // Verify answers for repo ("<owner>/<name>", as Pipelines-as-Code recorded the run's repository) at ref and sha. The
@@ -36,39 +31,10 @@ func (c *Client) Verify(ctx context.Context, app *apps.App, repo, ref, sha strin
 	if name != r.Source && name != r.Gitops && name != r.Config {
 		return nil, Invalid{"repo " + repo + " is not one of " + app.Name + "'s repositories (" + r.Source + ", " + r.Gitops + ")"}
 	}
-	var cands []Candidate
-	if c.Records != nil {
-		recs, err := c.Records(ctx, app)
-		if err != nil {
-			return nil, err // the baseline cannot be read: no answer (fail closed)
-		}
-		cands = Candidates(recs, owner, name)
+	// The release history is the gitops repository's: only for the app's source repository, and only when it has a gitops repository.
+	var hist *History
+	if name == r.Source && r.Gitops != "" {
+		hist = &History{GitopsRepo: r.Gitops, App: app.Name}
 	}
-	return c.Checker.Check(ctx, c.GitHub(app.Name), owner, name, ref, sha, cands)
-}
-
-// Candidates are the releases of owner/repo whose record says review evidence was verified (the guard's summary, written
-// into refProtection), newest first. They are claims: Check verifies the one it uses. A record that names another
-// repository, no commit, or never merged, or was not verified (an "Off here" release, a release before review evidence existed) is not a
-// candidate.
-func Candidates(recs []releases.Record, owner, repo string) []Candidate {
-	var out []Candidate
-	for _, rec := range recs {
-		d := rec.Data
-		rev := d["gitRevision"]
-		if !shaRE.MatchString(rev) || !strings.Contains(d["refProtection"], VerifiedMarker) {
-			continue
-		}
-		u := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(d["gitUrl"]), "/"), ".git")
-		if !strings.HasSuffix(strings.ToLower(u), "/"+strings.ToLower(owner+"/"+repo)) {
-			continue
-		}
-		at := d["mergedAt"]
-		if at == "" {
-			continue // its release PR was never merged: nothing was released
-		}
-		out = append(out, Candidate{Sha: rev, Release: rec.Name, Env: d["env"], At: at})
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].At > out[j].At })
-	return out
+	return c.Checker.Check(ctx, c.GitHub(app.Name), owner, name, ref, sha, hist)
 }

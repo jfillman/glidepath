@@ -11,13 +11,15 @@
 // platform does not hold (pipeline trust T3b, docs/admin/security.md "Ref protection"). The rulesets and branch
 // protection are still read and reported, best effort, as an informational "configuration" section.
 //
-//   - Range (range.go): the commits after the last VERIFIED release of this app (a release record whose refProtection
-//     says review evidence was verified) up to the commit; with no such release, the commit alone. The baseline is
-//     never trusted to skip commits: it must be an ancestor of the commit, and must itself carry review evidence.
+//   - Range (history.go, evidence.go): the commits after the newest release of this app that its GITOPS repository's
+//     merged release pull requests corroborate, up to the commit; the gitops history showing no release at all, the commit
+//     alone. That release must be an ancestor of the commit and itself carry review evidence. Release records (ConfigMaps)
+//     are not consulted: the pipeline's ServiceAccount can write and delete them.
 //   - Pull request: each commit must belong to a pull request MERGED INTO THE PROTECTED BRANCH of THIS repository (the
 //     commit is its merge commit, one of its commits, or one of the commits a rebase merge landed from it).
-//   - Review: that pull request needs an approving review, on its final head, not dismissed, from an account that is not
-//     a bot, not its opener and not the author or committer of any of its commits.
+//   - Review: that pull request needs an approving review, on its final head, not dismissed, from an account with write
+//     access to the repository that is not a bot, not its opener and not the author or committer of any of its commits.
+//     A merge commit that is not the head is accepted only if GitHub made it (committer web-flow, verified signature).
 //
 // Verdicts: protected (every commit has the evidence), unreviewed (some commit does not: they are listed), unverifiable
 // (GitHub did not answer, the range is longer than MaxRangeCommits, or the range cannot be established). Only protected
@@ -79,8 +81,8 @@ var (
 	upgradeRE   = regexp.MustCompile(`(?i)upgrade to github|upgrade your plan|not available for|available (for|on|to) .*(plan|public)`)
 )
 
-// Candidate is a release that claims to have been verified: the commit it released and where the claim came from. It is
-// a CLAIM (release records are written by the pipeline's ServiceAccount until pipeline trust T4): the check verifies it.
+// Candidate is a release the gitops repository's history corroborates (history.go): the app commit it released and the
+// gitops pull request it came from. The check still verifies it before it starts a range.
 type Candidate struct {
 	Sha     string `json:"sha"`
 	Release string `json:"release,omitempty"` // the release record's name
@@ -157,8 +159,11 @@ type PullEvidence struct {
 	// Unlinked counts commits whose author or committer GitHub could not link to an account.
 	Unlinked  int      `json:"unlinked,omitempty"`
 	Approvers []string `json:"approvers"` // accounts whose approval counts
-	Reviewed  bool     `json:"reviewed"`
-	Missing   string   `json:"missing,omitempty"`
+	// ApproverPermissions is what GitHub says each approver (before the write-access rule) may do on the repository now:
+	// admin, write, maintain, read, none, or "association:X" when the permission could not be read (see evidence.go).
+	ApproverPermissions map[string]string `json:"approverPermissions,omitempty"`
+	Reviewed            bool              `json:"reviewed"`
+	Missing             string            `json:"missing,omitempty"`
 }
 
 // UnreviewedCommit is a commit without review evidence.
@@ -188,7 +193,7 @@ func (v *Verdict) finish(verdict string, reasons ...string) *Verdict {
 
 // Check answers for owner/repo at ref and sha. rd is the request's own reader. candidates are the releases that claim
 // to have been verified (newest first); they are claims, checked here.
-func (c *Checker) Check(ctx context.Context, rd Reader, owner, repo, ref, sha string, candidates []Candidate) (*Verdict, error) {
+func (c *Checker) Check(ctx context.Context, rd Reader, owner, repo, ref, sha string, hist *History) (*Verdict, error) {
 	v := &Verdict{Repo: owner + "/" + repo, Ref: ref, Sha: sha}
 	if !shaRE.MatchString(sha) {
 		return nil, Invalid{"sha must be a full 40-character lowercase commit sha"}
@@ -199,7 +204,7 @@ func (c *Checker) Check(ctx context.Context, rd Reader, owner, repo, ref, sha st
 	if strings.Trim(sha, "0") == "" {
 		return nil, Invalid{"sha is the all-zero sha: the run recorded no commit"}
 	}
-	e := &engine{c: c, rd: rd, owner: owner, repo: repo, prs: map[int]*prState{}}
+	e := &engine{c: c, rd: rd, owner: owner, repo: repo, hist: hist, prs: map[int]*prState{}, perms: map[string]string{}, infos: map[string]*commitInfo{}}
 	switch {
 	case branchRefRE.MatchString(ref):
 		v.Kind = "branch"
@@ -219,7 +224,7 @@ func (c *Checker) Check(ctx context.Context, rd Reader, owner, repo, ref, sha st
 	default:
 		return nil, Invalid{"ref must be a full ref: refs/heads/<branch> or refs/tags/<tag>"}
 	}
-	err := c.decide(ctx, e, v, sha, candidates)
+	err := c.decide(ctx, e, v, sha)
 	var u *unverifiable
 	if errors.As(err, &u) {
 		v.Verdict, v.Reasons, v.Missing = "", nil, nil
@@ -248,7 +253,7 @@ func (c *Checker) Check(ctx context.Context, rd Reader, owner, repo, ref, sha st
 }
 
 // decide fills v. It returns *unverifiable for "cannot establish", any other error for a failed read.
-func (c *Checker) decide(ctx context.Context, e *engine, v *Verdict, sha string, candidates []Candidate) error {
+func (c *Checker) decide(ctx context.Context, e *engine, v *Verdict, sha string) error {
 	// The protected branch the commit must be on.
 	if v.Kind == "tag" {
 		if len(c.ProtectedBranches) == 0 {
@@ -282,7 +287,7 @@ func (c *Checker) decide(ctx context.Context, e *engine, v *Verdict, sha string,
 			return nil
 		}
 	}
-	rng, err := e.resolveRange(ctx, v.Branch, sha, candidates)
+	rng, err := e.resolveRange(ctx, v.Branch, sha)
 	if err != nil {
 		return err
 	}
@@ -303,6 +308,9 @@ func (c *Checker) decide(ctx context.Context, e *engine, v *Verdict, sha string,
 		}
 	}
 	e.summarize(ev)
+	if e.assocUsed {
+		ev.Notes = append(ev.Notes, "GitHub did not let the read token read collaborator permissions: a reviewer's write access was taken from the review's author_association (OWNER, COLLABORATOR or MEMBER), which is weaker (an organization member need not have write access to this repository)")
+	}
 	where := fmt.Sprintf("%s, %s", v.Branch, rangeText(ev))
 	if len(ev.Unreviewed) > 0 {
 		v.finish(Unreviewed, fmt.Sprintf("review evidence is incomplete: %d of %d commits have no approved pull request (%s)", len(ev.Unreviewed), len(ev.Commits), where))
@@ -331,7 +339,7 @@ func rangeText(ev *Evidence) string {
 	if ev.Mode == "range" {
 		return fmt.Sprintf("range %s..%s", short(ev.From), short(ev.To))
 	}
-	return fmt.Sprintf("%s alone: no earlier verified release", short(ev.To))
+	return fmt.Sprintf("%s alone: no earlier release to start from", short(ev.To))
 }
 
 // summarize fills the distinct opener, merger and approver lists from the pull requests that cover the range.

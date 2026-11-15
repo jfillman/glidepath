@@ -202,9 +202,11 @@ api:
     serviceAccounts: [] # [{name, namespace}]
   # The broker glidepath-api asks for per-request GitHub read tokens (githubRead below). Empty: the in-cluster Service.
   brokerUrl: ""
-  # GitHub logins of the pipeline's own accounts (its GitHub App's REST login, name[bot]) whose approval of a pull request
-  # never counts as review evidence (GET /v1/apps/{app}/ref-protection). Accounts GitHub types Bot, or whose login ends in
-  # [bot], never count either, so this only names an account that is not typed that way. Empty is fine.
+  # GitHub logins of the pipeline's own accounts (its GitHub App's REST login, name[bot]). Two uses (GET /v1/apps/{app}/ref-protection):
+  # their approval of a pull request never counts as review evidence, and a release pull request in an app's gitops repository counts
+  # as a release (the start of a range) only if one of them opened it: set it to the account that opens release pull requests
+  # before refProtection.mode is required, or checks are unverifiable where the gitops history shows releases. Empty is fine
+  # while the mode is off.
   pipelineLogins: []
   # The Flight promoter repository (<owner>/<repo>) whose promote.yaml on main signs promotion attestations: the
   # only identity a promotion attestation in /evidence verifies with (public Sigstore). Empty: promoter.dispatchRepo;

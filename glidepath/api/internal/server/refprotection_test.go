@@ -1,9 +1,7 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,10 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/github"
 	"github.com/glidepath/api/internal/refprotection"
-	"github.com/glidepath/api/internal/releases"
 )
 
 const (
@@ -48,11 +44,19 @@ func newRPHost(t *testing.T) *rpHost {
 			return
 		}
 		h.calls = append(h.calls, r.URL.RequestURI())
+		if r.URL.Path == "/repos/jfillman/gitops-shop/pulls" && r.Header.Get("Authorization") == "Bearer ghs-gitops-shop" {
+			io.WriteString(w, `[]`) // no release yet: a first release
+			return
+		}
 		if r.Header.Get("Authorization") != "Bearer ghs-shop" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		switch {
+		case r.URL.Path == "/repos/jfillman/shop/commits/"+rpSHA:
+			io.WriteString(w, `{"sha":"`+rpSHA+`","parents":[{"sha":"9999999999999999999999999999999999999999"}],"author":{"login":"alice","type":"User"},"committer":{"login":"web-flow","type":"User"},"commit":{"author":{"name":"Alice"},"committer":{"name":"GitHub"},"verification":{"verified":true}}}`)
+		case r.URL.Path == "/repos/jfillman/shop/collaborators/bob/permission":
+			io.WriteString(w, `{"permission":"write","role_name":"write"}`)
 		case strings.HasPrefix(r.URL.Path, "/repos/jfillman/shop/rules/branches/main"):
 			io.WriteString(w, `[{"type":"deletion","ruleset_source_type":"Repository","ruleset_source":"jfillman/shop","ruleset_id":100},
 			 {"type":"non_fast_forward","ruleset_source_type":"Repository","ruleset_source":"jfillman/shop","ruleset_id":100},
@@ -120,12 +124,12 @@ func TestRefProtectionVerdict(t *testing.T) {
 	if out["branch"] != "main" || ev == nil || ev["mode"] != "first" || len(ev["approvers"].([]any)) != 1 || out["configuration"] == nil {
 		t.Fatalf("the verdict carries its evidence and the informational configuration: %v", out)
 	}
-	if len(h.mints) != 1 || h.mints[0] != "jfillman/shop" {
-		t.Fatalf("one token for the app's own repo, this request: %v", h.mints)
+	if len(h.mints) != 2 || !(h.mints[0] == "jfillman/shop" && h.mints[1] == "jfillman/gitops-shop" || h.mints[1] == "jfillman/shop" && h.mints[0] == "jfillman/gitops-shop") {
+		t.Fatalf("one token per repo of the app (its source, and its gitops repository for the release history), this request: %v", h.mints)
 	}
 	// A second call reads the host again and mints again.
 	getRP(t, s, "repo=jfillman/shop&ref=refs/heads/main&sha="+rpSHA)
-	if len(h.mints) != 2 {
+	if len(h.mints) != 4 {
 		t.Fatalf("nothing is cached across requests: %v", h.mints)
 	}
 }
@@ -182,15 +186,5 @@ func TestRefProtectionUnconfigured(t *testing.T) {
 	defer done()
 	if code, _, _ := getRP(t, s, "repo=jfillman/shop&ref=refs/heads/main&sha="+rpSHA); code != http.StatusServiceUnavailable {
 		t.Fatalf("%d", code)
-	}
-}
-
-// The release records are read for the baseline; a failure to read them is no answer (502), never "a first release".
-func TestRefProtectionRecordsFailureFailsClosed(t *testing.T) {
-	s, _ := withRefProtection(t, refReader)
-	s.RefProtection.Records = func(context.Context, *apps.App) ([]releases.Record, error) { return nil, errors.New("api server down") }
-	code, out, _ := getRP(t, s, "repo=jfillman/shop&ref=refs/heads/main&sha="+rpSHA)
-	if code != http.StatusBadGateway || out["verdict"] != nil {
-		t.Fatalf("%d %v", code, out)
 	}
 }

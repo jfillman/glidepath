@@ -729,10 +729,11 @@ paths:
         Needs `get` on `refprotection.glidepath.hangar.io` in the app's namespace (a privileged Pipeline's
         pipeline-runner has it). `repo` is `<owner>/<name>` and must be one of the app's own repositories; `ref` is a full
         ref (`refs/heads/<branch>` or `refs/tags/<tag>`), `sha` the full commit; the caller sends the ones Pipelines-as-Code
-        recorded on the run. The verdict is `protected` when every commit in the range (the commits after the app's last
-        verified release, up to `sha`; a first release is `sha` alone) belongs to a pull request merged into the protected
+        recorded on the run. The verdict is `protected` when every commit in the range (the commits after the newest release
+        that the app's gitops repository corroborates, up to `sha`; no release in its history is a first release: `sha` alone) belongs to a pull request merged into the protected
         branch of this repository, and that pull request has an approving review, not dismissed, on its final head, from an
-        account that is not a bot, not its opener and not the author or committer of any of its commits. A commit with no
+        account with write access to the repository that is not a bot, not its opener and not the author or committer of any of its
+        commits, and a merge commit that is not its head must be GitHub's (committer web-flow, verified). A commit with no
         such pull request (a direct push, a force push, an administrator's bypass) makes it `unreviewed`; the commits are
         in `missing` and `evidence.unreviewed`. `unverifiable`: GitHub did not show enough (a failed read, a range longer
         than 250 commits, a last release that cannot be used as the start of the range, a ref that is not a protected
@@ -1227,9 +1228,9 @@ components:
       required: [branch, mode, to, commits, pullRequests, openers, mergers, approvers, accepted, calls]
       properties:
         branch: { type: string }
-        mode: { type: string, enum: [range, first], description: "range: the commits after the last verified release; first: the commit alone (no usable earlier verified release)" }
-        from: { type: string, description: "The last verified release's commit (exclusive), mode range. It was confirmed an ancestor of `to` on the protected branch and itself has review evidence; a release record is never trusted to skip commits" }
-        fromRelease: { type: string, description: The release record the start of the range came from }
+        mode: { type: string, enum: [range, first], description: "range: the commits after the newest release the gitops history corroborates; first: the commit alone (the history shows no earlier release, or the commit is at or before one)" }
+        from: { type: string, description: "The release's commit (exclusive), mode range. A merged release pull request in the gitops repository names it; GitHub confirms it an ancestor of `to`; it has review evidence itself. Release records (ConfigMaps) are not read" }
+        fromRelease: { type: string, description: The gitops pull request the start of the range came from }
         to: { type: string, description: The commit being released (inclusive) }
         commits:
           type: array
@@ -1258,7 +1259,8 @@ components:
               commits: { type: array, items: { type: string } }
               authors: { type: array, items: { type: string }, description: GitHub accounts that authored or committed its commits }
               unlinked: { type: integer, description: Commits whose author or committer GitHub could not link to an account (then the merger may not approve either) }
-              approvers: { type: array, items: { type: string }, description: Accounts whose approval counts }
+              approvers: { type: array, items: { type: string }, description: Accounts whose approval counts (write access or higher) }
+              approverPermissions: { type: object, additionalProperties: { type: string }, description: "Each approver's repository permission as GitHub reports it (admin, write, maintain, read, none), or association:<X> when it could not be read" }
               reviewed: { type: boolean }
               missing: { type: string }
         openers: { type: array, items: { type: string }, description: Distinct, sorted }

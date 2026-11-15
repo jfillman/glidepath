@@ -11,10 +11,11 @@ import (
 	"testing"
 
 	"github.com/glidepath/api/internal/github"
-	"github.com/glidepath/api/internal/releases"
 )
 
-func checker() *Checker { return &Checker{ProtectedBranches: []string{"main"}} }
+func checker() *Checker {
+	return &Checker{ProtectedBranches: []string{"main"}, BotLogins: []string{"pipeline[bot]"}}
+}
 
 func needVerdict(t *testing.T, v *Verdict, verdict string, reasonHas ...string) {
 	t.Helper()
@@ -87,7 +88,7 @@ func TestCleanRangeMergeSquashRebase(t *testing.T) {
 	v := mustCheck(t, checker(), w, "refs/heads/main", sh(43), cands)
 	needVerdict(t, v, Protected, "6 commits in 3 pull requests", "range "+short(sh(2))+".."+short(sh(43)))
 	ev := v.Evidence
-	if ev.Mode != "range" || ev.From != sh(2) || ev.FromRelease != "release-tracking-r1" || len(ev.Commits) != 6 {
+	if ev.Mode != "range" || ev.From != sh(2) || ev.FromRelease != "gitops-app#900" || len(ev.Commits) != 6 {
 		t.Fatalf("%+v", ev)
 	}
 	if j(ev.Openers) != `["carol","frank","gina"]` || j(ev.Mergers) != `["dave","frank","gina"]` || j(ev.Approvers) != `["bob","erin"]` {
@@ -353,10 +354,10 @@ func rangeWorld(t *testing.T) *world {
 
 func TestNearestVerifiedReleaseStartsTheRange(t *testing.T) {
 	w := rangeWorld(t)
-	cands := []Candidate{{Sha: sh(2), Release: "old"}, {Sha: sh(3), Release: "new"}}
+	cands := []Candidate{{Sha: sh(3), Release: "new"}, {Sha: sh(2), Release: "old"}} // newest first
 	v := mustCheck(t, checker(), w, "refs/heads/main", sh(4), cands)
 	needVerdict(t, v, Protected, "1 commit in 1 pull request")
-	if v.Evidence.From != sh(3) || v.Evidence.FromRelease != "new" {
+	if v.Evidence.From != sh(3) || v.Evidence.FromRelease != "gitops-app#901" {
 		t.Fatalf("%+v", v.Evidence)
 	}
 }
@@ -368,7 +369,7 @@ func TestForgedLastReleaseNotAnAncestorIsRefused(t *testing.T) {
 	w.prCommit(sh(77), "mallory")
 	w.override["compare/"+sh(77)+"..."+sh(4)] = resp{200, `{"status":"diverged","total_commits":3,"ahead_by":3,"commits":[]}`}
 	v := mustCheck(t, checker(), w, "refs/heads/main", sh(4), []Candidate{{Sha: sh(77), Release: "forged"}})
-	needVerdict(t, v, Unverifiable, "cannot establish which commits this release carries", "is diverged of", "A release record is not trusted to skip commits")
+	needVerdict(t, v, Unverifiable, "cannot establish which commits this release carries", "gitops history shows earlier releases", "is diverged of")
 	if v.Evidence != nil && len(v.Evidence.Commits) > 0 {
 		t.Fatal("no evidence is claimed for a range that could not be established")
 	}
@@ -408,26 +409,6 @@ func TestCommitAtOrBeforeAVerifiedReleaseIsCheckedAlone(t *testing.T) {
 	// ... and a commit that is not reviewed is still refused
 	w.land(&wCommit{sha: sh(5), author: "mallory", committer: "mallory"})
 	needVerdict(t, mustCheck(t, checker(), w, "refs/heads/main", sh(5), []Candidate{{Sha: sh(5), Release: "same"}}), Unreviewed, short(sh(5)))
-}
-
-func TestCandidatesFromReleaseRecords(t *testing.T) {
-	rec := func(name, rev, rp, merged, url string) releases.Record {
-		return releases.Record{Name: name, Data: map[string]string{"gitRevision": rev, "refProtection": rp, "mergedAt": merged, "gitUrl": url, "env": "prod"}}
-	}
-	good := "ref protection: review evidence: 3 commits in 1 pull request"
-	recs := []releases.Record{
-		rec("old", sh(1), good, "2026-11-01T00:00:00Z", "https://github.com/o/app"),
-		rec("new", sh(2), good, "2026-11-05T00:00:00Z", "https://github.com/O/app.git"),
-		rec("off", sh(3), "ref protection: Off here (refProtection.mode is off)", "2026-11-09T00:00:00Z", "https://github.com/o/app"),
-		rec("legacy", sh(4), "ref protection: verified for refs/heads/main at 1234567: branch main requires", "2026-11-09T00:00:00Z", "https://github.com/o/app"),
-		rec("unmerged", sh(5), good, "", "https://github.com/o/app"),
-		rec("other repo", sh(6), good, "2026-11-09T00:00:00Z", "https://github.com/o/other"),
-		rec("not a sha", "main", good, "2026-11-09T00:00:00Z", "https://github.com/o/app"),
-	}
-	got := Candidates(recs, "o", "app")
-	if len(got) != 2 || got[0].Release != "new" || got[1].Release != "old" {
-		t.Fatalf("only verified, merged releases of this repository, newest first: %+v", got)
-	}
 }
 
 // ---- first release and refs
@@ -525,7 +506,7 @@ func TestRangePaginationBoundaries(t *testing.T) {
 	longHistory(w, 251)
 	v := mustCheck(t, checker(), w, "refs/heads/main", sh(5000+250), []Candidate{{Sha: sh(2), Release: "r"}})
 	needVerdict(t, v, Unverifiable, "more than 250 commits")
-	if w.count("commits/") != 1 { // only the baseline's own commit was looked up; no commit of the range was
+	if w.count("commits/") != 2 { // only the baseline's own commit was looked up (its pulls and itself); no commit of the range was
 		t.Fatalf("a range that is too long reads no commit of it: %d", w.count("commits/"))
 	}
 }
@@ -610,7 +591,8 @@ func TestHostFailuresFailClosed(t *testing.T) {
 			} else {
 				w.override[tc.path] = tc.r
 			}
-			v, err := checker().Check(context.Background(), w, "o", "app", "refs/heads/main", sh(4), cands)
+			w.setReleases(cands)
+			v, err := checker().Check(context.Background(), w, "o", "app", "refs/heads/main", sh(4), withHistory(w))
 			if tc.want == "" {
 				if err == nil {
 					t.Fatalf("a failed read is an error, got %+v", v)
@@ -646,8 +628,9 @@ func TestNothingIsCachedBetweenChecks(t *testing.T) {
 func TestEvidenceCallsAreReported(t *testing.T) {
 	w := rangeWorld(t)
 	v := mustCheck(t, checker(), w, "refs/heads/main", sh(4), nil)
-	// ref compare + commit pulls + pull + its commits + its reviews = 5 reads for a lone squashed commit
-	if v.Evidence.Calls != 5 {
+	// ref compare + gitops closed pull requests + commit's pulls + pull + its commits + its reviews + the approver's permission
+	// + the merge commit itself (it is not in a range list) = 8 reads for a lone squashed commit
+	if v.Evidence.Calls != 8 {
 		t.Fatalf("calls %d: %v", v.Evidence.Calls, w.calls)
 	}
 }
@@ -674,6 +657,8 @@ func TestConfigurationNeverDecides(t *testing.T) {
 
 type recordedHost struct {
 	t *testing.T
+	// permission403: the permission read answers GitHub's recorded 403 (the token may not read it) instead of "write"
+	permission403 bool
 	// dropState removes the recorded reviews of that state (to show the verdict rests on them)
 	dropState string
 }
@@ -713,6 +698,14 @@ func (r recordedHost) GetJSON(_ context.Context, _, _, path string) (int, []byte
 		}
 		out, _ := json.Marshal(kept)
 		return 200, out, nil
+	case strings.HasPrefix(p, "commits/") && !strings.HasSuffix(p, "/pulls"):
+		return read("real_commit.json")
+	case strings.HasPrefix(p, "collaborators/") && strings.HasSuffix(p, "/permission"):
+		if r.permission403 {
+			_, b, _ := read("real_permission_403.json")
+			return 403, b, nil
+		}
+		return 200, []byte(`{"permission":"write","role_name":"write"}`), nil
 	case strings.HasPrefix(p, "rules/") || strings.HasPrefix(p, "rulesets"):
 		return 200, []byte(`[]`), nil
 	case strings.HasPrefix(p, "branches/"):
@@ -730,6 +723,12 @@ func TestRecordedShapes(t *testing.T) {
 	}
 	needVerdict(t, v, Protected, "1 commit in 1 pull request")
 	pe := v.Evidence.PullRequests[0]
+	// the recorded merge commit is a real GitHub-made merge commit: two parents, committer web-flow, verified signature
+	var rc ghCommit
+	b0, _ := os.ReadFile("testdata/real_commit.json")
+	if err := json.Unmarshal(b0, &rc); err != nil || rc.Committer.Login != "web-flow" || !rc.Commit.Verification.Verified || len(rc.Parents) != 2 {
+		t.Fatalf("the recorded shape: %v %+v", err, rc)
+	}
 	if pe.Number != 15041 || pe.Opener != "BagToad" || pe.Merger != "BagToad" || j(pe.Approvers) != `["tidy-dev"]` {
 		t.Fatalf("%+v", pe)
 	}
@@ -743,4 +742,15 @@ func TestRecordedShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	needVerdict(t, v, Unreviewed, "no approving review")
+}
+
+// The recorded 403 (what GitHub answered a token that may not read collaborator permissions) makes the check use the review's
+// author_association; the real reviewer there is a CONTRIBUTOR, which does not count as write access: refused, and it says so.
+func TestRecordedPermissionRefusalFallsBackToAssociation(t *testing.T) {
+	c := &Checker{ProtectedBranches: []string{"trunk"}}
+	v, err := c.Check(context.Background(), recordedHost{t: t, permission403: true}, "cli", "cli", "refs/heads/trunk", "e1110093f516b3e595cae3bef8a20c7bf39c2d14", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	needVerdict(t, v, Unreviewed, "approved only by an account without write access", "tidy-dev (association:CONTRIBUTOR)")
 }

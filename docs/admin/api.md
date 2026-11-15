@@ -526,16 +526,17 @@ the run unless the verdict is `protected`. It needs `get` on `refprotection.glid
 
 `verdict` is one of `protected` (every commit of the range has review evidence), `unreviewed` (some commit does not: `missing` lists up to 20 lines, one per
 commit, and `evidence.unreviewed` all of them) or `unverifiable` (GitHub did not show enough: a read that failed, a range of more than 250 commits, a last
-verified release that cannot start the range, a ref that is not a protected branch). Only `protected` is a yes. `unprotected` and `unavailable` are gone.
+release that cannot start the range, a ref that is not a protected branch). Only `protected` is a yes. `unprotected` and `unavailable` are gone.
 A broker or host that does not answer at all (transport, a rate limit past the bounded retries) is 502, never a verdict, and the caller refuses on it too.
 Otherwise the answer is 200, carries `reasons` a person can act on, and is never cached: every call reads GitHub again with the broker's per-request read-only
 token ([below](#the-github-read-token); contents, pull requests and metadata). Each list is paged and bounded, and one check makes at most 400 evidence reads.
 
-**The range.** `evidence.mode` is `range` (the commits after `evidence.from`, the last verified release, up to `to`) or `first` (`to` alone: no earlier verified
-release is recorded, or `to` is at or before one). The last verified release is read from the app's release records (`release-tracking-*`: merged, and whose
-`refProtection` contains `review evidence:`), but a record is a claim: the candidate must be an ancestor of `to` per GitHub and itself have review evidence,
-else it is ignored, and records that claim a release none of which can be used make the answer `unverifiable`, not a shorter range (security.md says what a
-forged record can still do until the pipeline's account is split, slice T4).
+**The range.** `evidence.mode` is `range` (the commits after `evidence.from`, the newest release the app's **gitops repository** corroborates, up to `to`) or `first`
+(`to` alone: the gitops history shows no release of the app, or `to` is at or before a release). A release is a merged pull request in the gitops repository that
+one of `api.pipelineLogins` opened, with `X-App-Repo`/`X-App-Commit` trailers and a manifest whose image tag ends in that commit; it must be an ancestor of `to`
+per GitHub and its own commit must have review evidence. Release records (`release-tracking-*` ConfigMaps) are **not** read: the pipeline's account can write and
+delete them. A gitops history that shows an earlier release but yields no baseline is `unverifiable`, never `first` (security.md, "The range", says what stays open).
+An approver's write access is read per distinct approver (`approverPermissions`); a merge commit that is not the pull request's head must be GitHub's (web-flow, verified).
 
 **What the Clearance gate's proposer can read.** The same endpoint, called for a release's source commit (`repo` the source repository, `ref` the protected
 branch, `sha` the released commit): `evidence.commits` (each commit and the merged `pullRequest` that brought it into the branch), `evidence.pullRequests` (opener,

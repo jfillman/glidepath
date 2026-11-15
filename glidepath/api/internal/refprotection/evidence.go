@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -18,8 +19,19 @@ type engine struct {
 	c           *Checker
 	rd          Reader
 	owner, repo string
+	hist        *History
 	calls       int
-	prs         map[int]*prState // pull requests read in THIS check, by number (never kept across requests)
+	prs         map[int]*prState  // pull requests read in THIS check, by number (never kept across requests)
+	perms       map[string]string // reviewer login (lower case) -> repository permission read in THIS check
+	infos       map[string]*commitInfo
+	assocUsed   bool // a reviewer's write access was taken from author_association, not read
+}
+
+// commitInfo is what the merge-commit rule needs of one commit.
+type commitInfo struct {
+	committer string
+	verified  bool
+	parents   []string
 }
 
 type prState struct {
@@ -96,6 +108,9 @@ type ghCommit struct {
 		Committer struct {
 			Name string `json:"name"`
 		} `json:"committer"`
+		Verification struct {
+			Verified bool `json:"verified"`
+		} `json:"verification"`
 	} `json:"commit"`
 }
 
@@ -125,6 +140,9 @@ type ghReview struct {
 	User     *ghUser `json:"user"`
 	State    string  `json:"state"`
 	CommitID string  `json:"commit_id"`
+	// AuthorAssociation is GitHub's word for the reviewer's relationship to the repository (OWNER, MEMBER, COLLABORATOR,
+	// CONTRIBUTOR, NONE ...). It is only a fallback for write access when the permission read is not allowed.
+	AuthorAssociation string `json:"author_association"`
 }
 
 // ---- ancestry and range
@@ -154,8 +172,11 @@ func (e *engine) onBranch(ctx context.Context, branch, sha string) (bool, string
 }
 
 type rangeCommit struct {
-	sha     string
-	parents []string
+	sha       string
+	parents   []string
+	committer string
+	verified  bool
+	known     bool // read from GitHub's compare (a lone commit carries only its sha)
 }
 
 type commitRange struct {
@@ -166,38 +187,29 @@ type commitRange struct {
 	notes       []string
 }
 
-type related struct {
-	c       Candidate
-	aheadBy int
-}
-
-// resolveRange decides which commits must carry evidence. The baseline (the last verified release) is a CLAIM: a release
-// record is written by the pipeline's ServiceAccount, so a forged one could name a commit near the head and shrink the
-// range. So it is never used to skip anything unless GitHub confirms that it is an ancestor of the commit on the protected
-// branch and that it itself has review evidence. A candidate that fails either is ignored; when records claim a verified
-// release and none of them can be used (and the commit is not at or before one), the range cannot be established and the
-// answer is unverifiable, never a shorter range. With no claim at all it is a first release: the commit alone.
-func (e *engine) resolveRange(ctx context.Context, branch, to string, cands []Candidate) (*commitRange, error) {
-	seen := map[string]bool{}
-	var use []Candidate
-	for _, c := range cands {
-		if !shaRE.MatchString(c.Sha) || seen[c.Sha] {
-			continue
-		}
-		seen[c.Sha] = true
-		if use = append(use, c); len(use) == maxCandidates {
-			break
-		}
-	}
+// resolveRange decides which commits must carry evidence. The baseline is the newest release the app's GITOPS repository
+// corroborates (history.go) that is an ancestor of the commit per GitHub's compare and whose own commit has review evidence.
+// Release records (ConfigMaps) are not an input: the pipeline's ServiceAccount can write and delete them, so a forged one could
+// otherwise shorten the range. Neither the gitops history nor GitHub's ancestry can be edited by it. If the gitops history
+// shows an earlier release but none can start the range, the answer is unverifiable, never a first release; a first release
+// (the commit alone) is only when the history shows none.
+func (e *engine) resolveRange(ctx context.Context, branch, to string) (*commitRange, error) {
 	r := &commitRange{mode: "first", commits: []rangeCommit{{sha: to}}}
-	if len(use) == 0 {
-		r.notes = append(r.notes, "no earlier verified release of this app is recorded: this is a first release, so the commit alone is checked")
+	if e.hist == nil {
+		r.notes = append(r.notes, "no release history applies to this repository (it is not an app's source repository): the commit alone is checked")
 		return r, nil
 	}
-	var ahead []related
-	atOrBehind := false
+	cands, sawAny, notes, err := e.releases(ctx)
+	if err != nil {
+		return nil, err
+	}
+	r.notes = append(r.notes, notes...)
+	if !sawAny {
+		r.notes = append(r.notes, "the gitops history shows no earlier release of this app: this is a first release, so the commit alone is checked")
+		return r, nil
+	}
 	var skipped []string
-	for _, c := range use {
+	for _, c := range cands {
 		st, body, err := e.do(ctx, fmt.Sprintf("compare/%s...%s?per_page=1", c.Sha, to))
 		if err != nil {
 			return nil, err
@@ -205,51 +217,41 @@ func (e *engine) resolveRange(ctx context.Context, branch, to string, cands []Ca
 		switch st {
 		case http.StatusOK:
 			var cmp struct {
-				Status  string `json:"status"`
-				AheadBy int    `json:"ahead_by"`
+				Status string `json:"status"`
 			}
 			if err := json.Unmarshal(body, &cmp); err != nil {
 				return nil, &unverifiable{fmt.Sprintf("GitHub's compare of %s...%s could not be read: %v", short(c.Sha), short(to), err)}
 			}
 			switch cmp.Status {
 			case "ahead":
-				ahead = append(ahead, related{c, cmp.AheadBy})
+				ce, err := e.commitEvidence(ctx, branch, c.Sha, nil, nil)
+				if err != nil {
+					return nil, err
+				}
+				if !ce.Reviewed {
+					skipped = append(skipped, fmt.Sprintf("%s (%s) itself has no review evidence: %s", short(c.Sha), c.Release, ce.Reason))
+					continue
+				}
+				list, err := e.listRange(ctx, c.Sha, to)
+				if err != nil {
+					return nil, err
+				}
+				r.mode, r.from, r.fromRelease, r.commits = "range", c.Sha, c.Release, list
+				r.notes = append(r.notes, skipped...)
+				return r, nil
 			case "identical", "behind":
-				atOrBehind = true
+				r.notes = append(r.notes, fmt.Sprintf("this commit is at or before the release %s (%s): a rollback or a repeat, so the commit alone is checked", short(c.Sha), c.Release))
+				return r, nil
 			default:
-				skipped = append(skipped, fmt.Sprintf("%s is %s of %s, not an ancestor", short(c.Sha), cmp.Status, short(to)))
+				skipped = append(skipped, fmt.Sprintf("%s (%s) is %s of %s, not an ancestor", short(c.Sha), c.Release, cmp.Status, short(to)))
 			}
 		case http.StatusNotFound, http.StatusUnprocessableEntity:
-			skipped = append(skipped, fmt.Sprintf("%s is not a commit GitHub knows in this repository", short(c.Sha)))
+			skipped = append(skipped, fmt.Sprintf("%s (%s) is not a commit GitHub knows in this repository", short(c.Sha), c.Release))
 		default:
 			return nil, &unverifiable{fmt.Sprintf("GitHub answered %d to the compare of %s...%s: %s", st, short(c.Sha), short(to), hostMessage(body))}
 		}
 	}
-	sort.SliceStable(ahead, func(i, j int) bool { return ahead[i].aheadBy < ahead[j].aheadBy })
-	for _, a := range ahead {
-		ce, err := e.commitEvidence(ctx, branch, a.c.Sha, nil, nil)
-		if err != nil {
-			return nil, err
-		}
-		if !ce.Reviewed {
-			skipped = append(skipped, fmt.Sprintf("%s (release %s) itself has no review evidence: %s", short(a.c.Sha), a.c.Release, ce.Reason))
-			continue
-		}
-		// The ancestor is confirmed and evidenced: only now may it shorten the range.
-		list, err := e.listRange(ctx, a.c.Sha, to)
-		if err != nil {
-			return nil, err
-		}
-		r.mode, r.from, r.fromRelease, r.commits = "range", a.c.Sha, a.c.Release, list
-		r.notes = append(r.notes, skipped...)
-		return r, nil
-	}
-	if atOrBehind {
-		r.notes = append(r.notes, "this commit is at or before the last verified release (a rollback or a repeat): the commit alone is checked")
-		r.notes = append(r.notes, skipped...)
-		return r, nil
-	}
-	return nil, &unverifiable{fmt.Sprintf("cannot establish which commits this release carries: the release records claim a verified release, but none can be used as the start of the range (%s). A release record is not trusted to skip commits", strings.Join(skipped, "; "))}
+	return nil, &unverifiable{fmt.Sprintf("cannot establish which commits this release carries: the gitops history shows earlier releases of this app but none can start the range (%s)", strings.Join(append(skipped, notes...), "; "))}
 }
 
 // listRange is the commits after from up to and including to, oldest first, read from GitHub's compare.
@@ -273,7 +275,10 @@ func (e *engine) listRange(ctx context.Context, from, to string) ([]rangeCommit,
 			return 0, errRangeTooLong
 		}
 		for _, gc := range c.Commits {
-			rc := rangeCommit{sha: gc.SHA}
+			rc := rangeCommit{sha: gc.SHA, verified: gc.Commit.Verification.Verified, known: true}
+			if gc.Committer != nil {
+				rc.committer = gc.Committer.Login
+			}
 			for _, p := range gc.Parents {
 				rc.parents = append(rc.parents, p.SHA)
 			}
@@ -335,8 +340,15 @@ func (e *engine) commitEvidence(ctx context.Context, branch, sha string, idx map
 			other = append(other, fmt.Sprintf("#%d (not merged into %s)", p.Number, branch))
 			continue
 		}
-		if !e.member(st, sha, idx, list) {
-			reason = fmt.Sprintf("GitHub associates it with #%d, which does not contain it (it is not that pull request's merge commit, one of its commits, or a commit it rebased in)", p.Number)
+		in, why, err := e.member(ctx, st, sha, idx, list)
+		if err != nil {
+			return ce, err
+		}
+		if !in {
+			if why == "" {
+				why = "which does not contain it (it is not that pull request's merge commit, one of its commits, or a commit it rebased in)"
+			}
+			reason = fmt.Sprintf("GitHub associates it with #%d, %s", p.Number, why)
 			continue
 		}
 		if st.Reviewed {
@@ -369,29 +381,77 @@ func (e *engine) sameRepo(r *ghRepoRef) bool {
 	return r != nil && strings.EqualFold(r.FullName, e.owner+"/"+e.repo)
 }
 
-// member: sha is the pull request's merge commit, one of its commits, or a commit a rebase merge landed from it: GitHub
-// associates it with the pull request, it lies within the CONTIGUOUS single-parent run of at most (commit count) commits
-// ending at the merge commit, and the merge commit itself has one parent. A squash lands one commit, a merge commit lands
-// two parents and the branch's own commits, a rebase lands N linear commits: nothing else qualifies.
-func (e *engine) member(st *prState, sha string, idx map[string]int, list []rangeCommit) bool {
-	if sha == st.MergeCommit || st.commitSet[sha] {
-		return true
+// member: sha is one of the pull request's own commits, its merge commit, or a commit a rebase merge landed from it. GitHub
+// associates it with the pull request, and:
+//   - the approval covers the pull request's HEAD, so a merge commit that is not the head is accepted only when GitHub made it:
+//     committer web-flow with a verified signature (a merge commit or a squash). A merge pushed by hand, a child of the approved
+//     head with changes on top, has neither.
+//   - otherwise it is a rebase-merge tip: one parent that is not one of the pull request's own commits (a child of reviewed
+//     commits is "reviewed code plus something else", refused), and every commit of the run is within the CONTIGUOUS single-parent
+//     run of at most (commit count) commits ending at the merge commit.
+//
+// What stays open for a rebase merge: GitHub marks a rebase-landed commit by nothing this API shows (it is committed by the
+// merger and not signed), so a hand-made linear commit that is not a child of the head and that GitHub still records as the pull
+// request's merge commit would pass the run rule; the run is bounded by the pull request's commit count, not compared by content.
+func (e *engine) member(ctx context.Context, st *prState, sha string, idx map[string]int, list []rangeCommit) (bool, string, error) {
+	if st.commitSet[sha] {
+		return true, "", nil
+	}
+	if sha == st.MergeCommit {
+		info, err := e.info(ctx, sha, idx, list)
+		if err != nil {
+			return false, "", err
+		}
+		if strings.EqualFold(info.committer, "web-flow") && info.verified {
+			return true, "", nil
+		}
+		if len(info.parents) == 1 && !st.commitSet[info.parents[0]] {
+			return true, "", nil
+		}
+		return false, "whose merge commit was not made by GitHub (committer web-flow with a verified signature) and is not a rebase of it: a merge commit pushed by hand can carry changes nobody reviewed", nil
 	}
 	if idx == nil {
-		return false
+		return false, "", nil
 	}
 	j, okj := idx[st.MergeCommit]
 	i, oki := idx[sha]
 	if !okj || !oki || i >= j || j-i >= st.count || len(list[j].parents) != 1 {
-		return false
+		return false, "", nil
 	}
 	for k := i; k < j; k++ {
 		next := list[k+1]
 		if len(next.parents) != 1 || next.parents[0] != list[k].sha {
-			return false
+			return false, "", nil
 		}
 	}
-	return len(list[i].parents) == 1
+	return len(list[i].parents) == 1, "", nil
+}
+
+// info is the committer, signature verdict and parents of one commit: from the range list when it is there, else one read.
+func (e *engine) info(ctx context.Context, sha string, idx map[string]int, list []rangeCommit) (*commitInfo, error) {
+	if i, ok := idx[sha]; ok && list[i].known {
+		return &commitInfo{committer: list[i].committer, verified: list[i].verified, parents: list[i].parents}, nil
+	}
+	if ci, ok := e.infos[sha]; ok {
+		return ci, nil
+	}
+	body, err := e.ok(ctx, "commits/"+sha)
+	if err != nil {
+		return nil, err
+	}
+	var gc ghCommit
+	if err := json.Unmarshal(body, &gc); err != nil {
+		return nil, &unverifiable{fmt.Sprintf("GitHub's commit %s could not be read: %v", short(sha), err)}
+	}
+	ci := &commitInfo{verified: gc.Commit.Verification.Verified}
+	if gc.Committer != nil {
+		ci.committer = gc.Committer.Login
+	}
+	for _, p := range gc.Parents {
+		ci.parents = append(ci.parents, p.SHA)
+	}
+	e.infos[sha] = ci
+	return ci, nil
 }
 
 // pr reads one pull request once per check and evaluates its review evidence. It returns nil when the pull request, read in
@@ -503,7 +563,8 @@ func (e *engine) pr(ctx context.Context, n int, branch string) (*prState, error)
 	}); err != nil {
 		return nil, err
 	}
-	var dismissed, stale, own, bots, changes []string
+	var dismissed, stale, own, bots, changes, noWrite []string
+	var cand []ghReview
 	for _, k := range order {
 		r := latest[k]
 		login := r.User.Login
@@ -519,7 +580,22 @@ func (e *engine) pr(ctx context.Context, n int, branch string) (*prState, error)
 		case excluded[k]:
 			own = append(own, login)
 		default:
-			pe.Approvers = append(pe.Approvers, login)
+			cand = append(cand, r)
+		}
+	}
+	// An approval from an account that cannot write to the repository is not a review: GitHub records one from anyone who can see
+	// the pull request, and it does not count toward its own branch protection. Read each distinct approver's permission now.
+	pe.ApproverPermissions = map[string]string{}
+	for _, r := range cand {
+		perm, err := e.permission(ctx, r)
+		if err != nil {
+			return nil, err
+		}
+		pe.ApproverPermissions[r.User.Login] = perm
+		if writes(perm) {
+			pe.Approvers = append(pe.Approvers, r.User.Login)
+		} else {
+			noWrite = append(noWrite, fmt.Sprintf("%s (%s)", r.User.Login, perm))
 		}
 	}
 	sort.Strings(pe.Approvers)
@@ -545,6 +621,9 @@ func (e *engine) pr(ctx context.Context, n int, branch string) (*prState, error)
 			who += " or the merger (some commits' authors are unknown to GitHub)"
 		}
 		why = append(why, fmt.Sprintf("approved only by %s, who is %s", strings.Join(own, ", "), who))
+	}
+	if len(noWrite) > 0 {
+		why = append(why, "approved only by an account without write access to the repository ("+strings.Join(noWrite, ", ")+"): GitHub records an approval from anyone who can see a pull request, and it is not a review")
 	}
 	if len(bots) > 0 {
 		why = append(why, "approved only by a bot ("+strings.Join(bots, ", ")+")")
@@ -572,4 +651,56 @@ func (e *engine) isBot(u *ghUser) bool {
 		}
 	}
 	return false
+}
+
+// writes: the repository permissions that may review for the branch (GitHub's legacy names: maintain reads as write).
+func writes(perm string) bool {
+	return perm == "admin" || perm == "write" || perm == "maintain" || perm == "association:OWNER" || perm == "association:COLLABORATOR" || perm == "association:MEMBER"
+}
+
+// permission is the reviewer's permission on this repository now: GET collaborators/{login}/permission (documented to need
+// Metadata: read). When GitHub says the integration may not read it (403), the review's own author_association is used instead
+// and recorded as "association:<X>": OWNER, COLLABORATOR and MEMBER count. That is weaker: an organization MEMBER need not hold
+// write on this repository. A failure of any other kind is unverifiable.
+func (e *engine) permission(ctx context.Context, r ghReview) (string, error) {
+	k := strings.ToLower(r.User.Login)
+	if p, ok := e.perms[k]; ok {
+		return p, nil
+	}
+	st, body, err := e.do(ctx, "collaborators/"+url.PathEscape(r.User.Login)+"/permission")
+	if err != nil {
+		return "", err
+	}
+	var perm string
+	switch st {
+	case http.StatusOK:
+		var out struct {
+			Permission string `json:"permission"`
+			RoleName   string `json:"role_name"`
+		}
+		if err := json.Unmarshal(body, &out); err != nil {
+			return "", &unverifiable{fmt.Sprintf("GitHub's permission of %s could not be read: %v", r.User.Login, err)}
+		}
+		perm = out.Permission
+		if out.RoleName == "maintain" || out.RoleName == "write" || out.RoleName == "admin" {
+			perm = out.RoleName
+		}
+		if perm == "" {
+			return "", &unverifiable{fmt.Sprintf("GitHub's permission of %s is empty", r.User.Login)}
+		}
+	case http.StatusNotFound:
+		perm = "none" // not a user GitHub knows (deleted): no access
+	case http.StatusForbidden:
+		// "Resource not accessible by integration" (an App token without the permission) and "Must have push access to view
+		// collaborator permission" (what GitHub answered a token without push access, recorded in testdata) both mean: not readable.
+		if m := strings.ToLower(hostMessage(body)); !strings.Contains(m, "not accessible") && !strings.Contains(m, "push access") {
+			return "", &unverifiable{fmt.Sprintf("GitHub answered 403 to the permission of %s: %s", r.User.Login, hostMessage(body))}
+		}
+		perm = "association:" + strings.ToUpper(r.AuthorAssociation)
+		e.assocUsed = true
+	default:
+		return "", &unverifiable{fmt.Sprintf("GitHub answered %d to the permission of %s: %s", st, r.User.Login, hostMessage(body))}
+	}
+	e.perms[k] = perm
+	return perm, nil
 }
