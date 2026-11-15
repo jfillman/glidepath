@@ -34,7 +34,7 @@
 # no path may be both a leaf and a container, and every non-empty container closes under a unique parent path (see _oci_nodups).
 #
 # Scope of the checks. The documents oras and registries interpret (the layout marker, index, image index, manifests, descriptors,
-# platforms) are validated in depth: exact keys, shapes and types, no ref-name annotations, one document, no BOM or NUL. The image
+# platforms) are validated in depth: exact keys, shapes and types, no ref-name annotations (but BuildKit's own on index.json's one descriptor), one document, no BOM or NUL. The image
 # CONFIG blob is the author's own image configuration (entrypoint, env, labels) and nothing in this pipeline interprets it beyond
 # os/architecture; only its top-level, config, rootfs and history keys are allowlisted, and duplicate keys are refused anywhere in it.
 # It is not validated in depth. Every jq call's exit status is checked (_oci_get, _oci_shape, _oci_json).
@@ -134,6 +134,11 @@ _oci_get() { jq -r "$2" "$1"; }
 _OCI_JQ_DEFS='def ann: type == "object" and all(.[]; type == "string");
 def annok: (has("annotations") | not) or (.annotations | ann);
 def refname: [.. | objects | .annotations? | objects | keys[]] | any(. == "org.opencontainers.image.ref.name" or . == "io.containerd.image.name");
+# The one descriptor of index.json is the exception: the BuildKit OCI exporter always writes org.opencontainers.image.ref.name
+# there ("latest" for the image, the tag= value for a cache). It is tolerated only there, only with a tag-shaped value, and is
+# never used: the push is by layout@digest. io.containerd.image.name stays refused everywhere.
+def toprefok: (.manifests[0].annotations["org.opencontainers.image.ref.name"] // "latest") | (type == "string") and test("\\A[A-Za-z0-9_][A-Za-z0-9._-]{0,127}\\z");
+def toprefname: del(.manifests[0].annotations["org.opencontainers.image.ref.name"]) | refname;
 def desc: type == "object" and (.mediaType | type == "string") and (.digest | type == "string")
   and (.size | (type == "number") and (. >= 0) and (. == floor)) and annok;
 def plat: type == "object" and all(.[]; type == "string");
@@ -318,8 +323,8 @@ oci_layout_validate() {
     _oci_fail "index.json is over 1 MiB"; return 1
   fi
   _oci_doc "${dir}/index.json" "index.json" || return 1
-  if ! _oci_shape "${dir}/index.json" '.schemaVersion == 2 and (.manifests | entries) and (.manifests | length == 1) and annok and (refname | not)'; then
-    _oci_fail "index.json is not a schema-2 index with exactly one well-formed descriptor, or names a ref in an annotation"; return 1
+  if ! _oci_shape "${dir}/index.json" '.schemaVersion == 2 and (.manifests | entries) and (.manifests | length == 1) and annok and toprefok and (toprefname | not)'; then
+    _oci_fail "index.json is not a schema-2 index with exactly one well-formed descriptor, or names a ref in an annotation (other than a tag-shaped ref.name on that descriptor)"; return 1
   fi
   if ! _oci_keys "${dir}/index.json" '.' schemaVersion mediaType manifests annotations ||
      ! _oci_keys "${dir}/index.json" '.manifests[]' mediaType digest size annotations platform ||

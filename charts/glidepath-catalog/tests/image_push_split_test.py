@@ -545,6 +545,45 @@ class LayoutValidator(unittest.TestCase):
         code, out, err, _ = self.check(ok)
         self.assertEqual(code, 0, err)
 
+    def test_buildkits_own_ref_name_on_the_top_descriptor_is_accepted(self):
+        # Live failure 2026-11-15: BuildKit's OCI exporter (v0.33.1, type=oci,tar=false) always writes
+        # org.opencontainers.image.ref.name on index.json's one descriptor ("latest"; the tag= value for a cache), so every
+        # real build was refused. Tolerated there only, tag-shaped only; the push is by digest.
+        def image(r, d):
+            digest = make_image(r)
+            rewrite_json(os.path.join(r, "index.json"), lambda o: o["manifests"][0].update(annotations={
+                "org.opencontainers.image.created": "2026-11-15T17:01:47Z", "org.opencontainers.image.ref.name": "latest"}))
+            return digest
+        code, out, err, digest = self.check(image)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.strip(), "OK " + digest)
+
+        def cache(r, d):
+            digest = make_cache(r)
+            rewrite_json(os.path.join(r, "index.json"), lambda o: o["manifests"][0].update(annotations={"org.opencontainers.image.ref.name": "cache"}))
+            return digest
+        code, out, err, digest = self.check(cache, kind="cache", want="")
+        self.assertEqual(code, 0, err)
+
+        for bad in ("x:latest", "ghcr.io/other/app", "a/b", "", "-x", "a" * 129, "a b", "a\nb", "latest\n", "latest\nx:evil"):
+            def top(r, d, bad=bad):
+                digest = make_image(r)
+                rewrite_json(os.path.join(r, "index.json"), lambda o: o["manifests"][0].update(annotations={"org.opencontainers.image.ref.name": bad}))
+                return digest
+            self.refused(top, "ref.name %r on the top descriptor" % bad)
+
+        # still refused one level down: on an entry of the image index
+        def nested(r, d):
+            make_image(r)
+            top = json.load(open(os.path.join(r, "index.json")))["manifests"][0]
+            idx = json.load(open(blob_path(r, top["digest"])))
+            idx["manifests"][0]["annotations"] = {"org.opencontainers.image.ref.name": "latest"}
+            data = jb(idx)
+            put(r, data)
+            write_top(r, desc(top["mediaType"], data))
+            return None
+        self.refused(nested, "ref.name on an entry of the image index")
+
     def test_a_duplicate_key_deep_in_an_image_config_is_refused(self):
         cfg = b'{"architecture": "amd64", "os": "linux", "config": {"Healthcheck": {"Test": ["a"]}, "Healthcheck": {"Test": ["b"]}}, "rootfs": {"type": "layers", "diff_ids": []}}'
         self.refused(lambda r, d: self.config_image(r, cfg), "deep duplicate", want="linux/amd64")
