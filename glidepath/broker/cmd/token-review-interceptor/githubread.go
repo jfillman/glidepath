@@ -48,45 +48,20 @@ type githubReadRequest struct {
 	Owner string `json:"owner"`
 	Repo  string `json:"repo"`
 	App   string `json:"app"`
-	// Purpose is "" (the read-only set above) or "ref-protection": glidepath-api's GET /ref-protection, the one call that
-	// may be minted with the extra permissions the cluster configured for it (loadRefProtectionPermissions).
+	// Purpose is "" or the legacy "ref-protection" that a glidepath-api older than pipeline trust T3b still sends. Both get
+	// the read-only set above and nothing more: there is no elevated purpose (ref protection rests on review evidence,
+	// which contents, pull requests and metadata read cover), and no request field can widen the permissions.
 	Purpose string `json:"purpose,omitempty"`
 }
 
-const purposeRefProtection = "ref-protection"
-
-// loadRefProtectionPermissions reads GITHUB_READ_REF_PROTECTION_PERMISSIONS (the chart's
-// githubRead.refProtectionPermissions): a JSON object of extra repository permissions for the ref-protection purpose
-// only. Empty (the default): that purpose gets exactly today's read-only set. Only "administration" with read or write
-// is accepted. GitHub returns a ruleset's bypass_actors only to a token with write access to the ruleset (REST docs,
-// "Get a repository ruleset"), so write is what a bypass list needs (docs/admin/security.md, Ref protection).
-func loadRefProtectionPermissions() (map[string]string, error) {
-	raw := strings.TrimSpace(os.Getenv("GITHUB_READ_REF_PROTECTION_PERMISSIONS"))
-	if raw == "" {
-		return nil, nil
-	}
-	var m map[string]string
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return nil, fmt.Errorf("GITHUB_READ_REF_PROTECTION_PERMISSIONS is not a JSON object of strings: %w", err)
-	}
-	for k, v := range m {
-		if k != "administration" || (v != "read" && v != "write") {
-			return nil, fmt.Errorf("GITHUB_READ_REF_PROTECTION_PERMISSIONS: only administration: read|write is accepted, got %s: %s", k, v)
-		}
-	}
-	return m, nil
-}
+// purposeLegacyRefProtection was the purpose that once asked for Administration. It is accepted so a glidepath-api that
+// still sends it keeps working through a rolling upgrade, and it is minted exactly like no purpose.
+const purposeLegacyRefProtection = "ref-protection"
 
 // loadGitHubReadCallers reads GITHUB_READ_CALLERS: comma-separated usernames as TokenReview names them
 // (system:serviceaccount:<ns>:<name>). Empty: the endpoint answers 503.
 func loadGitHubReadCallers() map[string]bool {
 	return loadCallerList("GITHUB_READ_CALLERS")
-}
-
-// loadRefProtectionCallers reads GITHUB_READ_REF_PROTECTION_CALLERS: the only callers the ref-protection purpose's extra
-// permissions are minted for. Empty: nobody is elevated, whatever GITHUB_READ_REF_PROTECTION_PERMISSIONS says.
-func loadRefProtectionCallers() map[string]bool {
-	return loadCallerList("GITHUB_READ_REF_PROTECTION_CALLERS")
 }
 
 func loadCallerList(env string) map[string]bool {
@@ -108,8 +83,8 @@ func githubReadCheck(callers map[string]bool, caller string, req githubReadReque
 	if !callers[caller] {
 		return http.StatusForbidden, fmt.Errorf("%s may not ask for GitHub read tokens", caller)
 	}
-	if req.Purpose != "" && req.Purpose != purposeRefProtection {
-		return http.StatusBadRequest, fmt.Errorf("purpose must be empty or %q", purposeRefProtection)
+	if req.Purpose != "" && req.Purpose != purposeLegacyRefProtection {
+		return http.StatusBadRequest, fmt.Errorf("purpose must be empty (the only token this endpoint mints is the read-only one)")
 	}
 	if !ownerPattern.MatchString(req.Owner) || !githubReadRepoRE.MatchString(req.Repo) || !githubReadAppRE.MatchString(req.App) {
 		return http.StatusBadRequest, fmt.Errorf("request body must be {\"owner\":..., \"repo\":..., \"app\":...}, each a plain name")
@@ -142,31 +117,7 @@ func githubReadOwns(dynClient dynamic.Interface, req githubReadRequest) error {
 	return fmt.Errorf("no Repository CR in app-%[1]s-cicd or infra-%[1]s-cicd maps to %s/%s", req.App, req.Owner, req.Repo)
 }
 
-// githubReadSourceRole reports whether req.Repo is registered as the app's SOURCE repository, by role and not by name: the
-// repository the app's own Repository CR (the CR named for the app, in app-<app>-cicd) points at, or, for an InfraService (no
-// source repository), the repository registered in infra-<app>-cicd. A gitops repository, or anything that does not resolve to
-// one of those, is not. Only that role may be given the elevated ref-protection permission.
-func githubReadSourceRole(dynClient dynamic.Interface, req githubReadRequest) bool {
-	registers := func(ns string, only string) bool {
-		list, err := dynClient.Resource(repositoryGVR).Namespace(ns).List(context.Background(), metav1.ListOptions{})
-		if err != nil {
-			return false
-		}
-		for _, item := range list.Items {
-			if only != "" && item.GetName() != only {
-				continue
-			}
-			url, _, _ := unstructured.NestedString(item.Object, "spec", "url")
-			if m := githubRepoRE.FindStringSubmatch(url); m != nil && strings.EqualFold(m[1], req.Owner) && m[2] == req.Repo {
-				return true
-			}
-		}
-		return false
-	}
-	return registers("app-"+req.App+"-cicd", req.App) || registers("infra-"+req.App+"-cicd", "")
-}
-
-func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Interface, appCreds *githubapp.Creds, callers map[string]bool, refProtectionExtra map[string]string, refProtectionCallers map[string]bool) http.HandlerFunc {
+func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Interface, appCreds *githubapp.Creds, callers map[string]bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var caller string
@@ -213,17 +164,8 @@ func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Int
 			fail(http.StatusBadGateway, installationLookupMessage("the GitHub App", req, err))
 			return
 		}
+		// Always the read-only set (contents, pull requests, metadata): nothing in the request or the configuration widens it.
 		perms := githubapp.RepoReadPermissions()
-		// The elevated set is for the ref-protection purpose only, only for a caller named in GITHUB_READ_REF_PROTECTION_CALLERS
-		// (being in GITHUB_READ_CALLERS is not enough), and only for a repository registered as the app's SOURCE (an InfraService's
-		// registered repository): decided by the Repository CRs' role, never by a repository name, so a gitops repository is never
-		// elevated whatever it is called, and one that does not resolve to a role is not. It is still one repo, one token, minted
-		// per call. Anything else gets the read-only set.
-		if req.Purpose == purposeRefProtection && refProtectionCallers[caller] && githubReadSourceRole(dynClient, req) {
-			for k, v := range refProtectionExtra {
-				perms[k] = v
-			}
-		}
 		instToken, expiresAt, err := githubapp.MintScopedToken(appJWT, installationID, req.Repo, perms)
 		if err != nil {
 			fail(http.StatusBadGateway, err.Error())

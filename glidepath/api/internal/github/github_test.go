@@ -164,12 +164,13 @@ func TestFailedMintIsRetried(t *testing.T) {
 	}
 }
 
-// A session for a purpose sends it to the broker (and only then), so the broker can mint that purpose's token.
-func TestSessionForPurposeSendsIt(t *testing.T) {
-	var bodies []map[string]string
+// A session asks the broker for the plain read-only token: the request carries no purpose and no permission list (the
+// elevated ref-protection purpose is gone: review evidence needs contents, pull requests and metadata read only).
+func TestSessionAsksForNoPurposeAndNoPermissions(t *testing.T) {
+	var bodies []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/github-read-token" {
-			var req map[string]string
+			var req map[string]any
 			json.NewDecoder(r.Body).Decode(&req)
 			bodies = append(bodies, req)
 			json.NewEncoder(w).Encode(map[string]string{"token": "ghs-x"})
@@ -181,13 +182,14 @@ func TestSessionForPurposeSendsIt(t *testing.T) {
 	tok := filepath.Join(t.TempDir(), "token")
 	os.WriteFile(tok, []byte("sa\n"), 0o600)
 	b := &Broker{URL: srv.URL, TokenPath: tok, HTTP: srv.Client(), API: srv.URL}
-	b.SessionFor("shop", "ref-protection").GetJSON(context.Background(), "o", "shop", "rulesets")
-	b.Session("shop").GetJSON(context.Background(), "o", "shop", "rulesets")
-	if len(bodies) != 2 || bodies[0]["purpose"] != "ref-protection" {
+	if st, _, err := b.Session("shop").GetJSON(context.Background(), "o", "shop", "pulls/1/reviews"); err != nil || st != 200 {
+		t.Fatalf("%d %v", st, err)
+	}
+	if len(bodies) != 1 {
 		t.Fatalf("%v", bodies)
 	}
-	if _, has := bodies[1]["purpose"]; has {
-		t.Fatalf("a plain session sends no purpose: %v", bodies[1])
+	if len(bodies[0]) != 3 || bodies[0]["owner"] != "o" || bodies[0]["repo"] != "shop" || bodies[0]["app"] != "shop" {
+		t.Fatalf("the request names the repository and the app and nothing else: %v", bodies[0])
 	}
 }
 
@@ -265,5 +267,49 @@ func TestGetJSONRateLimitGivesUpActionably(t *testing.T) {
 	b, calls, slept = rateStub(t, []int{403, 200}, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}, "API rate limit exceeded")
 	if st, _, err := b.Session("shop").GetJSON(context.Background(), "o", "shop", "rulesets"); err != nil || st != 200 || len(*slept) != 1 || (*slept)[0] <= 0 || (*slept)[0] > maxRateWait {
 		t.Fatalf("reset: %d %v slept=%v", st, err, *slept)
+	}
+}
+
+// GraphQL is one POST to /graphql with the token minted for that repository, the query and its variables in the body.
+func TestGraphQLPostsTheQueryWithTheRepositoryToken(t *testing.T) {
+	var got struct {
+		Auth, Method, Path string
+		Body               map[string]any
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/github-read-token" {
+			io.WriteString(w, `{"token":"ghs-shop"}`)
+			return
+		}
+		got.Auth, got.Method, got.Path = r.Header.Get("Authorization"), r.Method, r.URL.Path
+		json.NewDecoder(r.Body).Decode(&got.Body)
+		io.WriteString(w, `{"data":{}}`)
+	}))
+	defer srv.Close()
+	tok := filepath.Join(t.TempDir(), "token")
+	os.WriteFile(tok, []byte("sa\n"), 0o600)
+	b := &Broker{URL: srv.URL, TokenPath: tok, HTTP: srv.Client(), API: srv.URL}
+	st, body, err := b.Session("shop").GraphQL(context.Background(), "o", "shop", "query($n:Int!){x}", map[string]any{"n": 5})
+	if err != nil || st != 200 || string(body) != `{"data":{}}` {
+		t.Fatalf("%d %s %v", st, body, err)
+	}
+	if got.Method != "POST" || got.Path != "/graphql" || got.Auth != "Bearer ghs-shop" || got.Body["query"] != "query($n:Int!){x}" || got.Body["variables"].(map[string]any)["n"] != float64(5) {
+		t.Fatalf("%+v", got)
+	}
+}
+
+// github.com serves GraphQL at <api>/graphql; GitHub Enterprise Server's REST base ends in /api/v3 and its GraphQL is /api/graphql.
+func TestGraphQLURLFromTheAPIBase(t *testing.T) {
+	for base, want := range map[string]string{
+		"":                                "https://api.github.com/graphql",
+		"https://api.github.com":          "https://api.github.com/graphql",
+		"https://api.github.com/":         "https://api.github.com/graphql",
+		"https://ghe.example.com/api/v3":  "https://ghe.example.com/api/graphql",
+		"https://ghe.example.com/api/v3/": "https://ghe.example.com/api/graphql",
+		"http://127.0.0.1:5555":           "http://127.0.0.1:5555/graphql",
+	} {
+		if got := (&Broker{API: base}).graphqlURL(); got != want {
+			t.Errorf("%q: %s, want %s", base, got, want)
+		}
 	}
 }

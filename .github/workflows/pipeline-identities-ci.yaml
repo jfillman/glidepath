@@ -41,3 +41,5 @@ jobs:
       - run: python3 charts/glidepath-catalog/tests/program_text_test.py
       # no credential in a URL, an argument or a log excerpt that is posted
       - run: python3 charts/glidepath-catalog/tests/credentials_test.py
+      # a repository name is parsed whole (acme.web), and a fetch's credential header does not stay exported for the rest of the step
+      - run: python3 charts/glidepath-catalog/tests/repo_name_and_git_auth_test.py

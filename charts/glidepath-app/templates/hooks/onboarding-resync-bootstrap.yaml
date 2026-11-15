@@ -123,7 +123,9 @@ spec:
 
               # Same owner/repo derivation deliver-onboarding-files.yaml itself uses -
               # repo name isn't assumed to equal app-name.
-              repo="$(echo "${APP_REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+              # the whole repository name: a dot is part of it (acme.web), only a trailing .git is not
+              repo="$(sed -E 's#^https?://github\.com/[^/]+/([A-Za-z0-9._-]+)/?$#\1#' <<<"${APP_REPO_URL}")"; repo="${repo%.git}"
+              [[ "${repo}" =~ ^[A-Za-z0-9._-]{1,100}$ && "${repo}" != . && "${repo}" != .. ]] || { echo "error: ${APP_REPO_URL} is not a github.com repository URL with a plain repository name" >&2; exit 1; }
 
               token="$(github_app_installation_token "${GITHUB_OWNER}" "${repo}")"
               workdir="$(mktemp -d)"

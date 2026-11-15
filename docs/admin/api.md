@@ -500,52 +500,67 @@ isn't a ref of the repo, or a base file a patch can't be applied to (not a YAML 
 
 ## Ref protection
 
-`GET /v1/apps/{app}/ref-protection?repo=<owner>/<name>&ref=<full ref>&sha=<commit>` (API 0.12.0, tier T0) says whether
-the git host protects that ref so the commit could only have arrived through review. It is the platform's second
-layer behind the admission policy's name check (security.md, [Ref protection](security.md#ref-protection)): the
-privileged Pipelines call it as their first task, with the repository, ref and sha Pipelines-as-Code recorded on the run,
-and refuse the run unless the verdict is `protected`. It needs `get` on `refprotection.glidepath.hangar.io` in the app's
-namespace: `glidepath-app` grants it to that app's `pipeline-runner`, nothing else. `repo` must be one of the app's own
-repositories under the platform's owner (a source repo, its gitops repo, or where its `cicd.yaml` lives).
+`GET /v1/apps/{app}/ref-protection?repo=<owner>/<name>&ref=<full ref>&sha=<commit>` (tier T0; API 0.13.0 changed what it answers) says whether
+**every commit being released was reviewed**: it arrived on the protected branch through a merged pull request that someone other than its author approved.
+It is the platform's second layer behind the admission policy's name check (security.md, [Ref protection](security.md#ref-protection), which has the rules and
+the reason for each): the privileged Pipelines call it as their first task, with the repository, ref and sha Pipelines-as-Code recorded on the run, and refuse
+the run unless the verdict is `protected`. It needs `get` on `refprotection.glidepath.hangar.io` in the app's namespace: `glidepath-app` grants it to that app's
+`pipeline-runner`, nothing else. `repo` must be one of the app's own repositories under the platform's owner (a source repo, its gitops repo, or where its
+`cicd.yaml` lives).
 
 ```json
-{"verdict": "unprotected", "repo": "jfillman/shop", "ref": "refs/heads/main", "sha": "7f3c…", "kind": "branch", "mainLike": true,
- "reasons": ["branch main is not protected as required: missing blocking deletion"],
- "missing": ["blocking deletion"],
- "bypass": [{"source": "ruleset 100 (Repository)", "actorType": "RepositoryRole", "actorId": 5, "mode": "always", "moot": false, "note": "repository administrators"}],
- "protectedBy": ["ruleset 100 (Repository)"]}
+{"verdict": "unreviewed", "repo": "jfillman/shop", "ref": "refs/heads/main", "sha": "7f3c…", "kind": "branch", "mainLike": true, "branch": "main",
+ "reasons": ["review evidence is incomplete: 1 of 3 commits have no approved pull request (main, range 91ab…..7f3c…)"],
+ "missing": ["4d5e6f7: no pull request: pushed to main directly (a direct push, a force push or an administrator's bypass)"],
+ "evidence": {
+   "branch": "main", "mode": "range", "from": "91ab…", "fromRelease": "gitops-shop#412", "to": "7f3c…",
+   "commits": [{"sha": "4d5e…", "reviewed": false, "reason": "no pull request: pushed to main directly (…)"},
+               {"sha": "7f3c…", "pullRequest": 12, "reviewed": true}],
+   "pullRequests": [{"number": 12, "url": "https://github.com/jfillman/shop/pull/12", "opener": "alice", "merger": "alice", "mergedAt": "2026-11-10T10:00:00Z",
+                     "mergeCommit": "7f3c…", "head": "c0ffee…", "commits": ["c0ffee…"], "authors": ["alice"], "approvers": ["bob"], "reviewed": true}],
+   "openers": ["alice"], "mergers": ["alice"], "approvers": ["bob"],
+   "unreviewed": [{"sha": "4d5e…", "reason": "no pull request: pushed to main directly (…)"}],
+   "accepted": [], "calls": 9},
+ "configuration": {"state": "unprotected", "reasons": ["branch main is not protected as required: missing …"], "bypass": []}}
 ```
 
-`verdict` is one of `protected`, `unprotected`, `unavailable` (the host says its plan has no rulesets or branch
-protection for this repository: its own answer, never read as protected), or `unverifiable` (the host did not show enough:
-a ruleset that cannot be read, a bypass list the token is not shown). Only `protected` is a yes. A host that does not
-answer is 502, never a verdict, and the caller refuses on it too. The answer is always 200 otherwise, carries `reasons`
-a person can act on, and is never cached: every call reads the host again with the broker's per-request read token
-([below](#the-github-read-token)); each list is paged and bounded.
+`verdict` is one of `protected` (every commit of the range has review evidence), `unreviewed` (some commit does not: `missing` lists up to 20 lines, one per
+commit, and `evidence.unreviewed` all of them) or `unverifiable` (GitHub did not show enough: a read that failed, a range of more than 250 commits, a last
+release that cannot start the range, a ref that is not a protected branch). Only `protected` is a yes. `unprotected` and `unavailable` are gone.
+A broker or host that does not answer at all (transport, a rate limit past the bounded retries) is 502, never a verdict, and the caller refuses on it too.
+Otherwise the answer is 200, carries `reasons` a person can act on, and is never cached: every call reads GitHub again with the broker's per-request read-only
+token ([below](#the-github-read-token); contents, pull requests and metadata). Each list is paged and bounded, and one check makes at most 400 evidence reads.
 
-What "protected" means, from what the host reports:
+**The range.** `evidence.mode` is `range` (the commits after `evidence.from`, the newest release the app's **gitops repository** corroborates, up to `to`) or `first`
+(`to` alone: the gitops history shows no release of the app, or `to` is at or before a release). A release is a merged pull request in the gitops repository that
+one of `api.pipelineLogins` opened, with `X-App-Repo`/`X-App-Commit` trailers and a manifest whose image tag ends in that commit; it must be an ancestor of `to`
+per GitHub and its own commit must have review evidence. Release records (`release-tracking-*` ConfigMaps) are **not** read: the pipeline's account can write and
+delete them. A gitops history that shows an earlier release but yields no baseline is `unverifiable`, never `first` (security.md, "The range", says what stays open).
+An approval counts only if GitHub says its author may push to the repository (GraphQL `authorCanPushToRepository`, recorded as `approverCanPush`); a merge commit that is not the pull request's head must be GitHub's (web-flow, verified), and a rebase-merged pull request's landed commits must have the reviewed head's content, file by file (security.md; 3 more reads per rebase-merged pull request).
 
-| Ref | Needs | Bypass |
-|---|---|---|
-| Branch | an active ruleset (or classic branch protection) on it: pull requests with at least one approving review (`required_approving_review_count` >= 1) and `dismiss_stale_reviews_on_push` or `require_last_push_approval` (classic: `dismiss_stale_reviews` / `require_last_push_approval`), blocking force pushes (`non_fast_forward`) and deletion, all summed over every rule that applies; the commit is on the branch. `require_code_owner_review` and `required_review_thread_resolution` come back in `notes` | A write or maintain role, a custom role, a team, a deploy key or a named user may not bypass it (**moot**: anyone with push rights). Repository administrators, organization administrators and GitHub Apps may: they are reported in `bypass`, not counted. A bypass list the host does not return to the token is `unverifiable`, never "none" |
-| Tag | active tag rulesets matching the tag (`include`/`exclude`, `~ALL`, globs) that between them restrict `creation`, `update` and `deletion`, and the tagged commit is on a configured protected branch (`PROTECTED_BRANCHES`, the chart's `cicdRunAdmission.protectedBranches`) that is itself protected as above | as for a branch: whoever can still create the tag must not be a push-rights class |
+**What the Clearance gate's proposer can read.** The same endpoint, called for a release's source commit (`repo` the source repository, `ref` the protected
+branch, `sha` the released commit): `evidence.commits` (each commit and the merged `pullRequest` that brought it into the branch), `evidence.pullRequests` (opener,
+merger, `approvers`, the pull request's `commits` and the GitHub accounts that `authors` them) and the distinct, sorted `evidence.openers`, `mergers` and `approvers`.
+These are GitHub-authenticated accounts, resolved by one implementation (`glidepath/api/internal/refprotection`), so the shell resolution in the proposer
+(glidepath#247's `release-source.sh`) can be replaced by this call. It answers `unreviewed` (with the same evidence) for a range that has commits without a pull
+request: the proposer reads `evidence` whatever the verdict.
+
+`configuration` is what the host's rulesets and branch protection say (`state`: `protected`, `unprotected`, `unavailable`, `unverifiable`; `bypass`, `notes`,
+`protectedBy`), **informational**: it never decides the verdict, and a read that failed is reported there. A ruleset's bypass list is shown only to a token that
+may administer the repository, so with the read-only token it usually says "not shown".
 
 Reruns, promotes and rollbacks started through this API carry a stamped origin (`glidepath.io/origin-ref`, `origin-sha`) that this endpoint verifies for
 their guard: a rerun copies the original run's, promote and rollback stamp the release's commit and the first protected branch (security.md, Ref protection).
 
-`mainLike` says whether the ref is a protected branch name or matches `TAG_REF_PATTERN` (the chart's
-`cicdRunAdmission.tagRefPattern`): a build of any other ref (a side branch) writes no main image, so the build's
-task passes it; a privileged Pipeline ignores it.
+`mainLike` says whether the ref is a protected branch name or matches `TAG_REF_PATTERN` (the chart's `cicdRunAdmission.tagRefPattern`): a build of any other ref
+(a side branch) writes no main image, so the build's task passes it; a privileged Pipeline ignores it. A branch ref that is not one of `PROTECTED_BRANCHES` (the
+chart's `cicdRunAdmission.protectedBranches`) is `unverifiable` with no GitHub read; a tag's range is read against the first protected branch that holds its commit.
+`PIPELINE_LOGINS` (the chart's `api.pipelineLogins`) names pipeline accounts whose approval never counts, besides every account GitHub types Bot or names `[bot]`.
 
-GitHub endpoints used, all with the one token of the request (the broker's `ref-protection` purpose): `GET /repos/{o}/{r}/rules/branches/{branch}`,
-`GET /repos/{o}/{r}/rulesets?includes_parents=true`, `GET /repos/{o}/{r}/rulesets/{id}` (**Metadata: read** to call; but GitHub returns a ruleset's
-`bypass_actors` only to a token with **write access to the ruleset**, i.e. the App permission Administration: write), `GET /repos/{o}/{r}/compare/{base}...{head}`
-(**Contents: read**) and `GET /repos/{o}/{r}/branches/{branch}/protection` (classic protection, **Administration: read**). A bypass list the token is not shown is
-`unverifiable` with a reason naming the permission; there is no way to read it as "none". The default token (contents, pull requests, metadata read)
-cannot see bypass lists: the owner grants the App Administration: write and the cluster sets `githubRead.refProtectionPermissions` (security.md, Ref protection). About 4 to 6 GitHub
-calls per branch check and 8 to 10 per tag check (counted there); a 429 or rate-limit 403 is retried three times within a 10 s cap, then 502. `ref` may not contain empty, `.` or `..`
-segments or encoded characters (400); the all-zero sha and a sha that is not a commit (an annotated tag object) are refused. Rulesets on a private repository need
-GitHub Team or Enterprise (or a public repository); on a plan without them the host answers 403 with an upgrade message, the `unavailable` verdict.
+GitHub endpoints used, all with the one token of the request: `GET /repos/{o}/{r}/compare/{base}...{head}`, `commits?sha=`, `commits/{sha}`, `commits/{sha}/pulls`, `pulls/{n}`, `pulls/{n}/commits`, and in the gitops repository `pulls`, `pulls/{n}/files`, `issues/{n}/timeline` and `contents/{path}?ref=` (**Contents** and **Pull requests: read**), plus one read-only GraphQL query, `POST /graphql` (`/api/graphql` on GitHub Enterprise Server), for each pull request's reviews (`state`, `author`, `authorCanPushToRepository`, `commit{oid}`), and, for the informational configuration, `rules/branches/{branch}`, `rulesets`,
+`rulesets/{id}` and `branches/{branch}/protection` (**Metadata: read**; classic protection needs Administration: read, so it is reported as not shown).
+The count per check is in security.md ("Calls per check"). `ref` may not contain empty, `.` or `..` segments or encoded characters (400); the all-zero sha and a sha
+that is not a commit (an annotated tag object) are refused (400 / `unverifiable`).
 
 ## Live and archived reads
 

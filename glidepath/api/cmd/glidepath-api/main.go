@@ -28,8 +28,11 @@
 //	TESTKUBE_URL        Testkube's agent API (default http://testkube-api-server.testkube.svc.cluster.local:8088)
 //	DELEGATES           comma-separated usernames that may send X-Glidepath-On-Behalf-Of
 //	GITHUB_OWNER        the GitHub owner of the apps' repos, for promote and rollback (the chart's githubOwner)
-//	PROTECTED_BRANCHES  comma-separated branches a protected tag's commit must be reachable from, for GET /v1/apps/{app}/ref-protection
+//	PROTECTED_BRANCHES  comma-separated branches a release must come from, for GET /v1/apps/{app}/ref-protection
 //	                    (the chart's cicdRunAdmission.protectedBranches; default main)
+//	PIPELINE_LOGINS     comma-separated GitHub logins of the pipeline's own accounts (the chart's api.pipelineLogins): the accounts
+//	                    that open release pull requests in the gitops repositories (they establish where a range starts), and
+//	                    whose approval never counts (bots, typed Bot or named [bot], never count either)
 //	TAG_REF_PATTERN     the release tags' full-ref pattern (the chart's cicdRunAdmission.tagRefPattern; unset: every tag)
 //	BROKER_URL          the token broker, for per-request GitHub read tokens (default http://cdevents-broker-auth.platform-system.svc.cluster.local:8080)
 //	BROKER_TOKEN_PATH   this pod's projected ServiceAccount token for the broker, audience github-read-token
@@ -203,6 +206,12 @@ func main() {
 		}
 	}
 	logger := server.NewLogger()
+	if len(splitList(env("PIPELINE_LOGINS", ""))) == 0 {
+		// Review evidence starts a range at the newest release the gitops history corroborates, and only a pull request opened by
+		// one of these accounts is a release. Empty is fine while the catalog's refProtection.mode is off; under required every
+		// check where a gitops repository shows releases is unverifiable.
+		logger.Warn("PIPELINE_LOGINS is empty (the chart's api.pipelineLogins): with refProtection.mode required, every ref-protection check for an app whose gitops history shows a release is unverifiable. Set it to the login of the GitHub App that opens release pull requests")
+	}
 	// People's ID tokens from people-dex, for calls over the Gateway route (auth/oidc.go). Off without OIDC_ISSUER.
 	var people *auth.OIDC
 	if iss := os.Getenv("OIDC_ISSUER"); iss != "" {
@@ -300,12 +309,17 @@ func main() {
 				HTTP: tracing.Client(&http.Client{Timeout: 20 * time.Second}),
 			},
 		},
-		// Whether the git host protects a ref so a commit could only have arrived through review: read per request
-		// with the broker's read token (rulesets need Metadata: read, the reachability check Contents: read), never cached.
+		// Whether every commit being released was reviewed (review evidence: its merged pull request and an approval from
+		// someone else on the final head): read per request with the broker's read-only token (contents, pull requests,
+		// metadata), never cached. The last release (the start of the range) is read from the app's gitops repository history.
 		RefProtection: &refprotection.Client{
-			Owner:   githubOwner,
-			Checker: &refprotection.Checker{ProtectedBranches: splitList(env("PROTECTED_BRANCHES", "main")), TagRefPattern: tagPattern},
-			GitHub:  func(app string) refprotection.Reader { return broker.SessionFor(app, "ref-protection") },
+			Owner: githubOwner,
+			Checker: &refprotection.Checker{
+				ProtectedBranches: splitList(env("PROTECTED_BRANCHES", "main")),
+				TagRefPattern:     tagPattern,
+				BotLogins:         splitList(env("PIPELINE_LOGINS", "")),
+			},
+			GitHub: func(app string) refprotection.Reader { return broker.Session(app) },
 		},
 		Events: store,
 		Tap: &events.Tap{

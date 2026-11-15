@@ -41,11 +41,10 @@ type Broker struct {
 
 // Session is one request's GitHub reads for one app. Not for reuse across requests.
 type Session struct {
-	b       *Broker
-	app     string
-	purpose string // sent to the broker with each mint ("" = the plain read-only token)
-	mu      sync.Mutex
-	tokens  map[string]*mint // owner/repo -> its one mint, for this request only
+	b      *Broker
+	app    string
+	mu     sync.Mutex
+	tokens map[string]*mint // owner/repo -> its one mint, for this request only
 }
 
 // mint is one broker call; done closes when t/err are set, so a read that needs the token while a Prefetch is still
@@ -61,14 +60,6 @@ func (b *Broker) Session(app string) *Session {
 	return &Session{b: b, app: app, tokens: map[string]*mint{}}
 }
 
-// SessionFor is Session whose tokens are minted for a purpose the broker knows ("ref-protection"): the broker adds
-// what the cluster configured for that purpose, to these tokens only.
-func (b *Broker) SessionFor(app, purpose string) *Session {
-	s := b.Session(app)
-	s.purpose = purpose
-	return s
-}
-
 // Prefetch starts minting the tokens for repos now, in the background, so a request whose later reads depend on
 // earlier ones doesn't pay for each repo's mint in turn. A read already waiting on a failed mint gets its error; a later
 // read mints again.
@@ -76,6 +67,16 @@ func (s *Session) Prefetch(ctx context.Context, owner string, repos ...string) {
 	for _, r := range repos {
 		go s.token(ctx, owner, r)
 	}
+}
+
+// graphqlURL is GitHub's GraphQL endpoint for the configured API base: <base>/graphql on github.com, and on GitHub Enterprise
+// Server (REST base ending in /api/v3) /api/graphql.
+func (b *Broker) graphqlURL() string {
+	base := strings.TrimRight(b.api(), "/")
+	if strings.HasSuffix(base, "/api/v3") {
+		return strings.TrimSuffix(base, "/api/v3") + "/api/graphql"
+	}
+	return base + "/graphql"
 }
 
 func (b *Broker) api() string {
@@ -128,9 +129,6 @@ func (s *Session) mint(ctx context.Context, owner, repo string) (string, error) 
 		return "", fmt.Errorf("reading glidepath-api's broker token: %w", err)
 	}
 	reqBody := map[string]string{"owner": owner, "repo": repo, "app": s.app}
-	if s.purpose != "" {
-		reqBody["purpose"] = s.purpose
-	}
 	body, _ := json.Marshal(reqBody)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.b.URL, "/")+"/github-read-token", bytes.NewReader(body))
 	if err != nil {
@@ -258,6 +256,52 @@ func (s *Session) GetJSON(ctx context.Context, owner, repo, path string) (int, [
 		}
 		if wait <= 0 {
 			wait = time.Duration(attempt) * time.Second // no hint: back off 1s, 2s
+		}
+		if err := s.sleep(ctx, min(wait, maxRateWait)); err != nil {
+			return 0, nil, err
+		}
+	}
+}
+
+// GraphQL is one POST to GitHub's GraphQL endpoint with the token minted for owner/repo (read-only: the query is a read), for the
+// few facts REST does not carry (internal/refprotection: whether a review's author has push access). The status and body are
+// returned like GetJSON's, with the same bounded rate-limit retries; a 200 body with an `errors` list is the caller's to refuse.
+func (s *Session) GraphQL(ctx context.Context, owner, repo, query string, vars map[string]any) (int, []byte, error) {
+	payload, err := json.Marshal(map[string]any{"query": query, "variables": vars})
+	if err != nil {
+		return 0, nil, err
+	}
+	var last time.Duration
+	for attempt := 1; ; attempt++ {
+		t, err := s.token(ctx, owner, repo)
+		if err != nil {
+			return 0, nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.b.graphqlURL(), bytes.NewReader(payload))
+		if err != nil {
+			return 0, nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+t)
+		res, err := s.b.HTTP.Do(req)
+		if err != nil {
+			return 0, nil, err
+		}
+		body, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+		res.Body.Close()
+		if err != nil {
+			return res.StatusCode, body, err
+		}
+		limited, wait := rateLimitWait(res, body, time.Now())
+		if !limited {
+			return res.StatusCode, body, nil
+		}
+		last = wait
+		if attempt >= maxRateAttempts || wait > maxRateWait {
+			return res.StatusCode, nil, RateLimited{Wait: last}
+		}
+		if wait <= 0 {
+			wait = time.Duration(attempt) * time.Second
 		}
 		if err := s.sleep(ctx, min(wait, maxRateWait)); err != nil {
 			return 0, nil, err

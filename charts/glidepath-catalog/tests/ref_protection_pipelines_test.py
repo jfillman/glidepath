@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pipeline trust T3, verified ref protection (docs/admin/security.md, "Ref protection").
+"""Pipeline trust T3 and T3b, review evidence (docs/admin/security.md, "Ref protection").
 
 Renders the catalog and asserts, from the manifests alone:
   - every privileged Pipeline (release, deploy, test, gitops-image-bump) and the build starts with the
@@ -9,9 +9,10 @@ Renders the catalog and asserts, from the manifests alone:
     the file cannot drop the task: checked against the admission policy's own messages.
   - refProtection.mode is required by default, off only when set, anything else fails the render.
 Then runs the task's script against a fake kubectl (the PipelineRun as Pipelines-as-Code recorded it) and a fake curl
-(glidepath-api): a protected verdict passes; an unprotected, unavailable or unverifiable one, an API error and an
-unreadable run all refuse (fail closed); off asks nothing and records "ref protection: Off here"; the ref and sha come
-from the run's annotations; the release record gets the summary.
+(glidepath-api): a protected verdict passes and records "review evidence: ..."; an unreviewed or unverifiable one, an API
+error and an unreadable run all refuse (fail closed), listing the commits a developer must fix in at most 20 lines;
+off asks nothing and records "ref protection: Off here"; the ref and sha come from the run's annotations; the release
+record gets the summary. The elevated broker permission (Administration) is gone: nothing in the control plane renders it.
 
 Run:  python3 charts/glidepath-catalog/tests/ref_protection_pipelines_test.py     (needs helm, pyyaml, jq, bash)
 """
@@ -200,19 +201,34 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
         calls = get(os.path.join(fx, "curl-calls"))
         return p, res, summ, calls
 
-    PROTECTED = {"verdict": "protected", "mainLike": True, "reasons": ["branch main requires a reviewed pull request"],
-                 "bypass": [{"actorType": "RepositoryRole", "actorId": 5, "moot": False}]}
+    SUMMARY = "review evidence: 7 commits in 3 pull requests, all approved by someone other than their authors on the final head (main, range 1111111..2222222)"
+    PROTECTED = {"verdict": "protected", "mainLike": True, "reasons": [SUMMARY],
+                 "configuration": {"state": "unavailable", "reasons": ["o/shop: the git host offers no rulesets or branch protection for this repository on its plan"]}}
 
     def test_protected_passes_with_the_runs_own_ref_and_sha(self):
         p, res, summ, calls = self.run_task(api=self.PROTECTED)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(res, "verified")
-        self.assertIn("verified for refs/heads/main", summ)
+        self.assertEqual(summ.split(" [")[0], "ref protection: " + self.SUMMARY)
+        self.assertIn("[ruleset note: unavailable: o/shop: the git host offers no rulesets", summ)
+        self.assertTrue(summ.startswith("ref protection: review evidence: 7 commits in 3 pull requests"), summ)
         self.assertIn("http://api.example/v1/apps/shop/ref-protection", calls)
         self.assertIn("repo=jfillman/shop", calls)
         self.assertIn("ref=refs/heads/main", calls)
         self.assertIn(f"sha={SHA}", calls)
         self.assertIn("Authorization: Bearer sa-token", calls)
+
+    def test_the_target_environment_and_cluster_go_with_the_question(self):
+        params = [{"name": "env", "value": "prod"}, {"name": "cluster", "value": "hangar-prod"}]
+        p, res, _, calls = self.run_task(api=self.PROTECTED, params=params)
+        self.assertEqual((p.returncode, res), (0, "verified"), p.stderr)
+        self.assertIn("env=prod", calls)
+        self.assertIn("cluster=hangar-prod", calls)
+        # a run with no target parameter sends neither (the API then reads the strictest history)
+        p, res, _, calls = self.run_task(api=self.PROTECTED)
+        self.assertEqual((p.returncode, res), (0, "verified"))
+        self.assertNotIn("env=", calls)
+        self.assertNotIn("cluster=", calls)
 
     def test_a_tag_run_asks_about_the_tag_ref(self):
         p, res, _, calls = self.run_task(ref="refs/tags/v1.2.3", api=self.PROTECTED)
@@ -224,19 +240,48 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
         self.assertIn("/v1/apps/net/ref-protection", calls)
 
     def test_anything_but_protected_refuses_with_a_clear_message(self):
-        for verdict in ("unprotected", "unavailable", "unverifiable", "", "PROTECTED"):
+        for verdict in ("unreviewed", "unverifiable", "unprotected", "unavailable", "", "PROTECTED"):
             with self.subTest(verdict=verdict):
-                api = {"verdict": verdict, "mainLike": True, "reasons": ["branch main is not protected as required: missing blocking deletion"],
-                       "missing": ["blocking deletion"], "bypass": [{"actorType": "Team", "moot": True}]}
+                api = {"verdict": verdict, "mainLike": True, "reasons": ["review evidence is incomplete: 2 of 5 commits have no approved pull request (main, range 1111111..2222222)"],
+                       "missing": ["aaaaaaa: no pull request: pushed to main directly (a direct push, a force push or an administrator's bypass)",
+                                   "bbbbbbb: in #7, which has no usable approval: approved only on an older head (bob on ccccccc) but the final head is ddddddd: it was pushed to after the approval"],
+                       "configuration": {"state": "protected", "reasons": ["branch main requires a reviewed pull request"]}}
                 p, res, summ, _ = self.run_task(api=api)
                 self.assertEqual(p.returncode, 1)
                 self.assertEqual(res, "refused")
                 self.assertIn("refused", summ)
-                self.assertIn("NOT verified as protected", p.stderr)
-                self.assertIn("missing blocking deletion", p.stderr)
-                self.assertIn("missing: blocking deletion", p.stderr)
-                self.assertIn("Team (makes it moot)", p.stderr)
+                self.assertIn("has NO review evidence for", p.stderr)
+                self.assertIn("2 of 5 commits have no approved pull request", p.stderr)
+                self.assertIn("    aaaaaaa: no pull request: pushed to main directly", p.stderr)
+                self.assertIn("    bbbbbbb: in #7, which has no usable approval: approved only on an older head", p.stderr)
+                self.assertIn("(ruleset note: protected: branch main requires a reviewed pull request)", p.stderr)
                 self.assertIn("refProtection.mode: off", p.stderr)
+                if verdict == "unreviewed":
+                    self.assertIn("approves on its final head", p.stderr)
+                    self.assertIn("single maintainer cannot pass", p.stderr)
+                else:
+                    self.assertIn("the evidence could not be established", p.stderr)
+
+    def test_a_refusal_prints_a_bounded_number_of_lines(self):
+        api = {"verdict": "unreviewed", "mainLike": True, "reasons": ["r " * 1000],
+               "missing": [f"{i:07d}: " + "x" * 1000 for i in range(60)]}
+        p, res, summ, _ = self.run_task(api=api)
+        self.assertEqual((p.returncode, res), (1, "refused"))
+        listed = [l for l in p.stderr.splitlines() if l.startswith("    0")]
+        self.assertEqual(len(listed), 20, "no more than 20 commit lines")
+        self.assertTrue(all(len(l) <= 304 for l in listed), "each line is cut")
+        self.assertLessEqual(len(p.stderr.splitlines()), 30)
+        self.assertLessEqual(len(summ), 800, "the one-line summary stays inside a Tekton result")
+
+    def test_the_summary_is_what_the_next_range_recognises(self):
+        # glidepath-api treats a release record whose refProtection contains "review evidence:" as a verified release
+        for kw in (dict(), dict(ref="refs/tags/v1.2.3")):
+            p, res, summ, _ = self.run_task(api=self.PROTECTED, **kw)
+            self.assertIn("review evidence:", summ)
+        p, res, summ, _ = self.chained(api=self.PROTECTED)
+        self.assertIn("review evidence:", summ)
+        p, res, summ, _ = self.run_task(mode="off", api=self.PROTECTED)
+        self.assertNotIn("review evidence:", summ, "an Off here release is never a verified baseline")
 
     def test_fail_closed(self):
         for name, kw in {
@@ -262,7 +307,7 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
         p, res, _, calls = self.run_task(kind="build", event="pull_request", api=self.PROTECTED)
         self.assertEqual((p.returncode, res, calls), (0, "not-push", ""))
         # The build on a side branch: no main image, so nothing to verify; on main or a tag it must be protected.
-        side = {"verdict": "unprotected", "mainLike": False, "reasons": ["no"]}
+        side = {"verdict": "unreviewed", "mainLike": False, "reasons": ["no"]}
         p, res, _, _ = self.run_task(kind="build", ref="refs/heads/feature/x", api=side)
         self.assertEqual((p.returncode, res), (0, "side-ref"))
         main = dict(side, mainLike=True)
@@ -292,7 +337,7 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
 
     def test_a_chained_run_from_an_unprotected_origin_is_refused(self):
         p, res, _, calls = self.chained(ref="refs/heads/feature/x", anns={"glidepath.io/origin-ref": "refs/heads/feature/x"},
-                                        api={"verdict": "unprotected", "mainLike": False, "reasons": ["no"]})
+                                        api={"verdict": "unreviewed", "mainLike": False, "reasons": ["no"]})
         self.assertEqual((p.returncode, res), (1, "refused"))
         self.assertIn("ref=refs/heads/feature/x", calls)  # asked, and refused: a side ref never takes the build's exit
 
@@ -322,10 +367,10 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
         self.assertIn("ref=refs/heads/main", calls)
         # unprotected origin of a main-like ref: refused; a side ref passes the build's side-ref exit as before
         p, res, _, _ = self.run_task(kind="build", event="", anns={"glidepath.io/origin-ref": "refs/heads/main", "glidepath.io/origin-sha": SHA},
-                                     params=self.CHAIN_PARAMS, api={"verdict": "unprotected", "mainLike": True, "reasons": ["no"]})
+                                     params=self.CHAIN_PARAMS, api={"verdict": "unreviewed", "mainLike": True, "reasons": ["no"]})
         self.assertEqual((p.returncode, res), (1, "refused"))
         p, res, _, _ = self.run_task(kind="build", event="", anns={"glidepath.io/origin-ref": "refs/heads/feature/x", "glidepath.io/origin-sha": SHA},
-                                     params=self.CHAIN_PARAMS, api={"verdict": "unprotected", "mainLike": False, "reasons": ["no"]})
+                                     params=self.CHAIN_PARAMS, api={"verdict": "unreviewed", "mainLike": False, "reasons": ["no"]})
         self.assertEqual((p.returncode, res), (0, "side-ref"))
 
     def test_a_rerun_of_a_pull_request_build_is_not_a_push(self):
@@ -346,7 +391,7 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
         self.assertIn(f"sha={older}", calls)
         # not on the protected branch: the API says so and the run is refused
         p, res, _, _ = self.run_task(event="", anns={"glidepath.io/origin-ref": "refs/heads/main", "glidepath.io/origin-sha": older}, params=params,
-                                     api={"verdict": "unprotected", "mainLike": True, "reasons": ["commit is not on branch main"]})
+                                     api={"verdict": "unreviewed", "mainLike": True, "reasons": ["commit is not on branch main"]})
         self.assertEqual((p.returncode, res), (1, "refused"))
 
     def test_the_failure_says_what_a_misordered_upgrade_needs(self):
@@ -363,7 +408,7 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
 
     def test_off_asks_nothing_and_records_the_gap(self):
         for kind in ("privileged", "build"):
-            p, res, summ, calls = self.run_task(mode="off", kind=kind, api={"verdict": "unprotected"})
+            p, res, summ, calls = self.run_task(mode="off", kind=kind, api={"verdict": "unreviewed"})
             self.assertEqual(p.returncode, 0, p.stderr)
             self.assertEqual(res, "off")
             self.assertIn("ref protection: Off here", summ)
@@ -378,28 +423,44 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
 
 
 class BrokerSetting(unittest.TestCase):
-    """The broker adds Administration to the ref-protection call's token only when the cluster configured it."""
+    """The broker mints only the read-only token: the elevated ref-protection permission and its callers are gone."""
 
-    def env(self, *args):
-        d = [x for x in docs(CP, *args) if x["kind"] == "Deployment" and x["metadata"]["name"] == "cdevents-broker-auth"][0]
+    def deployment(self, name, *args):
+        return [x for x in docs(CP, *args) if x["kind"] == "Deployment" and x["metadata"]["name"] == name][0]
+
+    def env(self, name, *args):
+        d = self.deployment(name, *args)
         return {e["name"]: e.get("value") for c in d["spec"]["template"]["spec"]["containers"] for e in c.get("env", [])}
 
-    def test_default_is_today_s_permissions(self):
-        self.assertEqual(json.loads(self.env()["GITHUB_READ_REF_PROTECTION_PERMISSIONS"]), {})
+    def test_the_broker_has_no_elevation_setting(self):
+        env = self.env("cdevents-broker-auth")
+        self.assertEqual(env["GITHUB_READ_CALLERS"], "system:serviceaccount:platform-system:glidepath-api")
+        self.assertNotIn("GITHUB_READ_REF_PROTECTION_PERMISSIONS", env)
+        self.assertNotIn("GITHUB_READ_REF_PROTECTION_CALLERS", env)
+        # a values file from before T3b that still sets them changes nothing: the chart no longer reads them
+        e = self.env("cdevents-broker-auth", "--set", "githubRead.refProtectionPermissions.administration=write",
+                     "--set", "githubRead.refProtectionCallers[0]=system:serviceaccount:x:y")
+        self.assertNotIn("GITHUB_READ_REF_PROTECTION_PERMISSIONS", e)
+        self.assertNotIn("administration", json.dumps(docs(CP, "--set", "githubRead.refProtectionPermissions.administration=write")))
 
-    def test_the_elevated_permission_is_bound_to_named_callers(self):
-        self.assertEqual(self.env()["GITHUB_READ_REF_PROTECTION_CALLERS"], "system:serviceaccount:platform-system:glidepath-api")
-        self.assertEqual(self.env("--set", "githubRead.refProtectionCallers=null")["GITHUB_READ_REF_PROTECTION_CALLERS"], "")
+    def test_no_chart_value_or_template_mentions_the_elevated_path(self):
+        import pathlib
+        root = pathlib.Path(CP)
+        for f in list(root.rglob("*.yaml")) + list(root.rglob("*.tpl")):
+            if "tests" in f.parts:
+                continue
+            text = f.read_text()
+            self.assertNotIn("refProtectionPermissions", text, f)
+            self.assertNotIn("refProtectionCallers", text, f)
+            self.assertNotIn("REF_PROTECTION_PERMISSIONS", text, f)
 
-    def test_the_setting_reaches_the_broker(self):
-        e = self.env("--set", "githubRead.refProtectionPermissions.administration=write")
-        self.assertEqual(json.loads(e["GITHUB_READ_REF_PROTECTION_PERMISSIONS"]), {"administration": "write"})
-
-    def test_the_api_asks_for_the_purpose_and_gets_the_admission_values(self):
-        d = [x for x in docs(CP, "--set", "apiImage=x:1") if x["kind"] == "Deployment" and x["metadata"]["name"] == "glidepath-api"][0]
-        env = {e["name"]: e.get("value") for c in d["spec"]["template"]["spec"]["containers"] for e in c.get("env", [])}
+    def test_the_api_gets_the_admission_values_and_the_pipeline_logins(self):
+        env = self.env("glidepath-api", "--set", "apiImage=x:1")
         self.assertEqual(env["PROTECTED_BRANCHES"], "main")
         self.assertIn("refs/tags/v", env["TAG_REF_PATTERN"])
+        self.assertEqual(env["PIPELINE_LOGINS"], "")
+        env = self.env("glidepath-api", "--set", "apiImage=x:1", "--set", "api.pipelineLogins={glidepath-app[bot],other}")
+        self.assertEqual(env["PIPELINE_LOGINS"], "glidepath-app[bot],other")
 
 
 class Debrief(unittest.TestCase):

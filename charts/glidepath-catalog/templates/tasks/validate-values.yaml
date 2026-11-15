@@ -130,6 +130,7 @@ spec:
         git_auth "${token}"
         with_retry 3 -- git fetch --quiet --depth 1 "https://${GIT_HOST}/${owner}/${repo}.git" "${REVISION}"
         git checkout --quiet FETCH_HEAD
+        git_auth_clear  # the fetch is done: the token's header does not stay in the environment of everything this step runs next
 
         # Changed files: the PR's base...head compare (merge-base semantics, like the old `git merge-base
         # origin/main`), or the single commit when there is no PR. `removed` dropped = the old --diff-filter=AMR.
