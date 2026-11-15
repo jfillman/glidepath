@@ -275,7 +275,9 @@ type ArchiveSource struct {
 	Window  time.Duration // how far back to look; 30 days when zero
 }
 
-const maxCandidates = 5
+// maxCandidates bounds the archive reads for one commit. More builds than this is answered as a failed read (unresolved), never
+// truncated: a build left unread could have pushed a different digest, and a claim made without it could be wrong.
+const maxCandidates = 20
 
 func (s ArchiveSource) Runs(ctx context.Context, namespace, commit string) ([]Run, error) {
 	w := s.Window
