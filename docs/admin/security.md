@@ -213,8 +213,9 @@ What each part does.
     inline `pipelineSpec`, run-wide account `pipeline-runner`, one `taskRunSpecs` entry per task and only for `source-runner` or
     `glidepath-cloud-deployer` (which has its own policy), a `podTemplate` of `hostAliases` only, workspaces `emptyDir` or
     `volumeClaimTemplate` only. Also on UPDATE. `cicd-run-no-taskruns` refuses a TaskRun from the PaC identity.
-  - `cicd-run-source-isolation`: a run of a Pipeline that runs the repository's code (`build`: `build-source`, `unit-test` and the
-    two artifact builds; `test`: `run-integration-script`) must give those tasks to `source-runner`. A PR that deletes those lines
+  - `cicd-run-source-isolation`: a run of a Pipeline that runs the repository's code (`build`: `build-source`, `unit-test`, `build-image`
+    and the two artifact builds; `test`: `run-integration-script`; the list is `cicdRunAdmission.sourceTasks` and the policy's message is
+    rendered from it) must give those tasks to `source-runner`. A PR that deletes those lines
     from its `.tekton` file is refused, not obeyed. `cicdRunAdmission.sourceIsolationActions` sets what a refusal does.
   Every expression is `has()`-guarded and the match conditions cannot raise, so a CEL error cannot refuse requests cluster-wide.
 - **Tests.** `charts/glidepath-app/tests/pipeline_least_privilege_test.py` renders the charts and asserts each account, its
@@ -258,9 +259,11 @@ limited by AWS, not by this chart.
 What this release does close, and how that was checked:
 
 - **The repository's scripts, installs and `RUN` lines** (`build.sh`, `test.sh`, `integration-test.sh`, dependency installs, build backends) run
-  as `source-runner` with no Kubernetes credential, and the step that runs the code mounts no registry credential
-  (`build-artifact`'s separate `publish` step does, see (c)). `run-integration-script` is a Task of its own: nothing of
-  `run-testworkflow`'s pod is in it.
+  as `source-runner` with no Kubernetes credential. That is the only thing they no longer have. Two of those steps still sit next to a
+  registry credential: `build-image`'s build-and-push step runs the `Containerfile` `RUN` lines with `registry-credentials` mounted at
+  `/home/user/.docker` (open, see A(c)), and `build-artifact`'s pod mounts it for its separate `publish` step (the build step does not
+  mount it; `publish` validates the path it pushes). The other build steps and `run-integration-script` mount no registry credential;
+  `run-integration-script` shares nothing with `run-testworkflow`'s pod.
 - **A pull request's `.tekton` file** can no longer widen a run: it must start one of the Pipelines the platform itself starts
   from a file (the list is rendered from the onboarding templates and the flow generator, and a test compares them), pass only the
   parameters that Pipeline takes, with values of the expected shape, and the repository, revision, pull request and namespace

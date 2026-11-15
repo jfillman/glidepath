@@ -98,11 +98,38 @@ spec:
         # that volume while this runs, and they run the repository's code: Semgrep shells out to git in a repository, so a
         # .git/config the code wrote (core.fsmonitor, a hook) would run here, in a pod that mounts app-secrets; and a symlink to
         # this pod's own token would be read as a source file. The scan result is the same: Semgrep scans files, not history.
-        SCAN_DIR="$(mktemp -d)"
-        tar -c --exclude=./.git -f - . | tar -x -f - -C "${SCAN_DIR}"
-        find "${SCAN_DIR}" -name .git -prune -exec rm -rf {} + 2>/dev/null   # nested repositories too (vendored or submodule trees)
-        find "${SCAN_DIR}" -type l -delete
-        cd "${SCAN_DIR}"
+        # Fail closed: this step runs without `set -e` (semgrep's exit code is the verdict), so every step of the copy is checked, and a
+        # scan that could not be set up is a FAILED scan, never an empty one that passes.
+        copy_failed() {
+          echo "sast-scan: could not prepare the scan copy ($1): failing the scan rather than scanning nothing" >&2
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > "$(results.span-end-time.path)"
+          printf '%s' "the scan copy could not be prepared ($1)" > "$(results.findings-summary.path)"
+          printf '%s' "failed" > "$(results.outcome.path)"
+          exit 1
+        }
+        SRC_DIR="$PWD"
+        WORK="$(mktemp -d)" || copy_failed "mktemp"
+        [[ -n "${WORK}" && -d "${WORK}" ]] || copy_failed "no scratch directory"
+        SCAN_DIR="${WORK}/src"; mkdir "${SCAN_DIR}" || copy_failed "mkdir"
+        # A snapshot of the regular files outside any .git and node_modules (Semgrep skips node_modules by default): symlinks are not
+        # listed, so none is copied. unit-test and build-source write to this volume while this runs, so the copy is made from the list
+        # and then checked against it: a listed file that is not in the copy and still exists in the checkout is a copy failure; one
+        # that vanished meanwhile (a build cleaning up) is not.
+        if [[ -n "$(find . \( -name .git -o -name node_modules \) -prune -o -name "*"$'\n'"*" -print -quit)" ]]; then copy_failed "a file name contains a newline"; fi
+        find . \( -name .git -o -name node_modules \) -prune -o -type f -print | sort > "${WORK}/list" || copy_failed "listing the checkout"
+        [[ -s "${WORK}/list" ]] || copy_failed "the checkout holds no files to scan"
+        tar -c -T "${WORK}/list" -f - 2> "${WORK}/tar.err" | tar -x -f - -C "${SCAN_DIR}"
+        TAR_RC=("${PIPESTATUS[@]}")
+        [[ "${TAR_RC[1]}" -eq 0 && "${TAR_RC[0]}" -le 1 ]] || copy_failed "tar exit ${TAR_RC[0]}/${TAR_RC[1]}"
+        (cd "${SCAN_DIR}" && find . -type f | sort) > "${WORK}/copied" || copy_failed "listing the copy"
+        MISSING=0
+        while IFS= read -r f; do
+          [[ -e "${SRC_DIR}/${f}" ]] && MISSING=$((MISSING + 1))
+        done < <(comm -23 "${WORK}/list" "${WORK}/copied")
+        [[ "${MISSING}" -eq 0 ]] || copy_failed "${MISSING} files of the checkout are not in the copy"
+        [[ -n "$(find "${SCAN_DIR}" -type f -print -quit)" ]] || copy_failed "the copy is empty"
+        [[ -z "$(find "${SCAN_DIR}" \( -name .git -o -type l \) -print -quit)" ]] || copy_failed "the copy holds a .git or a symlink"
+        cd "${SCAN_DIR}" || copy_failed "cd"
         semgrep scan --metrics=off --config p/ci --config p/security-audit --error --json --output /tmp/scan-results.json . 2>&1 | tee /tmp/scan-output.txt
         EXIT_CODE=${PIPESTATUS[0]}
 

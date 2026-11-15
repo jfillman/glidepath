@@ -43,7 +43,11 @@ def fake(bin_, name, body):
 
 
 class SastScan(unittest.TestCase):
-    def test_scans_a_copy_without_git_or_symlinks_and_never_runs_git(self):
+    """The scan step copies the checkout and scans the copy. Every step of the copy must succeed and the copy must hold every file
+    that was expected: a SAST gate that passes on an empty or partial scan is worse than no copy."""
+
+    def run_scan(self, setup=None, tar_mode=None, mktemp_fails=False):
+        """-> (exit code, outcome file or None, the fake semgrep's record or None, stderr, scratch dir listing helper values)"""
         with tempfile.TemporaryDirectory() as d:
             ws, bin_, res = (os.path.join(d, x) for x in ("ws", "bin", "res"))
             for p in (ws, bin_, res, os.path.join(ws, ".git", "hooks"), os.path.join(ws, "src")):
@@ -55,26 +59,76 @@ class SastScan(unittest.TestCase):
             os.makedirs(os.path.join(ws, "src", "vendor", "dep", ".git"))     # a nested repository, with its own config
             open(os.path.join(ws, "src", "vendor", "dep", ".git", "config"), "w").write("[core]\n\tfsmonitor = x\n")
             open(os.path.join(ws, "src", "vendor", "dep", "lib.py"), "w").write("x = 1\n")
+            if setup:
+                setup(ws, d)
             seen = os.path.join(d, "seen")
-            fake(bin_, "semgrep", 'pwd > "%s"; ls -A >> "%s"; find . -type l >> "%s"; find . -name .git >> "%s"; echo "{\\"results\\": []}" > /tmp/scan-results.json; exit 0' % (seen, seen, seen, seen))
+            fake(bin_, "semgrep", 'pwd > "%s"; ls -A >> "%s"; echo "--links" >> "%s"; find . -type l >> "%s"; echo "--git" >> "%s"; find . -name .git >> "%s"; '
+                 'echo "--files" >> "%s"; find . -type f | sort >> "%s"; echo "{\\"results\\": []}" > /tmp/scan-results.json; exit 0' % ((seen,) * 8))
             fake(bin_, "git", 'echo "git $@" >> "%s/git-ran"; exit 1' % d)
+            real_tar = subprocess.run(["which", "tar"], capture_output=True, text=True).stdout.strip()
+            if tar_mode == "fail":
+                fake(bin_, "tar", 'for a in "$@"; do [ "$a" = "-x" ] && cat > /dev/null; done; exit 1')
+            elif tar_mode == "empty":      # extraction succeeds and extracts nothing
+                fake(bin_, "tar", 'for a in "$@"; do [ "$a" = "-x" ] && { cat > /dev/null; exit 0; }; done; exec %s "$@"' % real_tar)
+            if mktemp_fails:
+                fake(bin_, "mktemp", "exit 1")
             script = step("sast-scan", "scan")["script"]
             for k in ("span-start-time", "span-end-time", "findings-summary", "outcome"):
                 script = script.replace("$(results.%s.path)" % k, os.path.join(res, k))
             script = script.replace("$(workspaces.source.path)", ws)
             env = dict(os.environ, PATH=bin_ + ":" + os.environ["PATH"])
             p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, cwd=ws, env=env)
-            self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
-            lines = open(seen).read().split("\n")
-            self.assertNotEqual(os.path.realpath(lines[0]), os.path.realpath(ws), "semgrep ran in the shared workspace")
-            self.assertIn("src", lines)
-            self.assertNotIn(".git", lines)
-            self.assertFalse([l for l in lines if l.endswith(".git")], "a nested .git was left in the scanned copy: " + str(lines))
-            self.assertTrue(os.path.exists(os.path.join(os.path.dirname(os.path.realpath(lines[0])), "x")) or True)
-            self.assertNotIn("./src/openapi.yaml", lines, "a symlink was left in the scanned copy")
-            self.assertFalse(os.path.exists(os.path.join(d, "git-ran")), "git was run")
-            self.assertFalse(os.path.exists(os.path.join(d, "PWNED")))
-            self.assertEqual(open(os.path.join(res, "outcome")).read(), "passed")
+            read = lambda f: open(f).read() if os.path.exists(f) else None
+            return p.returncode, read(os.path.join(res, "outcome")), read(seen), p.stdout + p.stderr, d, ws
+
+    def test_scans_a_copy_without_git_or_symlinks_and_never_runs_git(self):
+        code, outcome, seen, log, d, ws = self.run_scan()
+        self.assertEqual(code, 0, log)
+        lines = seen.split("\n")
+        self.assertNotEqual(os.path.realpath(lines[0]), os.path.realpath(ws), "semgrep ran in the shared workspace")
+        self.assertEqual(outcome, "passed")
+        links = lines[lines.index("--links") + 1:lines.index("--git")]
+        gits = lines[lines.index("--git") + 1:lines.index("--files")]
+        files = [l for l in lines[lines.index("--files") + 1:] if l]
+        self.assertEqual(links, [], "a symlink was left in the scanned copy")
+        self.assertEqual(gits, [], "a .git was left in the scanned copy")
+        # the copy holds exactly the regular files outside .git directories (not the symlink, not either .git/config)
+        self.assertEqual(files, ["./src/app.py", "./src/vendor/dep/lib.py"])
+
+    def test_a_failed_copy_fails_the_scan_and_semgrep_does_not_run(self):
+        for kwargs in ({"tar_mode": "fail"}, {"mktemp_fails": True}, {"tar_mode": "empty"}):
+            code, outcome, seen, log, d, ws = self.run_scan(**kwargs)
+            self.assertNotEqual(code, 0, str(kwargs) + log)
+            self.assertEqual(outcome, "failed", str(kwargs))
+            self.assertIsNone(seen, "semgrep ran after a failed copy: " + str(kwargs))
+
+    def test_a_file_name_with_a_newline_fails_the_scan(self):
+        # it could not be listed one per line, so it would be silently left out of the scan
+        def odd(ws, d):
+            open(os.path.join(ws, "src", "a\nb.py"), "w").write("x")
+        code, outcome, seen, log, d, ws = self.run_scan(setup=odd)
+        self.assertNotEqual(code, 0, log)
+        self.assertEqual(outcome, "failed")
+        self.assertIsNone(seen)
+
+    def test_node_modules_are_not_scanned_and_do_not_fail_the_copy(self):
+        def deps(ws, d):
+            os.makedirs(os.path.join(ws, "node_modules", "left-pad"))
+            open(os.path.join(ws, "node_modules", "left-pad", "index.js"), "w").write("x")
+        code, outcome, seen, log, d, ws = self.run_scan(setup=deps)
+        self.assertEqual((code, outcome), (0, "passed"), log)
+        self.assertNotIn("node_modules", seen)
+
+    def test_a_workspace_with_nothing_to_scan_fails_rather_than_passing(self):
+        def only_git(ws, d):
+            import shutil
+            shutil.rmtree(os.path.join(ws, "src"))
+        code, outcome, seen, log, d, ws = self.run_scan(setup=only_git)
+        self.assertNotEqual(code, 0, log)
+        self.assertEqual(outcome, "failed")
+        self.assertIsNone(seen)
+        self.assertFalse(os.path.exists(os.path.join(d, "git-ran")))
+        self.assertFalse(os.path.exists(os.path.join(d, "PWNED")))
 
 
 class AttestApiSpec(unittest.TestCase):
