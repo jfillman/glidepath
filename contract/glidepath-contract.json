@@ -1392,7 +1392,7 @@
   ],
   "api": {
     "spec": "api/openapi.yaml",
-    "version": "0.11.0",
+    "version": "0.12.0",
     "actions": [
       {
         "operationId": "whoami",
@@ -1589,6 +1589,13 @@
         "path": "/v1/apps/{app}/cicd/validations",
         "tier": "T0",
         "summary": "What a change to the app's cicd.yaml would mean (writes nothing)"
+      },
+      {
+        "operationId": "getRefProtection",
+        "method": "GET",
+        "path": "/v1/apps/{app}/ref-protection",
+        "tier": "T0",
+        "summary": "Whether the git host protects a ref so a commit could only have arrived through review (writes nothing)"
       },
       {
         "operationId": "streamEvents",

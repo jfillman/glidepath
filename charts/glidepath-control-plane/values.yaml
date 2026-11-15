@@ -47,7 +47,9 @@ cicdRunAdmission:
   # A tag a push may start those Pipelines from, as the full ref. A branch named like a tag (refs/heads/refs/tags/x) does not match:
   # the decision is made on the full ref Pipelines-as-Code records as source-branch. A name is all this can check; whether
   # the ref is PROTECTED on the git host (who may push the tag, review on the branch) is not something an admission policy
-  # can see. docs/admin/security.md, "What remains possible", says what that leaves open.
+  # can see. That is the second layer: the catalog's verify-ref-protection task (refProtection.mode, default required)
+  # asks glidepath-api, which is given these two values (PROTECTED_BRANCHES, TAG_REF_PATTERN). docs/admin/security.md,
+  # "Ref protection", says what that leaves open when it is off.
   tagRefPattern: '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
   # The prefixes an app's image repository may start with (registry host and namespace, ending in /). The repository must be
   # <prefix><app-name> or <prefix><app-name>-pr. Empty: <host>/<the repository's owner>/<app-name>[-pr], any host. Set it to the

@@ -484,3 +484,12 @@ chart_safe() {
 chart_render_note="helm's error text is withheld (it can contain file content, and this step holds credentials): run helm template locally on the same chart and value files to see it"
 # END chart-safety
 {{- end -}}
+
+{{- /*
+glidepath-catalog.refProtectionMode: refProtection.mode, required (default) or off, nothing else.
+*/ -}}
+{{- define "glidepath-catalog.refProtectionMode" -}}
+{{- $m := (.Values.refProtection | default dict).mode | default "required" -}}
+{{- if not (has $m (list "required" "off")) }}{{ fail (printf "refProtection.mode must be required or off, not %q" $m) }}{{ end -}}
+{{ $m }}
+{{- end -}}

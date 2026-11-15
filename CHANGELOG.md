@@ -4,6 +4,20 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### Pipeline trust T3: verified ref protection
+
+- glidepath-api 0.12.0: `GET /v1/apps/{app}/ref-protection?repo=&ref=&sha=` answers whether the git host protects a pushed ref (rulesets or classic
+  branch protection requiring a reviewed pull request, blocking force pushes and deletion, with no push-rights bypass; tag rulesets
+  restricting creation, update and deletion, and the tagged commit on a protected branch). Verdicts `protected`, `unprotected`,
+  `unavailable` (the host's plan), `unverifiable`; a host failure is 502. Read per request, never cached. New env `PROTECTED_BRANCHES`,
+  `TAG_REF_PATTERN` (from `cicdRunAdmission`); `glidepath-app` lets `pipeline-runner` `get` the `refprotection` resource.
+- glidepath-catalog: new task `verify-ref-protection`, the first task of `release`, `deploy`, `test`, `gitops-image-bump` and `build`; every other task runs after
+  it. It reads the run's Pipelines-as-Code annotations, not a parameter, and refuses the run unless the verdict is `protected`.
+  **Upgrade: `refProtection.mode` defaults to `required`. A cluster on a host plan without rulesets (the lab's GitHub Free) must set
+  `refProtection.mode: off` in its values before taking this release, or every push build and privileged run is refused.** `off` records
+  "ref protection: Off here" in the task result and in the release record (`refProtection`). Release the control plane (glidepath-api) before the
+  catalog: a required check with no endpoint to ask refuses. docs/admin/security.md, "Ref protection".
+
 ### Pipeline least privilege: the repository's code runs with no Kubernetes credential
 
 - New `source-runner` ServiceAccount (no Role, no token): `build-source`, `unit-test` and the two artifact builds, the tasks that run

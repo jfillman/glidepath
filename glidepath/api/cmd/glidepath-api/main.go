@@ -28,6 +28,9 @@
 //	TESTKUBE_URL        Testkube's agent API (default http://testkube-api-server.testkube.svc.cluster.local:8088)
 //	DELEGATES           comma-separated usernames that may send X-Glidepath-On-Behalf-Of
 //	GITHUB_OWNER        the GitHub owner of the apps' repos, for promote and rollback (the chart's githubOwner)
+//	PROTECTED_BRANCHES  comma-separated branches a protected tag's commit must be reachable from, for GET /v1/apps/{app}/ref-protection
+//	                    (the chart's cicdRunAdmission.protectedBranches; default main)
+//	TAG_REF_PATTERN     the release tags' full-ref pattern (the chart's cicdRunAdmission.tagRefPattern; unset: every tag)
 //	BROKER_URL          the token broker, for per-request GitHub read tokens (default http://cdevents-broker-auth.platform-system.svc.cluster.local:8080)
 //	BROKER_TOKEN_PATH   this pod's projected ServiceAccount token for the broker, audience github-read-token
 //	                    (default /var/run/secrets/glidepath/broker/token)
@@ -57,6 +60,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -74,6 +78,7 @@ import (
 	"github.com/glidepath/api/internal/metrics"
 	"github.com/glidepath/api/internal/pipelineruns"
 	"github.com/glidepath/api/internal/previews"
+	"github.com/glidepath/api/internal/refprotection"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
 	"github.com/glidepath/api/internal/server"
@@ -90,6 +95,16 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+
+func splitList(v string) []string {
+	var out []string
+	for _, x := range strings.Split(v, ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 func envInt(k string, def int) int {
@@ -171,6 +186,12 @@ func main() {
 		URL:       env("BROKER_URL", "http://cdevents-broker-auth.platform-system.svc.cluster.local:8080"),
 		TokenPath: env("BROKER_TOKEN_PATH", "/var/run/secrets/glidepath/broker/token"),
 		HTTP:      tracing.Client(&http.Client{Timeout: 30 * time.Second}),
+	}
+	var tagPattern *regexp.Regexp
+	if p := os.Getenv("TAG_REF_PATTERN"); p != "" {
+		if tagPattern, err = regexp.Compile(p); err != nil {
+			log.Fatalf("glidepath-api: TAG_REF_PATTERN: %v", err)
+		}
 	}
 	logger := server.NewLogger()
 	// People's ID tokens from people-dex, for calls over the Gateway route (auth/oidc.go). Off without OIDC_ISSUER.
@@ -268,6 +289,13 @@ func main() {
 				URL:  env("VALIDATOR_URL", "http://127.0.0.1:8081"),
 				HTTP: tracing.Client(&http.Client{Timeout: 20 * time.Second}),
 			},
+		},
+		// Whether the git host protects a ref so a commit could only have arrived through review: read per request
+		// with the broker's read token (rulesets need Metadata: read, the reachability check Contents: read), never cached.
+		RefProtection: &refprotection.Client{
+			Owner:   githubOwner,
+			Checker: &refprotection.Checker{ProtectedBranches: splitList(env("PROTECTED_BRANCHES", "main")), TagRefPattern: tagPattern},
+			GitHub:  func(app string) refprotection.Reader { return broker.Session(app) },
 		},
 		Events: store,
 		Tap: &events.Tap{

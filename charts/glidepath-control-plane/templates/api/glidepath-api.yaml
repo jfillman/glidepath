@@ -348,6 +348,12 @@ spec:
             # Promote and rollback: the apps' GitHub owner, and the broker that mints per-request read tokens.
             - name: GITHUB_OWNER
               value: {{ include "glidepath-control-plane.githubOwner" . | quote }}
+            # GET /v1/apps/{app}/ref-protection: the branches a tag's commit must be on, and which tags are release tags
+            # (the admission policy's own values, so the two layers agree).
+            - name: PROTECTED_BRANCHES
+              value: {{ join "," .Values.cicdRunAdmission.protectedBranches | quote }}
+            - name: TAG_REF_PATTERN
+              value: {{ .Values.cicdRunAdmission.tagRefPattern | quote }}
             - name: BROKER_URL
               value: {{ .Values.api.brokerUrl | default "http://cdevents-broker-auth.platform-system.svc.cluster.local:8080" | quote }}
             - name: BROKER_TOKEN_PATH

@@ -52,6 +52,13 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "create", "patch", "delete"]
+  # Ref protection (pipeline trust T3): the first task of every privileged Pipeline asks glidepath-api whether the git host
+  # protects the ref that started the run (GET /v1/apps/{app}/ref-protection). The API authorizes it with a
+  # SubjectAccessReview on this virtual resource, which nothing in the cluster serves: this grant is only the string.
+  # It reads a verdict; it changes nothing.
+  - apiGroups: ["glidepath.hangar.io"]
+    resources: ["refprotection"]
+    verbs: ["get"]
   # Deliberately no apps/deployments rule (that's deploy-rbac.yaml, a peer namespace),
   # no impersonate, no wildcards, no cluster-scoped rules, no run creation - this plus the configmaps
   # grant above is the entire blast radius of a compromised pipeline-runner identity

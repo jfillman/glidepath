@@ -285,13 +285,11 @@ What this release does close, and how that was checked:
   sets from the comment (not `push`; the exact string was not confirmed). A privileged Pipeline then fails the push-only rule and is
   refused: the safe direction. Re-run those from the portal (glidepath-api rerun, once the cluster policy allows it) or push again.
 
-**Ref protection is a name check here, not a verification.** The policy cannot ask the git host whether a branch needs review or who may
-push a tag. Anyone who can push `main` (where it is not protected) or a `v1.2.3` tag can start the deploy, test, release and
-gitops-image-bump flows for that commit as `pipeline-runner`, with that commit's `cicd.yaml` as input: they can write
-`release-tracking-*` records, and a `test` run applies the commit's `glidepath/<name>.yaml` into the Testkube namespace with the app's
-Secret copied in. Closing it needs a host-side rule (a ruleset requiring review on the default branch, and a tag ruleset limiting who
-may create `v*` tags) and a platform check that the ref is covered; the check is not built. On a plan without rulesets (this lab's
-free plan) it is "Off here" and cannot be turned on.
+**Ref protection is two layers.** The admission policy's name check is the first: a push to a configured protected branch name or a
+tag of the shape `v<major>.<minor>.<patch>`. It cannot ask the git host whether that branch needs review or who may push the tag, so on
+its own anyone who can push `main` (where it is not protected) or a `v1.2.3` tag can start the deploy, test, release and gitops-image-bump
+flows, and a main or tag build, for that commit as `pipeline-runner`. The second is [Ref protection](#ref-protection), below: a trusted
+first task that asks the host. It is on by default and is "Off here" only where a cluster sets it off.
 
 What is not closed, in the order to do it:
 
@@ -327,6 +325,54 @@ What is not closed, in the order to do it:
    shape (`tower-identity-writes`, in the cluster repository, not here) says "no `taskRunSpecs`", so a rerun of a build or test
    run is refused until it allows entries of exactly `{pipelineTaskName, serviceAccountName: source-runner}` for the tasks in
    `cicdRunAdmission.sourceTasks`. A new push or `/retest` is not affected.
+
+### Ref protection
+
+*Pipeline trust slice T3.* Every privileged Pipeline (`release`, `deploy`, `test`, `gitops-image-bump`) and the `build` starts with the catalog
+task `verify-ref-protection`, before anything else, and refuses the run unless the git host protects the ref that started it. The
+cluster-resolved Pipelines cannot be changed by a `.tekton` file (the admission policy requires the catalog's cluster resolver and refuses an inline
+`pipelineSpec`), so the file cannot drop the task or reorder it; every other task of those Pipelines runs after it (a chart test
+checks the order for each Pipeline), so nothing pushes an image, deploys or writes a release record first. It runs no repository code, has no
+workspace and takes no parameter a file can set: it reads the run's own Pipelines-as-Code annotations (`event-type`, `source-branch`, `sha`,
+`repo-url`) and the run's namespace, and calls [glidepath-api](api.md#ref-protection) with its own ServiceAccount token (the app's
+`pipeline-runner` may `get` the `refprotection` resource, nothing else). A task that fails the check leaves its reasons in the task log and in
+its results, and the run ends red.
+
+| Ref | What the host must show |
+|---|---|
+| a protected branch (push) | an active ruleset or branch protection: pull requests with at least one approving review, force pushes blocked, deletion blocked; the commit on the branch; no write/maintain/custom role, team, deploy key or named user able to bypass it (administrators, organization administrators and GitHub Apps are reported, not counted) |
+| a release tag (push) | active tag rulesets restricting creation, update and deletion, with the same bypass rule, and the tagged commit on a protected branch that is itself protected as above |
+
+A host that answers "not on this plan" is the verdict `unavailable`, not protected. A host that fails to answer, a ruleset that cannot be read or a
+bypass list the token is not shown refuse too (fail closed); nothing is cached, and every list read is paged and bounded.
+With `required`, a main or tag build that fails the check does not run `build-image`, so it pushes nothing to the main image repository and
+writes nothing to the build cache (no task of the build runs before the check; with the build/push split of glidepath#250, `push-image`
+runs after `build-image`, which runs after `preflight`, which runs after the check, so it is covered the same way and nothing in this change
+depends on that split). A build for a pull request or a side branch passes as "not a push" / "side ref": it writes no main image.
+A run the platform chained (the next stage, started by its Trigger from the previous stage's event, with no Pipelines-as-Code annotations)
+records "chained": the first stage was checked.
+
+**The setting.** `refProtection.mode` in the catalog values: `required` (the default) or `off`. Nothing else is accepted, and no
+hostname or plan is detected in code: only this setting decides. A cluster on a host plan without rulesets (this lab: GitHub Free) sets
+`off` explicitly in its own values; the task then asks nothing and records `ref protection: Off here (...)` in its result
+`ref-protection-summary`, and the release Pipeline writes that line into the release record as `refProtection`, so the gap is in the evidence.
+A verified run records the proof the same way.
+
+**What `off` leaves open.** It is the name check only, so the two tables above go back to what they said before this slice:
+
+- *B(b), write a release record*: **Yes, by releasing.** Someone with push rights pushes `main` (when unprotected) or a `v1.2.3` tag and the release
+  flow writes `release-tracking-*` for a commit nobody reviewed. Gated downstream (the release PR, Clearance), not at the push.
+- *B(c)/(d)*: the same push starts a `test` run, which applies the commit's `glidepath/<name>.yaml` with the app's Secret copied into the
+  Testkube namespace, and a main or tag `build`, which pushes to the main image repository and the build cache.
+- A pull request still cannot start any of these (admission), and nothing in A changes.
+
+**Reading the answer's limits.** Rulesets are read with Metadata: read, reachability with Contents: read; classic branch protection needs
+Administration: read, which the broker's read token does not request, so a branch guarded only by classic protection is `unverifiable`
+until that permission is granted to the platform's GitHub App and requested by the broker (follow-up 1 below). GitHub leaves `bypass_actors` out of a ruleset it
+returns to a reader that may not see them (checked against public repositories); if the platform's token is not shown them the
+verdict is `unverifiable`, never "no bypass". Neither was exercised against a live GitHub App installation on a plan with rulesets: the
+lab has none. Not built: an allowlist for a named bypass team or App, per-app settings, and a `verify-ref-protection` record on the
+`open-release-pin-pr` (cloud) path, which does not write the release record.
 
 ### Upgrade note
 

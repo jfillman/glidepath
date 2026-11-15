@@ -285,6 +285,20 @@ pipelinesAsCode:
   applicationName: Glidepath
   legacyApplicationNames: ["Pipelines as Code CI"]
 
+# Verified ref protection (pipeline trust T3, docs/admin/security.md "Ref protection"). The first task of every privileged
+# Pipeline (release, deploy, test, gitops-image-bump) and of a main/tag build (verify-ref-protection) asks glidepath-api
+# whether the git host protects the ref Pipelines-as-Code recorded on the run, so that the commit could only have
+# arrived through review, and refuses the run unless it does. The admission policy decides on the ref's NAME; this is the
+# second layer, on what the host enforces.
+#   required (default): the run is refused unless the verdict is "protected".
+#   off: nothing is asked. A host plan without rulesets (the lab's GitHub Free) sets this in its own cluster values, on
+#        purpose. The task then records "ref protection: Off here" in its result and in the release record, so the gap is
+#        in the evidence. There is no plan or hostname detection: only this setting decides.
+refProtection:
+  mode: required
+  # glidepath-api, where the verdict is read (GET /v1/apps/{app}/ref-protection).
+  apiUrl: http://glidepath-api.platform-system.svc.cluster.local:8080
+
 # Each entry: name (= the PipelineRun generateName prefix, so the check is "<pipelinesAsCode.applicationName> / <name>-"),
 # description, status (real | stub), class (content | process | integrity | approval), optional targets, and
 # `required` (default true). required: false makes a real gate ADVISORY on every release PR: its Pipeline renders

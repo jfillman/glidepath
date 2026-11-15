@@ -153,6 +153,19 @@ func (s *Session) get(ctx context.Context, owner, repo, u, accept string) (*http
 	return s.b.HTTP.Do(req)
 }
 
+// GetJSON is one bounded GET of a repo-relative API path (with its query), for callers that read the status itself
+// (internal/refprotection: a 403 "upgrade" and a 404 "not protected" are answers, not failures). At most 4 MiB of the
+// body is returned. A transport failure or a broker refusal is an error; any HTTP status is not.
+func (s *Session) GetJSON(ctx context.Context, owner, repo, path string) (int, []byte, error) {
+	res, err := s.get(ctx, owner, repo, fmt.Sprintf("%s/repos/%s/%s/%s", s.b.api(), owner, repo, strings.TrimLeft(path, "/")), "application/vnd.github+json")
+	if err != nil {
+		return 0, nil, err
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	return res.StatusCode, body, err
+}
+
 func escapePath(p string) string {
 	parts := strings.Split(p, "/")
 	for i, x := range parts {

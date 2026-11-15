@@ -102,6 +102,16 @@ jobs:
       - run: pip install pyyaml
       - run: charts/glidepath-catalog/tests/promote_test.sh
 
+  # Pipeline trust T3: verify-ref-protection is the first task of every privileged Pipeline and of the build, nothing runs
+  # before it, and its script refuses (fail closed) or records "Off here" as the setting says.
+  ref-protection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: pip install pyyaml
+      - run: python3 charts/glidepath-catalog/tests/ref_protection_pipelines_test.py
+
   # The promotion fan-in (ADR-0029 phase 3): comment-pr-check-result's promotion-ready step.
   promotion-fan-in:
     runs-on: ubuntu-latest

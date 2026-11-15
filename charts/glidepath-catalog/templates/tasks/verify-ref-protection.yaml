@@ -1,0 +1,129 @@
+# catalog/tasks/verify-ref-protection.yaml
+#
+# The first task of every privileged Pipeline (release, deploy, test, gitops-image-bump) and of the build (pipeline trust
+# T3, docs/admin/security.md "Ref protection"). It runs no repository code: no source workspace, no parameter a
+# repository's file can set. Everything it decides on is read from the PipelineRun itself, as Pipelines-as-Code
+# recorded it (the annotations pipelinesascode.tekton.dev/event-type, source-branch, sha and repo-url), and from the
+# run's own namespace. The Pipelines are resolved from the catalog by the cluster resolver and the admission policy
+# (cicd-run-shape) refuses an inline pipelineSpec, so a .tekton file cannot drop or reorder this task.
+#
+# It asks glidepath-api (GET /v1/apps/{app}/ref-protection) whether the git host protects that ref so the commit could
+# only have arrived through review, and refuses the run unless the verdict is "protected". The API answers from the
+# host's rulesets and branch protection, per call, never cached; a failure to answer is a refusal (fail closed).
+#
+# Settings: refProtection.mode (catalog values). required (default) asks. off asks nothing and records "ref protection:
+# Off here" in the result `ref-protection-summary`, which the release Pipeline writes into the release record: a host
+# plan without rulesets sets it on purpose, and the gap is in the evidence rather than silent.
+#
+# Runs whose start was not Pipelines-as-Code's (the next stage of a chain, started by the platform's own Trigger from the
+# previous stage's event) carry no Pipelines-as-Code annotations: the chain's first stage was checked, and this one
+# records "chained". A pull request build (a push-only Pipeline cannot be started by one: admission) is "not a push".
+# With pipeline-kind build, a push to a ref that is not a protected branch or a release tag (a side branch) is
+# "side ref": it writes no main image. A privileged Pipeline never takes that exit.
+#
+# Ordering: every other task of the Pipeline runs after this one (runAfter, directly or through preflight), so nothing
+# pushes, deploys or writes a release record before the answer (tests/ref_protection_pipelines_test.py).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: verify-ref-protection
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Refuses the run unless the git host protects the pushed ref (glidepath-api's verdict) or the platform has set refProtection.mode to off.
+  params:
+    - name: pipeline-kind
+      type: string
+      default: privileged
+      description: >-
+        privileged (release, deploy, test, gitops-image-bump): only a push to a protected ref may pass, and a side ref
+        is refused. build: a pull request or a push to a side ref passes as not applicable (it writes no main image).
+  results:
+    - name: ref-protection
+      description: verified | off | chained | not-push | side-ref
+    - name: ref-protection-summary
+      description: 'One line for the evidence (the release record), for example "ref protection: Off here".'
+  steps:
+    - name: verify
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      env:
+        - { name: REF_PROTECTION_MODE, value: {{ include "glidepath-catalog.refProtectionMode" . | quote }} }
+        - { name: GLIDEPATH_API_URL, value: {{ .Values.refProtection.apiUrl | quote }} }
+        - { name: PIPELINE_RUN_NAME, value: $(context.pipelineRun.name) }
+        - { name: NAMESPACE, value: $(context.taskRun.namespace) }
+        - { name: PIPELINE_KIND, value: $(params.pipeline-kind) }
+        - { name: TOKEN_PATH, value: /var/run/secrets/kubernetes.io/serviceaccount/token }
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        result() { printf '%s' "$1" > "$(results.ref-protection.path)"; printf '%s' "$2" > "$(results.ref-protection-summary.path)"; echo "$2"; }
+        refuse() { result refused "ref protection: refused: $1"; echo "ref protection: this run is refused: $1" >&2; exit 1; }
+
+        case "${PIPELINE_KIND}" in privileged|build) ;; *) refuse "pipeline-kind ${PIPELINE_KIND} is not privileged or build" ;; esac
+
+        # Everything below is read from this PipelineRun as Pipelines-as-Code recorded it, never from a parameter.
+        run="$(kubectl get pipelinerun "${PIPELINE_RUN_NAME}" -n "${NAMESPACE}" -o json)" \
+          || refuse "could not read this run (${PIPELINE_RUN_NAME}) to see which ref started it"
+        ann() { jq -r --arg k "pipelinesascode.tekton.dev/$1" '.metadata.annotations[$k] // empty' <<<"${run}"; }
+        event="$(ann event-type)"; ref="$(ann source-branch)"; sha="$(ann sha)"; repo_url="$(ann repo-url)"
+
+        if [[ "${REF_PROTECTION_MODE}" == off ]]; then
+          # Explicit, platform-wide, recorded. No plan or hostname is looked at.
+          result off "ref protection: Off here (refProtection.mode is off in this cluster's catalog values: nothing verified that the pushed ref ${ref:-unknown} is protected on the git host)"
+          exit 0
+        fi
+        [[ "${REF_PROTECTION_MODE}" == required ]] || refuse "refProtection.mode is ${REF_PROTECTION_MODE}, not required or off"
+
+        if [[ -z "${event}" ]]; then
+          result chained "ref protection: chained (not started by Pipelines-as-Code: the stage that started this chain was checked)"
+          exit 0
+        fi
+        if [[ "${event}" != push ]]; then
+          [[ "${PIPELINE_KIND}" == build ]] || refuse "this Pipeline starts only from a push, not a ${event} event"
+          result not-push "ref protection: not a push (${event}): nothing to verify"
+          exit 0
+        fi
+
+        [[ "${repo_url}" =~ ^https://[a-z0-9.-]+/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)$ ]] \
+          || refuse "the run's repository (${repo_url:-none recorded}) is not an https repository URL"
+        repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]%.git}"
+        [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] || refuse "the run records no commit sha"
+        [[ "${ref}" =~ ^refs/(heads|tags)/.+ ]] || refuse "the run records no full ref (${ref:-none})"
+
+        # The app is the run's namespace: app-<name>-cicd or infra-<name>-cicd.
+        [[ "${NAMESPACE}" =~ ^(app|infra)-([a-z0-9-]+)-cicd$ ]] || refuse "namespace ${NAMESPACE} is not an app's -cicd namespace"
+        app="${BASH_REMATCH[2]}"
+
+        out="$(mktemp)"
+        code="$(curl --silent --show-error --max-time 30 --retry 3 --retry-connrefused -o "${out}" -w '%{http_code}' -G \
+          --data-urlencode "repo=${repo}" --data-urlencode "ref=${ref}" --data-urlencode "sha=${sha}" \
+          -H "Authorization: Bearer $(cat "${TOKEN_PATH}")" -H "Accept: application/json" \
+          "${GLIDEPATH_API_URL}/v1/apps/${app}/ref-protection")" || code=000
+        if [[ "${code}" != 200 ]]; then
+          refuse "glidepath-api could not verify ${ref} on ${repo} (HTTP ${code}: $(jq -r '.error // empty' "${out}" 2>/dev/null | head -c 300)); a run is never started on an unanswered question"
+        fi
+        verdict="$(jq -r '.verdict // empty' "${out}")"
+        main_like="$(jq -r '.mainLike // false' "${out}")"
+        reasons="$(jq -r '.reasons // [] | join("; ")' "${out}" | head -c 1500)"
+        missing="$(jq -r '.missing // [] | join(", ")' "${out}")"
+        bypass="$(jq -r '[.bypass // [] | .[] | "\(.actorType)\(if .actorId then " " + (.actorId|tostring) else "" end)\(if .moot then " (makes it moot)" else " (admin/app/org door)" end)"] | join(", ")' "${out}")"
+
+        if [[ "${PIPELINE_KIND}" == build && "${main_like}" != true ]]; then
+          result side-ref "ref protection: ${ref} is not a protected branch or a release tag: no main image is written from it, nothing to verify"
+          exit 0
+        fi
+        if [[ "${verdict}" == protected ]]; then
+          result verified "ref protection: verified for ${ref} at ${sha:0:7}: ${reasons}${bypass:+ [bypass: ${bypass}]}"
+          exit 0
+        fi
+        {
+          echo "ref protection: ${ref} on ${repo} is NOT verified as protected (${verdict:-no verdict}). This run is refused before anything runs."
+          echo "  why: ${reasons:-no reason given}"
+          [[ -z "${missing}" ]] || echo "  missing: ${missing}"
+          [[ -z "${bypass}" ]] || echo "  bypass actors: ${bypass}"
+          echo "  fix: protect the ref on the git host (a ruleset or branch protection requiring a reviewed pull request, blocking force pushes and deletion; for a tag, a tag ruleset restricting creation, update and deletion), then push again. A host plan with no rulesets sets refProtection.mode: off on purpose (docs/admin/security.md, Ref protection)."
+        } >&2
+        result refused "ref protection: refused: ${ref} on ${repo} is ${verdict:-unverified}: ${reasons}"
+        exit 1
