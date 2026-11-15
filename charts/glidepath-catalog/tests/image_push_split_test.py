@@ -677,6 +677,12 @@ class PushStep(unittest.TestCase):
         self.assertIn("refusing", err)
         self.assertTrue(results["cache"].startswith("skipped"), results["cache"])
 
+    def test_an_application_whose_own_repository_ends_in_pr_publishes_its_cache(self):
+        code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r), cache=lambda r, d: make_cache(r), repo="registry.example/o/sample-pr")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(results["cache"], "published")
+        self.assertTrue([c for c in calls if c.endswith(" registry.example/o/sample-pr-buildcache:latest")], calls)
+
     def test_the_cache_result_says_what_happened(self):
         code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r), cache=lambda r, d: make_cache(r))
         self.assertEqual(results["cache"], "published")
@@ -786,6 +792,16 @@ class BuildStep(unittest.TestCase):
         self.assertNotIn("--export-cache", argv)
         self.assertIn("--import-cache type=registry,ref=registry.example/o/app-buildcache:latest", argv)
         self.assertNotIn("app-pr-buildcache", argv)
+
+    def test_an_application_whose_own_repository_ends_in_pr_keeps_its_own_cache(self):
+        code, argv, _ = self.run_build(pr=False, repo="registry.example/o/sample-pr")
+        self.assertIn("--import-cache type=registry,ref=registry.example/o/sample-pr-buildcache:latest", argv)
+        self.assertNotIn("ref=registry.example/o/sample-buildcache", argv)
+        self.assertIn("--export-cache type=local", argv)
+        # its pull request build (repository sample-pr-pr) still reads the main cache, which is sample-pr's
+        code, argv, _ = self.run_build(pr=True, repo="registry.example/o/sample-pr-pr")
+        self.assertIn("--import-cache type=registry,ref=registry.example/o/sample-pr-buildcache:latest", argv)
+        self.assertNotIn("--export-cache", argv)
 
     def test_the_main_build_imports_the_main_cache(self):
         code, argv, _ = self.run_build(pr=False)

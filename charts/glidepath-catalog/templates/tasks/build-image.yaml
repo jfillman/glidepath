@@ -292,7 +292,12 @@ spec:
         mkdir -p "${OUT}"
         echo "platforms=${PLATFORMS}"
         # The cache this build may READ is always the main cache (<repo>-buildcache:latest, repo without a -pr suffix).
-        MAIN_REPO="${IMAGE_REPO%-pr}"
+        # Only a pull request's build (pr-tag-only=true, whose repository push-image requires to end -pr) strips the suffix: an
+        # application whose own repository name ends in -pr keeps it on a main build.
+        MAIN_REPO="${IMAGE_REPO}"
+        if [ "${PR_TAG_ONLY}" = "true" ]; then
+          MAIN_REPO="${IMAGE_REPO%-pr}"
+        fi
         # The cache this build may WRITE: a main build's goes to the workspace (push-image validates and publishes it);
         # a pull request's build writes none.
         if [ "${PR_TAG_ONLY}" = "true" ]; then
