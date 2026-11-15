@@ -142,6 +142,30 @@ func githubReadOwns(dynClient dynamic.Interface, req githubReadRequest) error {
 	return fmt.Errorf("no Repository CR in app-%[1]s-cicd or infra-%[1]s-cicd maps to %s/%s", req.App, req.Owner, req.Repo)
 }
 
+// githubReadSourceRole reports whether req.Repo is registered as the app's SOURCE repository, by role and not by name: the
+// repository the app's own Repository CR (the CR named for the app, in app-<app>-cicd) points at, or, for an InfraService (no
+// source repository), the repository registered in infra-<app>-cicd. A gitops repository, or anything that does not resolve to
+// one of those, is not. Only that role may be given the elevated ref-protection permission.
+func githubReadSourceRole(dynClient dynamic.Interface, req githubReadRequest) bool {
+	registers := func(ns string, only string) bool {
+		list, err := dynClient.Resource(repositoryGVR).Namespace(ns).List(context.Background(), metav1.ListOptions{})
+		if err != nil {
+			return false
+		}
+		for _, item := range list.Items {
+			if only != "" && item.GetName() != only {
+				continue
+			}
+			url, _, _ := unstructured.NestedString(item.Object, "spec", "url")
+			if m := githubRepoRE.FindStringSubmatch(url); m != nil && strings.EqualFold(m[1], req.Owner) && m[2] == req.Repo {
+				return true
+			}
+		}
+		return false
+	}
+	return registers("app-"+req.App+"-cicd", req.App) || registers("infra-"+req.App+"-cicd", "")
+}
+
 func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Interface, appCreds *githubapp.Creds, callers map[string]bool, refProtectionExtra map[string]string, refProtectionCallers map[string]bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -191,11 +215,11 @@ func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Int
 		}
 		perms := githubapp.RepoReadPermissions()
 		// The elevated set is for the ref-protection purpose only, only for a caller named in GITHUB_READ_REF_PROTECTION_CALLERS
-		// (being in GITHUB_READ_CALLERS is not enough), and never for an application's gitops-<app> repository: ref protection reads
-		// the source repository, and an administration token on the repo that holds what deploys is not worth minting. An
-		// InfraService has no source repository: gitops-infra-<app> is where its runs start, so it is the one gitops repo that is elevated. It is
-		// still one repo, one token, minted per call. Anything else gets the read-only set.
-		if req.Purpose == purposeRefProtection && refProtectionCallers[caller] && req.Repo != "gitops-"+req.App {
+		// (being in GITHUB_READ_CALLERS is not enough), and only for a repository registered as the app's SOURCE (an InfraService's
+		// registered repository): decided by the Repository CRs' role, never by a repository name, so a gitops repository is never
+		// elevated whatever it is called, and one that does not resolve to a role is not. It is still one repo, one token, minted
+		// per call. Anything else gets the read-only set.
+		if req.Purpose == purposeRefProtection && refProtectionCallers[caller] && githubReadSourceRole(dynClient, req) {
 			for k, v := range refProtectionExtra {
 				perms[k] = v
 			}

@@ -271,6 +271,7 @@ func TestGitHubReadTokenRefProtectionPurpose(t *testing.T) {
 	if got := permsFor(extra, nil, rp); got != readOnly {
 		t.Fatalf("no ref-protection caller configured: nobody is elevated: %s", got)
 	}
+	// Never a repository that is not registered as the app's source: its gitops repository.
 	// Never the gitops repository: ref protection reads the source repo, so a gitops repo is not worth an admin-write token.
 	if got := perms(extra, `{"owner":"jfillman","repo":"gitops-boarding-api","app":"boarding-api","purpose":"ref-protection"}`); got != readOnly {
 		t.Fatalf("the gitops repo is never elevated: %s", got)
@@ -289,6 +290,42 @@ func TestLoadRefProtectionPermissions(t *testing.T) {
 		t.Setenv("GITHUB_READ_REF_PROTECTION_PERMISSIONS", bad)
 		if _, err := loadRefProtectionPermissions(); err == nil {
 			t.Fatalf("%q must be refused", bad)
+		}
+	}
+}
+
+// The elevated permission goes by the repository's registered ROLE, not its name: only the repository the app's own Repository CR
+// registers as its source (the CR named for the app, in app-<app>-cicd), or an InfraService's registered repository.
+func TestGitHubReadSourceRole(t *testing.T) {
+	dyn := repos(
+		repoCR("app-boarding-api-cicd", "boarding-api", "https://github.com/jfillman/boarding-api"),
+		repoCR("app-boarding-api-cicd", "gitops-boarding-api", "https://github.com/jfillman/gitops-boarding-api"),
+		// an app whose CR registers a differently named repository as its source, and a gitops repo with an unrelated name
+		repoCR("app-odd-cicd", "odd", "https://github.com/jfillman/odd-service.git"),
+		repoCR("app-odd-cicd", "gitops-odd", "https://github.com/jfillman/odd-deploy"),
+		// a CR named for the app that registers what is really a gitops repository: the name does not make it a source
+		repoCR("app-mis-cicd", "mis", "https://github.com/jfillman/mis-gitops"),
+		repoCR("infra-broker-cicd", "gitops-infra-broker", "https://github.com/jfillman/gitops-infra-broker.git"),
+	)
+	for _, c := range []struct {
+		req  githubReadRequest
+		want bool
+	}{
+		{githubReadRequest{"jfillman", "boarding-api", "boarding-api", ""}, true},
+		{githubReadRequest{"jfillman", "gitops-boarding-api", "boarding-api", ""}, false},
+		// a differently named gitops repository is never the source; a differently named source is
+		{githubReadRequest{"jfillman", "odd-deploy", "odd", ""}, false},
+		{githubReadRequest{"jfillman", "odd-service", "odd", ""}, true},
+		{githubReadRequest{"jfillman", "odd", "odd", ""}, false}, // the name of the app is not a registration
+		// the infra repository registered in its own namespace, and nothing else
+		{githubReadRequest{"jfillman", "gitops-infra-broker", "broker", ""}, true},
+		{githubReadRequest{"jfillman", "broker", "broker", ""}, false},
+		// another owner, an unregistered app
+		{githubReadRequest{"someone-else", "boarding-api", "boarding-api", ""}, false},
+		{githubReadRequest{"jfillman", "ghost", "ghost", ""}, false},
+	} {
+		if got := githubReadSourceRole(dyn, c.req); got != c.want {
+			t.Errorf("%+v: %v, want %v", c.req, got, c.want)
 		}
 	}
 }

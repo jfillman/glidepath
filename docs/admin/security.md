@@ -539,9 +539,9 @@ for the ref-protection purpose, a token with repository Administration: write on
 for about an hour. Anything that can act as glidepath-api (a compromised glidepath-api, or code running as its ServiceAccount) can therefore edit or disable rulesets
 and branch protection, add deploy keys and change settings on every app's source repository, which defeats this guard and more. What the broker
 does to limit it: the elevation is bound to the identities in `githubRead.refProtectionCallers` (default glidepath-api only; being allowlisted to read is
-not enough, and an empty list elevates nobody), only for `purpose: ref-protection`, one repository per token, never an application's `gitops-<app>` repository (an InfraService has no source repository, its runs start from `gitops-infra-<app>`, so that repository is covered), each mint
+not enough, and an empty list elevates nobody), only for `purpose: ref-protection`, one repository per token, and only a repository the app's own Repository CR registers as its source (decided by that registered role, not by a repository name, so a gitops repository is never elevated whatever it is called, and one that does not resolve to a role is not; an InfraService has no source repository, so its registered infra gitops repository is the one exception and nothing else is), each mint
 logged with caller, repository and permissions. It is not separated further: glidepath-api itself holds the credential to ask, so a dedicated
-identity would only help if the ref-protection call ran in its own pod, which is not built. **Mark it "only if you accept this risk".** The
+identity would only help if the ref-protection call ran in its own pod, which is not built. On any repository where the elevated token is minted, the holder can edit that repository's branch protection, rulesets, deploy keys and settings. **Mark it "only if you accept this risk".** The
 alternative being proposed to the owner (verifying each released commit's review evidence with read-only access, so no bypass list is needed) would remove the need; until
 then the choices are `refProtection.mode: off` or this setting.
 
