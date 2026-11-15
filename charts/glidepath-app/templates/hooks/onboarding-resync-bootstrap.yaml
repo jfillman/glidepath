@@ -45,9 +45,8 @@
 # the first real one - see the existence check below - so it doesn't fight PaC's own
 # self-heal once `.tekton/onboarding-resync.yaml` is actually there.
 #
-# Reuses the pipeline-runner ServiceAccount rather than minting a dedicated one: it
-# already carries exactly the RBAC this Job needs (create on tekton.dev/pipelineruns,
-# identity/pipeline-runner.yaml) and nothing more.
+# Runs as pipeline-trigger (identity/pipeline-runner.yaml), the one identity that may create
+# PipelineRuns; the run it creates still executes as pipeline-runner.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -63,7 +62,10 @@ spec:
   backoffLimit: 2
   template:
     spec:
-      serviceAccountName: pipeline-runner
+      serviceAccountName: pipeline-trigger
+      # The account does not mount its token by default (identity/pipeline-runner.yaml); this Job is the one pod that
+      # uses it, to create the bootstrap PipelineRun.
+      automountServiceAccountToken: true
       restartPolicy: Never
       securityContext:
         runAsNonRoot: true

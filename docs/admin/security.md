@@ -19,8 +19,9 @@ component every tenant's traffic passes through - holds no elevated cluster role
 `kubectl auth can-i --as=system:serviceaccount:<broker-ns>:<broker-sa> '*' '*'` is an
 emphatic no. Where the broker needs to hand off to a tenant's own pipeline identity, it
 does so via Kubernetes' own `impersonate` verb, granted per-Application as a single
-namespaced `Role`/`RoleBinding` scoped to exactly that Application's `pipeline-runner`
-ServiceAccount - never a cluster-wide impersonation grant. See
+namespaced `Role`/`RoleBinding` scoped to exactly that Application's `pipeline-trigger`
+ServiceAccount (the one account that may create a PipelineRun, see
+[Pipeline identities](#pipeline-identities)) - never a cluster-wide impersonation grant. See
 [chaining.md](chaining.md) and [ADR-0002](adr/0002-cdevents-broker-tokenreview.md).
 
 ## Authentication without a platform-minted credential
@@ -172,6 +173,94 @@ dev as an authenticated event, never as a push in the other direction. See
 [multi-cluster.md](multi-cluster.md) and
 [ADR-0005](adr/0005-multicluster-per-cluster-argocd.md).
 
+## Pipeline identities
+
+An Application's `-cicd` namespace runs three kinds of code, and they do not share a credential. The trust model, plainly:
+
+| Code | Runs as | Can reach the Kubernetes API? |
+|---|---|---|
+| The **repository's own code**: `build-source` (`build.sh`), `unit-test` (`test.sh`), `build-python-wheel-artifact`, `build-go-binary-artifact`, and the dependency installs those run | `source-runner` | **No.** No Role, no RoleBinding, `automountServiceAccountToken: false`, no projected token. |
+| The **catalog's own tasks** (preflight, gates, release, deploy, notify, ...), whose code the platform ships | `pipeline-runner` | Namespace-scoped, least RBAC (below). Cannot create a run. |
+| The **triggers** that chain the next stage, and the one-time onboarding bootstrap Job | `pipeline-trigger` | `create` on `pipelineruns` in this namespace, nothing else. No task runs as it. |
+
+Why it matters. A pull request to the app repository can change `build.sh`, `test.sh`, a lockfile or a build backend, and that
+code runs in the pipeline before anything is merged. When it ran as `pipeline-runner`, with the ServiceAccount token mounted, it
+could write or delete the `release-tracking-*` ConfigMaps (the release records the Clearance gate reads), create a TaskRun or
+PipelineRun of its own with any image, any Secret of the namespace mounted and a projected token for any audience (the
+`clearance` one included, which Clearance trusts as the registrar `app-*-cicd/pipeline-runner`), and so register or attest a
+change as the pipeline. Now the code that comes from the repository has no Kubernetes credential at all: it can build and test
+and write to its workspace, which is what it needs.
+
+What each part does.
+
+- **`source-runner`** is chosen per task in the run's `taskRunSpecs`. The generated `.tekton/` build run
+  (`deliver-onboarding-files`) carries the four entries. It has an `imagePullSecrets` reference so its pod can pull the toolbox image;
+  nothing else.
+- **`pipeline-runner`** lost `create` on `pipelineruns` and `taskruns` (it keeps get/list/watch: `stage-debrief` and
+  `comment-pr-check-result` read their own run). Its other grants are unchanged in this release: `app-secrets` `get` by name, and
+  ConfigMaps get/list/create/patch/delete in its own namespace (see "Known, accepted gaps" below).
+- **`pipeline-trigger`** is what Tekton Triggers creates the next PipelineRun as (the broker impersonates it, and only it). The
+  run it creates still executes as `pipeline-runner`.
+- **A pull request's `.tekton/` file is source too.** Pipelines-as-Code creates the PipelineRun from the file in the PR as its
+  own controller identity, so no account's RBAC applies to that creation. RBAC cannot say "this run must be one of the catalog's",
+  so two ValidatingAdmissionPolicies in `glidepath-control-plane` (`templates/admission/cicd-run-shape.yaml`) do, for runs created
+  by the Pipelines-as-Code controller in a `(app|infra)-*-cicd` namespace only:
+  - `cicd-run-shape` (always Deny): a cluster-resolver `pipelineRef` to a catalog Pipeline, no inline `pipelineSpec`, run-wide
+    account `pipeline-runner`, per-task accounts only `source-runner` or `glidepath-cloud-deployer` (which has its own policy), a
+    `podTemplate` of `hostAliases` only, workspaces `emptyDir` or `volumeClaimTemplate` only.
+  - `cicd-run-source-isolation`: a run of the `build` Pipeline must give the four source tasks to `source-runner`. A PR that deletes
+    those lines from its `.tekton` file is refused, not obeyed. `cicdRunAdmission.sourceIsolationActions` sets what a refusal does.
+  Every expression is `has()`-guarded and the match conditions cannot raise, so a CEL error cannot refuse requests cluster-wide.
+- **Tests.** `charts/glidepath-app/tests/pipeline_least_privilege_test.py` renders the charts and asserts each account, its
+  automount, its effective RBAC, and that `source-runner` can do nothing (a negative test, run verb by verb);
+  `charts/glidepath-control-plane/tests/cicd_run_admission_test.py` evaluates the policies' CEL over the platform's own templates
+  (admitted) and over each way a PR could reach beyond the catalog (refused). Both run in `pipeline-identities-ci`.
+
+Forks. Pipelines-as-Code runs a pull request from a fork only after an owner or collaborator comments `/ok-to-test`
+(`remember-ok-to-test` is off, so every new commit needs it again). The policies apply to those runs as to any other.
+
+### What this does not yet do
+
+Stated so nobody relies on more than is there. In order of value:
+
+1. **`pipeline-runner` still writes every `release-tracking-*` ConfigMap, namespace-wide, and still reads `app-secrets`.** Only the
+   release tasks (`open-release-pr`, `mark-release-merged`, `itsm-change`, `itsm-gate`, `clearance-gate`, `comment-pr-check-result`,
+   `resolve-release-tracking`) should write them. The repository's code can no longer reach them; a catalog task can. Splitting
+   `pipeline-runner` into a release-record writer, a gate account and a read-mostly account is the next change.
+2. **The Clearance audience is still minted for `pipeline-runner`.** Clearance trusts `app-*-cicd/pipeline-runner` as registrar
+   (`CLEARANCE_VERIFIERS`). A dedicated `clearance-gate` ServiceAccount, plus a policy that only that account may hold a token
+   of the `clearance` audience (the shape of the catalog-token policy Autopilot already has), needs Clearance to trust it first.
+   Migration order: (a) in Clearance's `CLEARANCE_VERIFIERS`, add `app-*-cicd/clearance-gate` and `infra-*-cicd/clearance-gate`
+   next to the existing patterns (both trusted); (b) Glidepath adds the `clearance-gate` account and runs the `clearance-gate`
+   task (and the agent-gate tasks that use the same audience) as it through `taskRunSpecs`; (c) confirm in Clearance's records that
+   every registration now comes from the new principal; (d) remove `app-*-cicd/pipeline-runner` from the verifiers, and add the
+   audience policy.
+3. **`run-testworkflow`'s fallback step runs the repository's `integration-test.sh`** in the same pod as the credentialed
+   `execute-testworkflow` step (it needs `app-secrets` and the Testkube namespace). Moving it to a task of its own, run as
+   `source-runner`, changes the task whose results the `qa` gate reads from provenance, so it is its own change.
+4. **`build-artifact` builds the repository's code in the same pod that later pushes with the registry credential.** Different
+   containers, and only the push step mounts the credential, but one pod. Splitting build and publish removes that.
+5. **A rerun started through glidepath-api** copies the original run's `taskRunSpecs`. The policy that holds
+   glidepath-api to a shape (`tower-identity-writes`, in the cluster repository, not here) says "no `taskRunSpecs`", so a rerun of a
+   build run is refused until it allows entries of exactly `{pipelineTaskName, serviceAccountName: source-runner}`. A new push or
+   `/retest` is not affected.
+
+### Upgrade note
+
+Order matters because a build run created from a `.tekton` file written before this release has no `taskRunSpecs`.
+
+1. Release `glidepath-app` and `glidepath-catalog` together. The app chart adds `source-runner` and `pipeline-trigger`, moves the
+   Triggers and the bootstrap Job to `pipeline-trigger` and removes run creation from `pipeline-runner`; the catalog's onboarding
+   task then writes the new `.tekton/` build file. Triggers fire as `pipeline-trigger` from the moment the chart syncs.
+2. Release `glidepath-control-plane` with `cicdRunAdmission.sourceIsolationActions: [Warn, Audit]`. `cicd-run-shape` is Deny from
+   the start (every file the current onboarding delivers satisfies it, which the policy test checks). A not-yet-resynced build file is let through and warned.
+3. Merge the onboarding-resync PR in every app repository (the one that rewrites `.tekton/`). Until it merges that app's build
+   still runs its repository code as `pipeline-runner`; it has lost run creation, but not the ConfigMap grant.
+4. When no build run carries a source-isolation warning, set `sourceIsolationActions: [Deny]` (the default for a new install).
+5. Ask the owner of the cluster repository to let glidepath-api reruns carry the `source-runner` entries (item 5 above).
+
+Rolling back is the reverse: a build run is only refused by `cicd-run-source-isolation`, so set its actions to `[Audit]` first.
+
 ## Build isolation
 
 Image builds run rootless BuildKit as UID 1000: no privileged container, no added
@@ -200,6 +289,8 @@ namespaces) are not covered by this label. See [rootless-builds.md](rootless-bui
   [chaining.md](chaining.md)); TokenReview-verified identity, not transport
   encryption, was always the actual trust boundary for this never-leaves-the-cluster
   call.
+- **`pipeline-runner` is still one account for every catalog task**: it writes the release records and reads `app-secrets`
+  for all of them. The repository's code no longer shares it; the catalog's own tasks still do (see "What this does not yet do").
 - **Branch protection depends on the GitHub plan.** On this lab's private gitops repositories (free plan) branch
   protection is not available (checked 2026-10-10: the API answers "Upgrade to GitHub Pro"), so a release PR can be
   merged with failing checks by anyone with write access. Such a merge is a break-glass bypass: the PR keeps its

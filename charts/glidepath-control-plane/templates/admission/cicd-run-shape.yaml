@@ -1,0 +1,128 @@
+{{- if .Values.cicdRunAdmission.enabled }}
+# What a repository's own .tekton/ file may make Pipelines-as-Code run (2026-11-14).
+#
+# A pull request can change .tekton/*.yaml in its own repository, and Pipelines-as-Code creates the PipelineRun
+# from what it finds there as its own controller identity, so no RBAC on the app's ServiceAccounts applies to it.
+# Without a rule here a pull request could name any ServiceAccount of the namespace, embed its own pipelineSpec
+# (any image, any projected-token audience including Clearance's, any Secret of the namespace mounted) and so
+# reach everything the -cicd namespace holds. RBAC cannot express "this run may only be one of the catalog's", so
+# this policy does, for PaC-created runs only (matchConditions). Everything else that creates runs in these
+# namespaces (Triggers as pipeline-trigger, glidepath-api, the cloud-deployer policies) has its own control.
+#
+# Two policies, so the second can be rolled out in audit first:
+#   cicd-run-shape             always Deny: catalog Pipeline by cluster resolver, no inline spec, run-wide account
+#                              pipeline-runner, per-task accounts only source-runner or glidepath-cloud-deployer
+#                              (that one has its own policy), podTemplate hostAliases only.
+#   cicd-run-source-isolation  a run of the catalog's `build` Pipeline must run build-source, unit-test and the two
+#                              artifact builds as source-runner. A .tekton file generated before this policy has no
+#                              such entry; onboarding-resync regenerates it (security.md, upgrade note).
+#
+# Every expression is has()-guarded and every matchCondition cannot raise on a missing field, so a CEL error cannot
+# refuse a request cluster-wide (failurePolicy Fail would turn one into an outage).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: cicd-run-shape
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["tekton.dev"]
+        apiVersions: ["*"]
+        operations: ["CREATE"]
+        resources: ["pipelineruns"]
+  matchConditions:
+    - name: created-by-pipelines-as-code-in-a-cicd-namespace
+      expression: >-
+        has(request.userInfo.username) && request.userInfo.username == {{ .Values.cicdRunAdmission.pacControllerUser | quote }} &&
+        has(request.namespace) && request.namespace.matches('^(app|infra)-[a-z0-9-]+-cicd$')
+  variables:
+    - name: ref
+      expression: "has(object.spec.pipelineRef) ? object.spec.pipelineRef : {}"
+    - name: refParams
+      expression: "has(variables.ref.params) ? variables.ref.params : []"
+    - name: specs
+      expression: "has(object.spec.taskRunSpecs) ? object.spec.taskRunSpecs : []"
+  validations:
+    - expression: "!has(object.spec.pipelineSpec)"
+      message: "A run created from a .tekton file may not carry an inline pipelineSpec: it must reference one of the catalog's Pipelines."
+    - expression: >-
+        has(object.spec.pipelineRef) && has(variables.ref.resolver) && variables.ref.resolver == 'cluster' &&
+        size(variables.refParams) == 3 &&
+        variables.refParams.exists(p, has(p.name) && p.name == 'kind' && has(p.value) && p.value == 'pipeline') &&
+        variables.refParams.exists(p, has(p.name) && p.name == 'name' && has(p.value) && p.value.matches('^[a-z0-9-]+$')) &&
+        variables.refParams.exists(p, has(p.name) && p.name == 'namespace' && has(p.value) && p.value == {{ .Values.cicdRunAdmission.catalogNamespace | quote }})
+      message: "pipelineRef must be the cluster resolver for a Pipeline in the catalog namespace."
+    - expression: >-
+        has(object.spec.taskRunTemplate) && has(object.spec.taskRunTemplate.serviceAccountName) &&
+        object.spec.taskRunTemplate.serviceAccountName == 'pipeline-runner'
+      message: "taskRunTemplate.serviceAccountName must be pipeline-runner."
+    - expression: >-
+        variables.specs.all(s, s.all(k, k in ['pipelineTaskName', 'serviceAccountName']) &&
+          has(s.serviceAccountName) && s.serviceAccountName in ['source-runner', 'glidepath-cloud-deployer'])
+      message: "taskRunSpecs may only give a task the source-runner or glidepath-cloud-deployer account, with no other override."
+    - expression: >-
+        !has(object.spec.taskRunTemplate) || !has(object.spec.taskRunTemplate.podTemplate) ||
+        object.spec.taskRunTemplate.podTemplate.all(k, k == 'hostAliases')
+      message: "taskRunTemplate.podTemplate may only set hostAliases."
+    - expression: >-
+        !has(object.spec.workspaces) || object.spec.workspaces.all(w, w.all(k, k in ['name', 'subPath', 'emptyDir', 'volumeClaimTemplate']))
+      message: "Workspaces may only be emptyDir or volumeClaimTemplate."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: cicd-run-shape
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+spec:
+  policyName: cicd-run-shape
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: cicd-run-source-isolation
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["tekton.dev"]
+        apiVersions: ["*"]
+        operations: ["CREATE"]
+        resources: ["pipelineruns"]
+  matchConditions:
+    - name: a-pac-run-of-the-build-pipeline
+      expression: >-
+        has(request.userInfo.username) && request.userInfo.username == {{ .Values.cicdRunAdmission.pacControllerUser | quote }} &&
+        has(request.namespace) && request.namespace.matches('^(app|infra)-[a-z0-9-]+-cicd$') &&
+        has(object.spec.pipelineRef) && has(object.spec.pipelineRef.params) &&
+        object.spec.pipelineRef.params.exists(p, has(p.name) && p.name == 'name' && has(p.value) && p.value == 'build')
+  variables:
+    - name: specs
+      expression: "has(object.spec.taskRunSpecs) ? object.spec.taskRunSpecs : []"
+  validations:
+    - expression: >-
+        ['build-source', 'unit-test', 'build-python-wheel-artifact', 'build-go-binary-artifact'].all(t,
+          variables.specs.exists(s, has(s.pipelineTaskName) && s.pipelineTaskName == t &&
+            has(s.serviceAccountName) && s.serviceAccountName == 'source-runner'))
+      message: "A build run must run build-source, unit-test, build-python-wheel-artifact and build-go-binary-artifact as source-runner (taskRunSpecs): they run the repository's own code. Resync the repository's .tekton files (onboarding-resync) to regenerate it."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: cicd-run-source-isolation
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+spec:
+  policyName: cicd-run-source-isolation
+  validationActions: {{ .Values.cicdRunAdmission.sourceIsolationActions | toJson }}
+{{- end }}

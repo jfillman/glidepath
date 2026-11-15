@@ -268,7 +268,7 @@ Glidepath's shape. The admission policy `glidepath-api-pipelinerun-shape` (`towe
 2026-10-30; gitops `30-policy/kyverno-policies/tower-identity-writes.yaml`, rendered by Apron) holds
 `system:serviceaccount:platform-system:glidepath-api` to it: an app's or InfraService's `-cicd` namespace
 (`^(app|infra)-[a-z0-9-]+-cicd$`), a cluster-resolver `pipelineRef` into `platform-catalog`, SA `pipeline-runner`, no
-inline spec, no `taskRunSpecs`, a hostAliases-only podTemplate, `emptyDir` or `volumeClaimTemplate` workspaces, no
+inline spec, no `taskRunSpecs` (a rerun of a build run carries the four `source-runner` entries, see [security.md](security.md#upgrade-note) item 5), a hostAliases-only podTemplate, `emptyDir` or `volumeClaimTemplate` workspaces, no
 PaC annotations, and an update may only set `spec.status` to `Cancelled`, `CancelledRunFinally` or
 `StoppedRunFinally`. It also matches Tower's writer identity (`tower-actor`), only to refuse any PipelineRun write
 from it: Tower writes PipelineRuns only through this API. A write the cluster refuses, there or in RBAC, is

@@ -495,6 +495,23 @@ spec:
             - pipelineTaskName: deploy-aws-ecs
               serviceAccountName: glidepath-cloud-deployer"
           fi
+          # The build stage runs the repository's own code: build.sh, test.sh, the dependency installs and
+          # `python -m build` / `go build` they trigger. Those four tasks run as source-runner (no RBAC, no token;
+          # glidepath-app identity/pipeline-runner.yaml). Build is always a flow's first step (nothing chains into it), so
+          # this git-triggered run is the only place a build run is created from a template. The list is repeated in
+          # the glidepath-control-plane admission policy cicd-run-source-isolation, which refuses a build run without it.
+          if [[ "${root_stage}" == "build" ]]; then
+            task_run_specs_block="
+          taskRunSpecs:
+            - pipelineTaskName: build-source
+              serviceAccountName: source-runner
+            - pipelineTaskName: unit-test
+              serviceAccountName: source-runner
+            - pipelineTaskName: build-python-wheel-artifact
+              serviceAccountName: source-runner
+            - pipelineTaskName: build-go-binary-artifact
+              serviceAccountName: source-runner"
+          fi
           # Run-wide taskRunTemplate.podTemplate (2026-10-08), not a per-task
           # taskRunSpecs entry naming `notify-backstage`: Tekton validates taskRunSpecs
           # pipelineTaskNames at admission against the target Pipeline ("does not exist

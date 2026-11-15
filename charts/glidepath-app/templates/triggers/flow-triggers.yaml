@@ -329,7 +329,7 @@ metadata:
     hangar.io/flow: {{ $flowName }}
     hangar.io/stage: {{ $stageName }}
 spec:
-  serviceAccountName: pipeline-runner
+  serviceAccountName: pipeline-trigger
   interceptors:
     - ref: { name: cdevents-broker-auth, kind: ClusterInterceptor }
       params: [{ name: audience, value: cdevents-broker }]

@@ -25,6 +25,22 @@ testkubeNamespace: testkube
 # gitops-cluster-dev/50-platform-cicd/tekton-operator/) - the sole install path now.
 tektonChainsNamespace: tekton-pipelines
 
+# Admission for the PipelineRuns Pipelines-as-Code creates in a tenant's -cicd namespace from the
+# repository's own .tekton/ files (templates/admission/cicd-run-shape.yaml; docs/admin/security.md, "Pipeline
+# identities"). Those files are source: a pull request can change them, so the cluster, not the file, decides what
+# a run may be. Off only for a cluster that does not use Pipelines-as-Code.
+cicdRunAdmission:
+  enabled: true
+  # The username PaC's controller creates PipelineRuns as. Only runs created by this user are checked; Triggers, glidepath-api
+  # and the platform's own jobs have their own RBAC and policies.
+  pacControllerUser: system:serviceaccount:tekton-pipelines:pipelines-as-code-controller
+  # The one namespace a run's pipelineRef may resolve from.
+  catalogNamespace: platform-catalog
+  # What a refused build run does (cicd-run-source-isolation: the build Pipeline's source-executing tasks must run as
+  # source-runner). [Deny] on a fresh install. While upgrading, use [Warn, Audit] until every app's .tekton has been
+  # resynced (docs/admin/security.md, upgrade note), then [Deny].
+  sourceIsolationActions: [Deny]
+
 # See templates/broker/interceptor.yaml's own header comment on its Namespace resource
 # for the full reasoning. Defaults false: every cluster installs via an ArgoCD
 # Application with CreateNamespace=true (see docs/admin/installation.md), which owns
