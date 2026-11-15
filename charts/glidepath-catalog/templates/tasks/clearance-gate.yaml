@@ -210,6 +210,7 @@ spec:
           with_retry 3 -- git -C "${dir}" fetch --quiet --depth 1 "${clone_url}" "${rev}"
           git -C "${dir}" checkout --quiet FETCH_HEAD
           rm -f "${dir}/.git/config"
+          git_auth_clear  # the fetch is done: the token's header does not stay in the environment of the rest of the step
         }
 
         # The PR. A /retest fires an issue_comment webhook with no pull_request, so PaC leaves the template string:

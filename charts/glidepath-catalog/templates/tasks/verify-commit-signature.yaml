@@ -180,7 +180,9 @@ spec:
         # mints its own installation token rather than assuming a public, unauthenticated
         # fetch works.
         app_owner="$(echo "${app_repo}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
-        app_repo_name="$(echo "${app_repo}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        # the whole repository name: a dot is part of it (acme.web), only a trailing .git is not
+        app_repo_name="$(sed -E 's#^https?://github\.com/[^/]+/([A-Za-z0-9._-]+)/?$#\1#' <<<"${app_repo}")"; app_repo_name="${app_repo_name%.git}"
+        [[ "${app_repo_name}" =~ ^[A-Za-z0-9._-]{1,100}$ && "${app_repo_name}" != . && "${app_repo_name}" != .. ]] || { echo "error: ${app_repo} is not a github.com repository URL with a plain repository name" >&2; exit 1; }
         app_token="$(github_app_installation_token "${app_owner}" "${app_repo_name}")"
         git_auth "${app_token}"
         app_clone_url="https://${GIT_HOST}/${app_owner}/${app_repo_name}.git"

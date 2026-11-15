@@ -1,8 +1,10 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/util/version"
@@ -71,5 +73,48 @@ func TestTheRenderedControlPlanePoliciesCompile(t *testing.T) {
 				t.Errorf("%s: %s has %d expression(s) the API server would refuse (run `go run .` over the render for the errors)", name, p.Metadata.Name, bad)
 			}
 		}
+	}
+}
+
+// The compiler echoes the source under each error behind a "|". A long echo line is shortened, never dropped: the position caret under it is
+// what tells a person where the expression is wrong.
+func TestCondenseKeepsAShortenedEchoLine(t *testing.T) {
+	long := strings.Repeat("a", 400)
+	in := "ERROR: <input>:1:5: undeclared reference to 'x'\n | " + long + "\n | ....^"
+	got := condense(in)
+	if !strings.Contains(got, "ERROR: <input>:1:5: undeclared reference to 'x'") || !strings.Contains(got, "| ....^") {
+		t.Fatalf("the error line and the caret line are kept:\n%s", got)
+	}
+	var echo string
+	for _, l := range strings.Split(got, "\n") {
+		if strings.Contains(l, "aaaa") {
+			echo = strings.TrimSpace(l)
+		}
+	}
+	if echo == "" {
+		t.Fatalf("the echo line was dropped:\n%s", got)
+	}
+	if len(echo) > 170 || !strings.HasSuffix(echo, " ...") {
+		t.Fatalf("a long echo line is cut to 160 characters and marked: %d %q", len(echo), echo[len(echo)-10:])
+	}
+	// a short echo line is untouched
+	if g := condense("ERROR: e\n | x + 1"); !strings.Contains(g, "| x + 1") || strings.Contains(g, "...") {
+		t.Fatalf("%q", g)
+	}
+}
+
+// The package comment documents the flag the program defines (it once named -version, which does not exist).
+func TestThePackageCommentNamesTheRealFlag(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	if !strings.Contains(text, `flag.Int("minor"`) {
+		t.Fatal("the flag this test guards is gone: update the test with the program")
+	}
+	head := text[:strings.Index(text, "package main")]
+	if strings.Contains(head, "-version") || !strings.Contains(head, "[-minor 36]") {
+		t.Fatalf("the package comment must show `[-minor 36]` and not `-version`:\n%s", head)
 	}
 }

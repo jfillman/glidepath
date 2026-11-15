@@ -3,7 +3,7 @@
 // the API validation uses when a policy is created). cel-python accepts what this refuses (it does not type-check map literals or reject an invalid
 // string escape the way the API server does), so a policy that passes the behaviour tests can still leave a cluster unable to sync it.
 //
-//	helm template ... | go run . [-version 1.36] [files...]      (stdin when there are no files)
+//	helm template ... | go run . [-minor 36] [files...]      (stdin when there are no files)
 //
 // Exit 1 and one line per invalid expression, "<policy>: <where>: <error>", when any does not compile. Exit 0 with a count otherwise.
 package main
@@ -108,22 +108,24 @@ func policies(all []byte) []policy {
 	return out
 }
 
+// condense keeps every line of a compile error, and cuts a long echo of the source (a line behind "|") to 160 characters so a policy with a big
+// expression does not print it whole under each error. The echo and its caret line stay: they are where the position is.
+func condense(msg string) string {
+	var keep []string
+	for _, l := range strings.Split(msg, "\n") {
+		if t := strings.TrimSpace(l); strings.HasPrefix(t, "|") && len(t) > 160 {
+			l = t[:160] + " ..."
+		}
+		keep = append(keep, l)
+	}
+	return strings.Join(keep, "\n    ")
+}
+
 func check(envSet *environment.EnvSet, p policy) int {
 	bad := 0
 	report := func(where string, err error) {
 		bad++
-		// the compiler echoes the whole source under each error: keep the error lines and the position, not the echo
-		var keep []string
-		for _, l := range strings.Split(err.Error(), "\n") {
-			if t := strings.TrimSpace(l); strings.HasPrefix(t, "|") {
-				if len(t) > 160 {
-					t = t[:160] + " ..."
-				}
-				continue
-			}
-			keep = append(keep, l)
-		}
-		msg := strings.Join(keep, "\n    ")
+		msg := condense(err.Error())
 		fmt.Printf("%s: %s: %s\n", p.Metadata.Name, where, msg)
 	}
 	compiler, err := plugincel.NewCompositedCompiler(envSet)
