@@ -4,6 +4,15 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### Onboarding resync: "nothing to deliver" is read from the tree
+
+- `deliver-onboarding-files` decided with `git status --porcelain | grep -q .` under `pipefail`: an early `grep` exit gives git SIGPIPE (141), the pipeline reads as failed and the
+  `else` ("already up to date") ran for a gitops repository eleven files behind (lab, gate-api, twice; no resync PR, so no release check could start). Both halves now capture the status
+  and test the value, log the number of files that differ (or were compared), and a failing `git` stops the step. The same pipe-into-`grep -q` is gone from the agent-login checks
+  (`detect-bypass-merge`, `detect-propose-merge`, `cicd-validate`, `clearance-gate`, `agent-gates`, `agent-release`), the two `jq -e` reads of an API reply now fetch first, and two operator scripts under `hack/`.
+  `tests/onboarding_resync_decision_test.sh` runs the rendered step against a local origin; `tests/pipefail_early_exit_test.py` fails on a new unannotated `| grep -q` (annotate `# pipe-ok: <reason>`).
+  The upgrade note in docs/admin/security.md now says how to trigger a resync and what a repository that has not resynced shows.
+
 ### Pipeline trust T3b: ref protection rests on review evidence, not on bypass lists
 
 - `GET /v1/apps/{app}/ref-protection` (API 0.13.0): `protected` now means every commit being released (the commits after the newest release the app's gitops repository corroborates, up to

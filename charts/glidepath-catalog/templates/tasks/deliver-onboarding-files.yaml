@@ -423,7 +423,7 @@ spec:
         # With Clearance's GitHub App reporting the agent checks (CLEARANCE_CHECKS, C-7) the file is not delivered, and
         # one this Task delivered earlier (the BOILERPLATE marker; a tenant's own file has none) is removed.
         if [[ "${CLEARANCE_CHECKS}" == "true" ]]; then
-          if [[ -f .tekton/pull-request-agent-gates.yaml ]] && head -1 .tekton/pull-request-agent-gates.yaml | grep -q '^# BOILERPLATE'; then
+          if [[ -f .tekton/pull-request-agent-gates.yaml ]] && IFS= read -r first_line < .tekton/pull-request-agent-gates.yaml && [[ "${first_line}" == "# BOILERPLATE"* ]]; then
             rm -f .tekton/pull-request-agent-gates.yaml
             echo "app repo: removed .tekton/pull-request-agent-gates.yaml - Clearance's App reports agent-identity and agent-scope"
           fi
@@ -916,7 +916,10 @@ spec:
           done < <(jq -r --arg t "${DEPLOY_TARGET}" '.[] | select((.targets // null) == null or (.targets | index($t) != null)) | .name' <<<"${RELEASE_GUARDRAILS_JSON}")
         fi
 
-        if git status --porcelain | grep -q .; then
+        # Captured, then tested (see the gitops step: `git status | grep -q .` under pipefail reads a SIGPIPE as "nothing changed").
+        porcelain="$(git status --porcelain)"
+        if [[ -n "${porcelain}" ]]; then
+          echo "app repo: $(grep -c . <<<"${porcelain}" || true) file(s) changed - opening the resync PR"
           git config user.name "glidepath onboarding automation"
           git config user.email "onboarding@glidepath.invalid"
           # Static, not timestamped: unlike bump-manifest-pr.yaml/open-release-pr.yaml
@@ -981,7 +984,7 @@ spec:
             echo "app repo: opened onboarding-resync PR"
           fi
         else
-          echo "app repo: .tekton/ already up to date, nothing to deliver"
+          echo "app repo: nothing to deliver - the generated files match the repository (git status reports no change)"
         fi
 
     - name: deliver-gitops-repo-files
@@ -1053,7 +1056,8 @@ spec:
           [[ -f "${existing}" ]] || continue
           base="$(basename "${existing}")"
           [[ -f "/opt/platform/onboarding-templates/gitops-repo/${base}" ]] && continue
-          if head -1 "${existing}" | grep -qE '^# (STUB|BOILERPLATE)\b|^# The real `[a-z-]+` gate'; then
+          IFS= read -r first_line < "${existing}" || true
+          if [[ "${first_line:-}" =~ ^#\ (STUB|BOILERPLATE)([^A-Za-z0-9_]|$) || "${first_line:-}" =~ ^#\ The\ real\ \`[a-z-]+\`\ gate ]]; then
             rm -f "${existing}"
             echo "gitops repo: removed .tekton/${base} - its platform template no longer exists (gate retired)"
           fi
@@ -1064,11 +1068,12 @@ spec:
         skip_agent_gates=false
         if [[ "${CLEARANCE_CHECKS}" == "true" ]]; then
           skip_agent_gates=true
-          if [[ -f .tekton/pull-request-agent-gates.yaml ]] && head -1 .tekton/pull-request-agent-gates.yaml | grep -qE '^# (STUB|BOILERPLATE)\b'; then
+          if [[ -f .tekton/pull-request-agent-gates.yaml ]] && IFS= read -r first_line < .tekton/pull-request-agent-gates.yaml && [[ "${first_line}" =~ ^#\ (STUB|BOILERPLATE)([^A-Za-z0-9_]|$) ]]; then
             rm -f .tekton/pull-request-agent-gates.yaml
             echo "gitops repo: removed .tekton/pull-request-agent-gates.yaml - Clearance's App reports agent-identity and agent-scope"
           fi
         fi
+        templates_compared=0
         for f in /opt/platform/onboarding-templates/gitops-repo/*.yaml; do
           base="$(basename "${f}")"
           [[ "${skip_agent_gates}" == "true" && "${base}" == "pull-request-agent-gates.yaml" ]] && continue
@@ -1076,9 +1081,21 @@ spec:
             -e "s|<APP_NAMESPACE>|${APP_NAMESPACE}|g" \
             -e "s|<APP_NAME>|${APP_NAME}|g" \
             "${f}" > ".tekton/${base}"
+          templates_compared=$(( templates_compared + 1 ))
         done
 
-        if git status --porcelain | grep -q .; then
+        # "Nothing to deliver" is a fact read from the tree, never what is left when a test fails (2026-11-15: this was
+        # `git status --porcelain | grep -q .`, which under pipefail answers "no" whenever git is still writing after grep quit -
+        # SIGPIPE, status 141 - so a repository eleven files behind logged "already up to date" and no PR was opened). The
+        # status is captured first: a git that fails stops the step (set -e) instead of reading as an unchanged tree.
+        porcelain="$(git status --porcelain)"
+        if [[ -n "${porcelain}" ]]; then
+          # A porcelain entry with a D is a retired gate's file the loop above removed; every other entry is a template this run wrote.
+          n_differ=0; n_removed=0
+          while IFS= read -r entry; do
+            if [[ "${entry:0:2}" == *D* ]]; then n_removed=$(( n_removed + 1 )); else n_differ=$(( n_differ + 1 )); fi
+          done <<<"${porcelain}"
+          echo "gitops repo: ${n_differ} of ${templates_compared} template files differ from .tekton/, ${n_removed} retired gate file(s) removed ($(awk '{print $NF}' <<<"${porcelain}" | tr '\n' ' ')) - opening the resync PR"
           git config user.name "glidepath onboarding automation"
           git config user.email "onboarding@glidepath.invalid"
           # Static, not timestamped - same reasoning as deliver-app-repo-files' own
@@ -1116,5 +1133,5 @@ spec:
             echo "gitops repo: opened onboarding-resync PR"
           fi
         else
-          echo "gitops repo: .tekton/ already up to date, nothing to deliver"
+          echo "gitops repo: nothing to deliver - ${templates_compared} template files compared, 0 differ from .tekton/"
         fi

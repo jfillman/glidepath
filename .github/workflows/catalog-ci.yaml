@@ -162,6 +162,21 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: charts/glidepath-catalog/tests/close_stale_proposals_test.sh
 
+  # onboarding-resync decides "nothing to deliver" from a captured git status, never from a pipe (docs/admin/onboarding-mechanics.md).
+  onboarding-resync-decision:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: charts/glidepath-catalog/tests/onboarding_resync_decision_test.sh
+
+  # No unannotated `cmd | grep -q` in a task script, library or operator script: under pipefail an early grep exit reads as "no".
+  pipefail-early-exit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 charts/glidepath-catalog/tests/pipefail_early_exit_test.py
+
   # The cicd-validate check's validate step, against the real validator (docs/admin/contract.md).
   cicd-validate:
     runs-on: ubuntu-latest

@@ -125,7 +125,7 @@ spec:
         trailers="$(gh "${api}/commits/${head}" | jq -r '[.commit.message | splits("\n")
           | select(test("^Hangar-(Task|Session|Run|Agent): *[^ ]+ *$"))] | length')"
         agent=false
-        if [ "${trailers}" != "0" ] || tr ',' '\n' <<<"${AGENT_LOGINS}" | grep -qxF "${author}"; then agent=true; fi
+        if [ "${trailers}" != "0" ] || [[ ",${AGENT_LOGINS}," == *",${author},"* ]]; then agent=true; fi
         jq -nc --arg pr "${pr}" --arg head "${head}" --arg mb "${merge_base}" --arg author "${author}" \
           --argjson agent "${agent}" --argjson base "${has_base}" \
           '{pr: $pr, head: $head, mergeBase: $mb, author: $author, agent: $agent, base: $base}' > /work/meta.json
