@@ -99,6 +99,14 @@ for i in 1 2 3 4 5; do
   fi
 done
 
+# 1b. a retired gate's file (STUB marker, no template any more) is removed: it is counted as removed, never as a template that differs.
+printf '# STUB retired\nname: shop\n' > "$stale/.tekton/pull-request-retired.yaml"
+"${REAL_GIT}" -C "$stale" add .tekton && "${REAL_GIT}" -C "$stale" -c user.name=t -c user.email=t@t.invalid commit -q -m retired
+run_step "$stale"
+if [[ "$out" != *"5 of 5 template files differ"* || "$out" != *"1 retired gate file(s) removed"* ]]; then
+  echo "FAIL a removed retired gate is miscounted. Output: $(tail -3 <<<"$out")"; fail=1
+fi
+
 # 2. current files: said as a fact, with the count compared, and nothing is pushed.
 current="$(make_origin current)"
 run_step "$current"

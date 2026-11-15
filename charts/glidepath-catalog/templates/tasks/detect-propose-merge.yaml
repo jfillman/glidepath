@@ -71,7 +71,7 @@ spec:
         marked=false
         if grep -qE '^Hangar-Merge: *person *$' <<<"${msg}"; then marked=true; fi
         if [[ "${marked}" != "true" ]]; then
-          # Fetched on its own: an API failure stops the audit (set -e) instead of reading as "not marked for a person".
+          # Fetched on its own: the step runs under set -e, so an API failure stops the audit instead of reading as "not marked for a person".
           check_runs="$(gh "${api}/commits/${head_sha}/check-runs?per_page=100")"
           if jq -e '[.check_runs[] | select(.name == "Clearance / agent-scope") | (.output.title // "") | select(startswith("needs a person"))] | length > 0' >/dev/null <<<"${check_runs}"; then marked=true; fi
         fi

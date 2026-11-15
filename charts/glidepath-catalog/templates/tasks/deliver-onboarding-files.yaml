@@ -1090,8 +1090,12 @@ spec:
         # status is captured first: a git that fails stops the step (set -e) instead of reading as an unchanged tree.
         porcelain="$(git status --porcelain)"
         if [[ -n "${porcelain}" ]]; then
-          changed_files="$(grep -c . <<<"${porcelain}" || true)"
-          echo "gitops repo: ${changed_files} of ${templates_compared} template files differ from .tekton/ ($(awk '{print $NF}' <<<"${porcelain}" | tr '\n' ' ')) - opening the resync PR"
+          # A porcelain entry with a D is a retired gate's file the loop above removed; every other entry is a template this run wrote.
+          n_differ=0; n_removed=0
+          while IFS= read -r entry; do
+            if [[ "${entry:0:2}" == *D* ]]; then n_removed=$(( n_removed + 1 )); else n_differ=$(( n_differ + 1 )); fi
+          done <<<"${porcelain}"
+          echo "gitops repo: ${n_differ} of ${templates_compared} template files differ from .tekton/, ${n_removed} retired gate file(s) removed ($(awk '{print $NF}' <<<"${porcelain}" | tr '\n' ' ')) - opening the resync PR"
           git config user.name "glidepath onboarding automation"
           git config user.email "onboarding@glidepath.invalid"
           # Static, not timestamped - same reasoning as deliver-app-repo-files' own

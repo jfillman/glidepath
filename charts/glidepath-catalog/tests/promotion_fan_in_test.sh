@@ -51,7 +51,7 @@ while (( $# )); do
 done
 case "$method $url" in
   "POST http://el-cdevents-broker"*) printf '%s\n' "$data" >> "$FX/events"; exit 0 ;;
-  "GET "*/pulls/53/files*) cat "$FX/files.json" ;;
+  "GET "*/pulls/53/files*) [[ ! -f "$FX/files-fail" ]] || exit 22; cat "$FX/files.json" ;;
   "GET "*/pulls/53) cat "$FX/pr.json" ;;
   "GET "*/check-runs*)
     # a check that lands later: the first read is checks.json, every read after it later.json
@@ -122,6 +122,14 @@ expect "last: event content" "$(jq -c .subject.content "$FX/events")" \
 expect "last: event id is 20 hex" "$(jq -r .context.id "$FX/events" | grep -cE '^[0-9a-f]{20}$')" 1
 expect "last: ledger patch" "$(cat "$FX/patches")" '{"metadata":{"resourceVersion":"41"},"data":{"gate.111111111111.sbom":"success"}}'
 id_first="$(jq -r .context.id "$FX/events")"
+
+# the PR's file list cannot be read (API failure): never "nothing to promote" (that says the PR has no release file), no event, and a
+# visible warning with the way to ask again. The step does not fail the gate (its contract), so it is not an exit 1.
+scenario files-api-down; touch "$FX/files-fail"; run
+expect "files-api-down: exit 0 (never fails the gate)" "$(cat "$FX/rc")" 0
+expect "files-api-down: no event" "$(events)" 0
+expect "files-api-down: not reported as nothing to promote" "$(grep -c 'nothing to promote' "$FX/out")" 0
+expect "files-api-down: says the read failed" "$(grep -c 'could not read .*files.*no promotion asked' "$FX/out")" 1
 
 # another gate still running and no ledger entry for it: waits for it.
 scenario peer-running
