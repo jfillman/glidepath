@@ -90,6 +90,49 @@ free-form. Two live-confirmed symptoms, same root cause:
 `is-flow-terminal`, computed per-flow instead of hardcoded to one stage, fixes both:
 whichever stage is genuinely last for a given flow closes the span, and only that one.
 
+## Promotions join the build's trace
+
+A promotion from Tower (or `POST .../promote`) is its own flow with its own chain id, but the person asking wants to see
+it next to the build that made the image. glidepath-api resolves that build ([api.md](api.md#promotion-lineage)) and
+stamps its trace context on the promotion run (`glidepath.io/origin-traceparent` and
+`origin-finished-at`). The release Pipeline's `preflight` task (`stage-preflight.yaml`) reads them from the run itself,
+never from a parameter, and:
+
+- **within the window** (catalog value `promotionLineage.traceJoinWindow`, default `12h`, measured from when the build
+  finished): the promotion's stage span becomes a **sibling under the build's flow-root span**, in the build's trace,
+  and the promotion mints only its own chain id. The flow start it records is its own, not the build's, so lead time
+  and the release outcome span are measured as before. The build's root span is not the promotion's to send, so
+  `preflight` reports `flow-terminal=false` and the debrief's `end-flow` does not run: a second root with the build's
+  span id would overwrite the first in Tempo.
+- **outside the window, no origin, or anything unreadable** (the run cannot be read, the traceparent is malformed, the
+  finish time is missing or unreadable, the window is not `<n>s|m|h|d`): the promotion starts **its own trace**, as
+  before, and says why in the task log. A failed read is never a join. The origin's trace id is still on the release
+  record (`originTraceId`) and in the API, so the two traces are one lookup apart.
+- **Nothing else changes.** `stage-preflight` is the first task of every stage of every Pipeline; only a run that starts a new
+  chain **and** carries validated origin annotations joins a foreign trace. An incoming trace context without a chain id
+  mints a fresh root, exactly as before (`tests/promotion_lineage_test.py` holds every run without origin annotations to a
+  frozen copy of the previous behaviour over every chain id / traceparent / start time combination).
+
+**Span links are not emitted.** Checked, not recalled: `otel-cli span --help` in the toolbox image the catalog pins
+(`glidepath-toolbox:2026-10-31-checks-only`, otel-cli 0.4.5 from `catalog/toolbox/Dockerfile`) lists no link option (the word
+"link" does not appear in its flags), so a span cannot carry an OTel link to the build's trace. A promotion that starts its
+own trace records the build's trace id as `originTraceId` on its release record and in the API instead. If a later
+otel-cli gains links, `otel_span_send` is the one place to add one.
+
+**Why 12 hours, not 24.** The lab's Tempo (`observability/tempo`) has `compactor.block_retention: 24h` and no
+`max_duration` override. Retention deletes blocks by age, so the build's spans are gone 24 hours after they were written.
+A promotion that joined at 23 hours would be a trace whose root and build stages are already deleted: a child with no
+parent. Half the retention leaves the joined trace whole for at least 12 hours after the promotion. A cluster with a
+longer retention can raise the window (keep it below the retention, and well below it if promotions are opened late).
+Trace-by-id lookups are not bounded by the search window; a TraceQL search over a multi-hour trace is bounded by Tempo's
+`query_frontend.search.max_duration` and the time range the UI asks for, so a trace that spans many hours must be opened
+by id (the trace id is in the record) or with a time range that covers both flows.
+
+**The trade-off the release-outcome section below warns about applies here, on purpose and bounded.** A joined trace
+has spans that start hours after its root span ended, so its apparent duration is long and the promotion stage sits
+after the root's end. That is the price of one trace for "built, then promoted"; the window bounds it, and everything
+after the PR opens (review, merge, sync) is still the separate outcome trace below.
+
 ## Release outcome: a deliberately separate trace
 
 `release-outcome-notify.yaml` (fired once ArgoCD confirms a cluster-mapped release's
