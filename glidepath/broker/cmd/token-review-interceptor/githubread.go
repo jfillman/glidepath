@@ -191,8 +191,9 @@ func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Int
 		}
 		perms := githubapp.RepoReadPermissions()
 		// The elevated set is for the ref-protection purpose only, only for a caller named in GITHUB_READ_REF_PROTECTION_CALLERS
-		// (being in GITHUB_READ_CALLERS is not enough), and never for an app's gitops repository: ref protection reads the
-		// source repository, and an administration token on a gitops repo (which holds what deploys) is not worth minting. It is
+		// (being in GITHUB_READ_CALLERS is not enough), and never for an application's gitops-<app> repository: ref protection reads
+		// the source repository, and an administration token on the repo that holds what deploys is not worth minting. An
+		// InfraService has no source repository: gitops-infra-<app> is where its runs start, so it is the one gitops repo that is elevated. It is
 		// still one repo, one token, minted per call. Anything else gets the read-only set.
 		if req.Purpose == purposeRefProtection && refProtectionCallers[caller] && req.Repo != "gitops-"+req.App {
 			for k, v := range refProtectionExtra {

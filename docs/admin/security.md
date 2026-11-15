@@ -539,7 +539,7 @@ for the ref-protection purpose, a token with repository Administration: write on
 for about an hour. Anything that can act as glidepath-api (a compromised glidepath-api, or code running as its ServiceAccount) can therefore edit or disable rulesets
 and branch protection, add deploy keys and change settings on every app's source repository, which defeats this guard and more. What the broker
 does to limit it: the elevation is bound to the identities in `githubRead.refProtectionCallers` (default glidepath-api only; being allowlisted to read is
-not enough, and an empty list elevates nobody), only for `purpose: ref-protection`, one repository per token, never an app's gitops repository, each mint
+not enough, and an empty list elevates nobody), only for `purpose: ref-protection`, one repository per token, never an application's `gitops-<app>` repository (an InfraService has no source repository, its runs start from `gitops-infra-<app>`, so that repository is covered), each mint
 logged with caller, repository and permissions. It is not separated further: glidepath-api itself holds the credential to ask, so a dedicated
 identity would only help if the ref-protection call ran in its own pod, which is not built. **Mark it "only if you accept this risk".** The
 alternative being proposed to the owner (verifying each released commit's review evidence with read-only access, so no bypass list is needed) would remove the need; until
