@@ -777,6 +777,18 @@ Order matters because a build run created from a `.tekton` file written before t
   `source-runner`. Until a repository resyncs, its policy-validation and clearance-gate checks **fail** (the Pipeline needs a workspace
   the old file does not give it: Tekton refuses the run, or the gate refuses a volume without its marker). They do not pass.
   While `sourceIsolationActions` is `[Warn, Audit]` a resynced file is admitted either way; in `[Deny]` a file without the entry is refused.
+  **What you see before a repository resyncs.** Tekton checks a PipelineRun's workspace bindings before it starts any task, so the check
+  cannot say anything itself: the pull request's `policy-validation-` / `clearance-gate-` / `values-` check fails with Tekton's own
+  validation error (the PipelineRun's condition names the missing workspace `gate`; the Pipeline needs it, the repository's `.tekton` file
+  does not give it), and no task of ours ran to word it better. Read it as: **this repository's `.tekton` files are older than the platform;
+  resync it.** Making the workspace optional so a task could explain it would change the Pipelines on every cluster, which this note
+  deliberately does not do.
+  **How to resync one app.** A resync fires only on a push to the app repository's `main` that changes `cicd.yaml` (a comment-only edit
+  does it), and nothing fires one automatically. Push that, wait for the `onboarding-resync` PipelineRun in the app's `-cicd` namespace, and
+  merge the resync pull request in the app repository and in its gitops repository (docs/admin/onboarding-mechanics.md, "Triggering a
+  resync"). The gitops step logs `N of M template files differ ... opening the resync PR` or `nothing to deliver - M template files
+  compared, 0 differ`; since 2026-11-15 that line is read from the tree, not from a pipe's status (an earlier version logged "already up to
+  date" for a repository that was behind).
 - **Behaviour changes.** A chart with *remote* `Chart.yaml` dependencies renders as before (it needs its `charts/` committed; `helm template`
   never fetched them); the render no longer has the cluster's network to try. A render that takes more than 120 CPU-seconds or writes more
   than 32 MiB a file fails that environment (raise `renderManifests.cpuSeconds` / `maxFileMiB`); more than 50 environments in one run

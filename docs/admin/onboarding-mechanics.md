@@ -171,6 +171,30 @@ workload without `release.image`, and the pipeline's deploy step only runs on th
 (`rollout.enabled: false` / `rollout: null` in `base.yaml` or its own file, the same check `deploy-manifests.yaml`
 makes) or when the previous environment has no release file yet. The deploy step overwrites the file on its next run.
 
+### Triggering a resync, and what "nothing to deliver" means
+
+A resync fires only on a push to the **app repository's `main`** that changes `cicd.yaml` (or `.tekton/flow-pr-build.yaml`): the trigger
+file's CEL is `"cicd.yaml".pathChanged()`, which reads the pushed commit's changed files. Nothing in Glidepath fires one on a timer or when
+the platform's templates change, on purpose: the platform never opens pull requests in a repository on its own schedule. To resync one app
+after a platform upgrade (both its app repository and its gitops repository are redelivered by the same run):
+
+1. Commit a change to the app repository's `cicd.yaml` on `main`. A comment-only edit is enough (`pathChanged` looks at the file, not at what
+   changed in it); no value has to move.
+2. Watch the `onboarding-resync` PipelineRun in `<type>-<app>-cicd` (`kubectl -n app-<app>-cicd get pipelinerun`), then its TaskRun's
+   `step-deliver-app-repo-files` and `step-deliver-gitops-repo-files` logs.
+3. Merge the resync pull request in each repository (`onboarding-resync` branch, one open PR per repository at a time).
+
+The gitops step's last log line is one of two facts, each with its count:
+
+- `gitops repo: N of M template files differ from .tekton/ (...) - opening the resync PR`
+- `gitops repo: nothing to deliver - M template files compared, 0 differ from .tekton/`
+
+Both come from `git status --porcelain` captured into a variable, so a failing `git` fails the step. Before 2026-11-15 the decision was
+`git status --porcelain | grep -q .`; under `pipefail` an early `grep` exit gave git SIGPIPE and the step logged "already up to date" for a
+repository eleven files behind (twice, on the lab; docs/admin/security.md upgrade note). If a resync says nothing to deliver and a
+check on a release PR still cannot start, compare the repository's `.tekton/` with the ConfigMap `onboarding-templates-gitops-repo` in the
+app's `-cicd` namespace and trigger again.
+
 ## A real deadlock this mechanism can fall into (found and fixed live)
 
 `onboarding-resync`'s own trigger file - the thing that would deliver a fix - is

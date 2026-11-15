@@ -71,14 +71,15 @@ spec:
         marked=false
         if grep -qE '^Hangar-Merge: *person *$' <<<"${msg}"; then marked=true; fi
         if [[ "${marked}" != "true" ]]; then
-          if gh "${api}/commits/${head_sha}/check-runs?per_page=100" \
-               | jq -e '[.check_runs[] | select(.name == "Clearance / agent-scope") | (.output.title // "") | select(startswith("needs a person"))] | length > 0' >/dev/null; then marked=true; fi
+          # Fetched on its own: an API failure stops the audit (set -e) instead of reading as "not marked for a person".
+          check_runs="$(gh "${api}/commits/${head_sha}/check-runs?per_page=100")"
+          if jq -e '[.check_runs[] | select(.name == "Clearance / agent-scope") | (.output.title // "") | select(startswith("needs a person"))] | length > 0' >/dev/null <<<"${check_runs}"; then marked=true; fi
         fi
         if [[ "${marked}" != "true" ]]; then echo "PR #${PR_NUMBER} is not marked for a person to merge - nothing to audit."; exit 0; fi
 
         person=true
         if [[ "${merged_type}" != "User" || "${merged_by}" == *"[bot]" ]] \
-           || tr ',' '\n' <<<"${AGENT_LOGINS}" | grep -qixF "${merged_by}"; then person=false; fi
+           || [[ ",${AGENT_LOGINS,,}," == *",${merged_by,,},"* ]]; then person=false; fi
         if [[ "${person}" == "true" ]]; then
           echo "PR #${PR_NUMBER} (marked for a person) was merged by ${merged_by}, a person - no finding."
           exit 0

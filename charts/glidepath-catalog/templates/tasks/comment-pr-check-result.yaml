@@ -422,8 +422,9 @@ spec:
         # A newer commit's gates decide; this run verified an older one.
         [[ -z "${REVISION}" || "${REVISION}" == "${head_sha}" ]] || { echo "${GATE_NAME} ran on ${REVISION:0:7}, the PR is at ${head_sha:0:7}"; exit 0; }
         # Only a Flight environment's release file is promoted (a cloud pin PR keeps its own copy at deploy).
-        gh_ "https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/files?per_page=100" \
-          | jq -e '[.[].filename | select(test("^[^/]+/[^/]+/release\\.yaml$"))] | length > 0' >/dev/null \
+        # The file list is fetched on its own so an API failure stops this step (set -e) instead of reading as "no release file".
+        pr_files="$(gh_ "https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/files?per_page=100")"
+        jq -e '[.[].filename | select(test("^[^/]+/[^/]+/release\\.yaml$"))] | length > 0' >/dev/null <<<"${pr_files}" \
           || { echo "#${pr_number} changes no <cluster>/<env>/release.yaml: nothing to promote"; exit 0; }
 
         # The gate ledger: this gate's verdict for this commit in the release record, written with the record's

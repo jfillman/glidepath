@@ -78,7 +78,7 @@ spec:
         # Who proposed it: the PR this commit came from (its author), else the commit's author.
         pr_author="$(gh "${api}/commits/${REVISION}/pulls" | jq -r '.[0].user.login // empty')"
         [[ -n "${pr_author}" ]] || pr_author="$(gh "${api}/commits/${REVISION}" | jq -r '.author.login // "unknown"')"
-        kind=person; tr ',' '\n' <<<"${AGENT_LOGINS}" | grep -qxF "${pr_author}" && kind=agent
+        kind=person; [[ ",${AGENT_LOGINS}," == *",${pr_author},"* ]] && kind=agent
         raw() { local out; out="$(curl --silent --max-time 20 -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github.raw+json" -w '\n%{http_code}' "${api}/contents/$1?ref=$2")"
                 [[ "$(tail -n1 <<<"${out}")" == 200 ]] && sed '$d' <<<"${out}" | yq -o json '.' 2>/dev/null || echo null; }
         ctok() { cat /var/run/secrets/platform/clearance-token; }

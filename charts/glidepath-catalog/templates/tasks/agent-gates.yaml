@@ -86,7 +86,7 @@ spec:
           | capture("^Hangar-(?<k>Task|Session|Run|Agent): *(?<v>[^ ]+) *$")? | {key: (.k | ascii_downcase), value: .v}]
           | from_entries')"
         looks_agent=false
-        if [ "${trailers}" != "{}" ] || tr ',' '\n' <<<"${AGENT_LOGINS}" | grep -qxF "${author}"; then looks_agent=true; fi
+        if [ "${trailers}" != "{}" ] || [[ ",${AGENT_LOGINS}," == *",${author},"* ]]; then looks_agent=true; fi
         echo "PR ${owner}/${repo}#${PR_NUMBER} head ${head} author ${author} paths $(jq length <<<"${paths}") trailers ${trailers}"
 
         verdict=""
