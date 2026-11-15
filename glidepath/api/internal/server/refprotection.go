@@ -13,6 +13,7 @@ import (
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
+	"github.com/glidepath/api/internal/refprotection"
 )
 
 func (s *Server) getRefProtection(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
@@ -28,8 +29,16 @@ func (s *Server) getRefProtection(ctx context.Context, w http.ResponseWriter, r 
 	if v.Evidence != nil {
 		commits, calls = len(v.Evidence.Commits), v.Evidence.Calls
 	}
-	note(w, "verdict", v.Verdict, "repo", v.Repo, "ref", v.Ref, "sha", v.Sha, "commits", commits, "unreviewed", len(v.Missing), "githubReads", calls)
+	note(w, "verdict", v.Verdict, "repo", v.Repo, "ref", v.Ref, "sha", v.Sha, "commits", commits, "unreviewed", unreviewedCount(v), "githubReads", calls)
 	w.Header().Set("Cache-Control", "no-store")
 	writeTowerJSON(w, http.StatusOK, v)
 	return nil
+}
+
+// unreviewedCount is how many commits lack evidence: the full list when the answer has one (Missing is capped at 20 lines).
+func unreviewedCount(v *refprotection.Verdict) int {
+	if v.Evidence != nil {
+		return len(v.Evidence.Unreviewed)
+	}
+	return len(v.Missing)
 }

@@ -205,3 +205,14 @@ func TestRefProtectionTargetParameters(t *testing.T) {
 		}
 	}
 }
+
+// The audit line counts the commits without evidence, not the lines of `missing` (capped at 20 plus a "more" line).
+func TestUnreviewedCountIsTheCommitCount(t *testing.T) {
+	v := &refprotection.Verdict{Missing: make([]string, 21), Evidence: &refprotection.Evidence{Unreviewed: make([]refprotection.UnreviewedCommit, 60)}}
+	if n := unreviewedCount(v); n != 60 {
+		t.Fatalf("%d", n)
+	}
+	if n := unreviewedCount(&refprotection.Verdict{Missing: []string{"x"}}); n != 1 {
+		t.Fatalf("no evidence: the lines are all there is: %d", n)
+	}
+}
