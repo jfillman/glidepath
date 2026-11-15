@@ -30,6 +30,8 @@ jobs:
       - run: python3 charts/glidepath-app/tests/pipeline_least_privilege_test.py
       - run: python3 charts/glidepath-app/tests/chain_origin_test.py
       - run: python3 charts/glidepath-control-plane/tests/cicd_run_admission_test.py
+      # no two platform CronJobs share a minute of the hour; the per-app token refresher's minute derives from the app name
+      - run: python3 charts/glidepath-control-plane/tests/cronjob_schedule_test.py
       - run: python3 charts/glidepath-catalog/tests/build_artifact_publish_test.py
       - run: python3 charts/glidepath-catalog/tests/workspace_hardening_test.py
       - run: python3 charts/glidepath-catalog/tests/chart_safety_test.py

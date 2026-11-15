@@ -62,7 +62,8 @@ metadata:
     hangar.io/subcomponent: "broker"
   namespace: platform-system
 spec:
-  schedule: "*/10 * * * *"
+  schedule: {{ .Values.cronSchedules.releaseRecordSweeper | quote }}
+  startingDeadlineSeconds: 300
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3

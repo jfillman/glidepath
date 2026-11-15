@@ -108,6 +108,11 @@ deploy:
   # airframe-application chart) is the only supported value today, and the default.
   strategy: rollout
 
+# The pr-token-refresher CronJob runs every 20 minutes, at minute (adler32 of the app name) mod 20 so the apps on a
+# cluster do not all fire together. Set minuteOffset (0-19) to pick the minute.
+prTokenRefresher:
+  minuteOffset: null
+
 ephemeralEnvironments:
   branch:
     # Renders a per-branch ephemeral environment (not just per-PR) for this

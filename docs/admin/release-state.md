@@ -148,7 +148,7 @@ Tenant Applications retry (limit 5, backoff up to 10 minutes), about 15 minutes 
 
 ## Stalls and retention
 
-`release-record-sweeper` (control plane, every 10 minutes):
+`release-record-sweeper` (control plane, every 10 minutes at minute 3, `cronSchedules.releaseRecordSweeper`):
 
 - raises a `ReleaseStalled` Event on a record that is `merged` with no fact for 45 minutes
   (the sync never started, or facts are not arriving), or `progressing` with no fact for 45

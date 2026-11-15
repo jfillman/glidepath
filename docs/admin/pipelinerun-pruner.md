@@ -52,7 +52,7 @@ deletion is what actually cleared them.
 Cluster-wide (`pipelineruns.tekton.dev`/`taskruns.tekton.dev` across every namespace),
 same unavoidable exception `stalled-pipeline-detector-cronjob.yaml` already documents:
 no Application-namespace-discovery label exists anywhere in this platform yet. Runs
-hourly (`0 * * * *`) - fine-grained enough relative to a 24h retention window without
+hourly (minute 7, `7 * * * *`, value `cronSchedules.pipelinerunPruner`: off :00, where every other timer fires) - fine-grained enough relative to a 24h retention window without
 adding load.
 
 ## RBAC

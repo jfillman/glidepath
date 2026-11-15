@@ -69,7 +69,8 @@ metadata:
     hangar.io/subcomponent: "broker"
   namespace: platform-system
 spec:
-  schedule: "*/5 * * * *"
+  schedule: {{ .Values.cronSchedules.stalledPipelineDetector | quote }}
+  startingDeadlineSeconds: 120
   concurrencyPolicy: Forbid
   jobTemplate:
     spec:

@@ -293,8 +293,14 @@ metadata:
     hangar.io/subcomponent: "argocd"
   namespace: {{ $appNamespace }}
 spec:
-  schedule: "*/20 * * * *"
+  # Every 20 minutes, at a minute derived from the app name so the apps' refreshers do not fire together (the GitHub
+  # installation token lives an hour: a different minute inside the same 20-minute period leaves the same margin).
+  # prTokenRefresher.minuteOffset (0-19) overrides the derived minute.
+  {{- $minute := mod (int (adler32sum .Values.platformIdentity.appName)) 20 }}
+  {{- if not (kindIs "invalid" .Values.prTokenRefresher.minuteOffset) }}{{ $minute = int .Values.prTokenRefresher.minuteOffset }}{{ end }}
+  schedule: "{{ $minute }}-59/20 * * * *"
   concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
   jobTemplate:
     spec:
       backoffLimit: 2
