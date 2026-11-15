@@ -1,0 +1,42 @@
+{
+  "push_main": {
+    "annotations": {
+      "pipelinesascode.tekton.dev/branch": "main",
+      "pipelinesascode.tekton.dev/event-type": "push",
+      "pipelinesascode.tekton.dev/repo-url": "https://github.com/o/sample",
+      "pipelinesascode.tekton.dev/sha": "b01565a54f78f0f28d13ec2a2fca114b3f9b3569",
+      "pipelinesascode.tekton.dev/source-branch": "refs/heads/main",
+      "pipelinesascode.tekton.dev/source-repo-url": "https://github.com/o/sample",
+      "pipelinesascode.tekton.dev/url-org": "o",
+      "pipelinesascode.tekton.dev/url-repository": "sample"
+    },
+    "labels": {
+      "pipelinesascode.tekton.dev/event-type": "push",
+      "pipelinesascode.tekton.dev/pull-request": "283",
+      "pipelinesascode.tekton.dev/repository": "sample",
+      "pipelinesascode.tekton.dev/sha": "b01565a54f78f0f28d13ec2a2fca114b3f9b3569",
+      "pipelinesascode.tekton.dev/url-org": "o",
+      "pipelinesascode.tekton.dev/url-repository": "sample"
+    }
+  },
+  "pull_request_main": {
+    "annotations": {
+      "pipelinesascode.tekton.dev/branch": "main",
+      "pipelinesascode.tekton.dev/event-type": "pull_request",
+      "pipelinesascode.tekton.dev/repo-url": "https://github.com/o/sample",
+      "pipelinesascode.tekton.dev/sha": "b01565a54f78f0f28d13ec2a2fca114b3f9b3569",
+      "pipelinesascode.tekton.dev/source-branch": "clearance-ui-0.1.2",
+      "pipelinesascode.tekton.dev/source-repo-url": "https://github.com/o/sample",
+      "pipelinesascode.tekton.dev/url-org": "o",
+      "pipelinesascode.tekton.dev/url-repository": "sample"
+    },
+    "labels": {
+      "pipelinesascode.tekton.dev/event-type": "pull_request",
+      "pipelinesascode.tekton.dev/pull-request": "283",
+      "pipelinesascode.tekton.dev/repository": "sample",
+      "pipelinesascode.tekton.dev/sha": "b01565a54f78f0f28d13ec2a2fca114b3f9b3569",
+      "pipelinesascode.tekton.dev/url-org": "o",
+      "pipelinesascode.tekton.dev/url-repository": "sample"
+    }
+  }
+}
