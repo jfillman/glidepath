@@ -58,7 +58,12 @@ spec:
       env:
         - { name: REF_PROTECTION_MODE, value: {{ include "glidepath-catalog.refProtectionMode" . | quote }} }
         - { name: GLIDEPATH_API_URL, value: {{ .Values.refProtection.apiUrl | quote }} }
-        - { name: PIPELINE_RUN_NAME, value: $(context.pipelineRun.name) }
+        # $(context.pipelineRun.name) is substituted only in a Pipeline, never in a Task (it stays a literal here). The
+        # run's name comes from the label Tekton's controller sets on this pod: not a parameter, not a file's to set.
+        - name: PIPELINE_RUN_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['tekton.dev/pipelineRun']
         - { name: NAMESPACE, value: $(context.taskRun.namespace) }
         - { name: PIPELINE_KIND, value: $(params.pipeline-kind) }
         - { name: TOKEN_PATH, value: /var/run/secrets/kubernetes.io/serviceaccount/token }
