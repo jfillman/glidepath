@@ -338,6 +338,13 @@ refProtection:
   # glidepath-api, where the verdict is read (GET /v1/apps/{app}/ref-protection).
   apiUrl: http://glidepath-api.platform-system.svc.cluster.local:8080
 
+# Promotion lineage (docs/admin/tracing.md, "Promotions join the build's trace"): a promotion or rollback that glidepath-api
+# resolved a build for joins that build's trace when the build finished within this window (<n>s|m|h|d), and starts its own
+# trace otherwise. Keep it under the trace backend's retention: the lab's Tempo keeps blocks 24h, so a joined trace is
+# complete only while its OLDEST span is younger than that; half of it leaves room to open the promotion afterwards.
+promotionLineage:
+  traceJoinWindow: 12h
+
 # Each entry: name (= the PipelineRun generateName prefix, so the check is "<pipelinesAsCode.applicationName> / <name>-"),
 # description, status (real | stub), class (content | process | integrity | approval), optional targets, and
 # `required` (default true). required: false makes a real gate ADVISORY on every release PR: its Pipeline renders

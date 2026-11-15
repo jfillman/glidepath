@@ -125,6 +125,9 @@ type RollbackResult struct {
 	Replayed    bool           `json:"replayed,omitempty"`
 	DryRun      bool           `json:"dryRun,omitempty"`
 	Object      map[string]any `json:"object,omitempty"`
+	// Origin is the flow that built the image being rolled back to; OriginUnknown says why it could not be resolved.
+	Origin        *Origin `json:"origin,omitempty"`
+	OriginUnknown string  `json:"originUnknown,omitempty"`
 }
 
 // Rollback is Tower's startRollback: the target must be one of the environment's eligible targets, computed here
@@ -178,5 +181,6 @@ func (c *Client) Rollback(ctx context.Context, app *apps.App, env string, req Ro
 	if err != nil {
 		return nil, err
 	}
-	return &RollbackResult{PipelineRun: s.Name, Target: *target, Replaces: replaces, Replayed: s.Replayed, DryRun: dryRun, Object: s.Object}, nil
+	return &RollbackResult{PipelineRun: s.Name, Target: *target, Replaces: replaces, Replayed: s.Replayed, DryRun: dryRun, Object: s.Object,
+		Origin: s.Origin, OriginUnknown: unknownText(s.OriginUnknown)}, nil
 }

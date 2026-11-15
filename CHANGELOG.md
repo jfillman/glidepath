@@ -4,6 +4,14 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### Promotion lineage: a promotion links back to the flow that built its image
+
+- glidepath-api resolves the build of the image a promote or rollback releases, server-side, from the build's own run (on the cluster, else Tekton Results), bound to the image repository and the commit being
+  released, and stamps `glidepath.io/origin-chain-id`, `-chain-slug`, `-trace-id` (and `-traceparent`, `-flow-start-time`, `-finished-at`) on the run. The promotion keeps its own chain. Unresolved or ambiguous is
+  "origin unknown" and the promotion goes ahead. The release record gets `originChainId`, `originChainSlug`, `originTraceId`; the release read models return `origin`; `GET /v1/apps/{app}/releases?fromChain=` lists
+  what came from a build. `stage-preflight` joins the build's trace when the build finished within `promotionLineage.traceJoinWindow` (default 12h, under Tempo's 24h retention) and accepts a trace without a chain
+  id. docs/admin/api.md "Promotion lineage", docs/admin/tracing.md.
+
 ### Onboarding resync: "nothing to deliver" is read from the tree
 
 - `deliver-onboarding-files` decided with `git status --porcelain | grep -q .` under `pipefail`: an early `grep` exit gives git SIGPIPE (141), the pipeline reads as failed and the

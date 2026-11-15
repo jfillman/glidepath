@@ -43,6 +43,17 @@ const (
 	AnnotationOriginSha   = "glidepath.io/origin-sha"
 	AnnotationOriginEvent = "glidepath.io/origin-event"
 
+	// Promotion lineage (docs/admin/api.md#promotion-lineage): the flow that built the image a promote or rollback run
+	// releases. Resolved by this API from the build's own record (never from the caller), read by the catalog's
+	// stage-preflight (trace join) and open-release-pr (the release record). Information, not a gate: nothing refuses a
+	// run for lacking them. Admission refuses every glidepath.io/ annotation on a run a repository file creates.
+	AnnotationOriginChainID     = "glidepath.io/origin-chain-id"
+	AnnotationOriginChainSlug   = "glidepath.io/origin-chain-slug"
+	AnnotationOriginTraceID     = "glidepath.io/origin-trace-id"
+	AnnotationOriginTraceparent = "glidepath.io/origin-traceparent"
+	AnnotationOriginFlowStart   = "glidepath.io/origin-flow-start-time"
+	AnnotationOriginFinishedAt  = "glidepath.io/origin-finished-at"
+
 	// maxGeneratedPrefix is the API server's own limit on a generateName prefix (63 - 5 random
 	// characters), kept so a re-run's name is as long as the one Tower's generateName got.
 	maxGeneratedPrefix = 58

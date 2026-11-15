@@ -654,7 +654,11 @@ class CicdRunAdmission(unittest.TestCase):
     def test_a_file_cannot_set_the_chain_origin(self):
         # glidepath.io/origin-* are set by the Triggers on a chained run and read by verify-ref-protection: a run a .tekton file
         # creates may carry no glidepath.io/ annotation at all.
-        for key in ("glidepath.io/origin-ref", "glidepath.io/origin-sha", "glidepath.io/anything"):
+        # Promotion lineage (glidepath-api stamps these on a promote or rollback run; the release record and the trace join
+        # trust them): a file can no more claim another flow's lineage than another commit's origin.
+        for key in ("glidepath.io/origin-ref", "glidepath.io/origin-sha", "glidepath.io/anything",
+                    "glidepath.io/origin-chain-id", "glidepath.io/origin-chain-slug", "glidepath.io/origin-trace-id",
+                    "glidepath.io/origin-traceparent", "glidepath.io/origin-flow-start-time", "glidepath.io/origin-finished-at"):
             md = meta("push", "main")
             md["annotations"] = dict(md["annotations"], **{key: "refs/heads/main"})
             self.refused(run("release", metadata=md, taskRunSpecs=None), msg="glidepath.io")

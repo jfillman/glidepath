@@ -514,8 +514,9 @@ func (s *Server) listFleetLiveTaskRuns(ctx context.Context, w http.ResponseWrite
 	return nil
 }
 
-func (s *Server) listReleases(ctx context.Context, w http.ResponseWriter, _ *http.Request, _ *auth.Caller, app *apps.App) error {
-	recs, err := s.Releases.List(ctx, app.Namespace, app.Name)
+func (s *Server) listReleases(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.Caller, app *apps.App) error {
+	// ?fromChain=<chain id>: only the releases that came from that build flow (promotion lineage).
+	recs, err := s.Releases.ListFrom(ctx, app.Namespace, app.Name, r.URL.Query().Get("fromChain"))
 	if err != nil {
 		return err
 	}

@@ -378,10 +378,13 @@ paths:
     get:
       operationId: listReleases
       summary: Every release record of an app, all environments
-      description: Needs `list` on `releases.glidepath.hangar.io`. The keys of `data`, and the release states, are in docs/admin/release-state.md and the contract's states.release.
+      description: >-
+        Needs `list` on `releases.glidepath.hangar.io`. The keys of `data`, and the release states, are in docs/admin/release-state.md and the contract's states.release.
+        `fromChain` limits the list to the releases that came from one build flow (promotion lineage, docs/admin/api.md#promotion-lineage).
       x-glidepath-tier: T0
       parameters:
         - { $ref: "#/components/parameters/App" }
+        - { name: fromChain, in: query, required: false, description: "Only the releases whose originChainId is this chain id (a promotion or rollback of the image that flow built); a malformed id is 400, none matching an empty list", schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,200}$" } }
         - { $ref: "#/components/parameters/OnBehalfOf" }
       responses:
         "200":
@@ -1135,6 +1138,17 @@ components:
         replayed: { type: boolean, description: Present (true) when an earlier call with this Idempotency-Key started the run }
         dryRun: { type: boolean }
         object: { type: object, description: "Dry run only: the PipelineRun the API creates (or found, on a replay)" }
+        origin: { $ref: "#/components/schemas/ReleaseOrigin" }
+        originUnknown: { type: string, description: "\"origin unknown: <why>\" when the build of the image could not be resolved (promotion lineage); the promotion started all the same" }
+    ReleaseOrigin:
+      type: object
+      required: [chainId]
+      description: The flow that built the image a release carries (promotion lineage). The release keeps its own chain id.
+      properties:
+        chainId: { type: string }
+        chainSlug: { type: string }
+        traceId: { type: string }
+        run: { type: string, description: "The build's PipelineRun (gone from the cluster about an hour after it ends; the archive keeps it 30 days). Only in a promote or rollback answer." }
     RollbackRequest:
       type: object
       required: [cluster, targetReleaseId, reason]
@@ -1154,6 +1168,8 @@ components:
         replayed: { type: boolean }
         dryRun: { type: boolean }
         object: { type: object }
+        origin: { $ref: "#/components/schemas/ReleaseOrigin" }
+        originUnknown: { type: string, description: "\"origin unknown: <why>\"; the rollback started all the same" }
     CicdValidationRequest:
       type: object
       description: Exactly one of patch and content.
@@ -1371,6 +1387,7 @@ components:
         chainId: { type: string }
         prUrl: { type: string }
         changeRequest: { type: string }
+        origin: { $ref: "#/components/schemas/ReleaseOrigin" }
         phase: { type: string, description: "The record's state once there is one, else the run's (running, failed, cancelled, finished)" }
         record: { nullable: true, allOf: [{ $ref: "#/components/schemas/Release" }] }
     LiveRuns:
@@ -1392,6 +1409,9 @@ components:
       properties:
         name: { type: string, description: "release-tracking-<chain-id>" }
         data: { type: object, additionalProperties: { type: string } }
+        origin:
+          allOf: [{ $ref: "#/components/schemas/ReleaseOrigin" }]
+          description: "The flow that built this release's image, from `originChainId`, `originChainSlug` and `originTraceId` in `data`; absent when the release is a flow's own step or its origin was not resolved."
         clearance:
           type: object
           required: [id]

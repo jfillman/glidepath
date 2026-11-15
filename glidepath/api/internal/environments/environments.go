@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/glidepath/api/internal/apps"
+	"github.com/glidepath/api/internal/lineage"
 	"github.com/glidepath/api/internal/pipelineruns"
 	"github.com/glidepath/api/internal/releases"
 
@@ -103,7 +104,12 @@ type Client struct {
 	GitHub    func(app string) GitHub // a new Session per request
 	Templates Templates               //
 	Runs      pipelineruns.Store      //
-	Records   interface {             // release records for one environment and cluster
+	// Lineage resolves the build a release's image came from (internal/lineage); nil resolves none, and a release run
+	// then carries no origin and its answer says nothing about one.
+	Lineage interface {
+		Resolve(ctx context.Context, namespace, imageRef, commit string) lineage.Resolution
+	}
+	Records interface { // release records for one environment and cluster
 		ListEnv(ctx context.Context, namespace, app, env, cluster string) ([]releases.Record, error)
 	}
 }
@@ -213,6 +219,40 @@ type Started struct {
 	Name     string
 	Replayed bool
 	Object   map[string]any // dry run: the PipelineRun it creates (or found, on a replay)
+	Origin   *Origin        // the build the release's image came from, when resolved
+	// OriginUnknown says why there is no Origin ("" when Lineage is not configured or Origin is set). A release with no
+	// origin is not refused: lineage is information, not a gate.
+	OriginUnknown string
+}
+
+// Origin is the flow that built the image a release carries (docs/admin/api.md#promotion-lineage).
+type Origin struct {
+	ChainID   string `json:"chainId"`
+	ChainSlug string `json:"chainSlug,omitempty"`
+	TraceID   string `json:"traceId"`
+	Run       string `json:"run,omitempty"` // the build's PipelineRun (gone from the cluster about an hour after it ends)
+}
+
+func originOf(o *lineage.Origin) *Origin {
+	if o == nil {
+		return nil
+	}
+	return &Origin{ChainID: o.ChainID, ChainSlug: o.ChainSlug, TraceID: o.TraceID, Run: o.Run}
+}
+
+// lineageKeys are the annotations stampOrigin sets, so a refused run can have them taken off again.
+var lineageKeys = []string{pipelineruns.AnnotationOriginChainID, pipelineruns.AnnotationOriginChainSlug, pipelineruns.AnnotationOriginTraceID,
+	pipelineruns.AnnotationOriginTraceparent, pipelineruns.AnnotationOriginFlowStart, pipelineruns.AnnotationOriginFinishedAt}
+
+func stampOrigin(ann map[string]any, o *lineage.Origin) {
+	ann[pipelineruns.AnnotationOriginChainID] = o.ChainID
+	if o.ChainSlug != "" {
+		ann[pipelineruns.AnnotationOriginChainSlug] = o.ChainSlug
+	}
+	ann[pipelineruns.AnnotationOriginTraceID] = o.TraceID
+	ann[pipelineruns.AnnotationOriginTraceparent] = o.Traceparent
+	ann[pipelineruns.AnnotationOriginFlowStart] = o.FlowStartTime
+	ann[pipelineruns.AnnotationOriginFinishedAt] = o.FinishedAt
 }
 
 // startRun is Tower's startReleaseRun with a derived name: read the template, fill its params, create the run (a
@@ -269,10 +309,32 @@ func (c *Client) startRun(ctx context.Context, app *apps.App, p releaseRun, keyH
 	if c.OriginRef != "" && p.gitRevision != "" {
 		ann[pipelineruns.AnnotationOriginRef], ann[pipelineruns.AnnotationOriginSha] = c.OriginRef, p.gitRevision
 	}
+	// Promotion lineage: the build of the image this release carries, resolved here from the build's own run for the
+	// repository and commit being released (never from the caller). Unresolved is not refused.
+	var origin *lineage.Origin
+	unknown := ""
+	if c.Lineage != nil {
+		res := c.Lineage.Resolve(ctx, app.Namespace, p.imageRef, p.gitRevision)
+		if res.Origin != nil {
+			origin = res.Origin
+			stampOrigin(ann, origin)
+		} else {
+			unknown = res.Unknown
+		}
+	}
 	meta["annotations"] = ann
 	run["metadata"] = meta
 
 	err = c.Runs.Create(ctx, app.Namespace, run, dryRun)
+	if origin != nil && (apierrors.IsForbidden(err) || apierrors.IsInvalid(err)) {
+		// An older admission policy for this API's runs lists the annotations a run may carry and does not know these
+		// yet: the release goes ahead without its lineage, never refused for it.
+		for _, k := range lineageKeys {
+			delete(ann, k)
+		}
+		origin, unknown = nil, "the cluster's admission policy for glidepath-api runs does not yet allow the lineage annotations"
+		err = c.Runs.Create(ctx, app.Namespace, run, dryRun)
+	}
 	if apierrors.IsAlreadyExists(err) {
 		found, gerr := c.Runs.Get(ctx, app.Namespace, name)
 		if apierrors.IsNotFound(gerr) {
@@ -285,7 +347,11 @@ func (c *Client) startRun(ctx context.Context, app *apps.App, p releaseRun, keyH
 		if a[pipelineruns.AnnotationKeyHash] != keyHash {
 			return nil, pipelineruns.Conflict{What: fmt.Sprintf("PipelineRun %s exists and is not this %s's run for this Idempotency-Key", name, kind)}
 		}
+		// A replay reports what the run it found carries, not what this call would resolve now.
 		s := &Started{Name: name, Replayed: true}
+		if a[pipelineruns.AnnotationOriginChainID] != "" {
+			s.Origin = &Origin{ChainID: a[pipelineruns.AnnotationOriginChainID], ChainSlug: a[pipelineruns.AnnotationOriginChainSlug], TraceID: a[pipelineruns.AnnotationOriginTraceID]}
+		}
 		if dryRun {
 			s.Object = found
 		}
@@ -297,7 +363,7 @@ func (c *Client) startRun(ctx context.Context, app *apps.App, p releaseRun, keyH
 	if err != nil {
 		return nil, err
 	}
-	s := &Started{Name: name}
+	s := &Started{Name: name, Origin: originOf(origin), OriginUnknown: unknown}
 	if dryRun {
 		s.Object = run
 	}
@@ -319,4 +385,12 @@ func ExtractShortSha(tag string) (string, error) {
 		return "", Refused{fmt.Sprintf(`could not extract a git sha from image tag "%s" - unrecognized tagging convention`, tag), ""}
 	}
 	return m[1], nil
+}
+
+// unknownText is the answer's "origin unknown: <why>", or "" when nothing was asked.
+func unknownText(why string) string {
+	if why == "" {
+		return ""
+	}
+	return "origin unknown: " + why
 }

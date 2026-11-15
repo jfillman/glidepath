@@ -191,6 +191,12 @@ spec:
           value: $(params.rollback-reason)
         - name: REF_PROTECTION
           value: $(params.ref-protection)
+        # $(context.pipelineRun.name) is substituted only in a Pipeline, never in a Task: the run's name comes from the label
+        # Tekton's controller sets on this pod (as verify-ref-protection reads it). Not a parameter, not a file's to set.
+        - name: PIPELINE_RUN_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['tekton.dev/pipelineRun']
         - name: NAMESPACE
           # For the release-tracking ConfigMap (this cluster, this Application's own
           # namespace) - $(context.taskRun.namespace) is the correct Task-level
@@ -249,6 +255,24 @@ spec:
           *) echo "error: release-kind must be promote or rollback, got '${RELEASE_KIND}'." >&2; exit 1 ;;
         esac
 
+        # Promotion lineage (docs/admin/api.md#promotion-lineage): the flow that built this release's image, as glidepath-api
+        # stamped it on THIS run's annotations when it started the promotion or rollback. Read from the run, never from a
+        # parameter (admission refuses any glidepath.io/ annotation on a run a .tekton file creates), checked for shape, and
+        # empty when there is none (a flow's own release step, or an origin glidepath-api could not resolve). Information
+        # only: a run that cannot be read, or carries nothing, still releases, and says so here.
+        origin_chain_id=""; origin_chain_slug=""; origin_trace_id=""
+        if run_json="$(kubectl get pipelinerun "${PIPELINE_RUN_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null)"; then
+          oann() { jq -r --arg k "glidepath.io/origin-$1" '.metadata.annotations[$k] // empty' <<<"${run_json}"; }
+          origin_chain_id="$(oann chain-id)"; origin_chain_slug="$(oann chain-slug)"; origin_trace_id="$(oann trace-id)"
+          [[ "${origin_chain_id}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || origin_chain_id=""
+          [[ "${origin_chain_slug}" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || origin_chain_slug=""
+          [[ "${origin_trace_id}" =~ ^[0-9a-f]{32}$ ]] || origin_trace_id=""
+          [[ -n "${origin_chain_id}" ]] || { origin_chain_slug=""; origin_trace_id=""; }
+          [[ -z "${origin_chain_id}" ]] || echo "promotion lineage: image built by chain ${origin_chain_id} (${origin_chain_slug:-no slug}), trace ${origin_trace_id:-unknown}"
+        else
+          echo "warning: could not read this run's annotations; the release record carries no origin (the release itself is unaffected)." >&2
+        fi
+
         # The dev-side release record (ADR-0021): prUrl/prCreatedAt as before, plus
         # everything glidepath-relay's /facts endpoint needs to rebuild this
         # release's CDEvent when the upper cluster reports a Rollout fact for it. One
@@ -273,6 +297,9 @@ spec:
             --from-literal="rollbackOf=${ROLLBACK_OF}" \
             --from-literal="rollbackReason=${ROLLBACK_REASON}" \
             --from-literal="refProtection=${REF_PROTECTION}" \
+            --from-literal="originChainId=${origin_chain_id}" \
+            --from-literal="originChainSlug=${origin_chain_slug}" \
+            --from-literal="originTraceId=${origin_trace_id}" \
             --from-literal="appNamespace=${APP_NAMESPACE}" \
             --from-literal="appName=${APP_NAME}" \
             --from-literal="env=${ENV}" \

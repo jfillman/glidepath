@@ -32,6 +32,10 @@ type PromoteResult struct {
 	Replayed    bool           `json:"replayed,omitempty"`
 	DryRun      bool           `json:"dryRun,omitempty"`
 	Object      map[string]any `json:"object,omitempty"`
+	// Origin is the flow that built the promoted image; OriginUnknown says why it could not be resolved ("origin unknown:
+	// ..."). The promotion is the same either way (docs/admin/api.md#promotion-lineage).
+	Origin        *Origin `json:"origin,omitempty"`
+	OriginUnknown string  `json:"originUnknown,omitempty"`
 }
 
 // source is Tower's ResolvedSource.
@@ -119,7 +123,8 @@ func (c *Client) Promote(ctx context.Context, app *apps.App, targetEnv string, r
 	if err != nil {
 		return nil, err
 	}
-	return &PromoteResult{Mode: "pipeline", PipelineRun: s.Name, Replayed: s.Replayed, DryRun: dryRun, Object: s.Object}, nil
+	return &PromoteResult{Mode: "pipeline", PipelineRun: s.Name, Replayed: s.Replayed, DryRun: dryRun, Object: s.Object,
+		Origin: s.Origin, OriginUnknown: unknownText(s.OriginUnknown)}, nil
 }
 
 // resolveSource is Tower's: what to promote comes from the file the source environment's tier commits to, never from

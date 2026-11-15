@@ -372,6 +372,63 @@ starts with `rollback-of` the current release's id, `rollback-reason`, and `conf
 Tower held its request up to 90 s for the run's PR; the API answers as soon as the run exists, and the PR
 appears where Tower's release tracker already follows the run (`GET /release-run` accepts these names).
 
+### Promotion lineage
+
+A promotion is its own flow: it keeps its own chain id and slug, and its release record is `release-tracking-<its chain>`
+(one record per chain, one environment, one PR). What it needs is the link back to the flow that **built** the image.
+glidepath-api resolves that **server-side** when it starts a promote or rollback run, and never from the caller (a body
+field naming an origin is ignored):
+
+- **Source.** The build's own run: the `build` PipelineRun on the cluster (Tekton deletes a finished run about an hour
+  after it ends) or its copy in Tekton Results (the 30-day archive). That run names the image repository it pushed
+  (`IMAGE_URL`), the digest (`IMAGE_DIGEST`), the commit it built (`CHAINS-GIT_COMMIT`) and, through its `preflight`
+  task, the chain id, slug and trace the flow minted.
+- **Binding.** The lookup is for the **image repository and the commit being released**, both of which the API itself
+  resolved (from the source environment's release file, or the rollback target's record). A build of another
+  repository (a pull request's `-pr` image) or another commit is never a candidate. The caller supplies neither a chain
+  id nor a build.
+- **Two builds, one digest** (a rerun of the same commit): the earliest finished one, the build that produced the
+  content. **Two builds, different digests** for the commit: the API does not read the registry here, so it cannot tell
+  which one the tag points at, and resolves nothing. A source that cannot be read (Results down) also resolves nothing,
+  with the error; a failed read is never answered as "no build".
+- **Unresolved is not refused.** Lineage is information, not a gate. With no origin the promotion starts as before and
+  the answer says `"originUnknown": "origin unknown: <why>"`; the run carries no origin annotations and the record no
+  origin fields. A build older than the archive (30 days) and the first promotion of an image built elsewhere are the
+  common cases.
+
+The answer of promote and rollback:
+
+```json
+{"mode": "pipeline", "pipelineRun": "promote-staging-e65cefae-7ef9ab",
+ "origin": {"chainId": "94e8228a-5cdc-4350-914a-d73802e5b296", "chainSlug": "ornate-ram",
+            "traceId": "98f0963d6bc08cb69e6051852fc528de", "run": "ci-0-build-nm682"}}
+```
+
+The run carries it as annotations the API sets (`glidepath.io/origin-chain-id`, `origin-chain-slug`, `origin-trace-id`,
+and for the trace join `origin-traceparent`, `origin-flow-start-time`, `origin-finished-at`). Admission refuses every
+`glidepath.io/` annotation on a run a `.tekton` file creates (`cicd-run-shape`), so a repository cannot claim another
+flow's lineage; the catalog's trusted tasks read them from the run itself, never from a parameter.
+
+- **Release record** (`release-tracking-<chain>`): `originChainId`, `originChainSlug`, `originTraceId`, written by
+  `open-release-pr`. `GET /v1/apps/{app}/releases/{chainId}` and the list return them as `origin`
+  (`{chainId, chainSlug, traceId}`, absent when there is none; `data` carries the raw keys).
+- **Release run view** (`GET /v1/apps/{app}/releases/runs/{name}`): `origin` from the run's annotations, so it shows
+  before the record exists. `chainId` stays the promotion's own.
+- **Releases that came from a build**: `GET /v1/apps/{app}/releases?fromChain=<build chain id>` lists the releases
+  whose `originChainId` is that chain (a malformed id is `400`; none is an empty list). Bounded by the app's release
+  records, which one label-selected list reads.
+- **Rollback** gets the same lineage: the origin is the build of the image being rolled back to (the target's own image
+  and commit). A rerun keeps `rerun-of` and is unchanged.
+- **The trace** is joined by `stage-preflight`; see [tracing.md](tracing.md#promotions-join-the-builds-trace).
+
+**Order of upgrades.** Each side tolerates the other being old. A new API against an old catalog stamps annotations
+nothing reads: the promotion runs, with its own trace and no origin on its record (the API's answer and the run view
+still show it). An old API against a new catalog stamps none: the record fields are empty and the trace is its own. A
+cluster whose admission policy for glidepath-api's runs lists the annotations a run may carry (the platform's
+`glidepath-api-pipelinerun-shape`, kept in the cluster repository) and does not know the lineage keys yet refuses the
+run; the API then starts it again **without** the lineage and answers `origin unknown: the cluster's admission policy
+for glidepath-api runs does not yet allow the lineage annotations`. Add the six keys to that policy to turn lineage on.
+
 ### Following a release run
 
 `GET /v1/apps/{app}/releases/runs/{name}` (API 0.8.0, tier T0, `get` on `releases`) is the read that follows the run a

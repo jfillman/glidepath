@@ -103,7 +103,26 @@ spec:
     - name: config-path
       type: string
       default: cicd.yaml
+    - name: origin-trace-window
+      type: string
+      default: ""
+      description: >-
+        Promotion lineage (docs/admin/tracing.md, "Promotions join the build's trace"): a Go duration-like window (30m, 12h,
+        1d). Set only by the release Pipeline. When this run starts a NEW chain (no incoming chain-id) and carries the build's
+        trace context in its own annotations (glidepath.io/origin-traceparent and origin-finished-at, stamped by glidepath-api,
+        read from this run here and never from a parameter), a build that finished within the window is JOINED: this stage's
+        span becomes a sibling under the build's flow root. Empty: never join.
+    - name: is-flow-terminal
+      type: string
+      default: "false"
+      description: >-
+        The Pipeline's own is-flow-terminal param, passed through to the flow-terminal result - except that a run that joined
+        another flow's trace never closes that flow's root span, so the result is "false" there.
   results:
+    - name: trace-joined
+      description: "'true' when this run's stage span is a sibling under ANOTHER flow's root span (an incoming trace with no incoming chain id, or a promotion joining its build's trace); 'false' when it minted its own or continued its own flow's."
+    - name: flow-terminal
+      description: "The is-flow-terminal param, or 'false' when trace-joined (the root span is not this run's to close)."
     - name: traceparent
       description: W3C traceparent of the flow-root span - minted here for a flow root, passed through otherwise.
     - name: chain-id
@@ -177,6 +196,10 @@ spec:
           value: $(params.flow-traceparent)
         - name: INCOMING_FLOW_START_TIME
           value: $(params.flow-start-time)
+        - name: ORIGIN_TRACE_WINDOW
+          value: $(params.origin-trace-window)
+        - name: IS_FLOW_TERMINAL
+          value: $(params.is-flow-terminal)
         - name: GITHUB_TOKEN_BROKER_URL
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
         - name: GIT_URL
@@ -212,10 +235,52 @@ spec:
         # chain_id_to_slug function with no such requirement.
         source "${PLATFORM_LIB}/chain-slug.sh"
 
+        # Promotion lineage: the build's trace context, from THIS run's own annotations (glidepath-api stamped them from the
+        # build's run; a parameter or a .tekton file cannot set them, admission refuses any glidepath.io/ annotation on a run a
+        # file creates). Prints "<traceparent>" when the build finished within ORIGIN_TRACE_WINDOW, nothing otherwise. A failed
+        # read is never "join": it says so and the promotion starts its own trace.
+        origin_traceparent() {
+          [[ -n "${ORIGIN_TRACE_WINDOW}" ]] || return 0
+          local w="${ORIGIN_TRACE_WINDOW}" n u secs run tp fin fin_epoch now_epoch
+          n="${w%[smhd]}"; u="${w: -1}"
+          if ! [[ "${n}" =~ ^[0-9]+$ ]]; then echo "origin trace: window '${w}' is not <n>s|m|h|d; this run starts its own trace" >&2; return 0; fi
+          case "${u}" in s) secs=$(( n )) ;; m) secs=$(( n * 60 )) ;; h) secs=$(( n * 3600 )) ;; d) secs=$(( n * 86400 )) ;;
+            *) echo "origin trace: window '${w}' is not <n>s|m|h|d; this run starts its own trace" >&2; return 0 ;; esac
+          if ! run="$(kubectl get pipelinerun "${TEKTON_PIPELINE_RUN}" -n "${NAMESPACE}" -o json 2>/dev/null)"; then
+            echo "origin trace: could not read this run's annotations; this run starts its own trace" >&2; return 0
+          fi
+          tp="$(jq -r '.metadata.annotations["glidepath.io/origin-traceparent"] // empty' <<<"${run}")"
+          fin="$(jq -r '.metadata.annotations["glidepath.io/origin-finished-at"] // empty' <<<"${run}")"
+          [[ -n "${tp}" ]] || return 0   # no origin resolved (a flow's own step, or an origin that could not be found)
+          if ! [[ "${tp}" =~ ^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$ ]]; then echo "origin trace: the origin's traceparent is malformed; this run starts its own trace" >&2; return 0; fi
+          if ! fin_epoch="$(jq -rn --arg t "${fin}" '$t | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601' 2>/dev/null)"; then
+            echo "origin trace: the build's finish time '${fin}' is unreadable; this run starts its own trace" >&2; return 0
+          fi
+          now_epoch="$(date +%s)"
+          if (( now_epoch - fin_epoch > secs )); then
+            echo "origin trace: the build finished more than ${w} ago (${fin}); this run starts its own trace" >&2; return 0
+          fi
+          printf '%s' "${tp}"
+        }
+
+        trace_joined=false
+        incoming_tp="${INCOMING_TRACEPARENT}"
+        if [[ -z "${INCOMING_CHAIN_ID}" && -z "${incoming_tp}" ]]; then
+          incoming_tp="$(origin_traceparent)"
+        fi
         if [[ -n "${INCOMING_CHAIN_ID}" ]]; then
           chain_id="${INCOMING_CHAIN_ID}"
           printf '%s' "${INCOMING_TRACEPARENT}" > "$(results.traceparent.path)"
           printf '%s' "${INCOMING_FLOW_START_TIME}" > "$(results.start-time.path)"
+          printf '%s' "${chain_id}" > "$(results.chain-id.path)"
+        elif [[ -n "${incoming_tp}" ]]; then
+          # A NEW chain in an EXISTING trace (a promotion joining its build's): this run's own chain id, the other flow's trace.
+          # The flow start is this run's own (what lead time and the release record measure from); the other flow's root span
+          # is not this run's to send or close.
+          trace_joined=true
+          printf '%s' "${incoming_tp}" > "$(results.traceparent.path)"
+          printf '%s' "$(otel_now)" > "$(results.start-time.path)"
+          chain_id="$(uuidgen)"
           printf '%s' "${chain_id}" > "$(results.chain-id.path)"
         else
           read -r traceparent start_time <<< "$(otel_flow_root_begin)"
@@ -227,10 +292,14 @@ spec:
           chain_id="$(uuidgen)"
           printf '%s' "${chain_id}" > "$(results.chain-id.path)"
         fi
+        printf '%s' "${trace_joined}" > "$(results.trace-joined.path)"
+        if [[ "${trace_joined}" == true ]]; then printf 'false' > "$(results.flow-terminal.path)"; else printf '%s' "${IS_FLOW_TERMINAL}" > "$(results.flow-terminal.path)"; fi
         # A pure function of chain-id - always the same word pair a downstream
         # CDEvent-triggered stage's own PipelineRun name derives for this chain.
         printf '%s' "$(chain_id_to_slug "${chain_id}")" > "$(results.chain-slug.path)"
-        if [[ -n "${INCOMING_CHAIN_ID}" ]]; then
+        if [[ "${trace_joined}" == true ]]; then
+          echo "flow started: chain ${chain_id} ($(cat "$(results.chain-slug.path)")), joined trace $(otel_traceparent_trace_id "$(cat "$(results.traceparent.path)")") (the flow that built the image)"
+        elif [[ -n "${INCOMING_CHAIN_ID}" ]]; then
           echo "flow continued: chain ${chain_id} ($(cat "$(results.chain-slug.path)")), trace $(otel_traceparent_trace_id "$(cat "$(results.traceparent.path)")"), started $(cat "$(results.start-time.path)")"
         else
           echo "flow started: chain ${chain_id} ($(cat "$(results.chain-slug.path)")), trace $(otel_traceparent_trace_id "$(cat "$(results.traceparent.path)")")"

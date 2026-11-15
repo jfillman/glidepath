@@ -77,6 +77,7 @@ import (
 	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
 	"github.com/glidepath/api/internal/github"
+	"github.com/glidepath/api/internal/lineage"
 	"github.com/glidepath/api/internal/live"
 	"github.com/glidepath/api/internal/metrics"
 	"github.com/glidepath/api/internal/pipelineruns"
@@ -246,13 +247,14 @@ func main() {
 		}
 	}
 	liveRuns := &live.Client{Store: live.NewKubeStore(dyn, cs)}
+	runArchive := &results.Client{
+		Base: env("RESULTS_URL", "http://tekton-results-relay.platform-system.svc.cluster.local:8080"),
+		HTTP: tracing.Client(&http.Client{Timeout: 30 * time.Second}),
+	}
 	s := &server.Server{
-		Auth: &auth.Auth{Reviewer: auth.NewKubeReviewer(cs), Delegates: delegates, OIDC: people},
-		Apps: &apps.Resolver{CS: cs, TTL: 5 * time.Minute},
-		Results: &results.Client{
-			Base: env("RESULTS_URL", "http://tekton-results-relay.platform-system.svc.cluster.local:8080"),
-			HTTP: tracing.Client(&http.Client{Timeout: 30 * time.Second}),
-		},
+		Auth:     &auth.Auth{Reviewer: auth.NewKubeReviewer(cs), Delegates: delegates, OIDC: people},
+		Apps:     &apps.Resolver{CS: cs, TTL: 5 * time.Minute},
+		Results:  runArchive,
 		Releases: releases.Reader{CS: cs},
 		// Evidence reads each app's registry-credentials Secret per request (never cached), the Fulcio
 		// root ConfigMap and Rekor (cached 10 minutes, as Tower does). Promotion attestations verify
@@ -296,6 +298,9 @@ func main() {
 			Templates: environments.NewKubeTemplates(dyn),
 			Runs:      pipelineruns.NewKubeStore(dyn),
 			Records:   releases.Reader{CS: cs},
+			// The build a promoted image came from: the build run on the cluster, else its copy in Tekton Results
+			// (docs/admin/api.md#promotion-lineage). Information only: a release is never refused for lacking it.
+			Lineage: &lineage.Resolver{Sources: []lineage.Source{lineage.ClusterSource{Live: liveRuns}, lineage.ArchiveSource{Results: runArchive}}},
 		},
 		// A cicd.yaml change, validated by the glidepath-validate sidecar (`glidepath validate --serve`, the chart's
 		// cicdValidatorImage) on the pod's loopback: one copy of the rules, the one the PR check runs.

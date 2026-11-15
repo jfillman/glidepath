@@ -143,7 +143,7 @@ spec:
           ('pipelinesascode.tekton.dev/branch' in variables.anns && variables.anns['pipelinesascode.tekton.dev/branch'] in {{ $c.protectedBranches | toJson }}))
       message: "This Pipeline starts only from a push to a protected branch (cicdRunAdmission.protectedBranches) or to a tag matching cicdRunAdmission.tagRefPattern (decided on the full ref), or, for a check, from a pull request into a protected branch."
     - expression: "!variables.anns.exists(k, k.startsWith('glidepath.io/'))"
-      message: "A run created from a .tekton file may carry no glidepath.io/ annotation: glidepath.io/origin-ref and origin-sha are set by the platform's own Triggers on a chained run, and verify-ref-protection trusts them."
+      message: "A run created from a .tekton file may carry no glidepath.io/ annotation: glidepath.io/origin-ref and origin-sha are set by the platform's own Triggers on a chained run, and verify-ref-protection trusts them; glidepath.io/origin-chain-id, origin-chain-slug, origin-trace-id, origin-traceparent, origin-flow-start-time and origin-finished-at (promotion lineage) are set by glidepath-api alone, and the release record and the trace join trust them."
     - expression: >-
         variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || p.name != 'image-repo' ||
           (variables.appName != '' &&

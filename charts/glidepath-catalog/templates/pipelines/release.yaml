@@ -183,6 +183,10 @@ spec:
         - { name: app-namespace, value: $(params.app-namespace) }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
         - { name: config-json, value: $(params.config-json) }
+        # Promotion lineage: a promotion or rollback glidepath-api started carries its build's trace context in its own
+        # annotations; preflight joins that trace when the build finished within this window (docs/admin/tracing.md).
+        - { name: origin-trace-window, value: {{ .Values.promotionLineage.traceJoinWindow | quote }} }
+        - { name: is-flow-terminal, value: $(params.is-flow-terminal) }
 
     - name: resolve-image-ref
       runAfter: [verify-ref-protection]
@@ -298,7 +302,8 @@ spec:
       params:
         - { name: stage-name, value: release }
         - { name: status, value: $(tasks.status) }
-        - { name: is-flow-terminal, value: $(params.is-flow-terminal) }
+        # preflight's result, not the param: a promotion that joined its build's trace must not close that flow's root span again.
+        - { name: is-flow-terminal, value: $(tasks.preflight.results.flow-terminal) }
         - { name: flow-name, value: "$(params.app-namespace)/$(params.app-name)" }
         - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
         - { name: chain-id, value: $(tasks.preflight.results.chain-id) }

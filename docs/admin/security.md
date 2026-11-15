@@ -657,6 +657,12 @@ creator, never by the caller's input, and its guard verifies the stamp against t
 - **Owed outside this repository:** the cluster policy that holds glidepath-api's run creations to a shape (`glidepath-api-pipelinerun-shape`, in the cluster
   repositories) must allow the `glidepath.io/origin-ref`, `origin-sha` and `origin-event` annotations; until it does, a rerun, promote or rollback is refused
   at creation. Not verified here.
+- **Promotion lineage annotations** (`glidepath.io/origin-chain-id`, `origin-chain-slug`, `origin-trace-id`, `origin-traceparent`,
+  `origin-flow-start-time`, `origin-finished-at`) are information, not a gate, and follow the same rule: only glidepath-api sets them, from the build's own run
+  (the image repository and commit it resolved itself, [api.md](api.md#promotion-lineage)), and `cicd-run-shape` refuses every `glidepath.io/` annotation
+  on a run a `.tekton` file creates, so a repository cannot claim another flow's lineage in a release record or join another flow's trace. The same cluster
+  policy must list them; until it does, glidepath-api starts the run without them (the answer says `origin unknown`) instead of refusing it. They name a
+  build for a person to follow; nothing authorises a release on them.
 
 **A forged chain event replays, at most, an older reviewed commit.** A chained stage verifies the origin the event named. Someone who could forge a
 chain event (the broker authenticates the sending namespace, so that is a compromised task of the same app) cannot name an unreviewed commit, but can name
