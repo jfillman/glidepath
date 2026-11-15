@@ -695,7 +695,19 @@ object)" and never reaches `protected`. A ref with an empty, `.` or `..` segment
 **Not built:** an allowlist for a named bypass team or App, per-app settings, organization-level bypass lists, and a `verify-ref-protection` record on the
 `open-release-pin-pr` (cloud) path, which does not write the release record.
 
-### Upgrade note
+### Upgrade note: a cluster that deploys Glidepath from `main` (the lab does)
+
+**Do this in order.** Merging to `main` deploys the charts at once, and the policies below start refusing runs from `.tekton` files that have not been regenerated.
+
+1. **Cluster values first** (in the cluster repository's Glidepath values, before the chart that has these policies reaches the cluster): `cicdRunAdmission.shapeActions: [Warn, Audit]`, `cicdRunAdmission.sourceIsolationActions: [Warn, Audit]` (and `noTaskRunsActions` if you want it in the window; it has nothing to resync), and `refProtection.mode: off` if the git host plan has no rulesets (the lab's GitHub Free plan). Only platform values set these; a `.tekton` file cannot.
+2. **Then the chart** with these policies (`glidepath-control-plane`, `glidepath-catalog`, `glidepath-app` together). The bindings carry the annotation `glidepath.io/enforcement: NOT ENFORCING` and, with prometheus-operator, the alerts `CicdRunShapeNotEnforcing`, `CicdRunSourceIsolationNotEnforcing`, `CicdRunNoTaskRunsNotEnforcing` fire after 3 days. **They must not be left on.** `cicd-run-shape` has never existed on a cluster that synced a release with the CEL defect (fixed in the PR that adds `hack/ci/vap-compile`), so it enforces for the first time here.
+3. **Resync every app's `.tekton/`** (the onboarding-resync PR, merged in each repository).
+4. **Run one of each, then read what would have been refused**: one build (a pull request build and a push build), one gate check on a release PR (`policy-validation`, `clearance-gate`, `values`), one release. A `Warn` is returned to the client that made the request: Pipelines-as-Code's controller logs it (`kubectl -n pipelines-as-code logs deploy/pipelines-as-code-controller | grep -i warning`, and the PipelineRun creation event on its repository), and an `Audit` writes the annotation `validation.policy.admission.k8s.io/validation_failure` (the policy name, the failing expression's message) into the API server's audit log. Read both for each of the three policies; anything listed is a run that `[Deny]` would refuse: resync that repository or fix the file first.
+5. **Switch both to `[Deny]`** (`shapeActions`, `sourceIsolationActions`; the defaults), and remove `refProtection.mode: off` only if rulesets exist. The annotation and the alerts go away.
+
+What each policy refuses, so you know what to look for: `cicd-run-shape` refuses a `.tekton` file that is not a catalog Pipeline with allowed parameters, whose repository, revision, pull request or app parameters differ from what Pipelines-as-Code recorded, a non-push build without `pr-tag-only=true`, an `image-repo` that is not the app's own, an account other than `source-runner`, `image-pusher` or `glidepath-cloud-deployer` on its listed tasks, a pod template beyond `hostAliases`, a workspace claim outside the allowed shape, and a deploy, test or release started from a pull request or an unprotected branch. `cicd-run-source-isolation` refuses a build, test, policy-validation, clearance-gate or values-check run that does not give its source tasks (`build-source`, `unit-test`, `build-image`, `render`, ...) to `source-runner`, or `push-image` to `image-pusher`.
+
+### Upgrade note (the sequence by change)
 
 **Ref protection (T3): `required` is the default and needs more than a release.** Order: (1) glidepath-api (the endpoint; the control plane chart also
 carries the broker setting); (2) glidepath-app (the `refprotection` grant for `pipeline-runner`); (3) the catalog. A mis-ordered upgrade explains itself: the
@@ -714,7 +726,7 @@ Order matters because a build run created from a `.tekton` file written before t
 3. Merge the onboarding-resync PR in every app repository (the one that rewrites `.tekton/`). Until it merges that app's build
    still runs its repository code as `pipeline-runner`; it has lost run creation, but not the ConfigMap grant. While any app is in
    this state `sourceIsolationActions` is not Deny, the binding carries the annotation `glidepath.io/enforcement: NOT ENFORCING` and
-   (with prometheus-operator) the alert `CicdRunSourceIsolationNotEnforcing` fires after 3 days. **It must not be left on.**
+   (with prometheus-operator) the alert `CicdRunSourceIsolationNotEnforcing` fires after 3 days. **It must not be left on.** `shapeActions` and `noTaskRunsActions` do the same for the other two bindings.
    Also, before the first `[Deny]` of `cicd-run-shape`, check one real file: on a branch, add a bogus `git-revision` to a copy of
    a check's `.tekton` file and confirm the run is refused (the policy compares it with what Pipelines-as-Code records).
    Apps whose flows trigger on a branch other than `main` need `cicdRunAdmission.protectedBranches` set to include it, or their

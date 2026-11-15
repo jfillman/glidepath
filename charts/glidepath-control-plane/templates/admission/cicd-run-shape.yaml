@@ -18,7 +18,7 @@
 # values", so this policy does, for runs created by the PaC controller only (matchConditions). Everything else that creates runs
 # in these namespaces (Triggers as pipeline-trigger, glidepath-api, the cloud-deployer policies) has its own control.
 #
-#   cicd-run-shape             always Deny. apiVersion v1 only; a cluster-resolver pipelineRef to one of the Pipelines in
+#   cicd-run-shape             Deny by default (shapeActions: [Warn, Audit] for an upgrade window). apiVersion v1 only; a cluster-resolver pipelineRef to one of the Pipelines in
 #                              values cicdRunAdmission.pipelines (and no other); only the parameter names that Pipeline takes,
 #                              each matching its pattern, each appearing once; repo, revision, pull request and namespace
 #                              parameters equal what PaC itself recorded on the run, not what the file says; Pipelines that write
@@ -211,9 +211,13 @@ metadata:
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
     hangar.io/subcomponent: "admission"
+  {{- if not (has "Deny" $c.shapeActions) }}
+  annotations:
+    glidepath.io/enforcement: "NOT ENFORCING: shapeActions has no Deny. This is the upgrade state; set it to [Deny] (docs/admin/security.md, upgrade note)."
+  {{- end }}
 spec:
   policyName: cicd-run-shape
-  validationActions: [Deny]
+  validationActions: {{ $c.shapeActions | toJson }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -304,17 +308,24 @@ metadata:
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
     hangar.io/subcomponent: "admission"
+  {{- if not (has "Deny" $c.noTaskRunsActions) }}
+  annotations:
+    glidepath.io/enforcement: "NOT ENFORCING: noTaskRunsActions has no Deny. This is the upgrade state; set it to [Deny] (docs/admin/security.md, upgrade note)."
+  {{- end }}
 spec:
   policyName: cicd-run-no-taskruns
-  validationActions: [Deny]
-{{- if and (not (has "Deny" $c.sourceIsolationActions)) (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+  validationActions: {{ $c.noTaskRunsActions | toJson }}
+{{- $notEnforcing := list }}
+{{- if not (has "Deny" $c.shapeActions) }}{{ $notEnforcing = append $notEnforcing (dict "alert" "CicdRunShapeNotEnforcing" "binding" "cicd-run-shape" "value" "shapeActions" "what" "A .tekton file that no longer fits the catalog's shape (a Pipeline, parameters, accounts, workspaces) is let through") }}{{ end }}
+{{- if not (has "Deny" $c.sourceIsolationActions) }}{{ $notEnforcing = append $notEnforcing (dict "alert" "CicdRunSourceIsolationNotEnforcing" "binding" "cicd-run-source-isolation" "value" "sourceIsolationActions" "what" "A build or test run of a repository whose .tekton file was not regenerated still runs the repository's code as pipeline-runner") }}{{ end }}
+{{- if not (has "Deny" $c.noTaskRunsActions) }}{{ $notEnforcing = append $notEnforcing (dict "alert" "CicdRunNoTaskRunsNotEnforcing" "binding" "cicd-run-no-taskruns" "value" "noTaskRunsActions" "what" "Pipelines-as-Code may create a TaskRun, which no catalog Pipeline holds to anything") }}{{ end }}
+{{- if and $notEnforcing (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
 ---
-# Fires while the source-isolation policy is not in Deny: a repository whose build still runs its code with pipeline-runner is
-# let through. The upgrade state must not be left on.
+# Fires while a cicd-run-* binding is not in Deny: the upgrade state must not be left on.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: cicd-run-source-isolation-not-enforcing
+  name: cicd-run-admission-not-enforcing
   labels:
     {{- include "glidepath-control-plane.labels" . | nindent 4 }}
     hangar.io/subcomponent: "admission"
@@ -322,13 +333,15 @@ spec:
   groups:
     - name: cicd-run-admission
       rules:
-        - alert: CicdRunSourceIsolationNotEnforcing
+        {{- range $notEnforcing }}
+        - alert: {{ .alert }}
           expr: vector(1)
           for: 3d
           labels:
             severity: warning
           annotations:
-            summary: "cicd-run-source-isolation has not been in Deny for 3 days"
-            description: "A build or test run of a repository whose .tekton file was not regenerated still runs the repository's code as pipeline-runner. Finish the onboarding-resync and set cicdRunAdmission.sourceIsolationActions to [Deny]."
+            summary: "{{ .binding }} has not been in Deny for 3 days"
+            description: {{ printf "%s. Finish the onboarding-resync and set cicdRunAdmission.%s to [Deny]." .what .value | quote }}
+        {{- end }}
 {{- end }}
 {{- end }}

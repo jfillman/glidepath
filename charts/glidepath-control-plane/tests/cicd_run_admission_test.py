@@ -255,19 +255,41 @@ class CicdRunAdmission(unittest.TestCase):
             self.assertEqual(p["failurePolicy"], "Fail")
             self.assertTrue(p["matchConditions"], "a policy with no matchConditions applies to every run")
 
-    def test_isolation_actions_are_a_value_and_a_non_deny_state_is_visible(self):
-        docs = render("--set", "cicdRunAdmission.sourceIsolationActions={Warn,Audit}", "--api-versions", "monitoring.coreos.com/v1")
-        bind = [d for d in docs if d["kind"] == "ValidatingAdmissionPolicyBinding" and d["metadata"]["name"] == "cicd-run-source-isolation"][0]
-        self.assertEqual(bind["spec"]["validationActions"], ["Warn", "Audit"])
-        self.assertIn("NOT ENFORCING", bind["metadata"]["annotations"]["glidepath.io/enforcement"])
-        rules = [d for d in docs if d["kind"] == "PrometheusRule" and d["metadata"]["name"] == "cicd-run-source-isolation-not-enforcing"]
-        self.assertEqual(len(rules), 1)
-        self.assertEqual(rules[0]["spec"]["groups"][0]["rules"][0]["alert"], "CicdRunSourceIsolationNotEnforcing")
-        # and in Deny: no annotation, no alert
+    BINDINGS = {"cicd-run-shape": ("shapeActions", "CicdRunShapeNotEnforcing"),
+                "cicd-run-source-isolation": ("sourceIsolationActions", "CicdRunSourceIsolationNotEnforcing"),
+                "cicd-run-no-taskruns": ("noTaskRunsActions", "CicdRunNoTaskRunsNotEnforcing")}
+
+    def bindings_of(self, docs):
+        return {d["metadata"]["name"]: d for d in docs if d["kind"] == "ValidatingAdmissionPolicyBinding"}
+
+    def alerts_of(self, docs):
+        return [r["alert"] for d in docs if d["kind"] == "PrometheusRule" and d["metadata"]["name"] == "cicd-run-admission-not-enforcing"
+                for g in d["spec"]["groups"] for r in g["rules"]]
+
+    def test_every_binding_takes_its_actions_from_a_value_and_a_non_deny_state_is_visible(self):
+        for name, (value, alert) in self.BINDINGS.items():
+            docs = render("--set", "cicdRunAdmission.%s={Warn,Audit}" % value, "--api-versions", "monitoring.coreos.com/v1")
+            binds = self.bindings_of(docs)
+            self.assertEqual(binds[name]["spec"]["validationActions"], ["Warn", "Audit"], name)
+            self.assertIn("NOT ENFORCING", binds[name]["metadata"]["annotations"]["glidepath.io/enforcement"], name)
+            self.assertEqual(self.alerts_of(docs), [alert], "only the binding that is not in Deny alerts")
+            for other in set(self.BINDINGS) - {name}:
+                self.assertEqual(binds[other]["spec"]["validationActions"], ["Deny"], other)
+                self.assertNotIn("annotations", binds[other]["metadata"], other)
+        # in Deny, the default: no annotation, no alert
         docs = render("--api-versions", "monitoring.coreos.com/v1")
-        self.assertFalse([d for d in docs if d["kind"] == "PrometheusRule" and d["metadata"]["name"] == "cicd-run-source-isolation-not-enforcing"])
-        bind = [d for d in docs if d["kind"] == "ValidatingAdmissionPolicyBinding" and d["metadata"]["name"] == "cicd-run-source-isolation"][0]
-        self.assertNotIn("annotations", bind["metadata"])
+        self.assertEqual(self.alerts_of(docs), [])
+        for name, bind in self.bindings_of(docs).items():
+            self.assertEqual(bind["spec"]["validationActions"], ["Deny"], name)
+            self.assertNotIn("annotations", bind["metadata"], name)
+        # without prometheus-operator the annotation still says it, and no alert is rendered
+        docs = render("--set", "cicdRunAdmission.shapeActions={Warn}")
+        self.assertEqual(self.alerts_of(docs), [])
+        self.assertIn("NOT ENFORCING", self.bindings_of(docs)["cicd-run-shape"]["metadata"]["annotations"]["glidepath.io/enforcement"])
+
+    def test_a_warn_and_audit_binding_that_also_denies_is_enforcing(self):
+        docs = render("--set", "cicdRunAdmission.shapeActions={Deny,Audit}")
+        self.assertNotIn("annotations", self.bindings_of(docs)["cicd-run-shape"]["metadata"])
 
     def test_the_build_pull_credential_is_rendered_only_when_named_and_is_never_the_push_credential(self):
         def ces(*extra):

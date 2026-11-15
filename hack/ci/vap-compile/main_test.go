@@ -54,8 +54,9 @@ func TestTheRenderedControlPlanePoliciesCompile(t *testing.T) {
 	}
 	env := environment.MustBaseEnvSet(version.MajorMinor(1, 36))
 	for name, values := range map[string][]string{
-		"default values":      {"-f", filepath.Join(chart, "tests", "values.example.yaml")},
-		"every optional list": {"-f", filepath.Join(chart, "tests", "values.example.yaml"), "-f", filepath.Join(chart, "tests", "values.vap-full.yaml")},
+		"default values":                   {"-f", filepath.Join(chart, "tests", "values.example.yaml")},
+		"every optional list":              {"-f", filepath.Join(chart, "tests", "values.example.yaml"), "-f", filepath.Join(chart, "tests", "values.vap-full.yaml")},
+		"the upgrade window (Warn, Audit)": {"-f", filepath.Join(chart, "tests", "values.example.yaml"), "-f", filepath.Join(chart, "tests", "values.vap-warn.yaml"), "--api-versions", "monitoring.coreos.com/v1"},
 	} {
 		out, err := exec.Command("helm", append([]string{"template", "cp", chart}, values...)...).Output()
 		if err != nil {
