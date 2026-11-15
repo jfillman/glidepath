@@ -164,12 +164,13 @@ func TestFailedMintIsRetried(t *testing.T) {
 	}
 }
 
-// A session for a purpose sends it to the broker (and only then), so the broker can mint that purpose's token.
-func TestSessionForPurposeSendsIt(t *testing.T) {
-	var bodies []map[string]string
+// A session asks the broker for the plain read-only token: the request carries no purpose and no permission list (the
+// elevated ref-protection purpose is gone: review evidence needs contents, pull requests and metadata read only).
+func TestSessionAsksForNoPurposeAndNoPermissions(t *testing.T) {
+	var bodies []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/github-read-token" {
-			var req map[string]string
+			var req map[string]any
 			json.NewDecoder(r.Body).Decode(&req)
 			bodies = append(bodies, req)
 			json.NewEncoder(w).Encode(map[string]string{"token": "ghs-x"})
@@ -181,13 +182,14 @@ func TestSessionForPurposeSendsIt(t *testing.T) {
 	tok := filepath.Join(t.TempDir(), "token")
 	os.WriteFile(tok, []byte("sa\n"), 0o600)
 	b := &Broker{URL: srv.URL, TokenPath: tok, HTTP: srv.Client(), API: srv.URL}
-	b.SessionFor("shop", "ref-protection").GetJSON(context.Background(), "o", "shop", "rulesets")
-	b.Session("shop").GetJSON(context.Background(), "o", "shop", "rulesets")
-	if len(bodies) != 2 || bodies[0]["purpose"] != "ref-protection" {
+	if st, _, err := b.Session("shop").GetJSON(context.Background(), "o", "shop", "pulls/1/reviews"); err != nil || st != 200 {
+		t.Fatalf("%d %v", st, err)
+	}
+	if len(bodies) != 1 {
 		t.Fatalf("%v", bodies)
 	}
-	if _, has := bodies[1]["purpose"]; has {
-		t.Fatalf("a plain session sends no purpose: %v", bodies[1])
+	if len(bodies[0]) != 3 || bodies[0]["owner"] != "o" || bodies[0]["repo"] != "shop" || bodies[0]["app"] != "shop" {
+		t.Fatalf("the request names the repository and the app and nothing else: %v", bodies[0])
 	}
 }
 

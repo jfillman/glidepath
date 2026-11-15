@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,14 +13,21 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/github"
 	"github.com/glidepath/api/internal/refprotection"
+	"github.com/glidepath/api/internal/releases"
 )
 
-const rpSHA = "2222222222222222222222222222222222222222"
+const (
+	rpSHA  = "2222222222222222222222222222222222222222"
+	rpHead = "3333333333333333333333333333333333333333"
+	rpPull = `[{"number":5,"html_url":"https://github.com/jfillman/shop/pull/5","state":"closed","merged_at":"2026-11-01T11:00:00Z","merge_commit_sha":"` + rpSHA + `","commits":1,"user":{"login":"alice","type":"User"},"merged_by":{"login":"alice","type":"User"},"head":{"sha":"` + rpHead + `","repo":{"full_name":"jfillman/shop"}},"base":{"ref":"main","repo":{"full_name":"jfillman/shop"}}}]`
+)
 
-// rpHost is GitHub and the broker for the ref-protection route: a main branch protected by a ruleset (the recorded
-// shapes of internal/refprotection's tests), per-repo tokens, and a record of every path asked.
+// rpHost is GitHub and the broker for the ref-protection route: a main branch whose one commit came through a squash-merged,
+// approved pull request (the response shapes of internal/refprotection's tests), per-repo tokens, and a record of every
+// path asked.
 type rpHost struct {
 	mu    sync.Mutex
 	calls []string
@@ -55,6 +64,14 @@ func newRPHost(t *testing.T) *rpHost {
 			io.WriteString(w, `{"message":"Branch not protected"}`)
 		case strings.HasPrefix(r.URL.Path, "/repos/jfillman/shop/compare/"):
 			io.WriteString(w, `{"status":"behind"}`)
+		case r.URL.Path == "/repos/jfillman/shop/commits/"+rpSHA+"/pulls":
+			io.WriteString(w, rpPull)
+		case r.URL.Path == "/repos/jfillman/shop/pulls/5":
+			io.WriteString(w, rpPull[1:len(rpPull)-1])
+		case r.URL.Path == "/repos/jfillman/shop/pulls/5/commits":
+			io.WriteString(w, `[{"sha":"`+rpHead+`","author":{"login":"alice","type":"User"},"committer":{"login":"alice","type":"User"},"parents":[],"commit":{"author":{"name":"Alice"},"committer":{"name":"Alice"}}}]`)
+		case r.URL.Path == "/repos/jfillman/shop/pulls/5/reviews":
+			io.WriteString(w, `[{"id":1,"user":{"login":"bob","type":"User"},"state":"APPROVED","commit_id":"`+rpHead+`","submitted_at":"2026-11-01T10:00:00Z"}]`)
 		default:
 			w.WriteHeader(http.StatusInternalServerError)
 		}
@@ -99,6 +116,10 @@ func TestRefProtectionVerdict(t *testing.T) {
 	if hdr.Get("Cache-Control") != "no-store" {
 		t.Fatalf("a verdict is never cached: %v", hdr)
 	}
+	ev, _ := out["evidence"].(map[string]any)
+	if out["branch"] != "main" || ev == nil || ev["mode"] != "first" || len(ev["approvers"].([]any)) != 1 || out["configuration"] == nil {
+		t.Fatalf("the verdict carries its evidence and the informational configuration: %v", out)
+	}
 	if len(h.mints) != 1 || h.mints[0] != "jfillman/shop" {
 		t.Fatalf("one token for the app's own repo, this request: %v", h.mints)
 	}
@@ -131,7 +152,8 @@ func TestRefProtectionAuthorizationAndInput(t *testing.T) {
 	}
 }
 
-// A host failure is not a verdict: 502, so the task refuses.
+// GitHub answering with a failure is "unverifiable" (the guard refuses on anything but protected); the broker failing to
+// mint a token is no answer at all: 502.
 func TestRefProtectionHostFailureFailsClosed(t *testing.T) {
 	s, h := withRefProtection(t, refReader)
 	h.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -142,6 +164,14 @@ func TestRefProtectionHostFailureFailsClosed(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	code, out, _ := getRP(t, s, "repo=jfillman/shop&ref=refs/heads/main&sha="+rpSHA)
+	if code != http.StatusOK || out["verdict"] != "unverifiable" {
+		t.Fatalf("%d %v", code, out)
+	}
+	h.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, `{"error":"no"}`)
+	})
+	code, out, _ = getRP(t, s, "repo=jfillman/shop&ref=refs/heads/main&sha="+rpSHA)
 	if code != http.StatusBadGateway || out["verdict"] != nil {
 		t.Fatalf("%d %v", code, out)
 	}
@@ -152,5 +182,15 @@ func TestRefProtectionUnconfigured(t *testing.T) {
 	defer done()
 	if code, _, _ := getRP(t, s, "repo=jfillman/shop&ref=refs/heads/main&sha="+rpSHA); code != http.StatusServiceUnavailable {
 		t.Fatalf("%d", code)
+	}
+}
+
+// The release records are read for the baseline; a failure to read them is no answer (502), never "a first release".
+func TestRefProtectionRecordsFailureFailsClosed(t *testing.T) {
+	s, _ := withRefProtection(t, refReader)
+	s.RefProtection.Records = func(context.Context, *apps.App) ([]releases.Record, error) { return nil, errors.New("api server down") }
+	code, out, _ := getRP(t, s, "repo=jfillman/shop&ref=refs/heads/main&sha="+rpSHA)
+	if code != http.StatusBadGateway || out["verdict"] != nil {
+		t.Fatalf("%d %v", code, out)
 	}
 }

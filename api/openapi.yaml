@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Glidepath API
-  version: 0.12.0
+  version: 0.13.0
   description: |
     Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
     contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec are reads (tier T0); phase 3
@@ -21,6 +21,11 @@ info:
     0.12.0 adds GET /v1/apps/{app}/ref-protection: whether the git host protects a pushed ref (rulesets or branch
     protection requiring review, tag rulesets) so a commit could only have arrived through review; the privileged
     Pipelines' first task asks it and refuses the run unless the verdict is protected.
+    0.13.0 changes what that answer rests on: `protected` now means every commit being released arrived on the protected
+    branch through a merged pull request that someone other than its author approved on its final head (review evidence),
+    not that rulesets say so. The answer carries the evidence (commits, pull requests, openers, mergers, approvers); the
+    ruleset and branch protection reads are an informational `configuration`; `unprotected` and `unavailable` are gone,
+    `unreviewed` is new, and `bypass`, `notes` and `protectedBy` moved into `configuration`.
 
     Every /v1 call needs a bearer token the cluster's TokenReview accepts, in `Authorization`, or in
     `X-Glidepath-Authorization` when the call comes through the API server's service proxy (which
@@ -719,22 +724,24 @@ paths:
   /v1/apps/{app}/ref-protection:
     get:
       operationId: getRefProtection
-      summary: Whether the git host protects a ref so a commit could only have arrived through review (writes nothing)
+      summary: Whether every commit being released was reviewed, with the evidence (writes nothing)
       description: >-
         Needs `get` on `refprotection.glidepath.hangar.io` in the app's namespace (a privileged Pipeline's
         pipeline-runner has it). `repo` is `<owner>/<name>` and must be one of the app's own repositories; `ref` is a full
         ref (`refs/heads/<branch>` or `refs/tags/<tag>`), `sha` the full commit; the caller sends the ones Pipelines-as-Code
-        recorded on the run. A branch is `protected` when an active ruleset (or classic branch protection) requires pull
-        requests with at least one approving review that a later push does not leave standing (`dismiss_stale_reviews_on_push` or
-        `require_last_push_approval`) and blocks force pushes and deletion, no push-rights actor class
-        (write or maintain role, custom role, team, deploy key, named user) may bypass it, and the commit is on the
-        branch; bypass by administrators, organization administrators and GitHub Apps is reported in `bypass`, not
-        counted against it. A tag is `protected` when active tag rulesets matching it restrict creation, update and
-        deletion under the same bypass rule and the tagged commit is on a protected branch. `unavailable` is the host's own
-        "not on this plan" answer; `unverifiable` means the host did not show enough to decide (an unreadable ruleset, a
-        bypass list this token is not shown). Only `protected` is a yes. A host that fails to answer is 502, never a
-        verdict. The answer is 200 whatever the verdict and is never cached; every call reads the host again with a token
-        minted for that call.
+        recorded on the run. The verdict is `protected` when every commit in the range (the commits after the app's last
+        verified release, up to `sha`; a first release is `sha` alone) belongs to a pull request merged into the protected
+        branch of this repository, and that pull request has an approving review, not dismissed, on its final head, from an
+        account that is not a bot, not its opener and not the author or committer of any of its commits. A commit with no
+        such pull request (a direct push, a force push, an administrator's bypass) makes it `unreviewed`; the commits are
+        in `missing` and `evidence.unreviewed`. `unverifiable`: GitHub did not show enough (a failed read, a range longer
+        than 250 commits, a last release that cannot be used as the start of the range, a ref that is not a protected
+        branch). Only `protected` is a yes. A host or broker that fails to answer at all (transport, rate limit past the
+        bounded retries) is 502, never a verdict. `evidence` is what the Clearance gate's proposer reads: the commits with
+        their pull requests, the distinct openers, mergers and approvers. `configuration` is what the host's rulesets and
+        branch protection say; it is informational and never decides. The answer is 200 whatever the verdict and is never
+        cached; every call reads the host again with a read-only token (contents, pull requests, metadata) minted for that
+        call.
       x-glidepath-tier: T0
       parameters:
         - { $ref: "#/components/parameters/App" }
@@ -743,7 +750,7 @@ paths:
         - { name: sha, in: query, required: true, schema: { type: string, pattern: "^[0-9a-f]{40}$" }, description: The commit Pipelines-as-Code recorded for the event }
         - { $ref: "#/components/parameters/OnBehalfOf" }
       responses:
-        "200": { description: The verdict, content: { application/json: { schema: { $ref: "#/components/schemas/RefProtectionVerdict" } } } }
+        "200": { description: The verdict and its evidence, content: { application/json: { schema: { $ref: "#/components/schemas/RefProtectionVerdict" } } } }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
@@ -1181,29 +1188,91 @@ components:
       type: object
       required: [verdict, repo, ref, sha, kind, mainLike, reasons]
       properties:
-        verdict: { type: string, enum: [protected, unprotected, unavailable, unverifiable] }
+        verdict: { type: string, enum: [protected, unreviewed, unverifiable] }
         repo: { type: string }
         ref: { type: string }
         sha: { type: string }
         kind: { type: string, enum: [branch, tag] }
         mainLike: { type: boolean, description: "The ref is a configured protected branch or matches the release tag pattern; a build of any other ref writes no main image" }
-        reasons: { type: array, items: { type: string }, description: Why, in words a person can act on }
-        missing: { type: array, items: { type: string }, description: What a protected ref would have and this one lacks }
-        notes: { type: array, items: { type: string }, description: "Review settings reported, not required: require_code_owner_review and required_review_thread_resolution, on or off" }
-        protectedBy: { type: array, items: { type: string }, description: "The rulesets, branch protection or protected branch that protect it" }
-        bypass:
+        branch: { type: string, description: "The protected branch the evidence was read against (a tag's: the first protected branch holding its commit)" }
+        reasons: { type: array, items: { type: string }, description: "Why, in words a person can act on; for protected, the summary the release record carries (it starts with 'review evidence:')" }
+        missing: { type: array, items: { type: string }, description: "One line per commit without evidence, at most 20 (the rest in evidence.unreviewed)" }
+        evidence: { $ref: "#/components/schemas/ReviewEvidence" }
+        configuration:
+          type: object
+          description: "What the host's rulesets and branch protection say. Informational, so it never decides the verdict, and a read that failed is reported here, not as a failure."
+          required: [state, reasons]
+          properties:
+            state: { type: string, enum: [protected, unprotected, unavailable, unverifiable] }
+            reasons: { type: array, items: { type: string } }
+            missing: { type: array, items: { type: string } }
+            notes: { type: array, items: { type: string } }
+            protectedBy: { type: array, items: { type: string } }
+            bypass:
+              type: array
+              description: Every actor the rulesets or protection let past the rules, as far as the read-only token is shown them
+              items:
+                type: object
+                required: [source, actorType, moot]
+                properties:
+                  source: { type: string }
+                  actorType: { type: string }
+                  actorId: { type: integer, format: int64 }
+                  mode: { type: string }
+                  moot: { type: boolean }
+                  note: { type: string }
+    ReviewEvidence:
+      type: object
+      description: What a verdict rests on. Everything is a GitHub-authenticated fact (pull request opener and merger, linked commit accounts, review reviewer, state and commit id).
+      required: [branch, mode, to, commits, pullRequests, openers, mergers, approvers, accepted, calls]
+      properties:
+        branch: { type: string }
+        mode: { type: string, enum: [range, first], description: "range: the commits after the last verified release; first: the commit alone (no usable earlier verified release)" }
+        from: { type: string, description: "The last verified release's commit (exclusive), mode range. It was confirmed an ancestor of `to` on the protected branch and itself has review evidence; a release record is never trusted to skip commits" }
+        fromRelease: { type: string, description: The release record the start of the range came from }
+        to: { type: string, description: The commit being released (inclusive) }
+        commits:
           type: array
-          description: Every actor the rulesets or protection let past the rules; moot means the actor class is anyone with push rights
+          description: Every commit of the range, oldest first
           items:
             type: object
-            required: [source, actorType, moot]
+            required: [sha, reviewed]
             properties:
-              source: { type: string }
-              actorType: { type: string }
-              actorId: { type: integer, format: int64 }
-              mode: { type: string }
-              moot: { type: boolean }
-              note: { type: string }
+              sha: { type: string }
+              pullRequest: { type: integer, description: The merged pull request that brought it into the protected branch }
+              reviewed: { type: boolean }
+              reason: { type: string, description: Why a commit has no evidence }
+        pullRequests:
+          type: array
+          items:
+            type: object
+            required: [number, url, opener, merger, mergedAt, mergeCommit, head, commits, authors, approvers, reviewed]
+            properties:
+              number: { type: integer }
+              url: { type: string }
+              opener: { type: string }
+              merger: { type: string }
+              mergedAt: { type: string }
+              mergeCommit: { type: string }
+              head: { type: string, description: "The final head; an approval counts only on it" }
+              commits: { type: array, items: { type: string } }
+              authors: { type: array, items: { type: string }, description: GitHub accounts that authored or committed its commits }
+              unlinked: { type: integer, description: Commits whose author or committer GitHub could not link to an account (then the merger may not approve either) }
+              approvers: { type: array, items: { type: string }, description: Accounts whose approval counts }
+              reviewed: { type: boolean }
+              missing: { type: string }
+        openers: { type: array, items: { type: string }, description: Distinct, sorted }
+        mergers: { type: array, items: { type: string } }
+        approvers: { type: array, items: { type: string } }
+        unreviewed:
+          type: array
+          items: { type: object, required: [sha, reason], properties: { sha: { type: string }, reason: { type: string } } }
+        accepted:
+          type: array
+          description: "Reserved for an owner-declared baseline (commits accepted without review, and by whom). Always empty in this version"
+          items: { type: object, required: [sha, acceptedBy, reason], properties: { sha: { type: string }, acceptedBy: { type: string }, reason: { type: string }, at: { type: string } } }
+        notes: { type: array, items: { type: string } }
+        calls: { type: integer, description: GitHub reads the evidence took (at most 400) }
     CicdValidationResult:
       type: object
       required: [valid, problems, changes, needsPerson, summary, base, resulting, contractVersion]

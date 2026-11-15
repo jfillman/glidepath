@@ -153,7 +153,7 @@ func TestGitHubReadTokenEndpoint(t *testing.T) {
 			Authenticated: true, User: authenticationv1.UserInfo{Username: user}}}, nil
 	})
 	dyn := repos(repoCR("app-boarding-api-cicd", "boarding-api", "https://github.com/jfillman/boarding-api"))
-	h := handleGitHubReadToken(cs, dyn, testCreds(t), map[string]bool{apiSA: true}, nil, nil)
+	h := handleGitHubReadToken(cs, dyn, testCreds(t), map[string]bool{apiSA: true})
 
 	call := func(token, body string) (int, githubInstallationTokenResponse) {
 		req := httptest.NewRequest(http.MethodPost, "/github-read-token", strings.NewReader(body))
@@ -198,10 +198,9 @@ func TestGitHubReadTokenEndpoint(t *testing.T) {
 	}
 }
 
-// purpose "ref-protection" is the one call that may carry the extra permissions the cluster configured for it
-// (githubRead.refProtectionPermissions); no other call, and no cluster that configured nothing, gets more than the
-// read-only set.
-func TestGitHubReadTokenRefProtectionPurpose(t *testing.T) {
+// There is no elevated token: whatever the request carries (a purpose, a permissions field, an administration ask), the
+// token minted for glidepath-api is the read-only set, contents, pull requests and metadata, on the one repository.
+func TestGitHubReadTokenIsAlwaysReadOnly(t *testing.T) {
 	var mints []map[string]any
 	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -226,106 +225,50 @@ func TestGitHubReadTokenRefProtectionPurpose(t *testing.T) {
 			Authenticated: true, User: authenticationv1.UserInfo{Username: strings.TrimPrefix(tr.Spec.Token, "t-")}}}, nil
 	})
 	dyn := repos(repoCR("app-boarding-api-cicd", "boarding-api", "https://github.com/jfillman/boarding-api"))
-	rpCallers := map[string]bool{apiSA: true}
-	caller := apiSA
-	var permsFor func(extra map[string]string, callers map[string]bool, body string) string
-	perms := func(extra map[string]string, body string) string {
-		return permsFor(extra, rpCallers, body)
-	}
-	permsFor = func(extra map[string]string, callers map[string]bool, body string) string {
+	ask := func(body string) (int, string) {
 		mints = nil
-		h := handleGitHubReadToken(cs, dyn, testCreds(t), map[string]bool{apiSA: true, otherSA: true}, extra, callers)
+		h := handleGitHubReadToken(cs, dyn, testCreds(t), map[string]bool{apiSA: true})
 		req := httptest.NewRequest(http.MethodPost, "/github-read-token", strings.NewReader(body))
-		req.Header.Set("Authorization", "Bearer t-"+caller)
+		req.Header.Set("Authorization", "Bearer t-"+apiSA)
 		rec := httptest.NewRecorder()
 		h(rec, req)
 		if rec.Code != 200 {
-			return "status " + rec.Result().Status
+			return rec.Code, ""
+		}
+		if len(mints) != 1 {
+			t.Fatalf("one mint per request: %v", mints)
 		}
 		raw, _ := json.Marshal(mints[0]["permissions"])
-		return string(raw)
+		return rec.Code, string(raw)
 	}
-	plain := `{"owner":"jfillman","repo":"boarding-api","app":"boarding-api"}`
-	rp := `{"owner":"jfillman","repo":"boarding-api","app":"boarding-api","purpose":"ref-protection"}`
-	extra := map[string]string{"administration": "write"}
-	readOnly := `{"contents":"read","metadata":"read","pull_requests":"read"}`
-	if got := perms(extra, rp); got != `{"administration":"write","contents":"read","metadata":"read","pull_requests":"read"}` {
-		t.Fatalf("ref-protection purpose with the setting: %s", got)
-	}
-	if got := perms(extra, plain); got != readOnly {
-		t.Fatalf("a call with no purpose must not get the extra permission: %s", got)
-	}
-	if got := perms(nil, rp); got != readOnly {
-		t.Fatalf("with nothing configured the purpose gets today's permissions: %s", got)
-	}
-	if got := perms(extra, `{"owner":"jfillman","repo":"boarding-api","app":"boarding-api","purpose":"admin"}`); !strings.HasPrefix(got, "status 400") {
-		t.Fatalf("an unknown purpose is refused: %s", got)
-	}
-	// The elevated permission is bound to the ref-protection callers: a caller allowlisted only to read gets today's set even
-	// when it asks for the purpose, and so does everyone when no caller is bound.
-	caller = otherSA
-	if got := perms(extra, rp); got != readOnly {
-		t.Fatalf("a reader that is not a ref-protection caller must not be elevated: %s", got)
-	}
-	caller = apiSA
-	if got := permsFor(extra, nil, rp); got != readOnly {
-		t.Fatalf("no ref-protection caller configured: nobody is elevated: %s", got)
-	}
-	// Never a repository that is not registered as the app's source: its gitops repository.
-	// Never the gitops repository: ref protection reads the source repo, so a gitops repo is not worth an admin-write token.
-	if got := perms(extra, `{"owner":"jfillman","repo":"gitops-boarding-api","app":"boarding-api","purpose":"ref-protection"}`); got != readOnly {
-		t.Fatalf("the gitops repo is never elevated: %s", got)
-	}
-}
-
-func TestLoadRefProtectionPermissions(t *testing.T) {
-	for in, want := range map[string]string{"": "", `{"administration":"write"}`: "administration=write", `{"administration":"read"}`: "administration=read"} {
-		t.Setenv("GITHUB_READ_REF_PROTECTION_PERMISSIONS", in)
-		got, err := loadRefProtectionPermissions()
-		if err != nil || (len(got) == 0) != (want == "") || (want != "" && got["administration"] != strings.TrimPrefix(want, "administration=")) {
-			t.Fatalf("%q: %v %v", in, got, err)
-		}
-	}
-	for _, bad := range []string{`{"contents":"write"}`, `{"administration":"admin"}`, `not json`, `{"administration":"write","members":"read"}`} {
-		t.Setenv("GITHUB_READ_REF_PROTECTION_PERMISSIONS", bad)
-		if _, err := loadRefProtectionPermissions(); err == nil {
-			t.Fatalf("%q must be refused", bad)
-		}
-	}
-}
-
-// The elevated permission goes by the repository's registered ROLE, not its name: only the repository the app's own Repository CR
-// registers as its source (the CR named for the app, in app-<app>-cicd), or an InfraService's registered repository.
-func TestGitHubReadSourceRole(t *testing.T) {
-	dyn := repos(
-		repoCR("app-boarding-api-cicd", "boarding-api", "https://github.com/jfillman/boarding-api"),
-		repoCR("app-boarding-api-cicd", "gitops-boarding-api", "https://github.com/jfillman/gitops-boarding-api"),
-		// an app whose CR registers a differently named repository as its source, and a gitops repo with an unrelated name
-		repoCR("app-odd-cicd", "odd", "https://github.com/jfillman/odd-service.git"),
-		repoCR("app-odd-cicd", "gitops-odd", "https://github.com/jfillman/odd-deploy"),
-		// a CR named for the app that registers what is really a gitops repository: the name does not make it a source
-		repoCR("app-mis-cicd", "mis", "https://github.com/jfillman/mis-gitops"),
-		repoCR("infra-broker-cicd", "gitops-infra-broker", "https://github.com/jfillman/gitops-infra-broker.git"),
-	)
-	for _, c := range []struct {
-		req  githubReadRequest
-		want bool
-	}{
-		{githubReadRequest{"jfillman", "boarding-api", "boarding-api", ""}, true},
-		{githubReadRequest{"jfillman", "gitops-boarding-api", "boarding-api", ""}, false},
-		// a differently named gitops repository is never the source; a differently named source is
-		{githubReadRequest{"jfillman", "odd-deploy", "odd", ""}, false},
-		{githubReadRequest{"jfillman", "odd-service", "odd", ""}, true},
-		{githubReadRequest{"jfillman", "odd", "odd", ""}, false}, // the name of the app is not a registration
-		// the infra repository registered in its own namespace, and nothing else
-		{githubReadRequest{"jfillman", "gitops-infra-broker", "broker", ""}, true},
-		{githubReadRequest{"jfillman", "broker", "broker", ""}, false},
-		// another owner, an unregistered app
-		{githubReadRequest{"someone-else", "boarding-api", "boarding-api", ""}, false},
-		{githubReadRequest{"jfillman", "ghost", "ghost", ""}, false},
+	const readOnly = `{"contents":"read","metadata":"read","pull_requests":"read"}`
+	const repo = `"owner":"jfillman","repo":"boarding-api","app":"boarding-api"`
+	for name, body := range map[string]string{
+		"plain":                         `{` + repo + `}`,
+		"legacy ref-protection purpose": `{` + repo + `,"purpose":"ref-protection"}`,
+		"a permissions field":           `{` + repo + `,"permissions":{"administration":"write"}}`,
+		"an administration field":       `{` + repo + `,"administration":"write","purpose":"ref-protection"}`,
+		"the gitops repository":         `{"owner":"jfillman","repo":"gitops-boarding-api","app":"boarding-api","purpose":"ref-protection"}`,
 	} {
-		if got := githubReadSourceRole(dyn, c.req); got != c.want {
-			t.Errorf("%+v: %v, want %v", c.req, got, c.want)
+		code, perms := ask(body)
+		if code != 200 || perms != readOnly {
+			t.Errorf("%s: %d %s, want the read-only set", name, code, perms)
 		}
+		if strings.Contains(perms, "administration") {
+			t.Errorf("%s: administration must never be minted", name)
+		}
+	}
+	// any other purpose is refused, and so is a request that names a repository that is not the app's
+	if code, _ := ask(`{` + repo + `,"purpose":"admin"}`); code != http.StatusBadRequest {
+		t.Fatalf("an unknown purpose is refused: %d", code)
+	}
+	if code, _ := ask(`{"owner":"jfillman","repo":"someone-elses","app":"boarding-api"}`); code != http.StatusForbidden {
+		t.Fatalf("another repository is refused: %d", code)
+	}
+	// nothing in the code can configure it: the elevation settings are gone
+	t.Setenv("GITHUB_READ_REF_PROTECTION_PERMISSIONS", `{"administration":"write"}`)
+	t.Setenv("GITHUB_READ_REF_PROTECTION_CALLERS", apiSA)
+	if _, perms := ask(`{` + repo + `,"purpose":"ref-protection"}`); perms != readOnly {
+		t.Fatalf("a leftover setting must not elevate: %s", perms)
 	}
 }

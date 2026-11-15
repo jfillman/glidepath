@@ -41,11 +41,10 @@ type Broker struct {
 
 // Session is one request's GitHub reads for one app. Not for reuse across requests.
 type Session struct {
-	b       *Broker
-	app     string
-	purpose string // sent to the broker with each mint ("" = the plain read-only token)
-	mu      sync.Mutex
-	tokens  map[string]*mint // owner/repo -> its one mint, for this request only
+	b      *Broker
+	app    string
+	mu     sync.Mutex
+	tokens map[string]*mint // owner/repo -> its one mint, for this request only
 }
 
 // mint is one broker call; done closes when t/err are set, so a read that needs the token while a Prefetch is still
@@ -59,14 +58,6 @@ type mint struct {
 // Session opens a request's reads for app.
 func (b *Broker) Session(app string) *Session {
 	return &Session{b: b, app: app, tokens: map[string]*mint{}}
-}
-
-// SessionFor is Session whose tokens are minted for a purpose the broker knows ("ref-protection"): the broker adds
-// what the cluster configured for that purpose, to these tokens only.
-func (b *Broker) SessionFor(app, purpose string) *Session {
-	s := b.Session(app)
-	s.purpose = purpose
-	return s
 }
 
 // Prefetch starts minting the tokens for repos now, in the background, so a request whose later reads depend on
@@ -128,9 +119,6 @@ func (s *Session) mint(ctx context.Context, owner, repo string) (string, error) 
 		return "", fmt.Errorf("reading glidepath-api's broker token: %w", err)
 	}
 	reqBody := map[string]string{"owner": owner, "repo": repo, "app": s.app}
-	if s.purpose != "" {
-		reqBody["purpose"] = s.purpose
-	}
 	body, _ := json.Marshal(reqBody)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.b.URL, "/")+"/github-read-token", bytes.NewReader(body))
 	if err != nil {

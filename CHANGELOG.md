@@ -4,6 +4,22 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### Pipeline trust T3b: ref protection rests on review evidence, not on bypass lists
+
+- `GET /v1/apps/{app}/ref-protection` (API 0.13.0): `protected` now means every commit being released (the commits after the app's last verified release, up to
+  the released commit; a first release is the commit alone; at most 250) belongs to a pull request merged into the protected branch of the source repository
+  and that pull request has an approving review on its final head, not dismissed, from someone who is not a bot, not its opener and not an author or committer
+  of its commits. Verdicts `protected`, `unreviewed` (the commits are listed), `unverifiable`; `unprotected` and `unavailable` are gone. The answer carries
+  `evidence` (commits, pull requests, openers, mergers, approvers: what the Clearance gate's proposer needs) and the ruleset and branch protection reads as an
+  informational `configuration` that never decides. Read-only token only; no override yet (`evidence.accepted` is the empty place for an owner-declared baseline).
+- **Removed:** `githubRead.refProtectionPermissions` and `githubRead.refProtectionCallers` (the control plane chart), and the broker's elevated `ref-protection` purpose:
+  `/github-read-token` mints only contents, pull requests and metadata read. The platform's GitHub App is not asked for Administration. Values that still set them are ignored.
+- **Upgrade: with `refProtection.mode: required`, a release whose commits were not each approved by someone other than their author is refused. A repository with a
+  single maintainer cannot pass: set `off` (recorded) or add a reviewer.** A cluster on `off` (the lab) sees no change in behaviour: the guard asks nothing, the record still says
+  "Off here". New control plane value `api.pipelineLogins` (pipeline accounts whose approval never counts). docs/admin/security.md "Ref protection".
+- `hack/ci/vap-compile`: the package comment names the real flag `-minor`, and a truncated report line is printed instead of dropped.
+- Guard and gate tasks unset the GitHub token variables in the step that fetches with it; three repository-name parses no longer cut a name at a dot (`app.example`).
+
 ### Fix: the control plane's admission policy `cicd-run-shape` compiles under the API server
 
 - `cicd-run-shape` was refused by the Kubernetes API server (the Argo CD Application could not sync, and the policy was never created): the `catalog` variable was a
