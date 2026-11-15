@@ -279,6 +279,10 @@ spec:
           echo "image ${IMAGE_REF} -> ${IMAGE_REPO} ${IMAGE_DIGEST:-(no digest)}"
         fi
 
+        # the test's name selects a file in the repository (glidepath/<name>.yaml): a plain name, checked before it is used (the admission pattern for test-name)
+        for n in "${TEST_NAME}" "${CHECK_RIDE_NAME:-}"; do
+          [[ -z "${n}" || "${n}" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "error: a test name is not a plain name (lower case letters, digits, hyphens)" >&2; exit 1; }
+        done
         SECRET_NAME="${APP_NAME}-app-secrets"
         WORKFLOW_SPEC_JSON=""   # the spec that runs, for workflow-digest
         DECLARED=""             # spec.config keys the workflow declares
@@ -364,8 +368,11 @@ spec:
             exit 1
           fi
           echo "applying ${WORKFLOW_FILE} as TestWorkflow/${WORKFLOW_NAME} in testkube namespace"
-          APPLIED="$(yq eval ".metadata.name = \"${WORKFLOW_NAME}\"
-            | .spec.pod.imagePullSecrets = ((.spec.pod.imagePullSecrets // []) + [{\"name\": \"registry-credentials\"}] | unique_by(.name))" "${WORKFLOW_FILE}" \
+          # names that go into a program (yq, sed) are plain names first, and the yq value goes in through the environment
+          [[ "${WORKFLOW_NAME}" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ && "${SECRET_NAME}" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] \
+            || { echo "error: the workflow or secret name is not a plain name (lower case letters, digits, hyphens)" >&2; exit 1; }
+          APPLIED="$(WF_NAME="${WORKFLOW_NAME}" yq eval '.metadata.name = strenv(WF_NAME)
+            | .spec.pod.imagePullSecrets = ((.spec.pod.imagePullSecrets // []) + [{"name": "registry-credentials"}] | unique_by(.name))' "${WORKFLOW_FILE}" \
             | sed "s/__APP_SECRETS_NAME__/${SECRET_NAME}/g")"
           kubectl -n testkube apply -f - <<< "${APPLIED}"
           WORKFLOW_SPEC_JSON="$(yq eval -o=json '.spec' <<< "${APPLIED}" | jq -cS '.')"

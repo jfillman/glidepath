@@ -199,6 +199,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
 
         ### 1. Flow and stage ids - was start-flow-root-span.yaml's check-and-start step
         ### plus otel-stage-span-start's one-liner. Idempotent: an incoming chain-id
@@ -267,7 +268,8 @@ spec:
 
         owner="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         token="$(github_app_installation_token "${owner}" "${APP_NAME}")"
-        clone_url="https://x-access-token:${token}@github.com/${owner}/${APP_NAME}.git"
+        git_auth "${token}"
+        clone_url="https://${GIT_HOST}/${owner}/${APP_NAME}.git"
 
         cd "$(workspaces.source.path)"
         # Workspace volume is owned by a different uid than this step runs as - git

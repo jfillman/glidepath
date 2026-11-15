@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: anchors
+  namespace: {{ .Release.Namespace }}
+  labels: &labels {app: x, tier: "web"}
+data:
+  base: &base {a: "1", b: "2"}
+  merged:
+    <<: *base
+    b: overridden
+    c: "3"
+  alias: *labels
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: scalars, namespace: {{ .Release.Namespace }}}
+data:
+  ts: 2001-12-14t21:59:43.10-05:00
+  date: 2002-12-14
+  yes_value: yes
+  no_value: No
+  on_value: on
+  off_value: Off
+  tilde: ~
+  nul: null
+  octal_old: 012
+  octal_new: 0o14
+  hex: 0x1F
+  underscore: 1_000
+  exp: 1e3
+  sexa: 1:30
+  norway: NO
+  version: 1.10
+  quoted: "yes"
+  bin: !!binary aGVsbG8=
+  dupkey: first
+  dupkey: second
+---
+# a comment-only document
+---
+
+---
+apiVersion: v1
+metadata: {name: nokind}
+---
+kind: NoMetadata

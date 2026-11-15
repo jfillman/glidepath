@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crlf
+  namespace: {{ .Release.Namespace }}
+data:
+  text: |
+    line one
+    line two

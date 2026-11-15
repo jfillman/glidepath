@@ -255,7 +255,7 @@ spec:
             fail "no Rekor tlog entry found for attestation payload hash ${payload_hash} after retrying - was it signed before Rekor was deployed, or before transparency.enabled was set?"
           fi
           rekor_uuid="$(cat "${rekor_uuid_file}")"
-          rekor_entry="$(curl -fsSL --max-time 10 "http://rekor-server.rekor-system.svc/api/v1/log/entries/${rekor_uuid}" | jq ".[\"${rekor_uuid}\"]")"
+          rekor_entry="$(curl -fsSL --max-time 10 "http://rekor-server.rekor-system.svc/api/v1/log/entries/${rekor_uuid}" | jq --arg u "${rekor_uuid}" '.[$u]')"
           rekor_body_b64="$(jq -r '.body' <<<"${rekor_entry}")"
           integrated_time="$(jq -r '.integratedTime // empty' <<<"${rekor_entry}")"
           # -j (not -r): the checkpoint's own trailing newline is part of the signed note.

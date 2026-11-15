@@ -32,6 +32,12 @@ SOURCE_TASKS = ["build-source", "unit-test", "build-image", "build-python-wheel-
 PUSHER_TASKS = ["push-image"]
 TEST_TASKS = ["run-integration-script"]
 ENV = celpy.Environment()
+# the volume claim shape the onboarding templates and the flow generator write
+VCT = {"spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "2Gi"}}}}
+# What a typed client (Pipelines-as-Code builds typed PipelineRuns; Tekton's WorkspaceBinding.VolumeClaimTemplate is a corev1.PersistentVolumeClaim)
+# writes for the same template: Go's encoding/json emits a struct field even when it is empty, so a stored run carries
+# `metadata: {creationTimestamp: null}` and `status: {}` (what `kubectl get pipelinerun -o yaml` shows for any run that has a volumeClaimTemplate).
+REAL_VCT = {"metadata": {"creationTimestamp": None}, "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "2Gi"}}}, "status": {}}
 
 
 def render(*extra):
@@ -130,7 +136,7 @@ def run(name="build", metadata=None, **spec):
             # the default run is a pull request's build, which is what the generator writes for one
             "params": list(PR_BUILD_PARAMS if pr_build else BUILD_PARAMS),
             "taskRunTemplate": {"serviceAccountName": "pipeline-runner"},
-            "workspaces": [{"name": "source", "volumeClaimTemplate": {"spec": {}}}],
+            "workspaces": [{"name": "source", "volumeClaimTemplate": copy.deepcopy(VCT)}],
             "taskRunSpecs": [{"pipelineTaskName": t, "serviceAccountName": "source-runner"} for t in SOURCE_TASKS]
                             + [{"pipelineTaskName": t, "serviceAccountName": "image-pusher"} for t in PUSHER_TASKS],
         },
@@ -196,7 +202,9 @@ def render_catalog():
 
 
 def repo_code(task):
-    return any(x.get("image") == "$(params.agent-image)" or "buildctl" in x.get("script", "") for x in task["spec"].get("steps", []))
+    """Runs the repository's own code, or renders a chart it chooses (render-manifests: labelled, so a comment that names helm is not one)."""
+    return task["metadata"].get("labels", {}).get("glidepath.io/renders-repository-content") == "true" or \
+        any(x.get("image") == "$(params.agent-image)" or "buildctl" in x.get("script", "") for x in task["spec"].get("steps", []))
 
 
 def schema_stages():
@@ -465,6 +473,52 @@ class CicdRunAdmission(unittest.TestCase):
         self.refused(run(workspaces=[{"name": "source", "secret": {"secretName": "app-secrets"}}]), msg="Workspaces")
         self.refused(run(workspaces=[{"name": "source", "persistentVolumeClaim": {"claimName": "x"}}]), msg="Workspaces")
 
+    def test_a_workspace_volume_claim_has_only_the_shape_the_templates_use(self):
+        def vct(**spec):
+            body = copy.deepcopy(VCT)
+            body["spec"].update(spec)
+            return [{"name": "gate", "volumeClaimTemplate": body}]
+        self.admitted(run(workspaces=vct()))
+        self.admitted(run(workspaces=[{"name": "gate", "emptyDir": {}}]))
+        # the shape a typed client writes (Pipelines-as-Code): metadata.creationTimestamp null, empty status
+        self.admitted(run(workspaces=[{"name": "gate", "volumeClaimTemplate": copy.deepcopy(REAL_VCT)}]))
+        self.admitted(run(workspaces=[{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), metadata={})}]))
+        self.admitted(run(workspaces=[{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(VCT), status={})}]))
+        for storage in ("1Gi", "5Gi", "10Gi", "20Gi"):
+            self.admitted(run(workspaces=vct(resources={"requests": {"storage": storage}})))
+        refusals = {
+            "dataSource (a clone of another volume)": vct(dataSource={"kind": "PersistentVolumeClaim", "name": "source-pvc"}),
+            "dataSourceRef": vct(dataSourceRef={"kind": "PersistentVolumeClaim", "name": "source-pvc"}),
+            "volumeName": vct(volumeName="pv-1"),
+            "selector": vct(selector={"matchLabels": {"a": "b"}}),
+            "volumeMode": vct(volumeMode="Block"),
+            "a storageClassName that is not allowed": vct(storageClassName="fast"),
+            "another access mode": vct(accessModes=["ReadWriteMany"]),
+            "two access modes": vct(accessModes=["ReadWriteOnce", "ReadWriteMany"]),
+            "a size over the limit": vct(resources={"requests": {"storage": "500Gi"}}),
+            "a size in another unit": vct(resources={"requests": {"storage": "2048Mi"}}),
+            "a limit as well": vct(resources={"requests": {"storage": "2Gi"}, "limits": {"storage": "2Gi"}}),
+            "no size": vct(resources={}),
+            "no spec": [{"name": "gate", "volumeClaimTemplate": {}}],
+            "metadata with an annotation": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(VCT), metadata={"annotations": {"a": "b"}})}],
+            "metadata with a name": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), metadata={"name": "x", "creationTimestamp": None})}],
+            "metadata with a generateName": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), metadata={"generateName": "x-"})}],
+            "metadata with labels": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), metadata={"labels": {"a": "b"}})}],
+            "metadata with owner references": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), metadata={"ownerReferences": [{"name": "x"}]})}],
+            "a creationTimestamp that is a value": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), metadata={"creationTimestamp": "2026-01-01T00:00:00Z"})}],
+            "a status with content": [{"name": "gate", "volumeClaimTemplate": dict(copy.deepcopy(REAL_VCT), status={"phase": "Bound"})}],
+            "a typed template that also clones a volume": [{"name": "gate", "volumeClaimTemplate": {"metadata": {"creationTimestamp": None}, "status": {}, "spec": dict(copy.deepcopy(VCT)["spec"], dataSourceRef={"kind": "PersistentVolumeClaim", "name": "x"})}}],
+        }
+        for what, ws in refusals.items():
+            self.refused(run(workspaces=ws), msg="volumeClaimTemplate")
+
+    def test_a_workspace_storage_class_can_be_allowed_by_value(self):
+        pols, _ = policies("--set", "cicdRunAdmission.workspaceStorageClassNames={gp3}")
+        ws = [{"name": "gate", "volumeClaimTemplate": {"spec": dict(copy.deepcopy(VCT)["spec"], storageClassName="gp3")}}]
+        self.assertEqual(evaluate(pols["cicd-run-shape"], run(workspaces=ws)), [])
+        ws[0]["volumeClaimTemplate"]["spec"]["storageClassName"] = "other"
+        self.assertTrue(evaluate(pols["cicd-run-shape"], run(workspaces=ws)))
+
     def test_an_update_by_pac_is_held_to_the_same_shape(self):
         self.assertIn("UPDATE", self.pols["cicd-run-shape"]["matchConstraints"]["resourceRules"][0]["operations"])
         self.refused(run(pipelineSpec={"tasks": []}), operation="UPDATE")
@@ -599,6 +653,25 @@ class CicdRunAdmission(unittest.TestCase):
         self.admitted(t)
         other = run("cicd-validate-check", taskRunSpecs=None, params=prm(repo_url=REPO, revision=SHA, pr_number="17"))
         self.assertIsNone(evaluate(self.iso, other))
+
+    def test_the_gate_pipelines_must_run_their_render_as_source_runner(self):
+        """policy-validation-check and clearance-gate-check render a chart the repository chooses in their `render` task, which holds
+        no credential only as source-runner: a .tekton file that gives it to anyone else (or to nobody) is refused, and so is giving
+        source-runner to the gate's own tasks."""
+        for pname in ("policy-validation-check", "clearance-gate-check", "values-check"):
+            params = prm(repo_url=REPO, revision=SHA, app_name="sample", pr_number="17")
+            for specs in (None, []):
+                self.refused(run(pname, taskRunSpecs=specs, params=params), self.iso, "render")
+            for account in ("pipeline-runner", "image-pusher", "glidepath-cloud-deployer"):
+                specs = [{"pipelineTaskName": "render", "serviceAccountName": account}]
+                self.refused(run(pname, taskRunSpecs=specs, params=params), None, "may run as")
+                self.refused(run(pname, taskRunSpecs=specs, params=params), self.iso, "render")
+            for task in ("fetch", "evaluate", "register", "register-advisory", "render-check", "validate"):
+                specs = [{"pipelineTaskName": "render", "serviceAccountName": "source-runner"}, {"pipelineTaskName": task, "serviceAccountName": "source-runner"}]
+                self.refused(run(pname, taskRunSpecs=specs, params=params), None, "may run as")
+            good = run(pname, taskRunSpecs=[{"pipelineTaskName": "render", "serviceAccountName": "source-runner"}], params=params)
+            self.admitted(good)
+            self.admitted(good, self.iso)
 
     def test_the_push_task_must_run_as_image_pusher(self):
         sources = [{"pipelineTaskName": t, "serviceAccountName": "source-runner"} for t in SOURCE_TASKS]

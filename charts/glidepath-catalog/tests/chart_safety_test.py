@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""policy-validation-gate and clearance-gate run `helm template` on a chart and value files the repository can choose, in a pod that
-holds a ServiceAccount token. Helm follows symlinks (`.Files.Get`, `{{ fail ... }}`), and the steps used to `cat` helm's error into the
-log, which a developer reads. So: a chart or value file with a symlink out of its directory is refused before helm runs, and helm's
-error text is never printed from that pod.
+"""render-manifests runs `helm template` on a chart and value files the repository can choose. Helm follows symlinks (`.Files.Get`,
+`{{ fail ... }}`). The render used to run in the credentialed pods of policy-validation-gate and clearance-gate (where a symlink to the
+pod's own token, or helm's error text in the log, would have been a leak); it now runs in a pod with no token (tokenless_render_test.py), and
+the symlink refusal stays: a chart or value file with a symlink out of its directory is refused before helm runs, so the render's output
+(which a credentialed gate reads) cannot carry a file of the workspace. The gates run no helm at all.
 
 Runs the rendered helper (chart_safe) against scratch charts. Needs helm, pyyaml, bash.
 Run:  python3 charts/glidepath-catalog/tests/chart_safety_test.py
@@ -27,21 +28,14 @@ def scripts(task):
 
 
 class ChartSafety(unittest.TestCase):
-    def test_both_gates_check_before_helm_and_print_no_helm_error(self):
-        for task in ("policy-validation-gate", "clearance-gate"):
-            text = scripts(task)
-            self.assertIn("# BEGIN chart-safety", text, task)
-            # helm's stderr goes to a file that is never printed; the files that are printed hold only chart_safe's own message
-            self.assertNotRegex(text, r'cat "\$\{out\}[^"]*(helm-err|render\.err)"', task)
-            self.assertNotRegex(text, r'(cat|head|tail|sed|grep)[^\n]*(\.helm-err|render\.err)', task)
-            if task == "clearance-gate":
-                self.assertIn('2> "${out}.helm-err"', text)
-            for m in re.finditer(r"helm template", text):
-                before = text[: m.start()]
-                self.assertIn("chart_safe", before, task)
+    def test_the_render_checks_before_helm(self):
+        text = scripts("render-manifests")
+        self.assertIn("# BEGIN chart-safety", text)
+        for m in re.finditer(r"exec helm template", text):
+            self.assertIn("chart_safe", text[: m.start()])
 
     def helper(self, tmp):
-        text = scripts("policy-validation-gate")
+        text = scripts("render-manifests")
         a = text.index("# BEGIN chart-safety")
         b = text.index("# END chart-safety")
         path = os.path.join(tmp, "helper.sh")

@@ -127,7 +127,11 @@ spec:
 
               token="$(github_app_installation_token "${GITHUB_OWNER}" "${repo}")"
               workdir="$(mktemp -d)"
-              clone_url="https://x-access-token:${token}@github.com/${GITHUB_OWNER}/${repo}.git"
+              # the token goes in an HTTP header in the environment, scoped to the git host, never in a URL or an argument
+              export GIT_CONFIG_COUNT=3 GIT_TERMINAL_PROMPT=0
+              export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "${token}" | base64 | tr -d '\n')"
+              export GIT_CONFIG_KEY_1="http.followRedirects" GIT_CONFIG_VALUE_1="false" GIT_CONFIG_KEY_2="credential.helper" GIT_CONFIG_VALUE_2=""
+              clone_url="https://github.com/${GITHUB_OWNER}/${repo}.git"
 
               if git clone --quiet --depth 1 "${clone_url}" "${workdir}/repo" 2>/dev/null \
                   && [[ -f "${workdir}/repo/.tekton/onboarding-resync.yaml" ]]; then

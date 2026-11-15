@@ -29,6 +29,20 @@ spec:
     - { name: revision, value: "{{ revision }}" }
     - { name: app-name, value: "<APP_NAME>" }
     - { name: pr-number, value: "{{ pull_request_number }}" }
+  # The Pipeline renders the chart in its own task, as source-runner (no token, no Secret): the control plane's admission policy
+  # refuses a run that gives `render` to another account (docs/admin/security.md, "Rendering is not done where the credentials are").
+  # The gate's task and the render task hand data to each other on this one volume (inputs, what the gate trusts, what was rendered).
+  workspaces:
+    - name: gate
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 1Gi
+  taskRunSpecs:
+    - pipelineTaskName: render
+      serviceAccountName: source-runner
   taskRunTemplate:
     serviceAccountName: pipeline-runner
   timeouts:

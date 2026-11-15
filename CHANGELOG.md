@@ -29,6 +29,22 @@ Notable changes to Glidepath. Newest first.
   "ref protection: Off here" in the task result and in the release record (`refProtection`). Release the control plane (glidepath-api) before the
   catalog: a required check with no endpoint to ask refuses. docs/admin/security.md, "Ref protection".
 
+### Pipeline trust, slice T2: charts the repository chooses are rendered where there is no token
+
+- New Task `render-manifests`, run as `source-runner` (no Role, no token, no Secret, no projected token), renders the environments of
+  `policy-validation-check` and `clearance-gate-check` with the same `helm template` arguments as before (so the objects and Clearance's
+  tree digest are unchanged), with no plugin or post-renderer, a CPU-time and file-size limit (`renderManifests` values) and #249's
+  symlink refusal. `policy-validation-gate` and `clearance-gate` no longer run helm: each runs twice in its Pipeline (phase `fetch`, then
+  phase `decide`) around the render, on one per-run volume, and read the output as data: files opened without following links,
+  digests recomputed from a `MANIFEST`, a bounded YAML parse (no tags, no recursive anchor, depth, document and alias-expansion limits).
+  Findings shown in a PR comment are escaped and cut.
+- A token is never in a URL or an argument any more (`git_auth`: a header scoped to `gitHost`); `with_retry` prints a label; log excerpts posted to PRs, Slack and Backstage are redacted. Names from repository paths and chart sources are validated before use, and no repository string enters a `yq`/`jq` program. `values-check` renders token-less too. Workspace claims in a `.tekton` file are restricted.
+- Admission: `render` is in `cicdRunAdmission.sourceTasks` for the three gate Pipelines. The two gitops-repo check templates gain a `gate` workspace
+  and `taskRunSpecs` for `render`.
+- **Upgrade:** release the three charts together, resync every gitops repository's `.tekton/` (until then its two checks fail, they do not
+  pass), check the volume is writable by `source-runner`. A chart with remote dependencies must carry its `charts/` (as before).
+  docs/admin/security.md, "Rendering is not done where the credentials are" and its upgrade note.
+
 ### Pipeline trust, slice T1: the image build and the registry push credential are separate pods
 
 - `build-image` (runs the `Containerfile` `RUN` lines, as `source-runner`) no longer mounts the registry push credential and pushes

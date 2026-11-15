@@ -51,7 +51,7 @@ release_image_pin() {
     echo "error: promotion.pinDigest is on but the image digest is '${digest}', not sha256:<hex> - resolve-image-ref could not read it from the registry" >&2
     return 1
   fi
-  yq -i -e ".release.image.digest = \"${digest}\" | .release.image.source = \"${source_repo}\"" "${manifest}"
+  PIN_DIGEST="${digest}" PIN_SOURCE="${source_repo}" yq -i -e '.release.image.digest = strenv(PIN_DIGEST) | .release.image.source = strenv(PIN_SOURCE)' "${manifest}"
 {{- else }}
   yq -i 'del(.release.image.digest, .release.image.source)' "${manifest}"
 {{- end }}
@@ -456,10 +456,10 @@ the admission verdict Clearance records (C-8) is reached exactly as the policy-v
 {{- end -}}
 
 {{- /*
-glidepath-catalog.chartSafety: bash for a credentialed step that runs `helm template` on a chart and value files the repository can choose.
-Helm follows symlinks (.Files.Get, {{ fail ... }} can print a file), and the pod holds a ServiceAccount token, so a symlink that leaves
-the chart directory, or a symlinked value file, is refused before helm runs. Helm's own error text is never printed from such a pod
-(chart_render_note): it can carry file content.
+glidepath-catalog.chartSafety: bash for the render-manifests Task, which runs `helm template` on a chart and value files the repository can
+choose. Helm follows symlinks (.Files.Get, {{ fail ... }} can print a file), so a symlink that leaves the chart directory, or a
+symlinked value file, is refused before helm runs. That Task holds no credential at all (docs/admin/security.md); the check stays
+because the render's output is read by a credentialed gate and a chart must not be able to put any file of the workspace into it.
 */ -}}
 {{- define "glidepath-catalog.chartSafety" -}}
 # BEGIN chart-safety
@@ -481,8 +481,154 @@ chart_safe() {
   done
   return 0
 }
-chart_render_note="helm's error text is withheld (it can contain file content, and this step holds credentials): run helm template locally on the same chart and value files to see it"
 # END chart-safety
+{{- end -}}
+
+{{- /*
+glidepath-catalog.inputGuards: bash for a credentialed step that takes names and a chart source from the repository (a directory name in the
+gitops repository, a chart repoURL in cicd.yaml). valid_name: the platform's own name rule, checked BEFORE a name is used anywhere (a path
+component is otherwise any string without a slash). valid_chart_source: a chart is fetched only from a host the platform names
+(chartSources, plus the default chart's own host), over https (git) or oci://, with a revision, path and chart name of plain characters; the
+fetch carries credentials, so it must not be able to go anywhere else. Fixed messages only: nothing from the repository is printed.
+*/ -}}
+{{- define "glidepath-catalog.inputGuards" -}}
+# BEGIN input-guards
+valid_name() { [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; }
+ALLOWED_GIT_HOSTS={{ join " " (concat ((.Values.chartSources | default dict).gitHosts | default (list "github.com")) (ternary (list (regexReplaceAll "^https://([^/]+)/.*$" .Values.defaultChart.repoURL "${1}")) (list) (hasPrefix "https://" (.Values.defaultChart.repoURL | default ""))) ) | quote }}
+ALLOWED_OCI_HOSTS={{ join " " (concat ((.Values.chartSources | default dict).ociHosts | default (list "ghcr.io")) (ternary (list (regexReplaceAll "^oci://([^/]+)/?.*$" .Values.defaultChart.repoURL "${1}")) (list) (hasPrefix "oci://" (.Values.defaultChart.repoURL | default ""))) ) | quote }}
+valid_chart_source() { # <repoURL> <targetRevision> <path> <chart>
+  local url="$1" rev="$2" path="$3" chart="$4" host
+  [[ "${rev}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ && "${rev}" != *..* ]] || return 1
+  [[ "${path}" =~ ^[A-Za-z0-9._/-]{0,200}$ && "${path}" != /* && "${path}" != *..* ]] || return 1
+  if [[ "${url}" == oci://* ]]; then
+    [[ "${url}" =~ ^oci://([a-z0-9.-]+(:[0-9]+)?)(/[A-Za-z0-9._-]+)*$ ]] || return 1
+    host="${BASH_REMATCH[1]}"
+    [[ "${chart}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ && "${chart}" != *..* ]] || return 1
+    [[ " ${ALLOWED_OCI_HOSTS} " == *" ${host} "* ]]
+  else
+    [[ "${url}" =~ ^https://([a-z0-9.-]+)/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || return 1
+    host="${BASH_REMATCH[1]}"
+    [[ " ${ALLOWED_GIT_HOSTS} " == *" ${host} "* ]]
+  fi
+}
+# env_entry <cluster> <env>: "cluster|env" for a path of the environment shape (<cluster>/<env>/values.yaml). A first directory that is not a plain
+# name is not an environment tree at all (docs/, Docs/, a dotted directory): return 3, the path is ignored as it always was. A cluster that is a
+# name with an environment that is not has the shape and an invalid name: return 1, the run is refused.
+env_entry() {
+  valid_name "$1" || return 3
+  valid_name "$2" || return 1
+  echo "$1|$2"
+}
+# chart_specs_ok: reads cicd.yaml as JSON; every chart spec in it (deploy.chart and each environment's chart) must be a mapping. A spec the resolver cannot
+# read (`chart: "str"`) would otherwise leave the resolved chart empty, and the gate would render the default chart while Argo CD applies another.
+chart_specs_ok() {
+  jq -e '(.deploy // {}) as $d | ($d | type) == "object" and (($d.environments // []) | type) == "array"
+         and ([($d.chart // {})] + [($d.environments // [])[] | (.chart // {})] | all(type == "object"))' >/dev/null 2>&1
+}
+# every environment of a changed-files plan (<cluster>|<env> lines) has plain names; otherwise the run is refused before any is used
+valid_env_plan() { # <file>
+  local c e
+  while IFS='|' read -r c e; do
+    [[ -z "${c}${e}" ]] && continue
+    valid_name "${c}" && valid_name "${e}" || return 1
+  done < "$1"
+}
+# END input-guards
+{{- end -}}
+
+{{- /*
+glidepath-catalog.gitAuth: git_auth <token>, git_auth_clear. A token never goes into a URL or an argument (a failing git command's arguments end up in a log, and
+`comment-pr-check-result` posts log excerpts into the PR): it goes in the environment as an HTTP header git sends only to GIT_HOST (the platform's
+configured git host, catalog value gitHost), with redirects off so nothing can carry it elsewhere, and no credential helper or prompt.
+*/ -}}
+{{- define "glidepath-catalog.gitAuth" -}}
+# BEGIN git-auth
+GIT_HOST={{ (.Values.gitHost | default "github.com") | quote }}
+git_auth() { # <token>
+  export GIT_CONFIG_COUNT=3 GIT_TERMINAL_PROMPT=0
+  export GIT_CONFIG_KEY_0="http.https://${GIT_HOST}/.extraheader" GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$1" | base64 | tr -d '\n')"
+  export GIT_CONFIG_KEY_1="http.followRedirects" GIT_CONFIG_VALUE_1="false"
+  export GIT_CONFIG_KEY_2="credential.helper" GIT_CONFIG_VALUE_2=""
+}
+git_auth_clear() { unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2; }
+# END git-auth
+{{- end -}}
+
+{{- /*
+glidepath-catalog.redactSecrets: redact_secrets, a filter for text that is about to be posted where people read it (a PR comment): URL userinfo,
+GitHub token shapes, bearer/basic credentials, JWTs and Authorization lines.
+*/ -}}
+{{- define "glidepath-catalog.redactSecrets" -}}
+# BEGIN redact-secrets
+redact_secrets() {
+  sed -E \
+    -e 's#(https?://)[^/@[:space:]]+@#\1[redacted]@#g' \
+    -e 's#x-access-token:[^@[:space:]]*#x-access-token:[redacted]#g' \
+    -e 's#gh[pousr]_[A-Za-z0-9]{16,}#[redacted]#g' \
+    -e 's#github_pat_[A-Za-z0-9_]{16,}#[redacted]#g' \
+    -e 's#eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(\.[A-Za-z0-9_-]*)?#[redacted]#g' \
+    -e 's#([Bb]earer|[Bb]asic|[Tt]oken)[[:space:]]+[A-Za-z0-9._~+/=-]{12,}#\1 [redacted]#g' \
+    -e 's#([Aa]uthorization:?)[[:space:]]*.*#\1 [redacted]#g'
+}
+# END redact-secrets
+{{- end -}}
+
+{{- /*
+glidepath-catalog.ingestLimits: the environment entries (to indent under a step's `env:`) that give a gate's ingest step the limits the render task
+renders under (renderManifests), so raising maxFileMiB or maxEnvironments is honoured by both ends.
+*/ -}}
+{{- define "glidepath-catalog.ingestLimits" -}}
+{{- $mib := int ((.Values.renderManifests | default dict).maxFileMiB | default 32) -}}
+- name: RENDER_MAX_FILE_BYTES
+  value: {{ mul $mib 1048576 | quote }}
+- name: RENDER_MAX_TOTAL_BYTES
+  value: {{ max 134217728 (mul $mib 4194304) | quote }}
+- name: RENDER_MAX_ENVIRONMENTS
+  value: {{ (.Values.renderManifests | default dict).maxEnvironments | default 50 | quote }}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.renderedIngest: files/lib/rendered-ingest.py, to splice between `python3 - <<'PY'` and `PY` in the `ingest` step of
+policy-validation-gate and clearance-gate: reads the render-manifests Task's output as data (bounded YAML parse, no tags, file digests
+recomputed, no symlink followed) and writes /work/eval/<id>/ from the bytes it read.
+*/ -}}
+{{- define "glidepath-catalog.renderedIngest" -}}
+{{ .Files.Get "files/lib/rendered-ingest.py" }}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.gatePublish: the `publish` step of a gate's fetch phase. The fetch step's /work holds the PR's checkout, the charts,
+the plan and the trusted facts; this copies them onto the run's workspace in three places: inputs/ (what the render task may read:
+the checkouts, the charts, the plan, the observability facts), trusted/ (what only the gate reads afterwards: everything else, plus a
+PUBLISHED marker naming this run) and rendered/ (empty; the render task writes it). It first empties the volume: a retry, or a volume
+cloned from another run, leaves nothing behind. Copies keep symlinks as symlinks and never follow one.
+*/ -}}
+{{- define "glidepath-catalog.gatePublish" -}}
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${PHASE}" == fetch ]] || exit 0
+find /publish -mindepth 1 -delete
+mkdir -p /publish/inputs /publish/trusted /publish/rendered
+shopt -s dotglob nullglob
+for p in /work/*; do
+  n="${p##*/}"
+  case "${n}" in
+    repo|base|charts|observability) cp -a "${p}" /publish/inputs/ ;;
+  esac
+  case "${n}" in
+    repo|base|charts) ;;
+    *) cp -a "${p}" /publish/trusted/ ;;
+  esac
+done
+[[ -e /work/plan.txt ]] && cp -a /work/plan.txt /publish/inputs/plan.txt
+find /publish/inputs -name .git -prune -exec rm -rf {} +
+# the marker the decide phase requires: the data below was published by this run's own fetch
+printf '%s\n' "${PIPELINE_RUN}" > /publish/trusted/PUBLISHED
+# and the same marker where the render task reads: it renders nothing a fetch of this run did not publish (a fetch that failed leaves none)
+printf '%s\n' "${PIPELINE_RUN}" > /publish/inputs/PUBLISHED
+chmod -R a+rX /publish/inputs /publish/trusted
+chmod 0777 /publish/rendered
+echo "published for the render: $(find /publish/inputs -type f | wc -l) files; trusted: $(find /publish/trusted -type f | wc -l) files"
 {{- end -}}
 
 {{- /*

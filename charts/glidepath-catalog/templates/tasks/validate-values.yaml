@@ -20,7 +20,9 @@
 # An environment that renders its own chart (cicd.yaml deploy.chart / environments[].chart other than Airframe's,
 # ADR-0023 slice 5) is not given to the Airframe validator, whose strict keys and component checks describe a chart
 # it does not render. Its files get a plain `helm template` with that chart instead (step own-chart), plus the two
-# chart-contract checks a render can prove: a Namespace, and a Rollout named after the app.
+# chart-contract checks a render can prove: a Namespace, and a Rollout named after the app. That render runs in the token-less
+# render-manifests task (profile `values`), not in this Task's pod: the Task runs twice around it (phase `fetch`: clone-and-list, publish,
+# validate; phase `decide`: own-chart reads the render as data and makes the two checks), as policy-validation-gate does.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -49,6 +51,13 @@ spec:
       type: string
       default: ""
       description: The application name, passed to the validator as --app when set.
+    - name: phase
+      type: string
+      description: "fetch | decide: the Pipeline runs this Task twice around render-manifests (fetch: clone-and-list, publish, validate; decide: own-chart)."
+    - name: pipeline-run-name
+      type: string
+      default: ""
+      description: Names this run in the volume's marker.
   volumes:
     - name: github-token-broker-token
       projected:
@@ -59,6 +68,24 @@ spec:
               expirationSeconds: 600
     - name: work
       emptyDir: {}
+  workspaces:
+    - name: publish
+      optional: true
+      mountPath: /publish
+    - name: trusted
+      optional: true
+      readOnly: true
+      mountPath: /trusted
+    - name: rendered
+      optional: true
+      readOnly: true
+      mountPath: /rendered
+  stepTemplate:
+    env:
+      - name: PHASE
+        value: $(params.phase)
+      - name: PIPELINE_RUN
+        value: $(params.pipeline-run-name)
   steps:
     - name: clone-and-list
       image: {{ .Values.toolboxImage }}
@@ -84,8 +111,11 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
+        [[ "${PHASE}" == fetch ]] || exit 0
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
+        {{- include "glidepath-catalog.inputGuards" . | nindent 8 }}
 
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
@@ -97,7 +127,8 @@ spec:
         # The tree at the PR head, one commit deep: the validator reads the files from it.
         mkdir -p /work/repo && cd /work/repo
         git init --quiet
-        with_retry 3 -- git fetch --quiet --depth 1 "https://x-access-token:${token}@github.com/${owner}/${repo}.git" "${REVISION}"
+        git_auth "${token}"
+        with_retry 3 -- git fetch --quiet --depth 1 "https://${GIT_HOST}/${owner}/${repo}.git" "${REVISION}"
         git checkout --quiet FETCH_HEAD
 
         # Changed files: the PR's base...head compare (merge-base semantics, like the old `git merge-base
@@ -135,14 +166,29 @@ spec:
           cicd="$(curl -fsSL -H "Authorization: Bearer ${app_token}" -H "Accept: application/vnd.github.raw" \
             "https://api.github.com/repos/${owner}/${APP_NAME}/contents/cicd.yaml" 2>/dev/null || true)"
         fi
+        # fail closed on a chart spec the resolver below cannot read: it would fall back to the default chart
+        if [[ -n "${cicd}" ]]; then echo "${cicd}" | yq -o json '.' 2>/dev/null | chart_specs_ok || { echo "FAIL: cicd.yaml's deploy.chart or an environment's chart is not a mapping; the gate will not guess which chart is rendered"; exit 1; }; fi
         if [[ -n "${cicd}" && -s /work/files.txt ]]; then
           keep=()
           while read -r f; do
-            cluster="$(echo "${f}" | cut -d/ -f1)"; env="$(echo "${f}" | cut -d/ -f2)"
+            # Only a path of the environment shape is an environment: <cluster>/<env>/values.yaml, or <cluster>/base.yaml, under a cluster directory
+            # that is a plain name. Any other changed values file (a root values.yaml, x/values.yaml, a deeper path, a directory that is not a name)
+            # is validated as a file and is not an environment, as before. An environment shape with an invalid name refuses the run.
+            if [[ "${f}" =~ ^([^/]+)/([^/]+)/values\.yaml$ ]]; then
+              cluster="${BASH_REMATCH[1]}"; env="${BASH_REMATCH[2]}"
+            elif [[ "${f}" =~ ^([^/]+)/base\.yaml$ ]]; then
+              cluster="${BASH_REMATCH[1]}"; env="base.yaml"
+            else
+              keep+=("${f}"); continue
+            fi
+            valid_name "${cluster}" || { keep+=("${f}"); continue; }
+            if [[ "${env}" != "base.yaml" ]] && ! valid_name "${env}"; then
+              echo "FAIL: a changed values file is under an environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1
+            fi
             # A cluster's shared base.yaml has no environment, so it resolves to the app's chart. On an own chart it
             # is not a whole values file to render alone: the environments it brought in are rendered with it
             # layered underneath (step own-chart), so it is dropped here.
-            resolved="$(echo "${cicd}" | yq -o json "{\"app\": (.deploy.chart // {}), \"env\": ((.deploy.environments // [])[] | select(.name == \"${env}\") | .chart // {}), \"target\": (.deploy.target // \"k8s-rollout\")}" 2>/dev/null \
+            resolved="$(echo "${cicd}" | ENV_NAME="${env}" yq -o json '{"app": (.deploy.chart // {}), "env": ((.deploy.environments // [])[] | select(.name == strenv(ENV_NAME)) | .chart // {}), "target": (.deploy.target // "k8s-rollout")}' 2>/dev/null \
               | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" '
                   def over($b; $o): if ($o.repoURL // "") != "" then $o
                     else $b + ($o | with_entries(select(.value != null and .value != "")))
@@ -164,6 +210,10 @@ spec:
         while IFS='|' read -r f cluster env chart; do
           n=$((n + 1))
           repo_url="$(echo "${chart}" | jq -r .repoURL)"; rev="$(echo "${chart}" | jq -r '.targetRevision // "main"')"
+          # the fetch below carries credentials: only from the hosts the platform names, with plain revision, path and chart names
+          if ! valid_chart_source "${repo_url}" "${rev}" "$(echo "${chart}" | jq -r '.path // "."')" "$(echo "${chart}" | jq -r '.chart // ""')"; then
+            echo "FAIL: ${f%%/*}: the environment's chart source is not an allowed one (https git host or OCI registry from chartSources, plain revision and path)"; exit 1
+          fi
           if [[ "${repo_url}" == oci://* ]]; then
             name="$(echo "${chart}" | jq -r .chart)"
             with_retry 3 -- oras pull "${repo_url#oci://}/${name}:${rev}" -o "/work/charts/${n}-oci" >/dev/null
@@ -172,10 +222,12 @@ spec:
           else
             path="$(echo "${chart}" | jq -r '.path // "."')"
             clone_url="${repo_url%.git}.git"
+            git_auth_clear
             gh_owner="$(echo "${repo_url}" | sed -nE 's#https?://github\.com/([^/]+)/.*#\1#p')"
-            gh_repo="$(echo "${repo_url}" | sed -nE 's#https?://github\.com/[^/]+/([^/.]+).*#\1#p')"
+            gh_repo="$(echo "${repo_url}" | sed -nE 's#https?://github\.com/[^/]+/([^/]+).*#\1#p')"; gh_repo="${gh_repo%.git}"  # the whole repository name (it may contain a dot), not the part before the first one
             if [[ -n "${gh_owner}" ]] && t="$(github_app_installation_token "${gh_owner}" "${gh_repo}" 2>/dev/null)"; then
-              clone_url="https://x-access-token:${t}@github.com/${gh_owner}/${gh_repo}.git"
+              git_auth "${t}"
+              clone_url="https://${GIT_HOST}/${gh_owner}/${gh_repo}.git"
             fi
             # One-commit fetch of the pinned revision (branch, tag or sha), not a full clone.
             mkdir -p "/work/charts/${n}"
@@ -192,7 +244,17 @@ spec:
         # a non-root user (it fails with "Operation not permitted"). Files this step creates are already
         # world-readable; the validator image only reads them.
         rm -f .git/config
-        chmod -R a+rX /work/repo /work/files.txt /work/charts /work/own-resolved.txt 2>/dev/null || true
+        # what the render task is given: one line per environment that renders its own chart (cluster|env|chart)
+        touch /work/own-resolved.txt
+        cut -d'|' -f2- /work/own-resolved.txt | sort -u > /work/plan.txt
+        chmod -R a+rX /work/repo /work/files.txt /work/charts /work/own-resolved.txt /work/plan.txt 2>/dev/null || true
+    - name: publish
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      script: |
+        {{- include "glidepath-catalog.gatePublish" . | nindent 8 }}
     - name: validate
       image: $(params.validator-image)
       imagePullPolicy: IfNotPresent
@@ -206,6 +268,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
+        [[ "${PHASE}" == fetch ]] || exit 0
         cd /work/repo
         if [[ ! -s /work/files.txt ]]; then
           echo "No values files changed: nothing to validate."
@@ -217,7 +280,8 @@ spec:
         # The contract: the image provides an executable `validate-values` on its PATH.
         exec validate-values "${args[@]}" "${files[@]}"
     - name: own-chart
-      # The validator image carries helm and python3 (the toolbox does not carry helm).
+      # Reads what render-manifests wrote for the environments that render their own chart, as data (files/lib/rendered-ingest.py), and makes
+      # the two checks a render can prove. The validator image has python3 and pyyaml.
       image: $(params.validator-image)
       imagePullPolicy: IfNotPresent
       volumeMounts:
@@ -225,44 +289,16 @@ spec:
       env:
         - name: APP_NAME
           value: $(params.app-name)
+        - name: GATE
+          value: values
+        {{- include "glidepath-catalog.ingestLimits" . | nindent 8 }}
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
-        [[ -s /work/own-resolved.txt ]] || exit 0
-        cd /work/repo
-        rc=0
-        while IFS='|' read -r f cluster env chart; do
-          echo "== ${f}: helm template with ${chart}"
-          # Glidepath's injected values (chart-contract.md "What Glidepath injects"), then the same value files the
-          # Flight Application layers: <cluster>/base.yaml, the env file, its release.yaml.
-          printf 'appName: %s\ncluster: %s\nenvName: %s\nnamespace:\n  labels:\n    hangar.io/managed-secrets: "true"\n' \
-            "${APP_NAME}" "${cluster}" "${env}" > /tmp/injected.yaml
-          vf=()
-          for v in "${cluster}/base.yaml" "${cluster}/${env}/values.yaml" "${cluster}/${env}/release.yaml"; do
-            [[ -f "${v}" ]] && vf+=(-f "${v}")
-          done
-          if ! helm template "${APP_NAME}" "${chart}" --namespace "app-${APP_NAME}-${env}" "${vf[@]}" -f /tmp/injected.yaml > /tmp/out.yaml; then
-            echo "FAIL ${f}: helm template failed"; rc=1; continue
-          fi
-          python3 - "${APP_NAME}" "${f}" "${vf[@]+"${vf[@]}"}" <<'PY' || rc=1
-        import sys, yaml
-        app, f = sys.argv[1], sys.argv[2]
-        released = False  # before the first release a chart renders no workload (chart-contract.md, bootstrap)
-        for v in sys.argv[3:]:
-            if v != "-f":
-                doc = yaml.safe_load(open(v)) or {}
-                released = released or bool(((doc.get("release") or {}).get("image") or {}).get("repository"))
-        docs = [d for d in yaml.safe_load_all(open("/tmp/out.yaml")) if d]
-        kinds = {(d.get("kind"), (d.get("metadata") or {}).get("name")) for d in docs}
-        missing = []
-        if not any(k == "Namespace" for k, _ in kinds):
-            missing.append("a Namespace")
-        if released and ("Rollout", app) not in kinds:
-            missing.append(f"a Rollout named {app}")
-        if missing:
-            print(f"FAIL {f}: rendered {len(docs)} objects but no " + " or ".join(missing) + " (docs/admin/chart-contract.md)")
-            sys.exit(1)
-        print(f"ok   {f}: {len(docs)} objects")
+        [[ "${PHASE}" == decide ]] || exit 0
+        [[ -f /trusted/PUBLISHED && "$(cat /trusted/PUBLISHED)" == "${PIPELINE_RUN}" ]] || { echo "FAIL: the fetch phase's data for this run is not on the workspace"; exit 1; }
+        cp -a /trusted/. /work/
+        [[ -s /work/plan.txt ]] || exit 0
+        python3 - <<'PY'
+        {{- include "glidepath-catalog.renderedIngest" . | nindent 8 }}
         PY
-        done < /work/own-resolved.txt
-        exit "${rc}"

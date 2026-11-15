@@ -200,6 +200,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
         {{- include "glidepath-catalog.itsmLib" . | nindent 8 }}
@@ -395,7 +396,8 @@ spec:
         ensure_change_request ""
 
         workdir="$(mktemp -d)"
-        clone_url="https://x-access-token:${token}@github.com/${owner}/${gitops_repo}.git"
+        git_auth "${token}"
+        clone_url="https://${GIT_HOST}/${owner}/${gitops_repo}.git"
         # --depth 1 --single-branch (2026-10-09, report item 7): this Task only writes on top of
         # the default branch's tip and pushes, so history is never read. GitHub accepts a push
         # from a shallow clone (it already has the boundary commit).
@@ -462,7 +464,8 @@ spec:
         # get-only Role scoped to that ConfigMap). A hard failure here (not best-effort) is
         # deliberate: CLUSTER is already required above, so a missing entry means this app's
         # cluster mapping is genuinely misconfigured - better to fail before opening a PR.
-        registry_entry="$(kubectl get configmap cluster-registry -n platform-system -o jsonpath="{.data.${CLUSTER}}")"
+        # (the name goes in as data, never into a jsonpath expression)
+        registry_entry="$(kubectl get configmap cluster-registry -n platform-system -o json | jq -r --arg c "${CLUSTER}" '.data[$c] // ""')"
         if [[ -z "${registry_entry}" ]]; then
           echo "error: cluster '${CLUSTER}' has no entry in the glidepath cluster-registry ConfigMap (platform-system, charts/glidepath-control-plane's clusters:), so it is not a known release target. A platform admin needs to add it before this app can release to ${ENV}." >&2
           exit 1

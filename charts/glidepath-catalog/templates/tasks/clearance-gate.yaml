@@ -16,12 +16,17 @@
 #                                runs, a one-commit checkout of base and head, and each target cluster's admission
 #                                policy bundle (the broker's /policy-bundle; unreadable = an `error` verdict, not a
 #                                failed check)
-#   render    (validator image)  `helm template` of base and head per protected environment exactly as Argo CD (and
-#                                Clearance's Argo CD plugin) renders it: release <app>-<env>, the destination namespace,
-#                                the same value files and injected values the Flight ApplicationSet layers (the
-#                                destination cluster's observability included), then the object diff: every rendered object, unchanged ones marked, each
-#                                added, removed or changed object with the JSON pointers of the fields that changed
-#                                and its new images, each object's digest and the tree's digest (what a grant binds to)
+#   publish   (toolbox)          the fetch phase's last step: the checkouts, charts and plan onto the run's workspace for the
+#                                render task (inputs/), the rest for this gate's own later reading (trusted/, with a marker naming this run)
+#   (the render-manifests task, between the two phases of this Task, as `source-runner`: no token, no Secret, no projected token.
+#   `helm template` of base and head per protected environment exactly as Argo CD (and Clearance's Argo CD plugin) renders it:
+#   release <app>-<env>, the destination namespace, the same value files and injected values the Flight ApplicationSet layers
+#   (the destination cluster's observability included). docs/admin/security.md, "Rendering is not done where the credentials are")
+#   ingest    (validator image)  the decide phase's first step: reads what the render wrote as DATA (bounded YAML parse, no tags, every
+#                                file digest recomputed, no symlink followed), then the object diff: every rendered object, unchanged ones
+#                                marked, each added, removed or changed object with the JSON pointers of the fields that changed and its
+#                                new images, each object's digest and the tree's digest (what a grant binds to), computed here from the
+#                                bytes it read
 #   admission (toolbox)          the offline admission verdict per protected environment: `kyverno apply` of the
 #                                target cluster's policy bundle (the broker's /policy-bundle) to the rendered head,
 #                                the policy-validation gate's own evaluation (files/lib/policy-eval*), sent with the
@@ -86,6 +91,9 @@ spec:
       type: string
       default: "false"
       description: "\"true\" runs fetch and render only and fails when an environment cannot be rendered. The advisory copy of the check (onError: continue, whose findings stay green) runs one beside the register task so a render failure is never green."
+    - name: phase
+      type: string
+      description: "fetch | decide. The Pipeline runs this Task twice around the render-manifests task: `fetch` (fetch + publish; nothing else does anything) and `decide` (ingest, admission, register, report; fetch does nothing). The decide phase reads the rendered output read-only."
   results:
     - name: outcome
       description: cleared | holding | denied | skipped | fail
@@ -117,6 +125,27 @@ spec:
               expirationSeconds: 600
     - name: work
       emptyDir: {}
+  # The run's workspace, in three bindings (the Pipeline's subPaths): `publish` (the whole volume, the fetch phase only), then in the
+  # decide phase `trusted` (what fetch published for this gate) and `rendered` (what render-manifests wrote), both read-only. Optional:
+  # a phase binds only its own.
+  workspaces:
+    - name: publish
+      optional: true
+      mountPath: /publish
+    - name: trusted
+      optional: true
+      readOnly: true
+      mountPath: /trusted
+    - name: rendered
+      optional: true
+      readOnly: true
+      mountPath: /rendered
+  stepTemplate:
+    env:
+      - name: PHASE
+        value: $(params.phase)
+      - name: PIPELINE_RUN
+        value: $(params.pipeline-run-name)
   steps:
     - name: fetch
       image: {{ .Values.toolboxImage }}
@@ -152,9 +181,12 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
+        [[ "${PHASE}" == fetch ]] || exit 0
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
         {{- include "glidepath-catalog.policyEvalLib" . | nindent 8 }}
+        {{- include "glidepath-catalog.inputGuards" . | nindent 8 }}
         : > /work/plan.txt
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
@@ -166,10 +198,12 @@ spec:
         fetch_repo() { # <repo-url> <revision> <dir>
           local url="$1" rev="$2" dir="$3" o r t clone_url
           clone_url="${url%.git}.git"
+          git_auth_clear  # no earlier token rides along; a token is set below only for the repository it was minted for
           o="$(echo "${url}" | sed -nE 's#https?://github\.com/([^/]+)/.*#\1#p')"
-          r="$(echo "${url}" | sed -nE 's#https?://github\.com/[^/]+/([^/.]+).*#\1#p')"
+          r="$(echo "${url}" | sed -nE 's#https?://github\.com/[^/]+/([^/]+).*#\1#p')"; r="${r%.git}"  # the whole repository name (it may contain a dot), not the part before the first one
           if [[ -n "${o}" ]] && t="$(github_app_installation_token "${o}" "${r}" 2>/dev/null)"; then
-            clone_url="https://x-access-token:${t}@github.com/${o}/${r}.git"
+            git_auth "${t}"
+            clone_url="https://${GIT_HOST}/${o}/${r}.git"
           fi
           mkdir -p "${dir}"
           git -C "${dir}" init --quiet
@@ -216,23 +250,35 @@ spec:
 
         mkdir -p /work/repo && cd /work/repo
         git init --quiet
-        with_retry 3 -- git fetch --quiet --depth 1 "https://x-access-token:${token}@github.com/${owner}/${repo}.git" "${REVISION}"
+        git_auth "${token}"
+        with_retry 3 -- git fetch --quiet --depth 1 "https://${GIT_HOST}/${owner}/${repo}.git" "${REVISION}"
         git checkout --quiet FETCH_HEAD
         rm -f .git/config
         fetch_repo "${REPO_URL}" "${base_sha}" /work/base
 
         # The environments this PR changes (policy-validation-gate's rule).
         : > /work/envs.txt
+        bad_env=0
         while IFS= read -r f; do
           if [[ "${f}" =~ ^([^/]+)/([^/]+)/(values|release)\.yaml$ ]]; then
-            echo "${BASH_REMATCH[1]}|${BASH_REMATCH[2]}" >> /work/envs.txt
+            rc=0; entry="$(env_entry "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")" || rc=$?
+            if (( rc == 0 )); then echo "${entry}" >> /work/envs.txt; elif (( rc != 3 )); then bad_env=1; fi
           elif [[ "${f}" =~ ^([^/]+)/base\.yaml$ ]]; then
-            for d in "${BASH_REMATCH[1]}"/*/; do
-              [[ -f "${d}values.yaml" || -f "${d}release.yaml" ]] && echo "${BASH_REMATCH[1]}|$(basename "${d}")" >> /work/envs.txt
-            done
+            cl="${BASH_REMATCH[1]}"  # before valid_name: its own regex match replaces BASH_REMATCH
+            if valid_name "${cl}"; then
+              for d in "${cl}"/*/; do
+                if [[ -f "${d}values.yaml" || -f "${d}release.yaml" ]]; then
+                  rc=0; entry="$(env_entry "${cl}" "$(basename "${d}")")" || rc=$?
+                  if (( rc == 0 )); then echo "${entry}" >> /work/envs.txt; else bad_env=1; fi
+                fi
+              done
+            fi
           fi
         done < <(jq -r '.[] | .filename' <<<"${files}")
         sort -u -o /work/envs.txt /work/envs.txt
+        # names from paths in the repository: plain names only, before any use (a directory name is any string without a slash)
+        (( bad_env == 0 )) || { echo "FAIL: a changed file is under an environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1; }
+        valid_env_plan /work/envs.txt || { echo "FAIL: a changed file is under a cluster or environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1; }
 
         # The app's cicd.yaml: the chart, the target, and which environments are protected (production: true).
         cicd=""
@@ -250,6 +296,8 @@ spec:
           : > /work/envs.txt
         fi
         envs_json="$(echo "${cicd}" | yq -o json '.deploy.environments // []' 2>/dev/null || echo '[]')"
+        # fail closed on a chart spec the resolver below cannot read: it would fall back to the default chart
+        if [[ -n "${cicd}" ]]; then echo "${cicd}" | yq -o json '.' 2>/dev/null | chart_specs_ok || { echo "FAIL: cicd.yaml's deploy.chart or an environment's chart is not a mapping; the gate will not guess which chart is rendered"; exit 1; }; fi
 
         mkdir -p /work/charts
         n=0
@@ -257,7 +305,7 @@ spec:
           [[ -n "${cluster}" ]] || continue
           protected="$(jq -r --arg e "${env}" '[.[] | select(.name == $e) | .production // false] | .[0] // false' <<<"${envs_json}")"
           chart_dir=default
-          resolved="$(echo "${cicd}" | yq -o json "{\"app\": (.deploy.chart // {}), \"env\": ((.deploy.environments // [])[] | select(.name == \"${env}\") | .chart // {})}" 2>/dev/null \
+          resolved="$(echo "${cicd}" | ENV_NAME="${env}" yq -o json '{"app": (.deploy.chart // {}), "env": ((.deploy.environments // [])[] | select(.name == strenv(ENV_NAME)) | .chart // {})}' 2>/dev/null \
             | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" '
                 def over($b; $o): if ($o.repoURL // "") != "" then $o
                   else $b + ($o | with_entries(select(.value != null and .value != "")))
@@ -267,6 +315,9 @@ spec:
                '.repoURL != $r or (.chart // "") != "" or .path != $p')" == "true" ]]; then
             n=$((n + 1))
             repo_url="$(echo "${resolved}" | jq -r .repoURL)"; rev="$(echo "${resolved}" | jq -r '.targetRevision // "main"')"
+            # the fetch below carries credentials: only from the hosts the platform names, with plain revision, path and chart names
+            valid_chart_source "${repo_url}" "${rev}" "$(echo "${resolved}" | jq -r '.path // "."')" "$(echo "${resolved}" | jq -r '.chart // ""')" \
+              || { echo "FAIL: the environment's chart source is not an allowed one (https git host or OCI registry from chartSources, plain revision and path)"; exit 1; }
             if [[ "${repo_url}" == oci://* ]]; then
               with_retry 3 -- oras pull "${repo_url#oci://}/$(echo "${resolved}" | jq -r .chart):${rev}" -o "/work/charts/${n}-oci" >/dev/null
               mv "$(ls /work/charts/${n}-oci/*.tgz | head -1)" "/work/charts/${n}.tgz"
@@ -341,7 +392,14 @@ spec:
           '{owner: $owner, repo: $repo, pr: $pr, head: $head, base: $base, author: $author, files: $files, looksAgent: $looks_agent, provenance: $verdict, checkRuns: $checks, policyCommit: $policy_commit}' \
           > /work/meta.json
         chmod -R a+rwX /work 2>/dev/null || true
-    - name: render
+    - name: publish
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      script: |
+        {{- include "glidepath-catalog.gatePublish" . | nindent 8 }}
+    - name: ingest
       image: $(params.validator-image)
       imagePullPolicy: IfNotPresent
       volumeMounts:
@@ -353,58 +411,24 @@ spec:
           value: $(context.taskRun.namespace)
         - name: RENDER_ONLY
           value: $(params.render-only)
+        - name: GATE
+          value: clearance-gate
+        {{- include "glidepath-catalog.ingestLimits" . | nindent 8 }}
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
+        # The fetch phase ends at publish: the steps after this one skip on the marker, as they do for render-only.
+        [[ "${PHASE}" == decide ]] || { : > /work/skip-rest; exit 0; }
+        # Data the render task wrote can only be read where this run's own fetch published: a volume without the marker is refused.
+        [[ -f /trusted/PUBLISHED && "$(cat /trusted/PUBLISHED)" == "${PIPELINE_RUN}" ]] || { echo "FAIL: the fetch phase's data for this run is not on the workspace"; exit 1; }
+        cp -a /trusted/. /work/
         [[ -s /work/plan.txt ]] || { [[ "${RENDER_ONLY:-}" == true ]] && : > /work/skip-rest; exit 0; }
-        type="${NAMESPACE%%-*}"
         mkdir -p /work/eval
-{{- include "glidepath-catalog.chartSafety" . | nindent 8 }}
-        render() { # <tree dir> <cluster> <env> <chart> <out file> ; exit 2 when the environment does not exist in that tree
-          local dir="$1" cluster="$2" env="$3" chart="$4" out="$5" ns_pattern="" vf=()
-          [[ "${chart}" == default ]] && chart=/opt/airframe/charts/airframe-application && ns_pattern='{type}-{app}-{env}'
-          [[ -f "${dir}/${cluster}/${env}/values.yaml" || -f "${dir}/${cluster}/${env}/release.yaml" ]] || return 2
-          printf 'appName: %s\ncluster: %s\nenvName: %s\nnamespace:\n  labels:\n    hangar.io/managed-secrets: "true"\n' \
-            "${APP_NAME}" "${cluster}" "${env}" > "${out}.injected.yaml"
-          # What the environment ApplicationSet adds for the cluster's default chart only (an older pinned chart's strict
-          # schema has neither key): the namespace pattern and the observability block.
-          if [[ -n "${ns_pattern}" ]]; then
-            printf 'serviceNamespacePattern: "%s"\n' "${ns_pattern}" >> "${out}.injected.yaml"
-            [[ -s "/work/observability/${cluster}.yaml" ]] && cat "/work/observability/${cluster}.yaml" >> "${out}.injected.yaml"
-          fi
-          for v in "${cluster}/base.yaml" "${cluster}/${env}/values.yaml" "${cluster}/${env}/release.yaml"; do
-            [[ -f "${dir}/${v}" ]] && vf+=(-f "${dir}/${v}")
-          done
-          # The release name is the Argo CD Application's, <app>-<env>, as the chart stamps app.kubernetes.io/instance from it
-          # (Clearance's Argo CD plugin renders the same way: providers/argocd/cmp).
-          chart_safe "${chart}" "${vf[@]}" > "${out}.err" || return 1
-          helm template "${APP_NAME}-${env}" "${chart}" --namespace "${type}-${APP_NAME}-${env}" "${vf[@]}" -f "${out}.injected.yaml" > "${out}" 2> "${out}.helm-err"
-        }
         rc=0
-        while IFS='|' read -r cluster env chart protected; do
-          out="/work/eval/${cluster}__${env}"
-          mkdir -p "${out}"
-          if [[ "${protected}" != "true" ]]; then
-            echo "${cluster}/${env}: not a protected environment (no production: true): skipped"
-            echo skipped > "${out}/status"; continue
-          fi
-          if [[ -e "/work/observability/${cluster}.yaml.unreadable" ]]; then
-            echo "FAIL ${cluster}/${env}: ${cluster}'s observability facts could not be read (the broker's /policy-bundle), so the render would differ from Argo CD's"
-            echo render-failed > "${out}/status"; rc=1; continue
-          fi
-          if ! render /work/repo "${cluster}" "${env}" "${chart}" "${out}/head.yaml"; then
-            echo "FAIL ${cluster}/${env}: helm template of the PR head failed: $(cat "${out}/head.yaml.err" 2>/dev/null || true) ${chart_render_note}"; echo render-failed > "${out}/status"; rc=1; continue
-          fi
-          render /work/base "${cluster}" "${env}" "${chart}" "${out}/base.yaml"
-          case $? in
-            0) ;;
-            2) : > "${out}/base.yaml"; echo "${cluster}/${env}: new in this PR (no base tree)";;
-            *) echo "FAIL ${cluster}/${env}: helm template of the base failed: $(cat "${out}/base.yaml.err" 2>/dev/null || true) ${chart_render_note}"; echo render-failed > "${out}/status"; rc=1; continue;;
-          esac
-          echo "${cluster}/${env}: rendered head ($(grep -c '^kind:' "${out}/head.yaml") objects) and base ($(grep -c '^kind:' "${out}/base.yaml") objects) with ${chart}"
-          printf '%s\n%s\n' "${cluster}" "${env}" > "${out}/env"
-          ln -sf head.yaml "${out}/resources.yaml"  # what the admission evaluation reads (policy-eval-prepare.py)
-        done < /work/plan.txt
+        # What the render task wrote, as data: verified, bounded, and written to /work/eval from the bytes read.
+        python3 - <<'PY' || rc=1
+        {{- include "glidepath-catalog.renderedIngest" . | nindent 8 }}
+        PY
 
         # The object diff and each environment's change request (clearance gate.py ChangeRequest).
         python3 - <<'PY' || rc=1
@@ -635,7 +659,7 @@ spec:
         if [[ ! -s /work/plan.txt ]] || ! ls /work/eval/*/change.json >/dev/null 2>&1; then
           if ls /work/eval/*/status >/dev/null 2>&1 && grep -lq render-failed /work/eval/*/status 2>/dev/null; then
             echo "FAIL: an environment did not render; the gate cannot classify what it cannot see" > /work/report
-            write_results fail "an environment did not render (helm template failed)"; printf 1 > /work/failed; exit 0
+            write_results fail "an environment did not render (the render task's log says why)"; printf 1 > /work/failed; exit 0
           fi
           echo "No protected environment changes in this PR: nothing to register."
           write_results skipped "no protected environment (production: true) changes in this PR"

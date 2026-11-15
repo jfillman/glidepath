@@ -361,8 +361,9 @@ class LowerEnvsChart(unittest.TestCase):
         i = lower_envs(cicd(BUILD_DEPLOY, {"environments": env[:1]}), infra)
         self.assertEqual(i["spec"]["template"]["spec"]["destination"]["namespace"], "infra-sample-{{.envName}}")
         self.assertEqual(self.chart_of(i)["helm"]["valuesObject"]["serviceNamespacePattern"], "{type}-{app}-{env}")
-        # The Flight policy gate renders with the same pattern it would get from the tenant-onboarding ApplicationSet.
-        gate = open(os.path.join(ROOT, "charts", "glidepath-catalog", "templates", "tasks", "policy-validation-gate.yaml")).read()
+        # The Flight policy gate (its render is the render-manifests task) renders with the same pattern it would get from the
+        # tenant-onboarding ApplicationSet.
+        gate = open(os.path.join(ROOT, "charts", "glidepath-catalog", "templates", "tasks", "render-manifests.yaml")).read()
         self.assertIn(f"ns_pattern='{pattern}'", gate)
 
     def test_a_preview_gets_the_service_namespace_pattern(self):

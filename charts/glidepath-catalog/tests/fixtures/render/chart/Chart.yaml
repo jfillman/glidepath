@@ -1,0 +1,7 @@
+apiVersion: v2
+name: render-fixture
+version: 0.1.0
+dependencies:
+  - name: sub
+    version: 0.1.0
+    repository: file://charts/sub
