@@ -160,6 +160,23 @@ class Structure(unittest.TestCase):
                     self.assertEqual(phase, "decide")
                     self.assertEqual(bound, {"trusted": "trusted", "rendered": "rendered"}, t["name"])
 
+    def test_the_gates_read_with_the_limits_the_render_writes_under(self):
+        out = subprocess.run(["helm", "template", "c", CATALOG, "-f", os.path.join(CATALOG, "tests", "values.example.yaml"),
+                              "--set", "renderManifests.maxFileMiB=64", "--set", "renderManifests.maxEnvironments=7"], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        tasks = {d["metadata"]["name"]: d for d in yaml.safe_load_all(out.stdout) if d and d["kind"] == "Task"}
+
+        def env(task, step):
+            return {e["name"]: e["value"] for s in tasks[task]["spec"]["steps"] if s["name"] == step for e in s["env"]}
+        render = env("render-manifests", "render")
+        self.assertEqual(render["RENDER_MAX_FILE_KB"], str(64 * 1024))
+        for task, step in (("clearance-gate", "ingest"), ("policy-validation-gate", "ingest"), ("validate-values", "own-chart")):
+            e = env(task, step)
+            self.assertEqual(int(e["RENDER_MAX_FILE_BYTES"]), 64 * 1024 * 1024, task)
+            self.assertGreaterEqual(int(e["RENDER_MAX_TOTAL_BYTES"]), int(e["RENDER_MAX_FILE_BYTES"]), task)
+            self.assertEqual(e["RENDER_MAX_ENVIRONMENTS"], "7", task)
+        self.assertEqual(render["RENDER_MAX_ENVIRONMENTS"], "7")
+
     def test_nothing_touches_the_volume_beside_another_task(self):
         # Every pair of tasks that bind the run's volume is ordered by runAfter: the gate reads what render wrote after it has
         # finished, and nothing else writes the volume in between (the finally tasks bind nothing and run after all of them).

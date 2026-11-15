@@ -523,6 +523,20 @@ valid_env_plan() { # <file>
 {{- end -}}
 
 {{- /*
+glidepath-catalog.ingestLimits: the environment entries (to indent under a step's `env:`) that give a gate's ingest step the limits the render task
+renders under (renderManifests), so raising maxFileMiB or maxEnvironments is honoured by both ends.
+*/ -}}
+{{- define "glidepath-catalog.ingestLimits" -}}
+{{- $mib := int ((.Values.renderManifests | default dict).maxFileMiB | default 32) -}}
+- name: RENDER_MAX_FILE_BYTES
+  value: {{ mul $mib 1048576 | quote }}
+- name: RENDER_MAX_TOTAL_BYTES
+  value: {{ max 134217728 (mul $mib 4194304) | quote }}
+- name: RENDER_MAX_ENVIRONMENTS
+  value: {{ (.Values.renderManifests | default dict).maxEnvironments | default 50 | quote }}
+{{- end -}}
+
+{{- /*
 glidepath-catalog.renderedIngest: files/lib/rendered-ingest.py, to splice between `python3 - <<'PY'` and `PY` in the `ingest` step of
 policy-validation-gate and clearance-gate: reads the render-manifests Task's output as data (bounded YAML parse, no tags, file digests
 recomputed, no symlink followed) and writes /work/eval/<id>/ from the bytes it read.

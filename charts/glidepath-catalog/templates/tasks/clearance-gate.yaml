@@ -398,6 +398,7 @@ spec:
           value: $(params.render-only)
         - name: GATE
           value: clearance-gate
+        {{- include "glidepath-catalog.ingestLimits" . | nindent 8 }}
       script: |
         #!/usr/bin/env bash
         set -uo pipefail

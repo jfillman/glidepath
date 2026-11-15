@@ -293,6 +293,7 @@ spec:
           value: $(context.taskRun.namespace)
         - name: GATE
           value: policy-validation
+        {{- include "glidepath-catalog.ingestLimits" . | nindent 8 }}
       script: |
         #!/usr/bin/env bash
         set -uo pipefail

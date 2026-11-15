@@ -276,6 +276,7 @@ spec:
           value: $(params.app-name)
         - name: GATE
           value: values
+        {{- include "glidepath-catalog.ingestLimits" . | nindent 8 }}
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
