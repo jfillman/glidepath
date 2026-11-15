@@ -556,7 +556,15 @@ githubRead:
   # bypass_actors only to a token with write access to the ruleset (REST docs, "Get a repository ruleset"): the platform's
   # GitHub App must first be granted the repository permission Administration: write by its owner, then set
   # {administration: write} here. Only administration (read|write) is accepted. docs/admin/security.md, Ref protection.
+  #
+  # ONLY IF YOU ACCEPT THIS RISK, and the recommendation is not to: see "Ref protection" in docs/admin/security.md for the blast
+  # radius. In short: while this is set, glidepath-api (and anything that can act as it) can obtain a token with repository
+  # Administration: write on any app's source repository for about an hour per mint: edit or disable rulesets and branch
+  # protection, add deploy keys, change settings. The broker mints it only for the identities in refProtectionCallers, for the
+  # ref-protection purpose, one source repository per token (never a gitops repository), and logs every mint.
   refProtectionPermissions: {}
+  refProtectionCallers:
+    - system:serviceaccount:platform-system:glidepath-api
 
 # The broker's /agent-installation-token (agenttoken.go, Autopilot AP-B1, hangar D4): a token for the agents' own GitHub
 # App on one of an app's own repos (the /github-read-token rule), contents and pull_requests write, metadata read; never

@@ -530,6 +530,9 @@ What "protected" means, from what the host reports:
 | Branch | an active ruleset (or classic branch protection) on it: pull requests with at least one approving review (`required_approving_review_count` >= 1) and `dismiss_stale_reviews_on_push` or `require_last_push_approval` (classic: `dismiss_stale_reviews` / `require_last_push_approval`), blocking force pushes (`non_fast_forward`) and deletion, all summed over every rule that applies; the commit is on the branch. `require_code_owner_review` and `required_review_thread_resolution` come back in `notes` | A write or maintain role, a custom role, a team, a deploy key or a named user may not bypass it (**moot**: anyone with push rights). Repository administrators, organization administrators and GitHub Apps may: they are reported in `bypass`, not counted. A bypass list the host does not return to the token is `unverifiable`, never "none" |
 | Tag | active tag rulesets matching the tag (`include`/`exclude`, `~ALL`, globs) that between them restrict `creation`, `update` and `deletion`, and the tagged commit is on a configured protected branch (`PROTECTED_BRANCHES`, the chart's `cicdRunAdmission.protectedBranches`) that is itself protected as above | as for a branch: whoever can still create the tag must not be a push-rights class |
 
+Reruns, promotes and rollbacks started through this API carry a stamped origin (`glidepath.io/origin-ref`, `origin-sha`) that this endpoint verifies for
+their guard: a rerun copies the original run's, promote and rollback stamp the release's commit and the first protected branch (security.md, Ref protection).
+
 `mainLike` says whether the ref is a protected branch name or matches `TAG_REF_PATTERN` (the chart's
 `cicdRunAdmission.tagRefPattern`): a build of any other ref (a side branch) writes no main image, so the build's
 task passes it; a privileged Pipeline ignores it.

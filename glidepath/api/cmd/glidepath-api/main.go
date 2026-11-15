@@ -97,6 +97,15 @@ func env(k, def string) string {
 	return def
 }
 
+// originRef is the full ref a promote or rollback run claims as its origin: the first protected branch. The run's guard
+// verifies the claim against the git host.
+func originRef(branches []string) string {
+	if len(branches) == 0 {
+		return ""
+	}
+	return "refs/heads/" + branches[0]
+}
+
 func splitList(v string) []string {
 	var out []string
 	for _, x := range strings.Split(v, ",") {
@@ -270,7 +279,8 @@ func main() {
 		// Promote and rollback read GitHub with a token the broker mints per request and per repo (read only, that
 		// one repo), and start the app's release Pipeline from its own TriggerTemplate.
 		Envs: &environments.Client{
-			Owner: githubOwner,
+			Owner:     githubOwner,
+			OriginRef: originRef(splitList(env("PROTECTED_BRANCHES", "main"))),
 			GitHub: func(app string) environments.GitHub {
 				return broker.Session(app)
 			},

@@ -80,8 +80,18 @@ func loadRefProtectionPermissions() (map[string]string, error) {
 // loadGitHubReadCallers reads GITHUB_READ_CALLERS: comma-separated usernames as TokenReview names them
 // (system:serviceaccount:<ns>:<name>). Empty: the endpoint answers 503.
 func loadGitHubReadCallers() map[string]bool {
+	return loadCallerList("GITHUB_READ_CALLERS")
+}
+
+// loadRefProtectionCallers reads GITHUB_READ_REF_PROTECTION_CALLERS: the only callers the ref-protection purpose's extra
+// permissions are minted for. Empty: nobody is elevated, whatever GITHUB_READ_REF_PROTECTION_PERMISSIONS says.
+func loadRefProtectionCallers() map[string]bool {
+	return loadCallerList("GITHUB_READ_REF_PROTECTION_CALLERS")
+}
+
+func loadCallerList(env string) map[string]bool {
 	callers := map[string]bool{}
-	for _, c := range strings.Split(os.Getenv("GITHUB_READ_CALLERS"), ",") {
+	for _, c := range strings.Split(os.Getenv(env), ",") {
 		if c = strings.TrimSpace(c); c != "" {
 			callers[c] = true
 		}
@@ -132,7 +142,7 @@ func githubReadOwns(dynClient dynamic.Interface, req githubReadRequest) error {
 	return fmt.Errorf("no Repository CR in app-%[1]s-cicd or infra-%[1]s-cicd maps to %s/%s", req.App, req.Owner, req.Repo)
 }
 
-func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Interface, appCreds *githubapp.Creds, callers map[string]bool, refProtectionExtra map[string]string) http.HandlerFunc {
+func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Interface, appCreds *githubapp.Creds, callers map[string]bool, refProtectionExtra map[string]string, refProtectionCallers map[string]bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var caller string
@@ -180,8 +190,11 @@ func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Int
 			return
 		}
 		perms := githubapp.RepoReadPermissions()
-		if req.Purpose == purposeRefProtection {
-			// Only this purpose, only what the cluster configured for it, and only for this one token.
+		// The elevated set is for the ref-protection purpose only, only for a caller named in GITHUB_READ_REF_PROTECTION_CALLERS
+		// (being in GITHUB_READ_CALLERS is not enough), and never for an app's gitops repository: ref protection reads the
+		// source repository, and an administration token on a gitops repo (which holds what deploys) is not worth minting. It is
+		// still one repo, one token, minted per call. Anything else gets the read-only set.
+		if req.Purpose == purposeRefProtection && refProtectionCallers[caller] && req.Repo != "gitops-"+req.App {
 			for k, v := range refProtectionExtra {
 				perms[k] = v
 			}

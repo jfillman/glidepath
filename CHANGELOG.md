@@ -6,6 +6,11 @@ Notable changes to Glidepath. Newest first.
 
 ### Pipeline trust T3: verified ref protection
 
+- Runs glidepath-api starts are verified from a stamped origin: a rerun copies the origin of the run it repeats (and no other annotation), promote and
+  rollback stamp the release's commit and the configured protected branch (a rollback to an older commit of that branch passes by design). The cluster policy
+  `glidepath-api-pipelinerun-shape` must allow the `glidepath.io/origin-*` annotations. The broker's elevated ref-protection token is bound to
+  `githubRead.refProtectionCallers`, one source repository per token, never a gitops repository; docs/admin/security.md states the blast radius and recommends not setting it.
+
 - Review settings count: a protected branch needs approvals AND `dismiss_stale_reviews_on_push` or `require_last_push_approval`. Chained stages verify the
   origin ref and sha the Trigger stamps on them (`glidepath.io/origin-*`; admission refuses those annotations from a `.tekton` file); a chained run with no
   origin is refused, so drain in-flight chains. `required` needs the platform's GitHub App to hold Administration: write (GitHub shows a ruleset's bypass

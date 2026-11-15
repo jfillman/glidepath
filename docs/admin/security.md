@@ -405,7 +405,7 @@ What this release does close, and how that was checked:
   `chart_safe` call inside `render()`, helm's stderr to `.helm-err`, and the two `FAIL` lines.
 - **A re-run from a commit comment** (`/retest` on a pushed commit) is recorded by Pipelines-as-Code with an event type its source
   sets from the comment (not `push`; the exact string was not confirmed). A privileged Pipeline then fails the push-only rule and is
-  refused: the safe direction. Re-run those from the portal (glidepath-api rerun, once the cluster policy allows it) or push again.
+  refused: the safe direction. Re-run those from the portal (glidepath-api rerun; see "Runs glidepath-api starts" under Ref protection) or push again.
 
 **Ref protection is two layers.** The admission policy's name check is the first: a push to a configured protected branch name or a
 tag of the shape `v<major>.<minor>.<patch>`. It cannot ask the git host whether that branch needs review or who may push the tag, so on
@@ -482,11 +482,35 @@ chain that runs: the next stage asks about the side branch and is refused. The a
 stamp and the debrief). Events emitted by a run started before this release have no origin: their chained stage is refused, so drain in-flight
 chains before enabling `required`.
 
+**Runs glidepath-api starts carry a stamped origin too.** None of them has Pipelines-as-Code annotations, so each is stamped by its trusted
+creator, never by the caller's input, and its guard verifies the stamp against the git host:
+
+- **Rerun** (`POST /v1/apps/{app}/pipelineruns/{name}/rerun`): the API copies the origin of the run it repeats and nothing else from its annotations: the
+  `source-branch` and `sha` Pipelines-as-Code recorded for a push (so a rerun of a main build is verified as main at that commit), the stamp a chained run
+  carries, or `glidepath.io/origin-event` for a pull request run (a rerun of a PR build is "not a push"; a privileged Pipeline refuses it). A rerun of
+  a rerun keeps the origin; a request cannot change it.
+- **Promote and rollback**: the API stamps the commit the release is built from (the source environment's release file, or, for a rollback, the target
+  release record's `gitRevision`) and the platform's configured protected branch (`refs/heads/<first of PROTECTED_BRANCHES>`). The stamp is a claim, and
+  the guard checks it against the host: the branch must be protected and the commit on it (`sha` an ancestor of the branch head, or its head). A rollback
+  to an older release therefore passes **by design**: it is an older, already reviewed commit of the protected branch. A commit that never reached the
+  protected branch (a tag-only commit, say) is refused. A first deploy from an image tag is stamped the same way.
+- **Tower's own promote path** (the Backstage backend creating the run from the `promote-release` template itself) carries no stamp and is refused
+  under `required`; promote through glidepath-api.
+- **Owed outside this repository:** the cluster policy that holds glidepath-api's run creations to a shape (`glidepath-api-pipelinerun-shape`, in the cluster
+  repositories) must allow the `glidepath.io/origin-ref`, `origin-sha` and `origin-event` annotations; until it does, a rerun, promote or rollback is refused
+  at creation. Not verified here.
+
+**A forged chain event replays, at most, an older reviewed commit.** A chained stage verifies the origin the event named. Someone who could forge a
+chain event (the broker authenticates the sending namespace, so that is a compromised task of the same app) cannot name an unreviewed commit, but can name
+an older commit of the protected branch together with an `image-ref`: the image reference travels in the event and is not bound to the origin sha. What
+binds the image to the commit downstream is the release PR's gates (provenance: signature and SLSA provenance of the image by the platform's identity) and
+Clearance's gate; this change does not add a check that the image's source commit equals the origin sha. That is open.
+
 **The setting.** `refProtection.mode` in the catalog values: `required` (the default) or `off`. Nothing else is accepted, and no
 hostname or plan is detected in code: only this setting decides. A cluster on a host plan without rulesets (this lab: GitHub Free) sets
 `off` explicitly in its own values; the task then asks nothing and records `ref protection: Off here (...)` in its result
 `ref-protection-summary`, and the release Pipeline writes that line into the release record as `refProtection`, so the gap is in the evidence.
-A verified run records the proof the same way.
+A verified run records the proof the same way (`verified`, or `origin-verified` for a run verified from its stamped origin).
 
 **What `off` leaves open.** It is the name check only, so the two tables above go back to what they said before this slice:
 
@@ -509,6 +533,22 @@ ref-protection call (purpose `ref-protection`) and to no other token; the defaul
 unreadable bypass list as "no bypass"**: the verdict stays `unverifiable`, and its reason names the permission and these steps. Without the
 App permission, set `refProtection.mode: off` and read the section above for what that leaves open. Classic branch protection needs Administration: read
 and is read with the same token, so it is readable once the above is in place. Rulesets on a private repository need GitHub Team or Enterprise.
+
+**Blast radius of `githubRead.refProtectionPermissions: {administration: write}`: read this, and prefer not to set it.** With it set, the broker mints,
+for the ref-protection purpose, a token with repository Administration: write on a source repository of any app that glidepath-api names, valid
+for about an hour. Anything that can act as glidepath-api (a compromised glidepath-api, or code running as its ServiceAccount) can therefore edit or disable rulesets
+and branch protection, add deploy keys and change settings on every app's source repository, which defeats this guard and more. What the broker
+does to limit it: the elevation is bound to the identities in `githubRead.refProtectionCallers` (default glidepath-api only; being allowlisted to read is
+not enough, and an empty list elevates nobody), only for `purpose: ref-protection`, one repository per token, never an app's gitops repository, each mint
+logged with caller, repository and permissions. It is not separated further: glidepath-api itself holds the credential to ask, so a dedicated
+identity would only help if the ref-protection call ran in its own pod, which is not built. **Mark it "only if you accept this risk".** The
+alternative being proposed to the owner (verifying each released commit's review evidence with read-only access, so no bypass list is needed) would remove the need; until
+then the choices are `refProtection.mode: off` or this setting.
+
+**What a bypass list is allowed to contain.** By design the verdict accepts, and shows in its record, repository administrators, organization
+administrators and GitHub Apps on a ruleset's bypass list: they are the platform's and the owners' own door, not "anyone with push rights". Classic
+branch protection with `enforce_admins: false` is recorded as an administrator bypass and does **not** fail the check. Write and maintain roles, custom
+roles, teams, deploy keys and named users do fail it.
 
 **Calls per check.** A branch: `rules/branches/{b}` (1 page of 100 rules), one `rulesets/{id}` per ruleset that supplies a requirement (typically 1 to 3),
 `branches/{b}/protection` (1), `compare` (1); one more `rulesets?per_page=1` only when the host says classic protection is unavailable. About 4 to 6 in

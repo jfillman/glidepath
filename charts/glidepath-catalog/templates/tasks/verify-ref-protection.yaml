@@ -15,10 +15,12 @@
 # Off here" in the result `ref-protection-summary`, which the release Pipeline writes into the release record: a host
 # plan without rulesets sets it on purpose, and the gap is in the evidence rather than silent.
 #
-# A run the platform chained (the next stage, started by its own Trigger from the previous stage's event) carries no
-# Pipelines-as-Code annotations. The Trigger instead stamps it with glidepath.io/origin-ref and glidepath.io/origin-sha,
-# taken from the previous stage's event, which stage-debrief filled from the originating run's own Pipelines-as-Code
-# annotations (or, for a chained run, its own stamp). Admission refuses those annotation keys on a run a .tekton file
+# A run the platform created (the next stage, started by its own Trigger from the previous stage's event; a rerun, promote or
+# rollback glidepath-api starts) carries no Pipelines-as-Code annotations. Its creator stamps it with glidepath.io/origin-ref and
+# glidepath.io/origin-sha: the Trigger from the previous stage's event (which stage-debrief filled from the originating run's own
+# Pipelines-as-Code annotations or its stamp); glidepath-api from the run it repeats (a rerun), or, for promote and rollback,
+# from the release's commit and the configured protected branch. A rerun of a pull request build carries glidepath.io/origin-event
+# instead, and the build passes it as not a push. Admission refuses those annotation keys on a run a .tekton file
 # creates, so a file cannot set them. This guard verifies THAT ref and sha itself, exactly as for a push, and refuses a
 # chained run that has no origin, one whose origin sha is not the revision it was started for, or one whose origin is
 # not protected: a stage chained from a build that was not a verified protected-ref build never runs.
@@ -46,7 +48,7 @@ spec:
         is refused. build: a pull request or a push to a side ref passes as not applicable (it writes no main image).
   results:
     - name: ref-protection
-      description: verified | chained-verified | off | not-push | side-ref | refused
+      description: verified | origin-verified | off | not-push | side-ref | refused
     - name: ref-protection-summary
       description: 'One line for the evidence (the release record), for example "ref protection: Off here".'
   steps:
@@ -85,14 +87,19 @@ spec:
         [[ "${REF_PROTECTION_MODE}" == required ]] || refuse "refProtection.mode is ${REF_PROTECTION_MODE}, not required or off"
 
         if [[ -z "${event}" ]]; then
-          # Not started by Pipelines-as-Code: a chained stage. Its origin is what the Trigger stamped from the event.
-          [[ "${PIPELINE_KIND}" == privileged ]] || refuse "a build is never chained: this run has no Pipelines-as-Code event"
+          # Not started by Pipelines-as-Code: a chained stage, a rerun, or a promote or rollback run. Its origin is what the platform
+          # stamped (the Trigger from the event; glidepath-api from the run it repeats or the release it acts on).
+          oevent="$(gann origin-event)"
+          if [[ "${PIPELINE_KIND}" == build && -n "${oevent}" && -z "$(gann origin-ref)" ]]; then
+            result not-push "ref protection: not a push (a rerun of a ${oevent} build): nothing to verify"
+            exit 0
+          fi
           ref="$(gann origin-ref)"; sha="$(gann origin-sha)"; repo_url="$(param git-url)"
           [[ -n "${ref}" && -n "${sha}" ]] \
-            || refuse "this run was chained but carries no origin (glidepath.io/origin-ref and origin-sha): the stage that started it was not a verifiable push, so it is not run"
+            || refuse "this run was not started by a push and carries no origin (glidepath.io/origin-ref and origin-sha): it was chained from a stage that was not a verifiable push, or created without one, so it is not run"
           [[ "${sha}" == "$(param git-revision)" ]] \
             || refuse "the origin commit ${sha:0:7} is not the revision (${sha:0:7} vs $(param git-revision | head -c 7)) this chained run was started for"
-          chained=" (chained: origin ${ref})"
+          chained=" (origin ${ref})"
           event=push
         fi
         if [[ "${event}" != push ]]; then
@@ -139,7 +146,7 @@ spec:
           exit 0
         fi
         if [[ "${verdict}" == protected ]]; then
-          result "${chained:+chained-}verified" "ref protection: verified for ${ref} at ${sha:0:7}${chained}: ${reasons}${bypass:+ [bypass: ${bypass}]}"
+          result "${chained:+origin-}verified" "ref protection: verified for ${ref} at ${sha:0:7}${chained}: ${reasons}${bypass:+ [bypass: ${bypass}]}"
           exit 0
         fi
         {

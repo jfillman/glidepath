@@ -127,7 +127,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	mux.HandleFunc("/github-read-token", handleGitHubReadToken(clientset, dynClient, appCreds, loadGitHubReadCallers(), refProtectionExtra))
+	mux.HandleFunc("/github-read-token", handleGitHubReadToken(clientset, dynClient, appCreds, loadGitHubReadCallers(), refProtectionExtra, loadRefProtectionCallers()))
 	mux.HandleFunc("/agent-installation-token", handleAgentInstallationToken(clientset, dynClient, loadAgentTokenCallers()))
 	mux.HandleFunc("/agent-pin", handleAgentPin(clientset, dynClient, appCreds))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })

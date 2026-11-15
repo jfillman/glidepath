@@ -284,8 +284,8 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
 
     def test_a_chained_run_verifies_its_origin(self):
         p, res, summ, calls = self.chained(api=self.PROTECTED)
-        self.assertEqual((p.returncode, res), (0, "chained-verified"), p.stderr)
-        self.assertIn("chained: origin refs/heads/main", summ)
+        self.assertEqual((p.returncode, res), (0, "origin-verified"), p.stderr)
+        self.assertIn("(origin refs/heads/main)", summ)
         self.assertIn("ref=refs/heads/main", calls)
         self.assertIn(f"sha={SHA}", calls)
         self.assertIn("repo=jfillman/shop", calls)
@@ -310,8 +310,43 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
         # a run with neither a Pipelines-as-Code event nor an origin stamp
         p, res, _, _ = self.run_task(event="", api=self.PROTECTED)
         self.assertEqual((p.returncode, res), (1, "refused"))
-        # a build is never chained
-        p, res, _, _ = self.run_task(kind="build", event="", anns={"glidepath.io/origin-ref": "refs/heads/main", "glidepath.io/origin-sha": SHA}, api=self.PROTECTED)
+        # a build with neither an event nor an origin is refused too
+        p, res, _, _ = self.run_task(kind="build", event="", api=self.PROTECTED)
+        self.assertEqual((p.returncode, res), (1, "refused"))
+
+    # ---- runs the API starts: reruns, promote and rollback carry a stamped origin, verified like any other.
+    def test_a_rerun_of_a_main_build_verifies_its_origin(self):
+        p, res, _, calls = self.run_task(kind="build", event="", anns={"glidepath.io/origin-ref": "refs/heads/main", "glidepath.io/origin-sha": SHA},
+                                         params=self.CHAIN_PARAMS, api=self.PROTECTED)
+        self.assertEqual((p.returncode, res), (0, "origin-verified"), p.stderr)
+        self.assertIn("ref=refs/heads/main", calls)
+        # unprotected origin of a main-like ref: refused; a side ref passes the build's side-ref exit as before
+        p, res, _, _ = self.run_task(kind="build", event="", anns={"glidepath.io/origin-ref": "refs/heads/main", "glidepath.io/origin-sha": SHA},
+                                     params=self.CHAIN_PARAMS, api={"verdict": "unprotected", "mainLike": True, "reasons": ["no"]})
+        self.assertEqual((p.returncode, res), (1, "refused"))
+        p, res, _, _ = self.run_task(kind="build", event="", anns={"glidepath.io/origin-ref": "refs/heads/feature/x", "glidepath.io/origin-sha": SHA},
+                                     params=self.CHAIN_PARAMS, api={"verdict": "unprotected", "mainLike": False, "reasons": ["no"]})
+        self.assertEqual((p.returncode, res), (0, "side-ref"))
+
+    def test_a_rerun_of_a_pull_request_build_is_not_a_push(self):
+        p, res, _, calls = self.run_task(kind="build", event="", anns={"glidepath.io/origin-event": "pull_request"}, params=self.CHAIN_PARAMS, api=self.PROTECTED)
+        self.assertEqual((p.returncode, res, calls), (0, "not-push", ""))
+        # a privileged Pipeline never takes that exit
+        p, res, _, _ = self.run_task(kind="privileged", event="", anns={"glidepath.io/origin-event": "pull_request"}, params=self.CHAIN_PARAMS, api=self.PROTECTED)
+        self.assertEqual((p.returncode, res), (1, "refused"))
+
+    def test_a_promote_or_rollback_run_verifies_the_stamped_commit(self):
+        # glidepath-api stamps the configured protected branch and the release's commit; the guard asks the host about exactly that
+        # (a rollback's older sha is an ancestor of the branch head, which the API's reachability check accepts by design)
+        older = "5" * 40
+        params = [{"name": "git-url", "value": "https://github.com/jfillman/shop"}, {"name": "git-revision", "value": older}]
+        p, res, _, calls = self.run_task(event="", anns={"glidepath.io/origin-ref": "refs/heads/main", "glidepath.io/origin-sha": older},
+                                         params=params, api=self.PROTECTED)
+        self.assertEqual((p.returncode, res), (0, "origin-verified"), p.stderr)
+        self.assertIn(f"sha={older}", calls)
+        # not on the protected branch: the API says so and the run is refused
+        p, res, _, _ = self.run_task(event="", anns={"glidepath.io/origin-ref": "refs/heads/main", "glidepath.io/origin-sha": older}, params=params,
+                                     api={"verdict": "unprotected", "mainLike": True, "reasons": ["commit is not on branch main"]})
         self.assertEqual((p.returncode, res), (1, "refused"))
 
     def test_the_failure_says_what_a_misordered_upgrade_needs(self):
@@ -351,6 +386,10 @@ class BrokerSetting(unittest.TestCase):
 
     def test_default_is_today_s_permissions(self):
         self.assertEqual(json.loads(self.env()["GITHUB_READ_REF_PROTECTION_PERMISSIONS"]), {})
+
+    def test_the_elevated_permission_is_bound_to_named_callers(self):
+        self.assertEqual(self.env()["GITHUB_READ_REF_PROTECTION_CALLERS"], "system:serviceaccount:platform-system:glidepath-api")
+        self.assertEqual(self.env("--set", "githubRead.refProtectionCallers=null")["GITHUB_READ_REF_PROTECTION_CALLERS"], "")
 
     def test_the_setting_reaches_the_broker(self):
         e = self.env("--set", "githubRead.refProtectionPermissions.administration=write")
