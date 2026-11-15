@@ -28,7 +28,7 @@ cat > "$d/bin/helm" <<'EOF'
 #!/usr/bin/env bash
 n=$(( $(ls "${WORK}"/helm-*.args 2>/dev/null | wc -l) + 1 ))
 printf '%s\n' "$@" > "${WORK}/helm-${n}.args"
-if [[ " $* " == *" ${WORK}/vol/inputs/base/"* ]]; then sed 's/^  replicas: 1$/  replicas: 3/' "${FIXTURE}/head.yaml"; else cat "${FIXTURE}/head.yaml"; fi
+if [[ " $* " == *" ${VOL}/inputs/base/"* ]]; then sed 's/^  replicas: 1$/  replicas: 3/' "${FIXTURE}/head.yaml"; else cat "${FIXTURE}/head.yaml"; fi
 EOF
 chmod +x "$d/bin/helm"
 expect() { # <name> <got> <want>
@@ -54,14 +54,16 @@ pipe() {
   local s="$1"; shift
   local W="$d/$s"
   export WORK="$W" FIXTURE="$fx"
-  rm -rf "$W/vol" "$W/w" "$W/rtmp"; mkdir -p "$W/vol" "$W/w" "$W/rtmp"
-  sstep "$d/task.yaml" publish | loc "$W" x x x "$W/vol" > "$W/publish.sh"
-  ( cd "$W" && PHASE=fetch PIPELINE_RUN=run-1 bash "$W/publish.sh" ) > "$W/publish.log" 2>&1 || { echo "-- $s: publish failed:"; cat "$W/publish.log"; }
-  sstep "$d/rtask.yaml" render | loc "$W/vol/inputs" "$W/vol/rendered" x x x > "$W/render.sh"
+  local V="$d/vol-$s"; export VOL="$V"   # outside $W: $W is the fetch step's /work, which publish copies
+  rm -rf "$V" "$W/w" "$W/rtmp"; mkdir -p "$V"
+  sstep "$d/task.yaml" publish | loc "$W" x x x "$V" > "$d/publish-$s.sh"
+  ( cd "$W" && PHASE=fetch PIPELINE_RUN=run-1 bash "$d/publish-$s.sh" ) > "$d/publish-$s.log" 2>&1 || { echo "-- $s: publish failed:"; cat "$d/publish-$s.log"; }
+  mkdir -p "$W/w" "$W/rtmp"
+  sstep "$d/rtask.yaml" render | loc "$V/inputs" "$V/rendered" x x x > "$W/render.sh"
   ( cd "$W" && PATH="$d/bin:$PATH" RENDER_TMP="$W/rtmp" PROFILE=clearance-gate RENDER_CPU_SECONDS=60 RENDER_MAX_FILE_KB=32768 \
       RENDER_MAX_ENVIRONMENTS=50 APP_NAME=gate-api NAMESPACE=app-gate-api-cicd bash "$W/render.sh" ) > "$W/render.log" 2>&1
   echo $? > "$W/render.rc"
-  sstep "$d/task.yaml" ingest | loc "$W/w" x "$W/vol/rendered" "$W/vol/trusted" x > "$W/ingest.sh"
+  sstep "$d/task.yaml" ingest | loc "$W/w" x "$V/rendered" "$V/trusted" x > "$W/ingest.sh"
   ( cd "$W/w" && env PATH="$d/bin:$PATH" PHASE=decide PIPELINE_RUN=run-1 GATE=clearance-gate APP_NAME=gate-api NAMESPACE=app-gate-api-cicd \
       RENDER_ONLY=false "$@" bash "$W/ingest.sh" ) > "$W/ingest.log" 2>&1
   echo $? > "$W/ingest.rc"
@@ -89,7 +91,7 @@ expect "render exit" "$(cat "$w/render.rc")$(cat "$w/ingest.rc")" 00
 # head is the first helm call, base the second: <template> <release> <chart> --namespace <ns> -f ... -f injected
 expect "release name is <app>-<env> (the Application's)" "$(sed -n 2p "$w/helm-1.args")" gate-api-prod
 expect "namespace is the destination" "$(sed -n 5p "$w/helm-1.args")" app-gate-api-prod
-expect "value files, then the injected values last" "$(sed -n '6,$p' "$w/helm-1.args" | sed "s#$w/vol/inputs/repo/##; s#$(inj plain)#INJECTED#" | paste -sd' ' -)" \
+expect "value files, then the injected values last" "$(sed -n '6,$p' "$w/helm-1.args" | sed "s#$VOL/inputs/repo/##; s#$(inj plain)#INJECTED#" | paste -sd' ' -)" \
   "-f hangar-prod/prod/values.yaml -f hangar-prod/prod/release.yaml -f INJECTED"
 expect "the base renders with the same release name" "$(sed -n 2p "$w/helm-2.args")" gate-api-prod
 expect "injected values equal the plugin's" \
