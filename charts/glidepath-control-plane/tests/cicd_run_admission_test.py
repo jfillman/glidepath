@@ -466,8 +466,10 @@ class CicdRunAdmission(unittest.TestCase):
             pipeline, params = ("build", list(BUILD_PARAMS)) if event == "pull_request" else ("deploy", list(BUILD_PARAMS) + prm(env="dev"))
             params = [dict(p, value=fx[name]["annotations"]["pipelinesascode.tekton.dev/repo-url"]) if p["name"] == "git-url" else
                       dict(p, value=fx[name]["annotations"]["pipelinesascode.tekton.dev/sha"]) if p["name"] == "git-revision" else p for p in params]
-            self.admitted(run(pipeline, metadata=md, taskRunSpecs=None if pipeline != "build" else None, params=params) if pipeline != "build"
-                          else run(pipeline, metadata=md, params=params))
+            if pipeline == "build":
+                self.admitted(run(pipeline, metadata=md, params=params))
+            else:
+                self.admitted(run(pipeline, metadata=md, taskRunSpecs=None, params=params))
 
     def test_the_image_repository_is_the_apps_own(self):
         for bad in ("registry.example/o/other-app", "registry.example/victim/sample", "registry.example/o/sample-buildcache",
