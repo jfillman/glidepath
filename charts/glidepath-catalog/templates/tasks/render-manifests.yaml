@@ -1,0 +1,182 @@
+# catalog/tasks/render-manifests.yaml
+#
+# Where a chart is rendered for a gate (docs/admin/security.md, "Rendering is not done where the credentials are").
+#
+# `helm template` of a chart the repository can choose (cicd.yaml deploy.chart, or a repoURL the developer controls) is code
+# execution surface: Helm follows symlinks inside a chart, template functions read files (`.Files.Get`) and can fail with their
+# content, and a render can be made very large. It used to run in the pod of policy-validation-gate and clearance-gate, which hold a
+# Kubernetes token and projected tokens. It now runs here, as `source-runner`: no Role, no mounted token, no Secret volume, no projected
+# token (the admission policy cicd-run-source-isolation makes a run give this task to that account, for the two gate Pipelines).
+#
+# What it takes (the same inputs the gates always rendered from), read-only at /work:
+#   plan.txt        one line per environment: cluster|env|chart (policy-validation) or cluster|env|chart|protected (clearance-gate);
+#                   chart is a path under /work/charts, or `default` (the chart baked into the validator image)
+#   repo/ base/     the checkouts of the PR head and of its base (clearance-gate renders both)
+#   charts/         the repository charts the plan names, already fetched by the gate's fetch step
+#   observability/  the destination cluster's observability facts (clearance-gate), layered into the injected values
+# What it writes, to /out (its own workspace, read by the gate afterwards as data): one directory per environment,
+# `<cluster>__<env>/` holding `status` (ok | render-failed) and the rendered YAML (`head.yaml` and `base.yaml`, or `resources.yaml`),
+# and `MANIFEST`, last: "<sha256>  <directory>/<file>" per file. The gate recomputes every digest itself and does not trust this
+# task to have said the truth: whatever is here is data a pull request author chose.
+#
+# The render is exactly what the gates ran before: the same helm arguments (release name, namespace, value files in the same order,
+# the injected values last), so the objects, and the tree digest Clearance matches against its Argo CD plugin's, are unchanged. No
+# `--skip-tests`: Argo CD's own render does not skip them, and dropping a test hook here would change that digest.
+#
+# Bounds: no plugin (HELM_PLUGINS is an empty directory), no post-renderer (the flag is never passed), no `--set-file`, no
+# `--dependency-update`, no cluster (there is no token, and `helm template` answers `lookup` with nothing), a CPU-time limit and a
+# file-size limit per render, a limit on the environments, a symlink that leaves the chart refused. Network: none is needed. A chart's
+# remote dependencies are not fetched at render time (`helm template` never did that); a chart must carry its `charts/`. The Task is
+# labelled glidepath.io/network-egress=none for a cluster NetworkPolicy to select; this chart ships no NetworkPolicy.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: render-manifests
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+    # The Task runs the repository's chart: the admission policy and the chart tests key on this, not on a step's text.
+    glidepath.io/renders-repository-content: "true"
+    glidepath.io/network-egress: none
+spec:
+  description: Renders a gate's environments with `helm template` in a pod with no Kubernetes token, no Secret and no projected token, and writes the manifests and a digest manifest to the run's workspace for the gate to read as data.
+  params:
+    - name: profile
+      type: string
+      description: "clearance-gate | policy-validation: which gate's plan and release naming to render for."
+    - name: app-name
+      type: string
+      description: The application's name.
+    - name: validator-image
+      type: string
+      default: {{ .Values.valuesValidatorImage | default (printf "%s:%s" (required "valuesValidatorRepository (or valuesValidatorImage) must be set" .Values.valuesValidatorRepository) (required "defaultChart.targetRevision must be set" .Values.defaultChart.targetRevision)) | quote }}
+      description: The values gate's validator image (helm, python3, the default chart under /opt/airframe/charts).
+  workspaces:
+    - name: inputs
+      description: What the gate's fetch step published for the render (checkouts, charts, plan). Read-only.
+      mountPath: /work
+      readOnly: true
+    - name: output
+      description: Where the render is written. The gate reads it, read-only, after this task has finished.
+      mountPath: /out
+  steps:
+    - name: render
+      image: $(params.validator-image)
+      imagePullPolicy: IfNotPresent
+      computeResources:
+        requests: { cpu: 100m, memory: 256Mi }
+        limits: { cpu: "1", memory: 2Gi }
+      env:
+        - name: PROFILE
+          value: $(params.profile)
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: NAMESPACE
+          value: $(context.taskRun.namespace)
+        - name: RENDER_CPU_SECONDS
+          value: {{ (.Values.renderManifests | default dict).cpuSeconds | default 120 | quote }}
+        - name: RENDER_MAX_FILE_KB
+          value: {{ mul ((.Values.renderManifests | default dict).maxFileMiB | default 32) 1024 | quote }}
+        - name: RENDER_MAX_ENVIRONMENTS
+          value: {{ (.Values.renderManifests | default dict).maxEnvironments | default 50 | quote }}
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        case "${PROFILE}" in clearance-gate|policy-validation) ;; *) echo "FAIL: profile must be clearance-gate or policy-validation"; exit 1;; esac
+        mkdir -p /out
+        # A retry, or a workspace that was not empty, must not leave an earlier render beside this one.
+        find /out -mindepth 1 -delete
+        [[ -s /work/plan.txt ]] || exit 0
+        {{- include "glidepath-catalog.chartSafety" . | nindent 8 }}
+        # No plugin, no cache of an earlier run, no cluster.
+        T="${RENDER_TMP:-/tmp/render}"
+        export HOME="${T}/home"
+        mkdir -p "${HOME}/plugins" "${HOME}/cache" "${HOME}/config" "${HOME}/data" "${T}/scratch"
+        export HELM_PLUGINS="${HOME}/plugins" HELM_CACHE_HOME="${HOME}/cache" HELM_CONFIG_HOME="${HOME}/config" HELM_DATA_HOME="${HOME}/data"
+        unset KUBECONFIG HELM_KUBEAPISERVER HELM_KUBETOKEN HELM_KUBEASUSER HELM_KUBECONTEXT
+        type="${NAMESPACE%%-*}"
+        safe='^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+        failed=0
+        if (( $(grep -c . /work/plan.txt) > RENDER_MAX_ENVIRONMENTS )); then
+          echo "FAIL: the plan names more than ${RENDER_MAX_ENVIRONMENTS} environments (renderManifests.maxEnvironments)"; exit 1
+        fi
+        render() { # <tree dir> <cluster> <env> <chart> <release> <out file> ; 2 when the environment does not exist in that tree
+          local dir="$1" cluster="$2" env="$3" chart="$4" release="$5" out="$6" ns_pattern="" vf=() inj why rc
+          inj="${T}/scratch/injected.${cluster}.${env}.yaml"
+          [[ "${chart}" == default ]] && chart=/opt/airframe/charts/airframe-application && ns_pattern='{type}-{app}-{env}'
+          [[ -f "${dir}/${cluster}/${env}/values.yaml" || -f "${dir}/${cluster}/${env}/release.yaml" ]] || return 2
+          # The values the Flight ApplicationSet injects (valuesObject), then the value files it layers (base < values < release).
+          printf 'appName: %s\ncluster: %s\nenvName: %s\nnamespace:\n  labels:\n    hangar.io/managed-secrets: "true"\n' \
+            "${APP_NAME}" "${cluster}" "${env}" > "${inj}"
+          # What the environment ApplicationSet adds for the cluster's default chart only (an older pinned chart's strict
+          # schema has neither key): the namespace pattern and the observability block.
+          if [[ -n "${ns_pattern}" ]]; then
+            printf 'serviceNamespacePattern: "%s"\n' "${ns_pattern}" >> "${inj}"
+            [[ -s "/work/observability/${cluster}.yaml" ]] && cat "/work/observability/${cluster}.yaml" >> "${inj}"
+          fi
+          for v in "${cluster}/base.yaml" "${cluster}/${env}/values.yaml" "${cluster}/${env}/release.yaml"; do
+            [[ -f "${dir}/${v}" ]] && vf+=(-f "${dir}/${v}")
+          done
+          if ! why="$(chart_safe "${chart}" ${vf[@]+"${vf[@]}"})"; then echo "${why}"; return 1; fi
+          # The release name is the Argo CD Application's: clearance-gate renders <app>-<env> (Clearance's Argo CD plugin does too).
+          ( ulimit -t "${RENDER_CPU_SECONDS}"; ulimit -f "${RENDER_MAX_FILE_KB}"
+            exec helm template "${release}" "${chart}" --namespace "${type}-${APP_NAME}-${env}" ${vf[@]+"${vf[@]}"} -f "${inj}" ) > "${out}" 2> "${T}/scratch/helm.err"
+          rc=$?
+          # Helm can exit 0 with the output cut at the file-size limit (it does not see the failed write): a file at the limit is refused.
+          if (( $(wc -c < "${out}") >= RENDER_MAX_FILE_KB * 1024 )); then
+            echo "the render reached the output limit of ${RENDER_MAX_FILE_KB} KiB (renderManifests.maxFileMiB)"
+            return 1
+          fi
+          if (( rc != 0 )); then
+            echo "helm template failed (exit ${rc}):"; head -c 4000 "${T}/scratch/helm.err" | tr -c '[:print:]\n\t' '?'; echo
+            return 1
+          fi
+        }
+        while IFS='|' read -r cluster env chart protected; do
+          [[ -n "${cluster}" ]] || continue
+          [[ "${PROFILE}" == clearance-gate && "${protected}" != "true" ]] && continue
+          if ! [[ "${cluster}" =~ ${safe} && "${env}" =~ ${safe} ]]; then
+            echo "FAIL: an environment's cluster or name is not a plain name; not rendered"; failed=1; continue
+          fi
+          id="${cluster}__${env}"; d="/out/${id}"; mkdir -p "${d}"
+          if [[ "${PROFILE}" == clearance-gate && -e "/work/observability/${cluster}.yaml.unreadable" ]]; then
+            echo "FAIL ${cluster}/${env}: ${cluster}'s observability facts could not be read, so the render would differ from Argo CD's"
+            echo render-failed > "${d}/status"; failed=1; continue
+          fi
+          if [[ "${PROFILE}" == clearance-gate ]]; then
+            if ! out="$(render /work/repo "${cluster}" "${env}" "${chart}" "${APP_NAME}-${env}" "${d}/head.yaml")"; then
+              echo "FAIL ${cluster}/${env}: helm template of the PR head failed: ${out}"; rm -f "${d}/head.yaml"; echo render-failed > "${d}/status"; failed=1; continue
+            fi
+            render /work/base "${cluster}" "${env}" "${chart}" "${APP_NAME}-${env}" "${d}/base.yaml" > "${T}/scratch/base.log"
+            case $? in
+              0) ;;
+              2) : > "${d}/base.yaml"; echo "${cluster}/${env}: new in this PR (no base tree)";;
+              *) echo "FAIL ${cluster}/${env}: helm template of the base failed: $(cat "${T}/scratch/base.log")"; rm -f "${d}/head.yaml" "${d}/base.yaml"; echo render-failed > "${d}/status"; failed=1; continue;;
+            esac
+            echo "${cluster}/${env}: rendered head ($(grep -c '^kind:' "${d}/head.yaml")) and base ($(grep -c '^kind:' "${d}/base.yaml")) objects with ${chart}"
+          else
+            if ! out="$(render /work/repo "${cluster}" "${env}" "${chart}" "${APP_NAME}" "${d}/resources.yaml")"; then
+              echo "FAIL ${cluster}/${env}: helm template failed: ${out}"; rm -f "${d}/resources.yaml"; echo render-failed > "${d}/status"; failed=1; continue
+            fi
+            echo "${cluster}/${env}: rendered $(grep -c '^kind:' "${d}/resources.yaml") objects with ${chart}"
+          fi
+          echo ok > "${d}/status"
+        done < /work/plan.txt
+        # The manifest of what is in /out, written last and in one move: a render that did not finish has none.
+        python3 - <<'PY'
+        import hashlib, os
+        out, lines = "/out", []
+        for d in sorted(os.listdir(out)):
+            p = os.path.join(out, d)
+            if os.path.isdir(p) and not os.path.islink(p):
+                for f in sorted(os.listdir(p)):
+                    fp = os.path.join(p, f)
+                    if os.path.isfile(fp) and not os.path.islink(fp):
+                        with open(fp, "rb") as fh:
+                            lines.append(hashlib.sha256(fh.read()).hexdigest() + "  " + d + "/" + f)
+        with open(out + "/MANIFEST.tmp", "w") as fh:
+            fh.write("".join(l + "\n" for l in lines))
+        os.rename(out + "/MANIFEST.tmp", out + "/MANIFEST")
+        print("wrote the manifest of %d files" % len(lines))
+        PY
+        exit "${failed}"

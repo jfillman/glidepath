@@ -7,6 +7,13 @@
 # image, so a rollback is judged like any release (its tree is a change too); no rollback-advisory copy. The
 # registry's `required` applies: false renders only the -advisory copy (onError: continue) plus a render-check task
 # (the same Task, render-only, no onError) so a release that cannot be rendered is never green.
+#
+# Three tasks on one workspace volume, in order (nothing runs beside them: the gate reads what the render task wrote, after it has
+# finished, and nothing else writes the volume in between; render-check runs after register, not beside it): `fetch` and `register`
+# are the same Task, clearance-gate, in its two phases (credentialed: the PR, the charts and the facts; then the register); `render` is
+# render-manifests, run as source-runner (the onboarding template's taskRunSpecs, and the control plane's cicdRunAdmission.sourceTasks,
+# make a run say so): the chart is rendered where there is no token, and the gate reads the output as data (docs/admin/security.md).
+# A failure to fetch or to render is never green, advisory or not: the advisory copy's onError applies to the decide phase only.
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
@@ -27,12 +34,12 @@ spec:
       type: string
       default: ""
       description: "PaC's pull_request.number - the change registered is this PR's head; addresses the finally-block PR comment."
+  workspaces:
+    - name: gate
+      description: One volume per run (the onboarding template's volumeClaimTemplate), used in three places by subPath - inputs/, trusted/, rendered/.
   tasks:
     {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "clearance-gate")) "true" }}
-    - name: {{ ternary "register" "register-advisory" $required }}
-      {{- if not $required }}
-      onError: continue
-      {{- end }}
+    - name: fetch
       taskRef:
         resolver: cluster
         params:
@@ -45,11 +52,51 @@ spec:
         - { name: pr-number, value: $(params.pr-number) }
         - { name: app-name, value: $(params.app-name) }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: phase, value: fetch }
+      workspaces:
+        - { name: publish, workspace: gate }
+    - name: render
+      runAfter: [fetch]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: render-manifests }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: profile, value: clearance-gate }
+        - { name: app-name, value: $(params.app-name) }
+      workspaces:
+        - { name: inputs, workspace: gate, subPath: inputs }
+        - { name: output, workspace: gate, subPath: rendered }
+    - name: {{ ternary "register" "register-advisory" $required }}
+      {{- if not $required }}
+      onError: continue
+      {{- end }}
+      runAfter: [render]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: clearance-gate }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: phase, value: decide }
+      workspaces:
+        - { name: trusted, workspace: gate, subPath: trusted }
+        - { name: rendered, workspace: gate, subPath: rendered }
     {{- if not $required }}
     # The advisory copy ignores its task's failure (onError: continue), so a change that is holding or denied stays
-    # green by design. A gate that could not render the release saw nothing, and must not show green: this sibling
-    # runs fetch and render only, with no onError, and fails the run when an environment does not render.
+    # green by design. A gate that could not read the rendered release saw nothing, and must not show green: this sibling
+    # runs the decide phase's ingest only, with no onError, and fails the run when an environment's render is refused. It runs
+    # after the register task, not beside it: both read the one volume.
     - name: render-check
+      runAfter: [register-advisory]
       taskRef:
         resolver: cluster
         params:
@@ -63,6 +110,10 @@ spec:
         - { name: app-name, value: $(params.app-name) }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
         - { name: render-only, value: "true" }
+        - { name: phase, value: decide }
+      workspaces:
+        - { name: trusted, workspace: gate, subPath: trusted }
+        - { name: rendered, workspace: gate, subPath: rendered }
     {{- end }}
   finally:
     - name: comment-pr

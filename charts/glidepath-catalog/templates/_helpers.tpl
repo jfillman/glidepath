@@ -456,10 +456,10 @@ the admission verdict Clearance records (C-8) is reached exactly as the policy-v
 {{- end -}}
 
 {{- /*
-glidepath-catalog.chartSafety: bash for a credentialed step that runs `helm template` on a chart and value files the repository can choose.
-Helm follows symlinks (.Files.Get, {{ fail ... }} can print a file), and the pod holds a ServiceAccount token, so a symlink that leaves
-the chart directory, or a symlinked value file, is refused before helm runs. Helm's own error text is never printed from such a pod
-(chart_render_note): it can carry file content.
+glidepath-catalog.chartSafety: bash for the render-manifests Task, which runs `helm template` on a chart and value files the repository can
+choose. Helm follows symlinks (.Files.Get, {{ fail ... }} can print a file), so a symlink that leaves the chart directory, or a
+symlinked value file, is refused before helm runs. That Task holds no credential at all (docs/admin/security.md); the check stays
+because the render's output is read by a credentialed gate and a chart must not be able to put any file of the workspace into it.
 */ -}}
 {{- define "glidepath-catalog.chartSafety" -}}
 # BEGIN chart-safety
@@ -481,8 +481,49 @@ chart_safe() {
   done
   return 0
 }
-chart_render_note="helm's error text is withheld (it can contain file content, and this step holds credentials): run helm template locally on the same chart and value files to see it"
 # END chart-safety
+{{- end -}}
+
+{{- /*
+glidepath-catalog.renderedIngest: files/lib/rendered-ingest.py, to splice between `python3 - <<'PY'` and `PY` in the `ingest` step of
+policy-validation-gate and clearance-gate: reads the render-manifests Task's output as data (bounded YAML parse, no tags, file digests
+recomputed, no symlink followed) and writes /work/eval/<id>/ from the bytes it read.
+*/ -}}
+{{- define "glidepath-catalog.renderedIngest" -}}
+{{ .Files.Get "files/lib/rendered-ingest.py" }}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.gatePublish: the `publish` step of a gate's fetch phase. The fetch step's /work holds the PR's checkout, the charts,
+the plan and the trusted facts; this copies them onto the run's workspace in three places: inputs/ (what the render task may read:
+the checkouts, the charts, the plan, the observability facts), trusted/ (what only the gate reads afterwards: everything else, plus a
+PUBLISHED marker naming this run) and rendered/ (empty; the render task writes it). It first empties the volume: a retry, or a volume
+cloned from another run, leaves nothing behind. Copies keep symlinks as symlinks and never follow one.
+*/ -}}
+{{- define "glidepath-catalog.gatePublish" -}}
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${PHASE}" == fetch ]] || exit 0
+find /publish -mindepth 1 -delete
+mkdir -p /publish/inputs /publish/trusted /publish/rendered
+shopt -s dotglob nullglob
+for p in /work/*; do
+  n="${p##*/}"
+  case "${n}" in
+    repo|base|charts|observability) cp -a "${p}" /publish/inputs/ ;;
+  esac
+  case "${n}" in
+    repo|base|charts) ;;
+    *) cp -a "${p}" /publish/trusted/ ;;
+  esac
+done
+[[ -e /work/plan.txt ]] && cp -a /work/plan.txt /publish/inputs/plan.txt
+find /publish/inputs -name .git -prune -exec rm -rf {} +
+# the marker the decide phase requires: the data below was published by this run's own fetch
+printf '%s\n' "${PIPELINE_RUN}" > /publish/trusted/PUBLISHED
+chmod -R a+rX /publish/inputs /publish/trusted
+chmod 0777 /publish/rendered
+echo "published for the render: $(find /publish/inputs -type f | wc -l) files; trusted: $(find /publish/trusted -type f | wc -l) files"
 {{- end -}}
 
 {{- /*

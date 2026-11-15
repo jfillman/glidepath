@@ -20,7 +20,10 @@ release PR on gitops-<app>          broker (platform-system)               Kyver
    a changed `<cluster>/base.yaml`. None: the check passes as `skipped`.
 2. **Render.** The values gate's renderer: the validator image (`valuesValidatorRepository` at the cluster's
    default-chart tag), or the environment's own chart (`deploy.chart` / `environments[].chart`), with the values the
-   Flight ApplicationSet injects and its value files, into namespace `<type>-<app>-<env>`.
+   Flight ApplicationSet injects and its value files, into namespace `<type>-<app>-<env>`. It runs in the **`render-manifests`
+   task as `source-runner`** (no token, no Secret), not in the gate's own pod; the gate's `ingest` step then reads the result as data,
+   bounded and verified ([security.md](security.md#rendering-is-not-done-where-the-credentials-are)). The Pipeline is `fetch`,
+   `render`, `evaluate` on one volume; a repository picks it up with its next `.tekton/` resync.
 3. **Policies.** The broker's `/policy-bundle` returns the admission policies of the cluster's GitOps repo
    (below). The gate never receives a token for that repo: it also holds generated passwords.
 4. **Evaluate.** `kyverno apply` (1.19.0, the clusters' version) per environment, after normalizing the bundle for an
@@ -103,7 +106,7 @@ merged; release PRs cut before that keep running the stub.
 
 ## Files
 
-- `charts/glidepath-catalog/templates/tasks/policy-validation-gate.yaml` - fetch, render, evaluate
+- `charts/glidepath-catalog/templates/tasks/policy-validation-gate.yaml` - fetch, publish, ingest, evaluate (two phases; the render is `render-manifests.yaml`)
 - `charts/glidepath-catalog/files/lib/policy-eval.sh`, `policy-eval-prepare.py` - the bundle fetch, the offline
   normalization and `kyverno apply`, shared with `clearance-gate.yaml`, which sends the same verdict to Clearance as
   the change's admission result (C-8, [clearance-gate.md](clearance-gate.md))

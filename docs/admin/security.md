@@ -343,6 +343,97 @@ shared credential's reach is "every repository the credential's owner can write"
 catalog tasks' pods (`generate-sbom`, `attest-api-spec`, `build-artifact`'s publish step, `image-scan`, the release and verify tasks), none
 of which runs repository code.
 
+### Rendering is not done where the credentials are
+
+`helm template` of a chart the repository chooses (`deploy.chart.path` in the repository, or a `repoURL` the developer controls) is
+code-execution surface: Helm follows symlinks inside a chart, template functions read files (`.Files.Get`) and can fail with their
+content, a render can be made very large or never end. It used to run in the pod of `policy-validation-gate` and `clearance-gate`,
+which hold a Kubernetes token (`pipeline-runner`) and, for `clearance-gate`, a projected token Clearance trusts. It now runs in its own
+task, **`render-manifests`, as `source-runner`**: no Role, no mounted token, no Secret volume, no projected token. The two gates read
+what it wrote as data.
+
+**Where it renders now, and under which account**
+
+| Pipeline | Task (pipeline task name) | Account | What it holds | What the repository controls |
+|---|---|---|---|---|
+| `policy-validation-check`, `clearance-gate-check` | `fetch` (the gate Task, phase `fetch`; its `publish` step) | `pipeline-runner` | token, GitHub installation token, policy-bundle token (and the Clearance token in `clearance-gate`) | fetches repository files and charts as bytes; renders nothing |
+| same | `render` (`render-manifests`) | **`source-runner`** | nothing: two workspaces, `inputs` read-only | the chart, the value files, every template |
+| same | `evaluate` / `register` (the gate Task, phase `decide`) | `pipeline-runner` | as above | reads the render as data (below) |
+
+The control plane's admission policy (`cicd-run-source-isolation`, `cicdRunAdmission.sourceTasks`) lists `render` for both Pipelines, so a
+`.tekton` file that runs it as `pipeline-runner`, or any account but `source-runner`, is refused; the Pipelines are the catalog's, so the
+task cannot be skipped. The onboarding templates (`pull-request-policy-validation.yaml`, `pull-request-clearance-gate.yaml`) carry the
+`taskRunSpecs` entry and the workspace.
+
+**How the three tasks share data without trusting each other.** One volume per run (a `volumeClaimTemplate` in the template), used by
+subPath: `inputs/` (what `fetch` published for the render: the checkouts, the charts, the plan, the observability facts; the render sees it
+read-only), `rendered/` (what the render wrote; the gate sees it read-only), `trusted/` (the gate's own facts: the PR, the policy bundle,
+clearance.yaml, the provenance verdict; **never mounted in the render task**). The gate's `publish` step empties the volume first (a retry, or a
+volume cloned from another run, leaves nothing) and writes a `PUBLISHED` marker naming this run; the decide phase refuses a volume without
+it (so a run whose workspace was swapped for an `emptyDir` fails, it does not pass as "nothing to check"). The tasks run strictly in
+order, `fetch` then `render` then the decide phase (`render-check`, the advisory copy's companion, runs after `register-advisory`, not
+beside it): nothing else writes the volume between the render and the read, and a test checks that no two tasks that bind it can run
+together.
+
+**What the render does.** The same helm invocation the gates always ran (release name, namespace, value files in the same order, the
+injected values last), so the objects and the tree digest are unchanged. `HELM_PLUGINS` is an empty directory (no plugin), no
+post-renderer, no `--set-file`, no `--dependency-update` (a chart's remote dependencies are **not** fetched at render time, and never were:
+`helm template` does not do that; a chart must carry its `charts/`), no cluster (there is no token, and `helm template` answers `lookup`
+with nothing). `--skip-tests` is deliberately not used: Argo CD's own render does not skip test hooks, and dropping one would change the
+digest Clearance matches. A CPU-time limit and a file-size limit apply per render (`renderManifests.cpuSeconds`, `maxFileMiB`: Helm can
+exit 0 with the output cut at the limit, so a file at the limit is refused), and a limit on the environments per run. #249's symlink
+refusal stays (a symlink that leaves the chart, a symlinked value file). Helm's error text is printed to the render task's log, which holds
+no credential. Network: none is needed and none is used; the Task is labelled `glidepath.io/network-egress=none` for a cluster
+NetworkPolicy to select (this chart ships no NetworkPolicy, so the pod has the cluster's default egress; it still has nothing to send).
+
+**What the gates do with the output, and must never do.** The output is attacker-controlled data: a pull request author could always make
+the chart render anything. What this removes is the ability to read the gate pod's credentials or to run code beside them. So the gates
+(`files/lib/rendered-ingest.py`, the `ingest` step) read it with a YAML parser that builds only plain data: every file is opened without
+following a symlink and must be a plain file; every file digest in the `MANIFEST` is recomputed from the bytes the gate read (a missing,
+extra or changed file refuses the tree); a tag other than YAML's core ones (`!!python/object`), a recursive anchor, nesting over 64 levels,
+over 5000 documents, over 32 MiB a file, or over 1,000,000 nodes **after aliases are expanded** (an alias bomb) is refused. Nothing is
+`source`d, `eval`ed or executed from it; none of its strings reaches a shell unquoted (object names are only ever data in JSON the gate
+builds with `jq` or Python); nothing from it is printed wholesale (a log line carries a validated environment id and counts; the PR comment's
+resource and message columns are cut to 200 and 300 characters with control characters, markup, mentions, links and table characters
+removed). The **tree digest** Clearance registers is computed by the gate (`clearance-gate`'s object diff) from the bytes it verified and parsed,
+with the same function as before: `tests/tokenless_render_test.py` renders a fixture chart through the new path and requires the same tree
+and object digests as the old code produced (`tests/fixtures/render/golden.json`), and `tests/clearance_gate_parity_test.sh` still
+requires the recorded Argo CD plugin digests.
+
+**Policies the gate evaluates are the platform's.** `policy-validation-gate` evaluates the cluster's admission policies, read from the
+cluster's GitOps repository through the broker's `/policy-bundle`, against the rendered objects. It loads no policy or exception from the
+application's repository (the repository chooses only the cluster name in a path, which selects among the platform's configured bundles; an
+unknown cluster fails the check). `clearance-gate` sends the repository's `clearance.yaml` to Clearance, which accepts it only when it
+tightens the platform baseline (DG-POLICY), it is parsed as data in the fetch pod.
+
+**Where repository content is rendered or interpreted in a pod that holds a credential** (the audit behind this section; the Argo CD
+plugin that renders in Argo CD is Clearance's repository and out of scope here, it is named because it is the other renderer of the same
+chart):
+
+| # | Task / step | Account, what is mounted | What the repository controls | State |
+|---|---|---|---|---|
+| 1 | `policy-validation-gate` render | was `pipeline-runner`, token | chart, values, templates | **moved** to `render-manifests` as `source-runner` |
+| 2 | `clearance-gate` render | was `pipeline-runner`, token (Clearance token in the same pod, other steps) | same | **moved** |
+| 3 | `validate-values` `own-chart` (`values-check`) | `pipeline-runner`, token; GitHub installation token in the `fetch` step | the same chart and values, `helm template` | **follow-up 1** (below) |
+| 4 | `validate-values` `validate` (the validator image on the platform's default chart) | `pipeline-runner`, token | values files only (the chart is the platform's) | data into a platform chart; not repository code |
+| 5 | `policy-validation-gate` evaluate (Kyverno) | `pipeline-runner` | the rendered objects (data); policies are the platform's | reads data; findings escaped (this change) |
+| 6 | `clearance-gate`, `policy-validation-gate` and `validate-values` fetch steps: a `yq` program with the environment name (a directory name in the gitops repository) interpolated into its text (`select(.name == "${env}")`) | `pipeline-runner`, projected tokens | the environment name; `yq` has `load()` and `env()` | **finding, follow-up 4**: not shown exploitable here, not shown safe; pass it with `strenv()` |
+| 7 | `run-testworkflow` (`kubectl apply` of the repository's TestWorkflow) | `pipeline-runner`, registry credential | the whole manifest, checked by a field allowlist | documented above (B(a)); **follow-up 2** is to apply it from a rendered, validated copy |
+| 8 | `deliver-onboarding-files` (`yq` of `cicd.yaml`, generating `.tekton/`) | `pipeline-runner`, GitHub installation token | `cicd.yaml` values placed into generated files by shell expansion (never re-evaluated) | data; a hostile-file check is part of rollout (T6) |
+| 9 | `deploy-manifests`, `open-release-pin-pr`, `bump-manifest-pr` (`yq -i` on gitops files) | `pipeline-runner`, GitHub installation token | the image reference and digest, from the build's results, are interpolated into a `yq` expression | not a render; not audited for injection here (**follow-up 4**) |
+| 10 | `deploy-aws-lambda`, `deploy-aws-ecs` (cloud credentials, web identity) | `glidepath-cloud-deployer` | function and service names from `cicd.yaml` | no template rendering; `jq`/`aws` with fixed programs |
+| 11 | `sast-scan` (Semgrep over the checkout), `image-scan`, `generate-sbom` | `pipeline-runner`, `app-secrets` / registry credential | the repository files and image content as scan input | read as data; Semgrep scans a copy with no `.git` and no symlink |
+| 12 | `promote` `source "${W}/repo.env"` | `pipeline-runner` | nothing: the file is written by the task itself with `printf %q` | not repository-controlled |
+| 13 | Argo CD config management plugin (Clearance's repository) | n/a | renders the same chart in Argo CD | **out of scope**, named |
+
+Nothing in the catalog runs `kustomize build`, `jsonnet`, `envsubst` or `eval`. Follow-ups, in order: **(1)** `validate-values`' `own-chart`
+step: the same `helm template`, in `values-check`, still runs as `pipeline-runner`; it needs the same fetch / render / read split (a third
+use of `render-manifests`, a profile for its plan and the Namespace/Rollout checks as an ingest step); until then
+`tests/tokenless_render_test.py` names it (`KNOWN_FOLLOW_UP`) and fails if a second one appears or if it is fixed and left on the list.
+**(2)** `run-testworkflow`: apply a validated copy of the TestWorkflow, not the repository's file. **(3)** `glidepath-api` reruns of
+the two gate runs copy the `taskRunSpecs` entry for `render` (item 6 of "What is not closed", the same cluster policy change).
+**(4)** rows 6 and 9: `yq` programs built by string interpolation in credentialed pods; pass the values as `strenv()` / `jq --arg`.
+
 ### What remains possible for someone who can open a pull request
 
 Read this before relying on the section above. Two kinds of person, because the platform gives them different things.
@@ -352,7 +443,7 @@ runs in the build and test stages before anything is merged.
 
 | They want | Possible? | Shortest remaining path |
 |---|---|---|
-| **(a) a Kubernetes token** | **No known path.** One unaudited lead. | `build.sh`, `test.sh`, `integration-test.sh`, installs, build backends and `Containerfile` `RUN` lines all run as `source-runner` (no token). The lead: a credentialed task that opens a repository-chosen path (a symlink to its own token) and prints or publishes it. Closed for `attest-api-spec`, `build-artifact`'s publish, `sast-scan`, the TestWorkflow file and the chart renders; `stage-preflight` reading `cicd.yaml` was not audited. |
+| **(a) a Kubernetes token** | **No known path.** One unaudited lead. | `build.sh`, `test.sh`, `integration-test.sh`, installs, build backends and `Containerfile` `RUN` lines all run as `source-runner` (no token). The lead: a credentialed task that opens a repository-chosen path (a symlink to its own token) and prints or publishes it. Closed for `attest-api-spec`, `build-artifact`'s publish, `sast-scan` and the TestWorkflow file. **Chart renders** no longer happen in a credentialed pod for the two release gates (`render-manifests` as `source-runner`; see "Rendering is not done where the credentials are"); the same render in `values-check`'s `own-chart` step still does (follow-up 1). `stage-preflight` reading `cicd.yaml` was not audited. |
 | **(b) write or delete a release record** | **No known path.** | It needs the token, so it is only as closed as (a). |
 | **(c) read a Secret** | **Only the optional read-only pull credential** (`build-pull-credentials`, if the operator supplied one). **Not the registry push credential.** Nothing else known. | A `RUN` line in the `Containerfile` runs in `build-image`, which mounts no push credential and runs as `source-runner`. What it can read is the pull credential, which can only read packages. |
 | **(d) push an image to another application's repository, or a base image** | **No known path for repository code.** Not through parameters; not through a cache. | The push credential is only in `push-image`'s pod, which runs none of the repository's code and pushes what the validated layout and the run's parameters say (`image-repo` is bound to the app). A pull request writes no cache, so it cannot poison the cache a main build imports. What stays possible: its own `-pr` image (by design), and a compromise of the trusted push step (see "Image build and push"). |
@@ -398,11 +489,10 @@ What this release does close, and how that was checked:
   TaskRun. This depends on Pipelines-as-Code writing its own annotations over anything the file sets; that is how its source reads
   and how a run looked live, but it was not exercised against a hostile file, so the upgrade note asks for it to be.
 - **Creating a run** needs `pipeline-trigger`, which no task runs as.
-- **`helm template` in credentialed pods** (`policy-validation-gate`, `clearance-gate`): a chart with a symlink leaving its directory,
-  or a symlinked value file, is refused before helm runs, and helm's error text is no longer printed from those pods (it can carry file
-  content, e.g. `{{ fail (.Files.Get ...) }}`); the log says to run helm locally. Not done: rendering in a pod with no token and
-  handing the output over as data, which would remove the class. `clearance-gate.yaml` edits are the include of the helper, a
-  `chart_safe` call inside `render()`, helm's stderr to `.helm-err`, and the two `FAIL` lines.
+- **`helm template` for the two release gates** (`policy-validation-gate`, `clearance-gate`) no longer runs in a pod that holds a token: it
+  runs in `render-manifests` as `source-runner`, and the gates read the output as data, bounded and unexecuted ("Rendering is not done where
+  the credentials are"). The #249 stop-gap (symlink refusal, no helm stderr in the credentialed pod) is kept as defence in depth in the
+  render task. Not done: `values-check`'s `own-chart` step (follow-up 1). `clearance-gate.yaml` edits are listed in the pull request.
 - **A re-run from a commit comment** (`/retest` on a pushed commit) is recorded by Pipelines-as-Code with an event type its source
   sets from the comment (not `push`; the exact string was not confirmed). A privileged Pipeline then fails the push-only rule and is
   refused: the safe direction. Re-run those from the portal (glidepath-api rerun, once the cluster policy allows it) or push again.
@@ -468,6 +558,31 @@ Order matters because a build run created from a `.tekton` file written before t
    deploy, test and release flows are refused.
 4. When no build run carries a source-isolation warning, set `sourceIsolationActions: [Deny]` (the default for a new install).
 5. Ask the owner of the cluster repository to let glidepath-api reruns carry the `source-runner` entries (item 6 above).
+
+**Token-less render (the release gates).** Adds to the steps above.
+
+- Release `glidepath-catalog` (adds `render-manifests`; `policy-validation-check` and `clearance-gate-check` become three tasks on one
+  volume; the gate Tasks gain a required `phase` parameter and workspaces), `glidepath-control-plane` (`cicdRunAdmission.sourceTasks` names
+  `render` for both Pipelines) and `glidepath-app` (the onboarding templates) **together, before any gitops repository's resync PR
+  merges**: an older control plane refuses a `.tekton` file that names a `taskRunSpecs` entry for `render`.
+- **Resync every gitops repository's `.tekton/`** (the onboarding-resync PR). The two check files (`pull-request-policy-validation.yaml`,
+  `pull-request-clearance-gate.yaml`) gain a `workspaces` entry (a 1Gi `volumeClaimTemplate` per run) and `taskRunSpecs` for `render` as
+  `source-runner`. Until a repository resyncs, its policy-validation and clearance-gate checks **fail** (the Pipeline needs a workspace
+  the old file does not give it: Tekton refuses the run, or the gate refuses a volume without its marker). They do not pass.
+  While `sourceIsolationActions` is `[Warn, Audit]` a resynced file is admitted either way; in `[Deny]` a file without the entry is refused.
+- **Behaviour changes.** A chart with *remote* `Chart.yaml` dependencies renders as before (it needs its `charts/` committed; `helm template`
+  never fetched them); the render no longer has the cluster's network to try. A render that takes more than 120 CPU-seconds or writes more
+  than 32 MiB a file fails that environment (raise `renderManifests.cpuSeconds` / `maxFileMiB`); more than 50 environments in one run
+  fails the run. The gates refuse a render with more than 1,000,000 nodes after alias expansion, 5000 documents or nesting over 64.
+  Helm's error text now appears in the **render task's** log (it holds nothing), not the gate's.
+- **Volume.** Each run of the two checks now creates a small PVC (inputs, the rendered manifests, the gate's facts); it goes with the run.
+  The `source-runner` pod must be able to write the volume (same check as the build volume's first live run: the PVC's `fsGroup` /
+  permissions), and the volume's storage class must allow the same PVC to be mounted by two workspaces of one pod by subPath.
+- **First live run: verify on one gitops repository before the rest** (nothing here has run on a cluster). In order: the three tasks
+  start in order and the PVC is mounted by the gate and the render by subPath; the render writes `rendered/` and the gate's `ingest` reads it
+  read-only; the tree digest of an environment equals the one the previous release registered for the same commit (Clearance's record);
+  a `.tekton` copy that gives `render` to `pipeline-runner` is refused; `kubectl auth can-i --list --as system:serviceaccount:<ns>:source-runner`
+  is empty.
 
 **Image build and push (the build/push split).** This adds to the steps above; the same order applies.
 

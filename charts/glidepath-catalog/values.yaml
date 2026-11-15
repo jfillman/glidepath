@@ -86,6 +86,16 @@ defaultChart:
   path: charts/airframe-application
   targetRevision: ""
 
+# render-manifests (tasks/render-manifests.yaml): the token-less render of a chart the repository chooses, for policy-validation-check
+# and clearance-gate-check. Per render: cpuSeconds (a CPU-time limit, so a template that never ends is killed), maxFileMiB (the size of
+# the rendered output, one file per environment and tree); maxEnvironments: the most environments one run renders. A render that
+# reaches a limit fails the environment (its log says which). The gates read the output with their own bounds
+# (files/lib/rendered-ingest.py: documents, depth, nodes after alias expansion).
+renderManifests:
+  cpuSeconds: 120
+  maxFileMiB: 32
+  maxEnvironments: 50
+
 # The image the values-validation gate (tasks/validate-values.yaml) runs against a gitops PR's values files.
 # It must provide `validate-values [--app NAME] FILE...` on its PATH, exit 0 = valid. Empty (the default) means
 # Airframe's own validator at the default chart's tag: workflow airframe-validate-image publishes

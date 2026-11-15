@@ -6,7 +6,8 @@
 # Needs helm, yq, jq, python3 + pyyaml and kyverno (the toolbox's version) on PATH.
 # Usage: charts/glidepath-catalog/tests/policy_validation_test.sh
 set -u
-cd "$(dirname "$0")/../../.."
+here="$(cd "$(dirname "$0")" && pwd)"
+cd "$here/../../.."
 command -v kyverno >/dev/null || { echo "FAIL: kyverno not on PATH"; exit 1; }
 fx="$(pwd)/charts/glidepath-catalog/tests/fixtures/policy-validation"
 fail=0
@@ -14,9 +15,13 @@ d="$(mktemp -d)"
 trap '[[ -n "${KEEP:-}" ]] || rm -rf "$d"' EXIT
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
   --show-only templates/tasks/policy-validation-gate.yaml > "$d/task.yaml" || { echo "FAIL: render"; exit 1; }
+helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
+  --show-only templates/tasks/render-manifests.yaml > "$d/rtask.yaml" || { echo "FAIL: render (render-manifests)"; exit 1; }
 mkdir -p "$d/bin"
+# The publish -> render-manifests -> ingest chain the Pipeline runs before this Task's evaluate step (tests/lib/gate_chain.sh).
+source "${here}/lib/gate_chain.sh"
 # Paths the steps hardcode, the shared volume and the validator image's Airframe tree, replaced per scenario (the
-# render step's Python is a quoted heredoc, so a shell variable would not reach it).
+# ingest step's Python is a quoted heredoc, so a shell variable would not reach it). Used for the evaluate step.
 step() { # <index> <work dir>
   yq ".spec.steps[$1].script" "$d/task.yaml" \
     | sed -e "s#/work#$2#g" -e "s#\$(results.outcome.path)#$2/outcome#g" -e "s#\$(results.findings-summary.path)#$2/summary#g" \
@@ -45,22 +50,29 @@ has() { # <name> <file> <pattern> [absent]
   fi
 }
 
-# <scenario> <app> <values.yaml content>: lays out what the fetch step leaves, runs render + evaluate.
+# <scenario> <app> <values.yaml content>: lays out what the fetch step leaves (in $d/<scenario>/pub), runs publish, the token-less
+# render and the ingest step, then evaluate. $d/<scenario> is the decide phase's /work, so the outputs are where they always were.
 run() {
   local s="$1" app="$2"
   export WORK="$d/$s"
-  mkdir -p "$WORK/repo/hangar-prod/prod" "$WORK/policies/hangar-prod"
-  cp "$fx/gitops/hangar-prod/prod/release.yaml" "$WORK/repo/hangar-prod/prod/"
-  printf '%s\n' "$3" > "$WORK/repo/hangar-prod/prod/values.yaml"
-  cp -R "$fx/policies/30-policy/." "$WORK/policies/hangar-prod/"
-  echo '{"repoURL":"https://github.com/acme/gitops-hangar-prod.git","path":"30-policy","revision":"main"}' > "$WORK/policies/hangar-prod.source.json"
-  echo "hangar-prod|prod|default" > "$WORK/plan.txt"
-  step 1 "$WORK"; step 2 "$WORK"
-  ( cd "$WORK" && PATH="$d/bin:$PATH" APP_NAME="$app" NAMESPACE="app-${app}-cicd" bash "$WORK/step1.sh" ) > "$WORK/render.log" 2>&1
-  echo $? > "$WORK/render.rc"
-  ( cd "$WORK" && PATH="$d/bin:$PATH" APP_NAME="$app" NAMESPACE="app-${app}-cicd" PIPELINE_RUN=pr-1 bash "$WORK/step2.sh" ) > "$WORK/eval.log" 2>&1
+  local P="$WORK/pub"
+  mkdir -p "$P/repo/hangar-prod/prod" "$P/policies/hangar-prod"
+  cp "$fx/gitops/hangar-prod/prod/release.yaml" "$P/repo/hangar-prod/prod/"
+  printf '%s\n' "$3" > "$P/repo/hangar-prod/prod/values.yaml"
+  cp -R "$fx/policies/30-policy/." "$P/policies/hangar-prod/"
+  echo '{"repoURL":"https://github.com/acme/gitops-hangar-prod.git","path":"30-policy","revision":"main"}' > "$P/policies/hangar-prod.source.json"
+  echo "hangar-prod|prod|default" > "$P/plan.txt"
+  chain_and_evaluate "$s" "$app"
+}
+chain_and_evaluate() { # <scenario> <app>: the chain, then evaluate (run even when ingest failed: evaluate reports it)
+  local s="$1" app="$2"
+  export WORK="$d/$s"
+  gate_chain "$d/task.yaml" "$d/rtask.yaml" policy-validation "$WORK" "$app"
+  cp "$WORK/chain.log" "$WORK/render.log"; cp "$WORK/ingest.rc" "$WORK/render.rc"
+  step 3 "$WORK"
+  ( cd "$WORK" && PATH="$d/bin:$PATH" PHASE=decide APP_NAME="$app" NAMESPACE="app-${app}-cicd" PIPELINE_RUN=pr-1 bash "$WORK/step3.sh" ) > "$WORK/eval.log" 2>&1
   echo $? > "$WORK/eval.rc"
-  [[ "$(cat "$WORK/render.rc")" == 0 ]] || { echo "-- ${s}: render step log:"; cat "$WORK/render.log"; }
+  [[ "$(cat "$WORK/render.rc")" == 0 ]] || { echo "-- ${s}: render and ingest log:"; cat "$WORK/render.log"; }
 }
 
 # green: compliant values - every policy passes or does not apply.
@@ -102,18 +114,22 @@ has "red: a namespaceSelector that does not match is not applied" "$w/report.md"
 has "red: headline" "$w/report.md" '^### ❌ `policy-validation`: 4 violation\(s\) the target cluster would refuse'
 
 # broken: a chart that does not render fails the task, never passes.
-export WORK="$d/broken"; mkdir -p "$WORK/repo" "$WORK/policies"; echo "hangar-prod|prod|/nonexistent-chart" > "$WORK/plan.txt"
-step 1 "$WORK"; step 2 "$WORK"
-( cd "$WORK" && PATH="$d/bin:$PATH" APP_NAME=x NAMESPACE=app-x-cicd bash "$WORK/step1.sh" ) > "$WORK/render.log" 2>&1; echo $? > "$WORK/render.rc"
-( cd "$WORK" && PATH="$d/bin:$PATH" APP_NAME=x NAMESPACE=app-x-cicd PIPELINE_RUN="" bash "$WORK/step2.sh" ) > "$WORK/eval.log" 2>&1; echo $? > "$WORK/eval.rc"
-expect "broken: render step fails" "$(cat "$WORK/render.rc")" 1
+export WORK="$d/broken"; mkdir -p "$WORK/pub/repo/hangar-prod/prod"; echo "hangar-prod|prod|/nonexistent-chart" > "$WORK/pub/plan.txt"
+echo x > "$WORK/pub/repo/hangar-prod/prod/values.yaml"
+gate_chain "$d/task.yaml" "$d/rtask.yaml" policy-validation "$WORK" x
+step 3 "$WORK"
+( cd "$WORK" && PATH="$d/bin:$PATH" PHASE=decide APP_NAME=x NAMESPACE=app-x-cicd PIPELINE_RUN="" bash "$WORK/step3.sh" ) > "$WORK/eval.log" 2>&1; echo $? > "$WORK/eval.rc"
+expect "broken: the render task fails" "$(cat "$WORK/render.rc")" 1
+expect "broken: the ingest step fails" "$(cat "$WORK/ingest.rc")" 1
 expect "broken: outcome" "$(cat "$WORK/outcome")" fail
 expect "broken: exit" "$(cat "$WORK/eval.rc")" 1
 has "broken: says it could not evaluate" "$WORK/eval.log" 'could not evaluate 1 environment'
 
 # skipped: nothing changed.
-export WORK="$d/skipped"; mkdir -p "$WORK"; : > "$WORK/plan.txt"; step 2 "$WORK"
-( cd "$WORK" && PATH="$d/bin:$PATH" APP_NAME=x NAMESPACE=app-x-cicd PIPELINE_RUN="" bash "$WORK/step2.sh" ) > "$WORK/eval.log" 2>&1; echo $? > "$WORK/eval.rc"
+export WORK="$d/skipped"; mkdir -p "$WORK/pub"; : > "$WORK/pub/plan.txt"
+gate_chain "$d/task.yaml" "$d/rtask.yaml" policy-validation "$WORK" x
+step 3 "$WORK"
+( cd "$WORK" && PATH="$d/bin:$PATH" PHASE=decide APP_NAME=x NAMESPACE=app-x-cicd PIPELINE_RUN="" bash "$WORK/step3.sh" ) > "$WORK/eval.log" 2>&1; echo $? > "$WORK/eval.rc"
 expect "skipped: outcome" "$(cat "$WORK/outcome")" skipped
 expect "skipped: exit" "$(cat "$WORK/eval.rc")" 0
 

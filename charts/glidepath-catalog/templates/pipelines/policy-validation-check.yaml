@@ -5,6 +5,12 @@
 # environments and evaluate them offline against the target cluster's admission policies from its GitOps repo. A
 # finally: comment-pr block reports either way (the full report travels in the gate-report ConfigMap).
 #
+# Three tasks on one workspace volume, in order (nothing runs beside them: the gate reads what the render task wrote, after it has
+# finished, and nothing else writes the volume in between): `fetch` and `evaluate` are the same Task, policy-validation-gate, in its
+# two phases (credentialed: the PR head, the charts and the policy bundle; then the evaluation); `render` is render-manifests, run as
+# source-runner (the onboarding template's taskRunSpecs, and the control plane's cicdRunAdmission.sourceTasks, make a run say so): the
+# chart is rendered where there is no token, and the gate reads the output as data (docs/admin/security.md).
+#
 # class integrity, like values-check.yaml: no rollback-advisory copy. Whether a manifest is admissible does not
 # depend on the image having run healthy before; the cluster's admission makes no exception for a rollback.
 # The registry's `required` still applies: false renders only the -advisory copy (onError: continue).
@@ -28,9 +34,12 @@ spec:
       type: string
       default: ""
       description: "PaC's pull_request.number - picks the changed environments and addresses the finally-block PR comment."
+  workspaces:
+    - name: gate
+      description: One volume per run (the onboarding template's volumeClaimTemplate), used in three places by subPath - inputs/, trusted/, rendered/.
   tasks:
     {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "policy-validation")) "true" }}
-    - name: {{ ternary "evaluate" "evaluate-advisory" $required }}
+    - name: fetch
       {{- if not $required }}
       onError: continue
       {{- end }}
@@ -46,6 +55,47 @@ spec:
         - { name: pr-number, value: $(params.pr-number) }
         - { name: app-name, value: $(params.app-name) }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: phase, value: fetch }
+      workspaces:
+        - { name: publish, workspace: gate }
+    - name: render
+      {{- if not $required }}
+      onError: continue
+      {{- end }}
+      runAfter: [fetch]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: render-manifests }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: profile, value: policy-validation }
+        - { name: app-name, value: $(params.app-name) }
+      workspaces:
+        - { name: inputs, workspace: gate, subPath: inputs }
+        - { name: output, workspace: gate, subPath: rendered }
+    - name: {{ ternary "evaluate" "evaluate-advisory" $required }}
+      {{- if not $required }}
+      onError: continue
+      {{- end }}
+      runAfter: [render]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: policy-validation-gate }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: phase, value: decide }
+      workspaces:
+        - { name: trusted, workspace: gate, subPath: trusted }
+        - { name: rendered, workspace: gate, subPath: rendered }
   finally:
     - name: comment-pr
       when:

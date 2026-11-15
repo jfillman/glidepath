@@ -1,0 +1,25 @@
+{
+  "app": "x",
+  "cluster": "hangar-prod",
+  "env": "prod",
+  "namespace": "app-x-cicd",
+  "objects": {
+    "apps/v1/Deployment/app-x-prod/x": {
+      "digest": "2beee05e7ae112d466f819df3f62bb7b7305baaacc9f051554c806cf20a7a94d",
+      "op": "changed"
+    },
+    "v1/ConfigMap/app-x-prod/x-config": {
+      "digest": "6b72e2bbf23b279e4b9cb36a7ded1dfe718a1f987f159ec3c51b68b8bf473213",
+      "op": "unchanged"
+    },
+    "v1/Namespace//app-x-prod": {
+      "digest": "dcad794f564edff8dae8c31fe46482d7c657f8b82ef840bccee13c59fbf6f5eb",
+      "op": "unchanged"
+    },
+    "v1/Service/app-x-prod/x": {
+      "digest": "1796c0a035bf865ef2f401769ca90db15a6b16224d099e30a3591ef5ad7cabcd",
+      "op": "unchanged"
+    }
+  },
+  "treeDigest": "f3de985815acaa3c1510ccdb220d1662039ff4fd95a9ec39e9e168e1dcd79164"
+}

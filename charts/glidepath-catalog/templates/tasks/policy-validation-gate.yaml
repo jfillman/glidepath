@@ -12,11 +12,15 @@
 #                                or a cluster's base.yaml = every environment on it), each environment's chart
 #                                (validate-values.yaml's resolution: an own chart is fetched, the default is the one
 #                                baked into the validator image), and each target cluster's policy bundle
-#   render    (validator image)  `helm template` per environment with the same value files and injected values the
-#                                Flight ApplicationSet layers (base < values < release); then, for the Kyverno CLI:
-#                                stand-in CRDs for the custom kinds rendered (plurals from Airframe's XRDs, else the
-#                                API server's own guess), the rendered Namespaces' labels (namespaceSelector), and the
-#                                policy bundle normalized (below)
+#   publish   (toolbox)          the fetch phase's last step: the checkouts, charts and plan onto the run's workspace for the render
+#                                task (inputs/), the rest for this gate's own later reading (trusted/, with a marker naming this run)
+#   (the render-manifests task, between the two phases of this Task, as `source-runner`: no token, no Secret, no projected token.
+#   `helm template` per environment with the same value files and injected values the Flight ApplicationSet layers (base < values <
+#   release). docs/admin/security.md, "Rendering is not done where the credentials are")
+#   ingest    (validator image)  the decide phase's first step: reads what the render wrote as DATA (bounded YAML parse, no tags, every
+#                                file digest recomputed, no symlink followed); then, for the Kyverno CLI: stand-in CRDs for the custom
+#                                kinds rendered (plurals from Airframe's XRDs, else the API server's own guess), the rendered
+#                                Namespaces' labels (namespaceSelector), and the policy bundle normalized (below)
 #   evaluate  (toolbox)          `kyverno apply` per environment, every result classified, the report written
 #
 # Which policies count: Kyverno ValidatingPolicy / NamespacedValidatingPolicy, ClusterPolicy / Policy, and native
@@ -70,6 +74,9 @@ spec:
       type: string
       default: {{ .Values.valuesValidatorImage | default (printf "%s:%s" (required "valuesValidatorRepository (or valuesValidatorImage) must be set" .Values.valuesValidatorRepository) (required "defaultChart.targetRevision must be set" .Values.defaultChart.targetRevision)) | quote }}
       description: The values gate's validator image (helm, python3 + pyyaml, the default chart under /opt/airframe/charts and Airframe's XRDs under /opt/airframe/xrds).
+    - name: phase
+      type: string
+      description: "fetch | decide. The Pipeline runs this Task twice around the render-manifests task: `fetch` (fetch + publish; nothing else does anything) and `decide` (ingest, evaluate; fetch does nothing). The decide phase reads the rendered output read-only."
   results:
     - name: outcome
       description: pass | warn | fail | skipped
@@ -92,6 +99,26 @@ spec:
               expirationSeconds: 600
     - name: work
       emptyDir: {}
+  # The run's workspace, in three bindings (the Pipeline's subPaths): `publish` (the whole volume, the fetch phase only), then in the
+  # decide phase `trusted` (what fetch published for this gate) and `rendered` (what render-manifests wrote), both read-only.
+  workspaces:
+    - name: publish
+      optional: true
+      mountPath: /publish
+    - name: trusted
+      optional: true
+      readOnly: true
+      mountPath: /trusted
+    - name: rendered
+      optional: true
+      readOnly: true
+      mountPath: /rendered
+  stepTemplate:
+    env:
+      - name: PHASE
+        value: $(params.phase)
+      - name: PIPELINE_RUN
+        value: $(params.pipeline-run-name)
   steps:
     - name: fetch
       image: {{ .Values.toolboxImage }}
@@ -120,6 +147,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        [[ "${PHASE}" == fetch ]] || exit 0
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
         {{- include "glidepath-catalog.policyEvalLib" . | nindent 8 }}
@@ -239,7 +267,14 @@ spec:
           policy_bundle_fetch "${cluster}" "${owner}" || exit 1
         done
         chmod -R a+rwX /work/repo /work/charts /work/policies /work/plan.txt 2>/dev/null || true
-    - name: render
+    - name: publish
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      script: |
+        {{- include "glidepath-catalog.gatePublish" . | nindent 8 }}
+    - name: ingest
       image: $(params.validator-image)
       imagePullPolicy: IfNotPresent
       # Not readOnly and no workingDir: see validate-values.yaml's validate step.
@@ -250,45 +285,23 @@ spec:
           value: $(params.app-name)
         - name: NAMESPACE
           value: $(context.taskRun.namespace)
+        - name: GATE
+          value: policy-validation
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
+        # The fetch phase ends at publish.
+        [[ "${PHASE}" == decide ]] || exit 0
+        # Data the render task wrote can only be read where this run's own fetch published: a volume without the marker is refused.
+        [[ -f /trusted/PUBLISHED && "$(cat /trusted/PUBLISHED)" == "${PIPELINE_RUN}" ]] || { echo "FAIL: the fetch phase's data for this run is not on the workspace"; exit 1; }
+        cp -a /trusted/. /work/
         [[ -s /work/plan.txt ]] || exit 0
-        {{- include "glidepath-catalog.chartSafety" . | nindent 8 }}
-        cd /work/repo
-        # <type>-<app>-cicd runs this; the environment's namespace is <type>-<app>-<env> (app, or infra for an
-        # InfraService: the Flight ApplicationSet's destination).
-        type="${NAMESPACE%%-*}"
         rc=0
         mkdir -p /work/eval
-        while IFS='|' read -r cluster env chart; do
-          # serviceNamespacePattern: the platform's namespace convention, as the Flight tenant-onboarding ApplicationSet
-          # passes it, so airframe-application's env[].fromService renders here as it will there. The same pattern as
-          # glidepath-app's envNamespacePattern helper (envs_model_test.py checks the two agree). Only for the cluster's
-          # default chart (the validator image's, at defaultChart): an app's own chart may predate the key, and this
-          # gate's own-chart contract (chart-contract.md) does not include it.
-          ns_pattern=""
-          [[ "${chart}" == default ]] && chart=/opt/airframe/charts/airframe-application && ns_pattern='{type}-{app}-{env}'
-          out="/work/eval/${cluster}__${env}"
-          mkdir -p "${out}"
-          # The values the Flight ApplicationSet injects (valuesObject), then the value files it layers.
-          printf 'appName: %s\ncluster: %s\nenvName: %s\nnamespace:\n  labels:\n    hangar.io/managed-secrets: "true"\n' \
-            "${APP_NAME}" "${cluster}" "${env}" > "${out}/injected.yaml"
-          [[ -n "${ns_pattern}" ]] && printf 'serviceNamespacePattern: "%s"\n' "${ns_pattern}" >> "${out}/injected.yaml"
-          vf=()
-          for v in "${cluster}/base.yaml" "${cluster}/${env}/values.yaml" "${cluster}/${env}/release.yaml"; do
-            [[ -f "${v}" ]] && vf+=(-f "${v}")
-          done
-          if ! why="$(chart_safe "${chart}" "${vf[@]}")"; then
-            echo "FAIL ${cluster}/${env}: ${why}"; echo render-failed > "${out}/status"; rc=1
-            continue
-          fi
-          if ! helm template "${APP_NAME}" "${chart}" --namespace "${type}-${APP_NAME}-${env}" "${vf[@]}" -f "${out}/injected.yaml" > "${out}/resources.yaml" 2> "${out}/render.err"; then
-            echo "FAIL ${cluster}/${env}: helm template failed; ${chart_render_note}"; echo render-failed > "${out}/status"; rc=1
-            continue
-          fi
-          echo "${cluster}/${env}: rendered $(grep -c '^kind:' "${out}/resources.yaml") objects with ${chart}"
-        done < /work/plan.txt
+        # What the render task wrote, as data: verified, bounded, and written to /work/eval from the bytes read.
+        python3 - <<'PY' || rc=1
+        {{- include "glidepath-catalog.renderedIngest" . | nindent 8 }}
+        PY
 
         # Kyverno CLI inputs: stand-in CRDs, Namespace labels, and each cluster's normalized policy bundle.
         python3 - <<'PY' || rc=1
@@ -312,6 +325,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
+        [[ "${PHASE}" == decide ]] || exit 0
         {{- include "glidepath-catalog.policyEvalLib" . | nindent 8 }}
         report=/work/report.md
         write_results() { # <outcome> <summary>
@@ -330,7 +344,9 @@ spec:
           out="/work/eval/${cluster}__${env}"
           envs=$((envs + 1))
           if [[ -f "${out}/status" ]]; then
-            echo "{\"env\":\"${cluster}/${env}\",\"level\":\"broken\",\"message\":\"the manifest did not render (helm template failed)\"}" >> /work/findings.jsonl
+            # the name is from a path in the repository: shown only in a plain form, and built with jq, not by hand
+            jq -nc --arg e "$(printf '%s/%s' "${cluster}" "${env}" | tr -c 'A-Za-z0-9._/-' '?' | cut -c1-80)" \
+              '{env: $e, level: "broken", message: "the manifest did not render (the render task'"'"'s log says why)"}' >> /work/findings.jsonl
             rc=1; continue
           fi
           policy_eval_env "${cluster}" "${env}" /work/findings.jsonl

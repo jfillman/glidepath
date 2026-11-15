@@ -196,7 +196,9 @@ def render_catalog():
 
 
 def repo_code(task):
-    return any(x.get("image") == "$(params.agent-image)" or "buildctl" in x.get("script", "") for x in task["spec"].get("steps", []))
+    """Runs the repository's own code, or renders a chart it chooses (render-manifests: labelled, so a comment that names helm is not one)."""
+    return task["metadata"].get("labels", {}).get("glidepath.io/renders-repository-content") == "true" or \
+        any(x.get("image") == "$(params.agent-image)" or "buildctl" in x.get("script", "") for x in task["spec"].get("steps", []))
 
 
 def schema_stages():
@@ -590,6 +592,25 @@ class CicdRunAdmission(unittest.TestCase):
         self.admitted(t)
         other = run("cicd-validate-check", taskRunSpecs=None, params=prm(repo_url=REPO, revision=SHA, pr_number="17"))
         self.assertIsNone(evaluate(self.iso, other))
+
+    def test_the_gate_pipelines_must_run_their_render_as_source_runner(self):
+        """policy-validation-check and clearance-gate-check render a chart the repository chooses in their `render` task, which holds
+        no credential only as source-runner: a .tekton file that gives it to anyone else (or to nobody) is refused, and so is giving
+        source-runner to the gate's own tasks."""
+        for pname in ("policy-validation-check", "clearance-gate-check"):
+            params = prm(repo_url=REPO, revision=SHA, app_name="sample", pr_number="17")
+            for specs in (None, []):
+                self.refused(run(pname, taskRunSpecs=specs, params=params), self.iso, "render")
+            for account in ("pipeline-runner", "image-pusher", "glidepath-cloud-deployer"):
+                specs = [{"pipelineTaskName": "render", "serviceAccountName": account}]
+                self.refused(run(pname, taskRunSpecs=specs, params=params), None, "may run as")
+                self.refused(run(pname, taskRunSpecs=specs, params=params), self.iso, "render")
+            for task in ("fetch", "evaluate", "register", "register-advisory", "render-check"):
+                specs = [{"pipelineTaskName": "render", "serviceAccountName": "source-runner"}, {"pipelineTaskName": task, "serviceAccountName": "source-runner"}]
+                self.refused(run(pname, taskRunSpecs=specs, params=params), None, "may run as")
+            good = run(pname, taskRunSpecs=[{"pipelineTaskName": "render", "serviceAccountName": "source-runner"}], params=params)
+            self.admitted(good)
+            self.admitted(good, self.iso)
 
     def test_the_push_task_must_run_as_image_pusher(self):
         sources = [{"pipelineTaskName": t, "serviceAccountName": "source-runner"} for t in SOURCE_TASKS]
