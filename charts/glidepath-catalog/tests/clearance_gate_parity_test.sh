@@ -60,7 +60,7 @@ pipe() {
   ( cd "$W" && PHASE=fetch PIPELINE_RUN=run-1 bash "$d/publish-$s.sh" ) > "$d/publish-$s.log" 2>&1 || { echo "-- $s: publish failed:"; cat "$d/publish-$s.log"; }
   mkdir -p "$W/w" "$W/rtmp"
   sstep "$d/rtask.yaml" render | loc "$V/inputs" "$V/rendered" x x x > "$W/render.sh"
-  ( cd "$W" && PATH="$d/bin:$PATH" RENDER_TMP="$W/rtmp" PROFILE=clearance-gate RENDER_CPU_SECONDS=60 RENDER_MAX_FILE_KB=32768 \
+  ( cd "$W" && PATH="$d/bin:$PATH" RENDER_TMP="$W/rtmp" PROFILE=clearance-gate PIPELINE_RUN=run-1 RENDER_CPU_SECONDS=60 RENDER_MAX_FILE_KB=32768 \
       RENDER_MAX_ENVIRONMENTS=50 APP_NAME=gate-api NAMESPACE=app-gate-api-cicd bash "$W/render.sh" ) > "$W/render.log" 2>&1
   echo $? > "$W/render.rc"
   sstep "$d/task.yaml" ingest | loc "$W/w" x "$V/rendered" "$V/trusted" x > "$W/ingest.sh"

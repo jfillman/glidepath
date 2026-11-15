@@ -41,10 +41,11 @@ MAX_DEPTH = limit("RENDER_MAX_DEPTH", 64)
 MAX_NODES = limit("RENDER_MAX_NODES", 1000000)
 MAX_ENVS = limit("RENDER_MAX_ENVIRONMENTS", 50)
 
-FILES = {"clearance-gate": ("head.yaml", "base.yaml"), "policy-validation": ("resources.yaml",)}
+FILES = {"clearance-gate": ("head.yaml", "base.yaml"), "policy-validation": ("resources.yaml",), "values": ("resources.yaml",)}
 if GATE not in FILES:
-    sys.exit("rendered-ingest: GATE must be clearance-gate or policy-validation")
+    sys.exit("rendered-ingest: GATE must be clearance-gate, policy-validation or values")
 YAML_FILES = FILES[GATE]
+EXTRA_FILES = ("released",) if GATE == "values" else ()   # the values gate's one flag file: read as a word, not parsed
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 CORE_TAGS = {"tag:yaml.org,2002:" + t for t in ("str", "int", "float", "bool", "null", "map", "seq", "timestamp", "binary", "set", "omap", "pairs", "merge")}
 
@@ -104,7 +105,7 @@ def scan():
             manifest = read_file(p, budget)
         elif stat.S_ISDIR(st.st_mode) and SAFE_NAME.match(name):
             for f in sorted(os.listdir(p)):
-                if f not in YAML_FILES + ("status",):
+                if f not in YAML_FILES + EXTRA_FILES + ("status",):
                     fail("the rendered tree has a file this gate does not read")
                 files[name + "/" + f] = read_file(os.path.join(p, f), budget)
         else:
@@ -185,10 +186,12 @@ def parse(data):
                 if expanded > MAX_NODES:
                     fail("a rendered file expands to more than %d nodes once its aliases are expanded" % MAX_NODES)
         return [d for d in yaml.safe_load_all(text)]
-    except yaml.YAMLError:
-        fail("a rendered file is not valid YAML (or builds something other than plain data)")
     except RecursionError:
         fail("a rendered document is nested too deeply")
+    except Exception:
+        # YAMLError, but also what a scalar's constructor raises (a timestamp such as 2023-13-45, !!float abc, !!int x, a bad !!binary):
+        # one fixed message, never the exception's text, which quotes the repository's string
+        fail("a rendered file is not valid YAML (or builds something other than plain data)")
 
 
 def objects(documents):
@@ -243,6 +246,23 @@ def main():
             failed += 1
             continue
         parsed = {y: parse(files[eid + "/" + y]) for y in YAML_FILES}
+        if GATE == "values":
+            # the two things a render can prove about an own chart (docs/admin/chart-contract.md): a Namespace, and once released a Rollout named after the app
+            objs = objects(parsed["resources.yaml"])
+            kinds = {(d["kind"], d["metadata"].get("name")) for d in objs}
+            app = os.environ.get("APP_NAME", "")
+            released = files.get(eid + "/released", b"").strip() == b"true"
+            missing = []
+            if not any(k == "Namespace" for k, _ in kinds):
+                missing.append("a Namespace")
+            if released and ("Rollout", app) not in kinds:
+                missing.append("a Rollout named " + shown(app))
+            if missing:
+                print("FAIL %s: rendered %d objects but no %s (docs/admin/chart-contract.md)" % (label, len(objs), " or ".join(missing)))
+                failed += 1
+            else:
+                print("ok   %s: %d objects" % (label, len(objs)))
+            continue
         actions.append((eid, None, {y: files[eid + "/" + y] for y in YAML_FILES}, parsed, label, cluster, env))
     os.makedirs(WORK + "/eval", exist_ok=True)
     for a in actions:

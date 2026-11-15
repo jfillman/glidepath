@@ -41,6 +41,9 @@ cicdRunAdmission:
   # resynced (docs/admin/security.md, upgrade note), then [Deny]. Anything but Deny is NOT enforcing: the chart annotates the
   # binding and, where prometheus-operator is installed, renders an alert that fires until it is Deny again.
   sourceIsolationActions: [Deny]
+  # The storage classes a .tekton file's workspace volumeClaimTemplate may name (it may also leave it unset, which is what the onboarding
+  # templates do). Everything else about the template is fixed: ReadWriteOnce, 1 to 20Gi, no dataSource, volumeName or selector.
+  workspaceStorageClassNames: []
   # A Pipeline that writes release state, or deploys, is started only by a push to one of these branches (or a tag), never from a
   # pull request or a side branch, whatever the .tekton file says. The checks run on a pull request into one of these.
   protectedBranches: [main]
@@ -60,13 +63,14 @@ cicdRunAdmission:
   # Tasks of each Pipeline that run the repository's own code (the ones whose steps run $(params.agent-image) or the
   # repository's scripts, and build-image, whose Containerfile RUN lines are the repository's code) or render a chart it chooses
   # (render-manifests). A run of the Pipeline must give them to source-runner. The chart test derives this from the catalog.
-  # The two gate Pipelines that render a chart the repository chooses name `render` (render-manifests, which holds no credential): a run
+  # The three gate Pipelines that render a chart the repository chooses name `render` (render-manifests, which holds no credential): a run
   # of either must give it to source-runner, so a .tekton file cannot put the render in a pod that holds the gate's tokens.
   sourceTasks:
     build: [build-source, unit-test, build-image, build-python-wheel-artifact, build-go-binary-artifact]
     test: [run-integration-script]
     policy-validation-check: [render]
     clearance-gate-check: [render]
+    values-check: [render]
   # Tasks of each Pipeline that hold the registry push credential and run nothing from the repository (push-image validates the
   # OCI layout build-image wrote, then pushes it). A run of the Pipeline must give them to image-pusher, an account with no
   # Role and no token, and no other task may run as it. The chart test derives this from the catalog.

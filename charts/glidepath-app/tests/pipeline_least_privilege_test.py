@@ -264,7 +264,8 @@ class SourceTasks(unittest.TestCase):
     def test_the_admission_policy_names_the_same_tasks(self):
         values = yaml.safe_load(open(os.path.join(CP, "values.yaml")))["cicdRunAdmission"]
         self.assertEqual(values["sourceTasks"], {"build": SOURCE_TASKS, "test": ["run-integration-script"],
-                                                 "policy-validation-check": ["render"], "clearance-gate-check": ["render"]})
+                                                 "policy-validation-check": ["render"], "clearance-gate-check": ["render"],
+                                                 "values-check": ["render"]})
         self.assertEqual(values["pusherTasks"], {"build": PUSHER_TASKS})
 
     def test_the_build_task_mounts_no_push_credential_and_the_push_task_runs_no_repository_code(self):

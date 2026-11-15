@@ -27,12 +27,17 @@ spec:
       type: string
       default: ""
       description: "PaC's pull_request.number - only used to post the PR comment in the finally block."
+  workspaces:
+    - name: gate
+      description: One volume per run (the onboarding template's volumeClaimTemplate), used in three places by subPath - inputs/, trusted/, rendered/.
   tasks:
-    {{- /* The registry's `required` for this gate (values.yaml releaseGuardrails): false renders the
-    -advisory copy alone (onError: continue), so the check stays green and comment-pr reports what the
-    validator found with advisory-reason not-required. The values gate has no rollback case. */}}
+    {{- /* The registry's `required` for this gate (values.yaml releaseGuardrails): false renders the -advisory copy alone
+    (onError: continue), so the check stays green and comment-pr reports what the validator found with advisory-reason
+    not-required. The values gate has no rollback case. Three tasks on one volume, in order: validate-values (phase fetch: the
+    clone, the validator image on the platform's chart), render-manifests as source-runner (an own chart is rendered where there is no
+    token), validate-values (phase decide: the render read as data, and the Namespace and Rollout checks). */}}
     {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "values")) "true" }}
-    - name: {{ ternary "validate" "validate-advisory" $required }}
+    - name: fetch
       {{- if not $required }}
       onError: continue
       {{- end }}
@@ -47,6 +52,49 @@ spec:
         - { name: revision, value: $(params.revision) }
         - { name: pr-number, value: $(params.pr-number) }
         - { name: app-name, value: $(params.app-name) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: phase, value: fetch }
+      workspaces:
+        - { name: publish, workspace: gate }
+    - name: render
+      {{- if not $required }}
+      onError: continue
+      {{- end }}
+      runAfter: [fetch]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: render-manifests }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: profile, value: values }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+      workspaces:
+        - { name: inputs, workspace: gate, subPath: inputs }
+        - { name: output, workspace: gate, subPath: rendered }
+    - name: {{ ternary "validate" "validate-advisory" $required }}
+      {{- if not $required }}
+      onError: continue
+      {{- end }}
+      runAfter: [render]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: validate-values }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: app-name, value: $(params.app-name) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: phase, value: decide }
+      workspaces:
+        - { name: trusted, workspace: gate, subPath: trusted }
+        - { name: rendered, workspace: gate, subPath: rendered }
   finally:
     - name: comment-pr
       when:

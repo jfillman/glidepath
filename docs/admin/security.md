@@ -356,11 +356,11 @@ what it wrote as data.
 
 | Pipeline | Task (pipeline task name) | Account | What it holds | What the repository controls |
 |---|---|---|---|---|
-| `policy-validation-check`, `clearance-gate-check` | `fetch` (the gate Task, phase `fetch`; its `publish` step) | `pipeline-runner` | token, GitHub installation token, policy-bundle token (and the Clearance token in `clearance-gate`) | fetches repository files and charts as bytes; renders nothing |
+| `policy-validation-check`, `clearance-gate-check`, `values-check` | `fetch` (the gate Task, phase `fetch`; its `publish` step) | `pipeline-runner` | token, GitHub installation token, policy-bundle token (and the Clearance token in `clearance-gate`) | fetches repository files and charts as bytes; renders nothing |
 | same | `render` (`render-manifests`) | **`source-runner`** | nothing: two workspaces, `inputs` read-only | the chart, the value files, every template |
 | same | `evaluate` / `register` (the gate Task, phase `decide`) | `pipeline-runner` | as above | reads the render as data (below) |
 
-The control plane's admission policy (`cicd-run-source-isolation`, `cicdRunAdmission.sourceTasks`) lists `render` for both Pipelines, so a
+The control plane's admission policy (`cicd-run-source-isolation`, `cicdRunAdmission.sourceTasks`) lists `render` for the three Pipelines, so a
 `.tekton` file that runs it as `pipeline-runner`, or any account but `source-runner`, is refused; the Pipelines are the catalog's, so the
 task cannot be skipped. The onboarding templates (`pull-request-policy-validation.yaml`, `pull-request-clearance-gate.yaml`) carry the
 `taskRunSpecs` entry and the workspace.
@@ -414,25 +414,41 @@ chart):
 |---|---|---|---|---|
 | 1 | `policy-validation-gate` render | was `pipeline-runner`, token | chart, values, templates | **moved** to `render-manifests` as `source-runner` |
 | 2 | `clearance-gate` render | was `pipeline-runner`, token (Clearance token in the same pod, other steps) | same | **moved** |
-| 3 | `validate-values` `own-chart` (`values-check`) | `pipeline-runner`, token; GitHub installation token in the `fetch` step | the same chart and values, `helm template` | **follow-up 1** (below) |
+| 3 | `validate-values` `own-chart` (`values-check`) | was `pipeline-runner`, token | the same chart and values | **moved**: `render-manifests` profile `values`; the step now reads the render as data and makes the Namespace and Rollout checks |
 | 4 | `validate-values` `validate` (the validator image on the platform's default chart) | `pipeline-runner`, token | values files only (the chart is the platform's) | data into a platform chart; not repository code |
 | 5 | `policy-validation-gate` evaluate (Kyverno) | `pipeline-runner` | the rendered objects (data); policies are the platform's | reads data; findings escaped (this change) |
-| 6 | `clearance-gate`, `policy-validation-gate` and `validate-values` fetch steps: a `yq` program with the environment name (a directory name in the gitops repository) interpolated into its text (`select(.name == "${env}")`) | `pipeline-runner`, projected tokens | the environment name; `yq` has `load()` and `env()` | **finding, follow-up 4**: not shown exploitable here, not shown safe; pass it with `strenv()` |
+| 6 | `clearance-gate`, `policy-validation-gate` and `validate-values` fetch steps: a `yq` program with the environment name (a directory name in the gitops repository) interpolated into its text (`select(.name == "${env}")`) | `pipeline-runner`, projected tokens | the environment name | **was exploitable** (a reviewer proved it with yq 4.53.3: a directory name that closes the string can `load()` a mounted token into the resolved chart `repoURL`, and `fetch_repo` then fetches from that URL in the pod that holds the tokens). Fixed: names are checked against the platform's name rule before any use (the run is refused otherwise), passed to `yq` with `strenv()`, and a chart source is checked against the allowed hosts before any fetch |
 | 7 | `run-testworkflow` (`kubectl apply` of the repository's TestWorkflow) | `pipeline-runner`, registry credential | the whole manifest, checked by a field allowlist | documented above (B(a)); **follow-up 2** is to apply it from a rendered, validated copy |
 | 8 | `deliver-onboarding-files` (`yq` of `cicd.yaml`, generating `.tekton/`) | `pipeline-runner`, GitHub installation token | `cicd.yaml` values placed into generated files by shell expansion (never re-evaluated) | data; a hostile-file check is part of rollout (T6) |
-| 9 | `deploy-manifests`, `open-release-pin-pr`, `bump-manifest-pr` (`yq -i` on gitops files) | `pipeline-runner`, GitHub installation token | the image reference and digest, from the build's results, are interpolated into a `yq` expression | not a render; not audited for injection here (**follow-up 4**) |
+| 9 | `deploy-manifests`, `open-release-pin-pr`, `bump-manifest-pr`, `run-testworkflow`, the release-pin helper (`yq -i`) | `pipeline-runner`, GitHub installation token | image reference, digest, workflow name: build results and cicd.yaml | fixed: values go in with `strenv()`; names checked to a pattern first |
 | 10 | `deploy-aws-lambda`, `deploy-aws-ecs` (cloud credentials, web identity) | `glidepath-cloud-deployer` | function and service names from `cicd.yaml` | no template rendering; `jq`/`aws` with fixed programs |
 | 11 | `sast-scan` (Semgrep over the checkout), `image-scan`, `generate-sbom` | `pipeline-runner`, `app-secrets` / registry credential | the repository files and image content as scan input | read as data; Semgrep scans a copy with no `.git` and no symlink |
 | 12 | `promote` `source "${W}/repo.env"` | `pipeline-runner` | nothing: the file is written by the task itself with `printf %q` | not repository-controlled |
 | 13 | Argo CD config management plugin (Clearance's repository) | n/a | renders the same chart in Argo CD | **out of scope**, named |
 
-Nothing in the catalog runs `kustomize build`, `jsonnet`, `envsubst` or `eval`. Follow-ups, in order: **(1)** `validate-values`' `own-chart`
-step: the same `helm template`, in `values-check`, still runs as `pipeline-runner`; it needs the same fetch / render / read split (a third
-use of `render-manifests`, a profile for its plan and the Namespace/Rollout checks as an ingest step); until then
-`tests/tokenless_render_test.py` names it (`KNOWN_FOLLOW_UP`) and fails if a second one appears or if it is fixed and left on the list.
-**(2)** `run-testworkflow`: apply a validated copy of the TestWorkflow, not the repository's file. **(3)** `glidepath-api` reruns of
-the two gate runs copy the `taskRunSpecs` entry for `render` (item 6 of "What is not closed", the same cluster policy change).
-**(4)** rows 6 and 9: `yq` programs built by string interpolation in credentialed pods; pass the values as `strenv()` / `jq --arg`.
+Nothing in the catalog runs `kustomize build`, `jsonnet`, `envsubst` or `eval`. Follow-ups: **(2)** `run-testworkflow`: apply a validated copy of
+the TestWorkflow, not the repository's file. **(3)** `glidepath-api` reruns of the three gate runs copy the `taskRunSpecs` entry for `render` (item 6 of "What
+is not closed", the same cluster policy change). `tests/tokenless_render_test.py` fails if a Pipeline's credentialed task runs `helm template`, and
+`tests/program_text_test.py` fails if a yq or jq program anywhere in the catalog is a double-quoted string with a variable in it.
+
+**Program text and fetch targets (the audit).** Every `yq`/`jq` program in every task and library script was checked. Those that took a
+variable in the program text were fixed (the three fetch steps, `bump-manifest-pr`, `deploy-manifests`, the release-pin helper, `run-testworkflow`, and the
+Rekor lookups of `qa-gate`, `verify-image-provenance` and `verify-sast-attestation`). Those that remain are named in `SAFE_PROGRAMS` with the reason (read_field and flag
+take literal field paths; `clearance-gate`'s `filter` is one of two constants; the OCI layout library's helpers are called with literal expressions). The `yq` in
+the toolbox is 4.44.3, which has no `--security-disable-file-ops` / `--security-disable-env-ops`; with a toolbox that has them (4.47 and later) they
+should be added to every `yq` call that does not need `strenv()`. Until then the control is that no program text comes from the repository.
+Fetch targets: the three fetch steps check a chart `repoURL` against `chartSources` (https git hosts, OCI registries; the default chart's host is always
+allowed) and the revision, path and chart name against plain-character patterns before any `git fetch` or `oras pull`; `fetch_repo` sends the GitHub
+installation token only to `github.com` and only for a `github.com/<owner>/<repo>` URL, and sends nothing to any other allowed host. Every other `git clone` or
+`git fetch` in the catalog has a fixed `github.com` host with owner and repository names from parameters the admission policy binds to what Pipelines-as-Code recorded.
+
+**Parser differentials that remain open.** Policy evaluation (Kyverno), the Clearance object diff and the tree digest all rest on how the gate parses the
+rendered YAML (PyYAML's SafeLoader, YAML 1.1), and the cluster applies what Argo CD's own render and the API server make of the same text. Known
+differences: a duplicate key in a mapping is last-wins here (the API server's strict decoding refuses it); YAML 1.1 scalars (`yes`, `on`, `012`, `0x1F`,
+`1:30`, `1.10` without quotes) are read here as booleans and numbers, and as strings or other numbers by a YAML 1.2 reader; documents that are not mappings, or that lack
+a `kind` or a `metadata` mapping, are skipped by the gate's diff and digest (the tree digest and the object list do not include them) while another reader may not skip them; a
+mapping that mixes a YAML 1.1 boolean key (`yes:`) with string keys makes the digest function raise, which fails the check (it did before this change). None of these is closed here. A
+parser that agreed with the cluster's would be needed, or a refusal of any document the two could read differently; both are open.
 
 ### What remains possible for someone who can open a pull request
 
@@ -443,7 +459,7 @@ runs in the build and test stages before anything is merged.
 
 | They want | Possible? | Shortest remaining path |
 |---|---|---|
-| **(a) a Kubernetes token** | **No known path.** One unaudited lead. | `build.sh`, `test.sh`, `integration-test.sh`, installs, build backends and `Containerfile` `RUN` lines all run as `source-runner` (no token). The lead: a credentialed task that opens a repository-chosen path (a symlink to its own token) and prints or publishes it. Closed for `attest-api-spec`, `build-artifact`'s publish, `sast-scan` and the TestWorkflow file. **Chart renders** no longer happen in a credentialed pod for the two release gates (`render-manifests` as `source-runner`; see "Rendering is not done where the credentials are"); the same render in `values-check`'s `own-chart` step still does (follow-up 1). `stage-preflight` reading `cicd.yaml` was not audited. |
+| **(a) a Kubernetes token** | **No known path.** One unaudited lead. | `build.sh`, `test.sh`, `integration-test.sh`, installs, build backends and `Containerfile` `RUN` lines all run as `source-runner` (no token). The lead: a credentialed task that opens a repository-chosen path (a symlink to its own token) and prints or publishes it. Closed for `attest-api-spec`, `build-artifact`'s publish, `sast-scan` and the TestWorkflow file. **Chart renders** no longer happen in a credentialed pod for the two release gates (`render-manifests` as `source-runner`; see "Rendering is not done where the credentials are"); `values-check`'s own-chart render moved the same way. `stage-preflight` reading `cicd.yaml` was not audited. |
 | **(b) write or delete a release record** | **No known path.** | It needs the token, so it is only as closed as (a). |
 | **(c) read a Secret** | **Only the optional read-only pull credential** (`build-pull-credentials`, if the operator supplied one). **Not the registry push credential.** Nothing else known. | A `RUN` line in the `Containerfile` runs in `build-image`, which mounts no push credential and runs as `source-runner`. What it can read is the pull credential, which can only read packages. |
 | **(d) push an image to another application's repository, or a base image** | **No known path for repository code.** Not through parameters; not through a cache. | The push credential is only in `push-image`'s pod, which runs none of the repository's code and pushes what the validated layout and the run's parameters say (`image-repo` is bound to the app). A pull request writes no cache, so it cannot poison the cache a main build imports. What stays possible: its own `-pr` image (by design), and a compromise of the trusted push step (see "Image build and push"). |
@@ -492,7 +508,7 @@ What this release does close, and how that was checked:
 - **`helm template` for the two release gates** (`policy-validation-gate`, `clearance-gate`) no longer runs in a pod that holds a token: it
   runs in `render-manifests` as `source-runner`, and the gates read the output as data, bounded and unexecuted ("Rendering is not done where
   the credentials are"). The #249 stop-gap (symlink refusal, no helm stderr in the credentialed pod) is kept as defence in depth in the
-  render task. Not done: `values-check`'s `own-chart` step (follow-up 1). `clearance-gate.yaml` edits are listed in the pull request.
+  render task. `values-check`'s own-chart render moved too. `clearance-gate.yaml` edits are listed in the pull request.
 - **A re-run from a commit comment** (`/retest` on a pushed commit) is recorded by Pipelines-as-Code with an event type its source
   sets from the comment (not `push`; the exact string was not confirmed). A privileged Pipeline then fails the push-only rule and is
   refused: the safe direction. Re-run those from the portal (glidepath-api rerun, once the cluster policy allows it) or push again.
@@ -575,6 +591,14 @@ Order matters because a build run created from a `.tekton` file written before t
   than 32 MiB a file fails that environment (raise `renderManifests.cpuSeconds` / `maxFileMiB`); more than 50 environments in one run
   fails the run. The gates refuse a render with more than 1,000,000 nodes after alias expansion, 5000 documents or nesting over 64.
   Helm's error text now appears in the **render task's** log (it holds nothing), not the gate's.
+- **`values-check` is the third use of `render-manifests`** (profile `values`; `cicdRunAdmission.sourceTasks` lists `render` for it too): the
+  `pull-request-values.yaml` template gains the same workspace and `taskRunSpecs`, and an advisory `values-check` goes on after a failed fetch or render (green) as before.
+- **Workspace volume claims are now checked by admission.** A `.tekton` file's `volumeClaimTemplate` may carry only `accessModes: [ReadWriteOnce]`, a
+  storage request of 1, 2, 5, 10 or 20Gi and, if set, a `storageClassName` from `cicdRunAdmission.workspaceStorageClassNames` (empty by default: unset only). No
+  `dataSource`, `dataSourceRef`, `volumeName`, `selector`, `volumeMode` or metadata. The onboarding templates and the flow generator already fit; a cluster whose
+  generated build volumes name a storage class must list it. The render refuses inputs without this run's marker in `inputs/`, so a failed `fetch` in an advisory Pipeline renders nothing.
+- **Chart sources.** A chart named in `cicd.yaml` (`deploy.chart.repoURL`) must be on an allowed host (`chartSources.gitHosts`, `ociHosts`, plus the default
+  chart's); an environment or cluster directory in a gitops repository whose name is not lower case letters, digits and hyphens refuses the check.
 - **Volume.** Each run of the two checks now creates a small PVC (inputs, the rendered manifests, the gate's facts); it goes with the run.
   The `source-runner` pod must be able to write the volume (same check as the build volume's first live run: the PVC's `fsGroup` /
   permissions), and the volume's storage class must allow the same PVC to be mounted by two workspaces of one pod by subPath.

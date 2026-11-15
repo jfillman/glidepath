@@ -164,10 +164,11 @@ spec:
         fi
         mkdir -p "$(dirname "${manifest}")"
         [[ -f "${manifest}" ]] || printf '# machine-owned: written by deploy-manifests.yaml (D9/AF-5) - do not hand-edit\n' > "${manifest}"
-        yq -i -e "
-          .release.image.repository = \"${image_repo}\" |
-          .release.image.tag = \"${image_tag}\"
-        " "${manifest}"
+        # the values go in through the environment, never into the program text (an image reference is data, not yq)
+        IMAGE_REPO="${image_repo}" IMAGE_TAG="${image_tag}" yq -i -e '
+          .release.image.repository = strenv(IMAGE_REPO) |
+          .release.image.tag = strenv(IMAGE_TAG)
+        ' "${manifest}"
         # ADR-0029: a Ground environment runs the Ground image, so repository and source are the same.
         {{- include "glidepath-catalog.releaseImagePin" . | nindent 8 }}
         release_image_pin "${manifest}" "${image_repo}" "${IMAGE_DIGEST}"

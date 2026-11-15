@@ -66,6 +66,7 @@ spec:
       params:
         - { name: profile, value: clearance-gate }
         - { name: app-name, value: $(params.app-name) }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
       workspaces:
         - { name: inputs, workspace: gate, subPath: inputs }
         - { name: output, workspace: gate, subPath: rendered }

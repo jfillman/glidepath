@@ -43,10 +43,14 @@ spec:
   params:
     - name: profile
       type: string
-      description: "clearance-gate | policy-validation: which gate's plan and release naming to render for."
+      description: "clearance-gate | policy-validation | values: which gate's plan and release naming to render for."
     - name: app-name
       type: string
       description: The application's name.
+    - name: pipeline-run-name
+      type: string
+      default: ""
+      description: The run's name; the render refuses inputs that this run's own fetch did not publish (the PUBLISHED marker in inputs/).
     - name: validator-image
       type: string
       default: {{ .Values.valuesValidatorImage | default (printf "%s:%s" (required "valuesValidatorRepository (or valuesValidatorImage) must be set" .Values.valuesValidatorRepository) (required "defaultChart.targetRevision must be set" .Values.defaultChart.targetRevision)) | quote }}
@@ -71,6 +75,8 @@ spec:
           value: $(params.profile)
         - name: APP_NAME
           value: $(params.app-name)
+        - name: PIPELINE_RUN
+          value: $(params.pipeline-run-name)
         - name: NAMESPACE
           value: $(context.taskRun.namespace)
         - name: RENDER_CPU_SECONDS
@@ -82,10 +88,13 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
-        case "${PROFILE}" in clearance-gate|policy-validation) ;; *) echo "FAIL: profile must be clearance-gate or policy-validation"; exit 1;; esac
+        case "${PROFILE}" in clearance-gate|policy-validation|values) ;; *) echo "FAIL: profile must be clearance-gate, policy-validation or values"; exit 1;; esac
         mkdir -p /out
         # A retry, or a workspace that was not empty, must not leave an earlier render beside this one.
         find /out -mindepth 1 -delete
+        # Only inputs this run's own fetch published (it writes the marker after emptying the volume): a fetch that failed (an advisory
+        # Pipeline goes on after one) leaves none, and then there is nothing to render.
+        [[ -f /work/PUBLISHED && "$(cat /work/PUBLISHED)" == "${PIPELINE_RUN}" ]] || { echo "FAIL: the inputs were not published by this run's fetch"; exit 1; }
         [[ -s /work/plan.txt ]] || exit 0
         {{- include "glidepath-catalog.chartSafety" . | nindent 8 }}
         # No plugin, no cache of an earlier run, no cluster.
@@ -155,10 +164,25 @@ spec:
             esac
             echo "${cluster}/${env}: rendered head ($(grep -c '^kind:' "${d}/head.yaml")) and base ($(grep -c '^kind:' "${d}/base.yaml")) objects with ${chart}"
           else
+            vfiles=(); for v in "${cluster}/base.yaml" "${cluster}/${env}/values.yaml" "${cluster}/${env}/release.yaml"; do [[ -f "/work/repo/${v}" ]] && vfiles+=("/work/repo/${v}"); done
             if ! out="$(render /work/repo "${cluster}" "${env}" "${chart}" "${APP_NAME}" "${d}/resources.yaml")"; then
               echo "FAIL ${cluster}/${env}: helm template failed: ${out}"; rm -f "${d}/resources.yaml"; echo render-failed > "${d}/status"; failed=1; continue
             fi
             echo "${cluster}/${env}: rendered $(grep -c '^kind:' "${d}/resources.yaml") objects with ${chart}"
+            if [[ "${PROFILE}" == values ]]; then
+              # before the first release a chart renders no workload (chart-contract.md, bootstrap): has any value file set release.image.repository?
+              python3 - "${d}/released" ${vfiles[@]+"${vfiles[@]}"} <<'PY'
+        import sys, yaml
+        released = False
+        for v in sys.argv[2:]:
+            try:
+                doc = yaml.safe_load(open(v)) or {}
+            except Exception:
+                continue
+            released = released or bool(((doc.get("release") or {}).get("image") or {}).get("repository")) if isinstance(doc, dict) else released
+        open(sys.argv[1], "w").write("true" if released else "false")
+        PY
+            fi
           fi
           echo ok > "${d}/status"
         done < /work/plan.txt

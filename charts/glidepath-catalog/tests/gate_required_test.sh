@@ -57,7 +57,7 @@ expect "sbom-check default" "$(tasks sbom-check "${tmp}/default.yaml" | tr '\n' 
 expect "api-compat-check default (advisory)" "$(tasks api-compat-check "${tmp}/default.yaml" | tr '\n' ' ')" \
   "extract-promoted-image compare-api-advisory+continue advisory-reason=not-required "
 expect "values-check default" "$(tasks values-check "${tmp}/default.yaml" | tr '\n' ' ')" \
-  "validate advisory-reason=rollback "
+  "fetch render validate advisory-reason=rollback "
 expect "policy-validation-check default (required, no rollback copy)" "$(tasks policy-validation-check "${tmp}/default.yaml" | tr '\n' ' ')" \
   "fetch render evaluate advisory-reason=rollback "
 for task in detect-bypass-merge release-log-emit wait-for-release-guardrails open-release-pr comment-pr-check-result; do
@@ -99,7 +99,7 @@ expect "api-compat-check required" "$(tasks api-compat-check "${tmp}/override.ya
 expect "sbom-check advisory" "$(tasks sbom-check "${tmp}/override.yaml" | tr '\n' ' ')" \
   "extract-promoted-image generate-sbom-advisory+continue advisory-reason=not-required "
 expect "values-check advisory" "$(tasks values-check "${tmp}/override.yaml" | tr '\n' ' ')" \
-  "validate-advisory+continue advisory-reason=not-required "
+  "fetch+continue render+continue validate-advisory+continue advisory-reason=not-required "
 expect "policy-validation-check advisory" "$(tasks policy-validation-check "${tmp}/override.yaml" | tr '\n' ' ')" \
   "fetch+continue render+continue evaluate-advisory+continue advisory-reason=not-required "
 script_of detect-bypass-merge "${tmp}/override.yaml" > "${tmp}/detect-override.sh"

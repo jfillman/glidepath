@@ -36,3 +36,5 @@ jobs:
       - run: python3 charts/glidepath-catalog/tests/image_push_split_test.py
       # Rendering is not done where the credentials are: the render task holds nothing, the gates read its output as data (real helm).
       - run: python3 charts/glidepath-catalog/tests/tokenless_render_test.py
+      # no repository string becomes part of a yq/jq program or chooses where a credentialed fetch goes
+      - run: python3 charts/glidepath-catalog/tests/program_text_test.py

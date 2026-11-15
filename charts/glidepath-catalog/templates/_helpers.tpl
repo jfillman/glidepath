@@ -51,7 +51,7 @@ release_image_pin() {
     echo "error: promotion.pinDigest is on but the image digest is '${digest}', not sha256:<hex> - resolve-image-ref could not read it from the registry" >&2
     return 1
   fi
-  yq -i -e ".release.image.digest = \"${digest}\" | .release.image.source = \"${source_repo}\"" "${manifest}"
+  PIN_DIGEST="${digest}" PIN_SOURCE="${source_repo}" yq -i -e '.release.image.digest = strenv(PIN_DIGEST) | .release.image.source = strenv(PIN_SOURCE)' "${manifest}"
 {{- else }}
   yq -i 'del(.release.image.digest, .release.image.source)' "${manifest}"
 {{- end }}
@@ -485,6 +485,44 @@ chart_safe() {
 {{- end -}}
 
 {{- /*
+glidepath-catalog.inputGuards: bash for a credentialed step that takes names and a chart source from the repository (a directory name in the
+gitops repository, a chart repoURL in cicd.yaml). valid_name: the platform's own name rule, checked BEFORE a name is used anywhere (a path
+component is otherwise any string without a slash). valid_chart_source: a chart is fetched only from a host the platform names
+(chartSources, plus the default chart's own host), over https (git) or oci://, with a revision, path and chart name of plain characters; the
+fetch carries credentials, so it must not be able to go anywhere else. Fixed messages only: nothing from the repository is printed.
+*/ -}}
+{{- define "glidepath-catalog.inputGuards" -}}
+# BEGIN input-guards
+valid_name() { [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; }
+ALLOWED_GIT_HOSTS={{ join " " (concat ((.Values.chartSources | default dict).gitHosts | default (list "github.com")) (ternary (list (regexReplaceAll "^https://([^/]+)/.*$" .Values.defaultChart.repoURL "${1}")) (list) (hasPrefix "https://" (.Values.defaultChart.repoURL | default ""))) ) | quote }}
+ALLOWED_OCI_HOSTS={{ join " " (concat ((.Values.chartSources | default dict).ociHosts | default (list "ghcr.io")) (ternary (list (regexReplaceAll "^oci://([^/]+)/?.*$" .Values.defaultChart.repoURL "${1}")) (list) (hasPrefix "oci://" (.Values.defaultChart.repoURL | default ""))) ) | quote }}
+valid_chart_source() { # <repoURL> <targetRevision> <path> <chart>
+  local url="$1" rev="$2" path="$3" chart="$4" host
+  [[ "${rev}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ && "${rev}" != *..* ]] || return 1
+  [[ "${path}" =~ ^[A-Za-z0-9._/-]{0,200}$ && "${path}" != /* && "${path}" != *..* ]] || return 1
+  if [[ "${url}" == oci://* ]]; then
+    [[ "${url}" =~ ^oci://([a-z0-9.-]+(:[0-9]+)?)(/[A-Za-z0-9._-]+)*$ ]] || return 1
+    host="${BASH_REMATCH[1]}"
+    [[ "${chart}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ && "${chart}" != *..* ]] || return 1
+    [[ " ${ALLOWED_OCI_HOSTS} " == *" ${host} "* ]]
+  else
+    [[ "${url}" =~ ^https://([a-z0-9.-]+)/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || return 1
+    host="${BASH_REMATCH[1]}"
+    [[ " ${ALLOWED_GIT_HOSTS} " == *" ${host} "* ]]
+  fi
+}
+# every environment of a changed-files plan (<cluster>|<env> lines) has plain names; otherwise the run is refused before any is used
+valid_env_plan() { # <file>
+  local c e
+  while IFS='|' read -r c e; do
+    [[ -z "${c}${e}" ]] && continue
+    valid_name "${c}" && valid_name "${e}" || return 1
+  done < "$1"
+}
+# END input-guards
+{{- end -}}
+
+{{- /*
 glidepath-catalog.renderedIngest: files/lib/rendered-ingest.py, to splice between `python3 - <<'PY'` and `PY` in the `ingest` step of
 policy-validation-gate and clearance-gate: reads the render-manifests Task's output as data (bounded YAML parse, no tags, file digests
 recomputed, no symlink followed) and writes /work/eval/<id>/ from the bytes it read.
@@ -521,6 +559,8 @@ done
 find /publish/inputs -name .git -prune -exec rm -rf {} +
 # the marker the decide phase requires: the data below was published by this run's own fetch
 printf '%s\n' "${PIPELINE_RUN}" > /publish/trusted/PUBLISHED
+# and the same marker where the render task reads: it renders nothing a fetch of this run did not publish (a fetch that failed leaves none)
+printf '%s\n' "${PIPELINE_RUN}" > /publish/inputs/PUBLISHED
 chmod -R a+rX /publish/inputs /publish/trusted
 chmod 0777 /publish/rendered
 echo "published for the render: $(find /publish/inputs -type f | wc -l) files; trusted: $(find /publish/trusted -type f | wc -l) files"

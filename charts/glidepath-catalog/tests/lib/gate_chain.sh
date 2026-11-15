@@ -25,7 +25,7 @@ gate_chain() { # <gate task yaml> <render-manifests task yaml> <clearance-gate|p
   gate_sstep "$task" publish | gate_loc "$W/pub" x x x "$W/vol" > "$W/publish.sh"
   ( cd "$W/pub" && PHASE=fetch PIPELINE_RUN=run-1 bash "$W/publish.sh" ) > "$W/publish.log" 2>&1 || { echo "-- publish failed:"; cat "$W/publish.log"; }
   gate_sstep "$rtask" render | gate_loc "$W/vol/inputs" "$W/vol/rendered" x x x > "$W/render.sh"
-  ( cd "$W" && PATH="$d/bin:$PATH" RENDER_TMP="$W/rtmp" PROFILE="$gate" RENDER_CPU_SECONDS=60 RENDER_MAX_FILE_KB=32768 RENDER_MAX_ENVIRONMENTS=50 \
+  ( cd "$W" && PATH="$d/bin:$PATH" RENDER_TMP="$W/rtmp" PROFILE="$gate" PIPELINE_RUN=run-1 RENDER_CPU_SECONDS=60 RENDER_MAX_FILE_KB=32768 RENDER_MAX_ENVIRONMENTS=50 \
       APP_NAME="$app" NAMESPACE="app-${app}-cicd" bash "$W/render.sh" ) > "$W/render.log" 2>&1
   echo $? > "$W/render.rc"
   gate_sstep "$task" ingest | gate_loc "$W" x "$W/vol/rendered" "$W/vol/trusted" x > "$W/ingest.sh"

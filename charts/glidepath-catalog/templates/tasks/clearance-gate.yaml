@@ -185,6 +185,7 @@ spec:
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
         {{- include "glidepath-catalog.policyEvalLib" . | nindent 8 }}
+        {{- include "glidepath-catalog.inputGuards" . | nindent 8 }}
         : > /work/plan.txt
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
@@ -263,6 +264,8 @@ spec:
           fi
         done < <(jq -r '.[] | .filename' <<<"${files}")
         sort -u -o /work/envs.txt /work/envs.txt
+        # names from paths in the repository: plain names only, before any use (a directory name is any string without a slash)
+        valid_env_plan /work/envs.txt || { echo "FAIL: a changed file is under a cluster or environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1; }
 
         # The app's cicd.yaml: the chart, the target, and which environments are protected (production: true).
         cicd=""
@@ -287,7 +290,7 @@ spec:
           [[ -n "${cluster}" ]] || continue
           protected="$(jq -r --arg e "${env}" '[.[] | select(.name == $e) | .production // false] | .[0] // false' <<<"${envs_json}")"
           chart_dir=default
-          resolved="$(echo "${cicd}" | yq -o json "{\"app\": (.deploy.chart // {}), \"env\": ((.deploy.environments // [])[] | select(.name == \"${env}\") | .chart // {})}" 2>/dev/null \
+          resolved="$(echo "${cicd}" | ENV_NAME="${env}" yq -o json '{"app": (.deploy.chart // {}), "env": ((.deploy.environments // [])[] | select(.name == strenv(ENV_NAME)) | .chart // {})}' 2>/dev/null \
             | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" '
                 def over($b; $o): if ($o.repoURL // "") != "" then $o
                   else $b + ($o | with_entries(select(.value != null and .value != "")))
@@ -297,6 +300,9 @@ spec:
                '.repoURL != $r or (.chart // "") != "" or .path != $p')" == "true" ]]; then
             n=$((n + 1))
             repo_url="$(echo "${resolved}" | jq -r .repoURL)"; rev="$(echo "${resolved}" | jq -r '.targetRevision // "main"')"
+            # the fetch below carries credentials: only from the hosts the platform names, with plain revision, path and chart names
+            valid_chart_source "${repo_url}" "${rev}" "$(echo "${resolved}" | jq -r '.path // "."')" "$(echo "${resolved}" | jq -r '.chart // ""')" \
+              || { echo "FAIL: the environment's chart source is not an allowed one (https git host or OCI registry from chartSources, plain revision and path)"; exit 1; }
             if [[ "${repo_url}" == oci://* ]]; then
               with_retry 3 -- oras pull "${repo_url#oci://}/$(echo "${resolved}" | jq -r .chart):${rev}" -o "/work/charts/${n}-oci" >/dev/null
               mv "$(ls /work/charts/${n}-oci/*.tgz | head -1)" "/work/charts/${n}.tgz"

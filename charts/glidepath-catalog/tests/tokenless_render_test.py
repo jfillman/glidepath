@@ -40,13 +40,13 @@ DOCS = [d for d in yaml.safe_load_all(r.stdout) if d]
 TASKS = {d["metadata"]["name"]: d for d in DOCS if d["kind"] == "Task"}
 PIPELINES = {d["metadata"]["name"]: d for d in DOCS if d["kind"] == "Pipeline"}
 CP = yaml.safe_load(open(CP_VALUES))["cicdRunAdmission"]
-GATE_PIPELINES = {"policy-validation-check": "policy-validation-gate", "clearance-gate-check": "clearance-gate"}
+GATE_PIPELINES = {"policy-validation-check": "policy-validation-gate", "clearance-gate-check": "clearance-gate", "values-check": "validate-values"}
 # a command in command position (line start, or after ; & | ( ! exec then do if while), not the words in a message or a table
 HAZARD = re.compile(r"(?:^|[;&|(!]|\bexec|\bthen|\bdo|\bif|\bwhile)[ \t]*!?[ \t]*"
                     r"(?:helm[ \t]+(?:template|lint|dependency|pull|install|upgrade|show)|kustomize[ \t]+build|kubectl[ \t]+(?:kustomize|apply[ \t]+-k|diff)|jsonnet)\b", re.M)
 # Credentialed tasks that still render repository content. A follow-up, named here so it cannot grow unseen (and so this test fails
 # when it is fixed and the entry is left behind).
-KNOWN_FOLLOW_UP = {"validate-values"}
+KNOWN_FOLLOW_UP = set()
 
 
 def steps(task):
@@ -138,7 +138,7 @@ class Structure(unittest.TestCase):
             for s in steps(name):
                 if s["name"] != "publish":
                     self.assertNotIn("/publish", s.get("script", ""), (name, s["name"]))
-            self.assertIn('[[ "${PHASE}" == fetch ]] || exit 0', script(name, "fetch"))
+            self.assertIn('[[ "${PHASE}" == fetch ]] || exit 0', steps(name)[0]["script"])
             self.assertIn('[[ "${PHASE}" == fetch ]] || exit 0', script(name, "publish"))
 
     def test_decide_tasks_bind_only_read_only_workspaces_and_render_gets_the_account_free_split(self):
@@ -220,12 +220,16 @@ class Structure(unittest.TestCase):
                 if t["name"] in listed and task_of(t) == "render-manifests":
                     self.assertFalse(TASKS["render-manifests"]["spec"].get("volumes"))
 
-    def test_the_known_follow_up_is_a_helm_template_in_the_own_chart_step(self):
-        self.assertIn("helm template", code(script("validate-values", "own-chart")))
+    def test_values_check_no_longer_renders_in_its_own_pod(self):
+        # the follow-up of the first version of this slice: validate-values' own-chart step ran helm template as pipeline-runner
+        text = code("\n".join(s.get("script", "") for s in steps("validate-values")))
+        self.assertIsNone(HAZARD.search(text))
+        self.assertEqual(CP["sourceTasks"]["values-check"], ["render"])
+        self.assertIn("render-manifests", [task_of(t) for t in pipeline_tasks("values-check")])
 
 
 # ---------------------------------------------------------------------------------------------------------------- the render
-def lay_out_inputs(base, plan, head_values="replicas: 2\n", base_values="replicas: 1\n", observability=None, with_base=True):
+def lay_out_inputs(base, plan, head_values="replicas: 2\n", base_values="replicas: 1\n", observability=None, with_base=True, published=True):
     w = os.path.join(base, "work")
     for tree in ("repo", "base") if with_base else ("repo",):
         d = os.path.join(w, tree, "hangar-prod", "prod")
@@ -235,13 +239,15 @@ def lay_out_inputs(base, plan, head_values="replicas: 2\n", base_values="replica
     os.makedirs(os.path.join(w, "observability"))
     open(os.path.join(w, "observability", "hangar-prod.yaml"), "w").write(observability or "")
     open(os.path.join(w, "plan.txt"), "w").write(plan)
+    if published:
+        open(os.path.join(w, "PUBLISHED"), "w").write("run-1\n")
     os.makedirs(os.path.join(base, "out"))
     return w
 
 
 def render_env(profile, **extra):
     env = {"PROFILE": profile, "APP_NAME": "x", "NAMESPACE": "app-x-cicd", "RENDER_CPU_SECONDS": "60", "RENDER_MAX_FILE_KB": "32768",
-           "RENDER_MAX_ENVIRONMENTS": "50", "RENDER_TMP": tempfile.mkdtemp(prefix="render-tmp-")}
+           "RENDER_MAX_ENVIRONMENTS": "50", "PIPELINE_RUN": "run-1", "RENDER_TMP": tempfile.mkdtemp(prefix="render-tmp-")}
     env.update(extra)
     return env
 
@@ -289,6 +295,26 @@ class Render(unittest.TestCase):
         rc, log, _ = self.run_render("clearance-gate", "hangar-prod|prod|default|true\n")
         self.assertEqual(rc, 0, log)
         self.assertIn('release: "x-prod"', open(self.out("hangar-prod__prod", "head.yaml")).read())
+
+    def test_the_render_refuses_inputs_this_runs_fetch_did_not_publish(self):
+        # an advisory Pipeline goes on after a failed fetch: nothing it left is rendered
+        lay_out_inputs(self.base, "hangar-prod|prod|default|true\n", published=False)
+        rc, log, _ = run_script(script("render-manifests", "render"), self.base, render_env("clearance-gate"))
+        self.assertEqual(rc, 1, log)
+        self.assertIn("not published by this run", log)
+        self.assertEqual(os.listdir(self.out()), [])
+        self.tearDown(); self.setUp()
+        lay_out_inputs(self.base, "hangar-prod|prod|default|true\n")
+        rc, log, _ = run_script(script("render-manifests", "render"), self.base, render_env("clearance-gate", PIPELINE_RUN="another-run"))
+        self.assertEqual(rc, 1, log)
+        self.assertEqual(os.listdir(self.out()), [])
+
+    def test_values_profile_renders_with_the_apps_release_name_and_says_whether_the_app_is_released(self):
+        rc, log, _ = self.run_render("values", "hangar-prod|prod|default\n")
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(sorted(os.listdir(self.out("hangar-prod__prod"))), ["released", "resources.yaml", "status"])
+        self.assertEqual(open(self.out("hangar-prod__prod", "released")).read(), "false")
+        self.assertIn("namespace: app-x-prod", open(self.out("hangar-prod__prod", "resources.yaml")).read())
 
     def test_an_unprotected_environment_is_not_rendered(self):
         rc, log, _ = self.run_render("clearance-gate", "hangar-prod|prod|default|false\n")
@@ -588,6 +614,27 @@ class Ingest(unittest.TestCase):
         self.tearDown(); self.setUp()
         self.bad_yaml(b"a: \xff\xfe\n", "not UTF-8")
 
+    def test_a_scalar_the_parser_cannot_build_is_refused_with_a_fixed_message(self):
+        # a timestamp that is not a date, a float or int that is not a number, a bad binary: PyYAML's constructors raise ValueError,
+        # TypeError or binascii.Error, whose text quotes the repository's string
+        for text in ("a: 2023-13-45\nkind: ConfigMap\nmetadata: {name: x}\n", "a: !!float abc\n", "a: !!int xyz\n",
+                     "a: !!timestamp nope\n", "a: !!set {x: 1}\nb: !!omap [1]\n"):
+            self.tearDown(); self.setUp()
+            log = self.bad_yaml(text, "not valid YAML")
+            for secret in ("2023-13-45", "abc", "xyz", "nope"):
+                self.assertNotIn(secret, log)
+
+    def test_documents_that_are_not_mappings_or_lack_a_kind_are_read_and_ignored_as_before(self):
+        text = (b"---\n# only a comment\n---\n\n---\njust a scalar\n---\n- a\n- list\n---\nkind: NoMetadata\n---\n"
+                b"apiVersion: v1\nmetadata: {name: nokind}\n---\n" + GOOD_HEAD)
+        files = self.good()
+        files["hangar-prod__prod/head.yaml"] = text
+        self.lay_out("clearance-gate", files)
+        rc, log, _ = self.ingest("clearance-gate")
+        self.assertEqual(rc, 0, log)
+        c = json.load(open(os.path.join(self.base, "work", "eval", "hangar-prod__prod", "change.json")))
+        self.assertEqual([o["name"] for o in c["objects"]], ["a"])
+
     def hostile_names(self, gate):
         name = "a$(touch PWNED); `touch PWNED2` | @pr-lens\nsecond line"
         doc = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": name, "namespace": "app-x-prod"}, "data": {"k": "$(touch PWNED3)\n; rm -rf /"}}
@@ -640,6 +687,46 @@ class Ingest(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.base, "work", "skip-rest")))
 
 
+class ValuesIngest(unittest.TestCase):
+    """validate-values' own-chart step: the Namespace and Rollout checks it used to make on its own helm output, now on the render's."""
+
+    def run_step(self, resources, released, status=b"ok\n"):
+        with tempfile.TemporaryDirectory() as base:
+            for d in ("trusted", "rendered", "work"):
+                os.makedirs(os.path.join(base, d))
+            open(os.path.join(base, "trusted", "PUBLISHED"), "w").write("run-1\n")
+            open(os.path.join(base, "trusted", "plan.txt"), "w").write("hangar-prod|prod|/work/charts/1\n")
+            files = {"hangar-prod__prod/resources.yaml": resources, "hangar-prod__prod/released": released, "hangar-prod__prod/status": status}
+            lines = []
+            for rel, data in files.items():
+                os.makedirs(os.path.dirname(os.path.join(base, "rendered", rel)), exist_ok=True)
+                open(os.path.join(base, "rendered", rel), "wb").write(data)
+                lines.append("%s  %s" % (sha(data), rel))
+            open(os.path.join(base, "rendered", "MANIFEST"), "w").write("".join(l + "\n" for l in lines))
+            e = literal_env("validate-values", "own-chart")
+            e.update(PHASE="decide", PIPELINE_RUN="run-1", APP_NAME="x")
+            return run_script(script("validate-values", "own-chart"), base, e)
+
+    NS = b"apiVersion: v1\nkind: Namespace\nmetadata: {name: app-x-prod}\n"
+    ROLLOUT = b"---\napiVersion: argoproj.io/v1alpha1\nkind: Rollout\nmetadata: {name: x}\n"
+
+    def test_a_namespace_is_required_and_a_rollout_once_released(self):
+        self.assertEqual(self.run_step(self.NS, b"false")[0], 0)
+        self.assertEqual(self.run_step(self.NS + self.ROLLOUT, b"true")[0], 0)
+        rc, log, _ = self.run_step(self.ROLLOUT, b"true")
+        self.assertEqual(rc, 1)
+        self.assertIn("a Namespace", log)
+        rc, log, _ = self.run_step(self.NS, b"true")
+        self.assertEqual(rc, 1)
+        self.assertIn("a Rollout named x", log)
+
+    def test_a_render_that_failed_or_a_hostile_file_fails_the_step(self):
+        self.assertEqual(self.run_step(self.NS, b"false", status=b"render-failed\n")[0], 1)
+        rc, log, _ = self.run_step(b"a: !!python/object/apply:os.system ['touch PWNED']\n", b"false")
+        self.assertEqual(rc, 1)
+        self.assertIn("YAML tag", log)
+
+
 # ---------------------------------------------------------------------------------------------------------------- the digest
 class DigestEquality(unittest.TestCase):
     """Render the fixture chart through the new path (render-manifests, then the clearance-gate ingest step) with real helm and
@@ -659,6 +746,7 @@ class DigestEquality(unittest.TestCase):
             os.makedirs(os.path.join(w, "observability"))
             open(os.path.join(w, "observability", "hangar-prod.yaml"), "w").close()
             open(os.path.join(w, "plan.txt"), "w").write("hangar-prod|prod|default|true\n")
+            open(os.path.join(w, "PUBLISHED"), "w").write("run-1\n")
             os.makedirs(os.path.join(base, "out"))
             rc, log, _ = run_script(script("render-manifests", "render"), base, render_env("clearance-gate", APP_NAME=golden["app"], NAMESPACE=golden["namespace"]))
             self.assertEqual(rc, 0, log)
@@ -681,7 +769,7 @@ class DigestEquality(unittest.TestCase):
         self.assertEqual(change["treeDigest"], golden["treeDigest"])
         got = {"/".join([o["apiVersion"], o["kind"], o["namespace"], o["name"]]): {"digest": o["digest"], "op": o["op"]} for o in change["objects"]}
         self.assertEqual(got, golden["objects"])
-        self.assertEqual(len(got), 4, "the comparison is not vacuous")
+        self.assertGreaterEqual(len(got), 15, "the comparison is not vacuous: hooks, CRDs, a subchart, a List, YAML corners")
         self.assertRegex(change["treeDigest"], r"^[0-9a-f]{64}$")
 
 
