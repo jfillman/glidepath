@@ -184,6 +184,28 @@ def repo_code(task):
     return any(x.get("image") == "$(params.agent-image)" or "buildctl" in x.get("script", "") for x in task["spec"].get("steps", []))
 
 
+def schema_stages():
+    """The stage names cicd.yaml's steps[].stage accepts (the enum that contains `build`), read from the schema."""
+    with open(os.path.join(ROOT, "schemas", "cicd.schema.json")) as f:
+        schema = json.load(f)
+    found = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            st = o.get("properties", {}).get("stage") if isinstance(o.get("properties"), dict) else None
+            if isinstance(st, dict) and "enum" in st:
+                found.append(set(st["enum"]))
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(schema)
+    stages = [f for f in found if "build" in f]
+    assert len(stages) == 1, "expected exactly one stage enum in the schema, found %d" % len(stages)
+    return stages[0]
+
+
 class CicdRunAdmission(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -251,9 +273,7 @@ class CicdRunAdmission(unittest.TestCase):
     # ---- the allowlist is what the platform delivers (cannot drift) ----
     def test_the_pipelines_a_file_may_start_are_exactly_the_ones_the_platform_starts_from_one(self):
         from_templates = {template_pipeline(d) for _, d in delivered_templates()}
-        stages = set(json.load(open(os.path.join(ROOT, "schemas", "cicd.schema.json")))
-                     ["properties"]["pipelines"]["additionalProperties"]["oneOf"][0]["properties"]["steps"]["items"]["properties"]["stage"]["enum"]) \
-            if False else {"build", "test", "deploy", "release", "gitops-image-bump"}
+        stages = schema_stages()
         self.assertEqual(set(self.values["pipelines"]), from_templates | stages)
         catalog = {d["metadata"]["name"] for d in render_catalog() if d["kind"] == "Pipeline"}
         self.assertLessEqual(set(self.values["pipelines"]), catalog)
@@ -262,24 +282,7 @@ class CicdRunAdmission(unittest.TestCase):
             self.assertNotIn(must_not, self.values["pipelines"])
 
     def test_the_flow_stages_are_the_schemas(self):
-        schema = json.load(open(os.path.join(ROOT, "schemas", "cicd.schema.json")))
-        found = []
-
-        def walk(o):
-            if isinstance(o, dict):
-                st = o.get("properties", {}).get("stage") if isinstance(o.get("properties"), dict) else None
-                if st and "enum" in st:
-                    found.append(set(st["enum"]))
-                for v in o.values():
-                    walk(v)
-            elif isinstance(o, list):
-                for v in o:
-                    walk(v)
-        walk(schema)
-        self.assertTrue(found)
-        # the schema's steps[].stage enum is the one with build in it
-        stages = [f for f in found if "build" in f][0]
-        self.assertEqual(stages, {"build", "test", "deploy", "release", "gitops-image-bump"})
+        self.assertEqual(schema_stages(), {"build", "test", "deploy", "release", "gitops-image-bump"})
 
     def test_each_templates_params_are_what_the_policy_lists(self):
         for path, d in delivered_templates():
@@ -525,6 +528,12 @@ class CicdRunAdmission(unittest.TestCase):
         _, gen = generator_params()
         for t in self.values["cloudDeployerTasks"]["deploy"]:
             self.assertIn("pipelineTaskName: " + t, gen)
+
+    def test_the_isolation_message_names_every_task_in_the_values(self):
+        msg = self.iso["validations"][0]["message"]
+        for pipeline, tasks in self.values["sourceTasks"].items():
+            for t in tasks:
+                self.assertIn(t, msg, "message omits %s (%s)" % (t, pipeline))
 
     # ---- source isolation ----
     def test_source_isolation_for_every_pipeline_that_runs_repository_code(self):

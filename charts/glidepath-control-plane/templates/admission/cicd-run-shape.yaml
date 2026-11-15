@@ -201,7 +201,7 @@ spec:
         variables.sourceTasks[variables.pipelineName].all(t,
           variables.specs.exists(s, has(s.pipelineTaskName) && s.pipelineTaskName == t &&
             has(s.serviceAccountName) && s.serviceAccountName == 'source-runner'))
-      message: "This Pipeline runs the repository's own code: the tasks named in cicdRunAdmission.sourceTasks (build: build-source, unit-test and the artifact builds; test: run-integration-script) must run as source-runner (taskRunSpecs). Resync the repository's .tekton files (onboarding-resync) to regenerate it."
+      message: "This Pipeline runs the repository's own code: its tasks named in cicdRunAdmission.sourceTasks ({{ range $p, $ts := $c.sourceTasks }}{{ $p }}: {{ join ", " $ts }}; {{ end }}) must run as source-runner (taskRunSpecs). Resync the repository's .tekton files (onboarding-resync) to regenerate it."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
