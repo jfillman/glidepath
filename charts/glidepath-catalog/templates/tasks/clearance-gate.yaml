@@ -749,7 +749,7 @@ spec:
               else
                 "- **Source unresolved: registered as proposer unknown, which Clearance denies.** \(.reason)"
               end
-              + "\n- Promoter: \(if .promoter != "" then "`\(.promoter)`" else "not recorded (a pipeline-driven release, or a record from before the promoter was kept)" end). Clearance has no field for it yet, so it is named here only."' /work/source.json
+              + "\n- Promoter: \(if (.promoter // "") != "" then "`\(.promoter)`" else "not recorded (a pipeline-driven release, or a record from before the promoter was kept)" end). Clearance has no field for it yet, so it is named here only."' /work/source.json
           fi
           if (( holding > 0 )); then
             echo

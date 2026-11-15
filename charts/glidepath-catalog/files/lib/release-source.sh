@@ -227,7 +227,8 @@ release_source_resolve() {
       poType="$(jq -r '.user.type // ""' <<<"${p}")"; pmType="$(jq -r '.merged_by.type // ""' <<<"${p}")"
       plines="$(jq -r '(.additions // 0) + (.deletions // 0)' <<<"${p}")"
       for login in "${popener}" "${pmerger}"; do
-        # Clearance's principal pattern: letters, digits and : / _ . @ [ ] -  (so dependabot[bot] and dotted logins fit).
+        # A GitHub login (letters, digits, - _ . and the [bot] suffix) must fit Clearance's principal pattern, which is wider
+        # (it also allows : / @); GitHub logins never contain those, so the narrower class is deliberate.
         if [[ ! "${login}" =~ ^[]A-Za-z0-9_.@[-]{1,190}$ ]]; then
           _rs_fail "${sowner}/${srepo}#${pn} has an opener or merger (${popener:-none}, ${pmerger:-none}) Clearance cannot record as a principal"; return 0
         fi

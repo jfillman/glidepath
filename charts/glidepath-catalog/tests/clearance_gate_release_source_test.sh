@@ -293,6 +293,10 @@ out="$(resolve)"; expect "the release PR cannot be read: unresolved, says so" "$
 scenario curl-fail-commit; jq '.items[0].data.kind = "rollback"' "$FIX/records.json" > "$FIX/r" && mv "$FIX/r" "$FIX/records.json"
 out="$(resolve)"; expect "the single commit cannot be read: unresolved, says so" "$(q '[.resolved, (.reason | test("could not read o/shop@"))] | join(",")')" "false,true"
 
+# 13b. An unresolved early return (two records) omits the promoter: the report must still say "not recorded", not null.
+helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only templates/tasks/clearance-gate.yaml \
+  | yq '.spec.steps[3].script' | grep -c '(.promoter // "") != ""' | { read n; expect "the report treats a missing promoter as not recorded" "$n" 1; }
+
 # 14. A Bot account authored the PR, the pipelineLogins setting is empty and no record names it: still a person's PR, with a warning.
 scenario warn; jq '.items[0].data.prUrl = "https://github.com/o/gitops-shop/pull/99"' "$FIX/records.json" > "$FIX/r" && mv "$FIX/r" "$FIX/records.json"
 out="$(PIPELINE_LOGINS="" PRAUTHORTYPE=Bot resolve)"; expect "empty pipelineLogins and a Bot author: a warning is printed" "$(q '[.applicable, (.warning | test("pipelineLogins"))] | join(",")')" "false,true"
