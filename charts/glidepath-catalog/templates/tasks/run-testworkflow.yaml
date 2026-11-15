@@ -61,7 +61,7 @@
 # PipelineRun's provenance and attaches it to the image, carrying every result above in
 # buildConfig.tasks[] - the evidence the qa gate verifies, the same way the sast gate
 # reads sast-scan's outcome from the build's provenance. The image digest is resolved
-# with oras through the same registry-credentials build-image pushes with.
+# with oras through the same registry-credentials push-image pushes with.
 #
 # Triggering/polling uses the official `testkube` CLI (added to the toolbox image
 # 2026-09-05), not a hand-crafted TestWorkflowExecution CR + raw REST polling - see the
@@ -151,7 +151,7 @@ spec:
     - name: IMAGE_DIGEST
       description: "Same as image-digest, under the exact-cased Task-level type-hint name."
   # Registry read credentials for oras (digest resolution): the same
-  # kubernetes.io/dockerconfigjson Secret build-image pushes with, consumed via
+  # kubernetes.io/dockerconfigjson Secret push-image pushes with, consumed via
   # DOCKER_CONFIG the same way build-artifact.yaml does.
   volumes:
     - name: registry-credentials

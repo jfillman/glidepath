@@ -476,7 +476,7 @@ container image already pushes with. No separate publish target or credential to
 configure. Pull it with `oras pull <ref>`.
 
 The version always matches the container image's own resolved version exactly (both are
-read from the same `build-image` result) - there's no separate version-resolution path
+read from the same `build-image` version result, checked and re-reported by `push-image`) - there's no separate version-resolution path
 to drift out of sync.
 
 ## Build dependency caching (`build.cache`)

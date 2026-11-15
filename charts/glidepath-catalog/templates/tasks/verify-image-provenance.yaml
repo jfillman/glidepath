@@ -428,20 +428,20 @@ spec:
         # invocation.environment.labels; the catalog Pipeline is literally named `build`,
         # the same object the required-tasks list is read from below), or - should that
         # label ever go missing the way per-task labels already did (see the clone-repo
-        # comment below) - whose buildConfig.tasks[] has a `build-image` entry. The test
+        # comment below) - whose buildConfig.tasks[] has a `push-image` (or, for an image built before 2026-11, `build-image`) entry. The test
         # provenances are judged by qa-gate.yaml, not here. Several build provenances (a
         # rebuild of the same digest) all go through, as before.
         build_provenance_files=()
         for f in "${provenance_files[@]}"; do
           if jq -e '(.predicate.invocation.environment.labels["tekton.dev/pipeline"] // "") == "build"
-                    or any(.predicate.buildConfig.tasks[]?; .name == "build-image")' "${f}" >/dev/null; then
+                    or any(.predicate.buildConfig.tasks[]?; .name == "push-image" or .name == "build-image")' "${f}" >/dev/null; then
             build_provenance_files+=("${f}")
           else
             echo "skipping non-build provenance (pipeline '$(jq -r '.predicate.invocation.environment.labels["tekton.dev/pipeline"] // "unknown"' "${f}")', tasks $(jq -c '[.predicate.buildConfig.tasks[]?.name]' "${f}")) - test provenances are the qa gate's business"
           fi
         done
         if [[ ${#build_provenance_files[@]} -eq 0 ]]; then
-          echo "FAIL: ${#provenance_files[@]} verified slsaprovenance attestation(s) on ${image_ref}, none from the build pipeline (tekton.dev/pipeline=build label or a build-image task) - was this image built by the catalog's build Pipeline?" >&2
+          echo "FAIL: ${#provenance_files[@]} verified slsaprovenance attestation(s) on ${image_ref}, none from the build pipeline (tekton.dev/pipeline=build label or a push-image/build-image task) - was this image built by the catalog's build Pipeline?" >&2
           exit 1
         fi
         echo "build provenance(s) for Conforma: ${#build_provenance_files[@]} of ${#provenance_files[@]} verified"

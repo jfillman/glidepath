@@ -4,6 +4,25 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### Pipeline trust, slice T1: the image build and the registry push credential are separate pods
+
+- `build-image` (runs the `Containerfile` `RUN` lines, as `source-runner`) no longer mounts the registry push credential and pushes
+  nothing: it builds an OCI layout into the workspace. New Task `push-image` (a separate pod, new `image-pusher` ServiceAccount: no
+  Role, no token) validates that layout (no symlinks or traversal, digests and sizes checked, media types and platforms on an
+  allowlist) and pushes it with `oras cp --from-oci-layout` to the repository the run's `image-repo` names. The image digest and
+  reference every later task uses (scan, SBOM, API-spec attestation, the Pipeline's `IMAGE_URL`/`IMAGE_DIGEST`) now come from
+  `push-image`; `build-image`'s only result is `version`, which `push-image` checks as a tag.
+- A pull request's build imports the main BuildKit cache and exports none; a main build exports its cache to the workspace and
+  `push-image` publishes it. New optional read-only pull credential for private base images and caches: catalog
+  `buildPullCredential.secretName`, control-plane `buildPullCredential.remoteKey` (the push credential is refused for both).
+- Admission: `image-pusher` only on `push-image` of the `build` Pipeline (`cicdRunAdmission.pusherTasks`), required by
+  `cicd-run-source-isolation`; a build that a push did not start must pass `pr-tag-only=true`, which needs the `-pr` repository.
+- `push-image` hardening: exact-key allowlists and duplicate-key detection for every JSON document it interprets (a `Layers` next to `layers` refuses), symlink checks on the whole path, whole-string name matching, a main tag that already exists is never overwritten (a rerun reuses the published image, reports its digest, and attests no build of it), `image-pinned-ref` (`repo@digest`) for every later task, and a main cache that fails validation is skipped with a warning instead of failing the task.
+- **Upgrade:** release the three charts together, resync every app's `.tekton/`, supply the pull credential where bases are private, raise
+  `build.sourceVolume.size` for large images (the workspace now holds the image and cache layouts). docs/admin/security.md,
+  "Image build and push" and the upgrade note.
+
+
 ### Pipeline least privilege: the repository's code runs with no Kubernetes credential
 
 - New `source-runner` ServiceAccount (no Role, no token): `build-source`, `unit-test` and the two artifact builds, the tasks that run

@@ -136,6 +136,24 @@ automountServiceAccountToken: false
 imagePullSecrets:
   - name: registry-credentials
 ---
+# Runs push-image, the one task that holds the registry push credential for the image. It runs nothing from the repository: it
+# validates the OCI layout build-image wrote (as source-runner) and copies it to the application's repository with oras. Like
+# source-runner it has NO Role and NO RoleBinding and no mounted token: the push needs the registry credential (a Secret volume
+# of the task) and nothing from the Kubernetes API. It is a separate account so that the admission policy can say which task may
+# have it (cicdRunAdmission.pusherTasks) and so that no code that runs as pipeline-runner or source-runner gets the push
+# credential's pod by naming it. Nothing must ever bind this account to a Role; the chart test fails if anything does.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: image-pusher
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+automountServiceAccountToken: false
+imagePullSecrets:
+  - name: registry-credentials
+---
 # Lets the shared broker (platform-system/cdevents-broker) create the next-stage
 # PipelineRun as this Application's pipeline-trigger SA only, in this namespace only -
 # not a cluster-wide impersonate grant. (The run itself executes as pipeline-runner.)

@@ -15,10 +15,11 @@
 #                              each matching its pattern, each appearing once; repo, revision, pull request and namespace
 #                              parameters equal what PaC itself recorded on the run, not what the file says; Pipelines that write
 #                              release state or deploy only from a push to a protected branch or a tag; run-wide account
-#                              pipeline-runner; per-task accounts only source-runner or glidepath-cloud-deployer, one entry per
+#                              pipeline-runner; per-task accounts only source-runner, image-pusher or glidepath-cloud-deployer, one entry per
 #                              task; podTemplate hostAliases only; workspaces emptyDir or volumeClaimTemplate only.
 #   cicd-run-source-isolation  a run of a Pipeline that runs the repository's code (values sourceTasks) must run those tasks as
-#                              source-runner. Separate so it can be rolled out in audit first.
+#                              source-runner, and its tasks that hold the registry push credential (values pusherTasks:
+#                              push-image) as image-pusher. Separate so it can be rolled out in audit first.
 #   cicd-run-no-taskruns       PaC never creates a TaskRun; one from its identity is refused.
 #
 # Every expression is has()-guarded and every matchCondition cannot raise on a missing field, so a CEL error cannot refuse a
@@ -80,6 +81,8 @@ spec:
       expression: {{ $c.sourceTasks | toJson | squote }}
     - name: cloudTasks
       expression: {{ $c.cloudDeployerTasks | toJson | squote }}
+    - name: pusherTasks
+      expression: {{ $c.pusherTasks | toJson | squote }}
   validations:
     - expression: "has(request.resource) && has(request.resource.version) && request.resource.version == 'v1'"
       message: "Only tekton.dev/v1 PipelineRuns are accepted from a .tekton file (v1beta1 has different fields for the same settings)."
@@ -146,8 +149,18 @@ spec:
           (s.serviceAccountName == 'source-runner' && variables.pipelineName in variables.sourceTasks &&
             s.pipelineTaskName in variables.sourceTasks[variables.pipelineName]) ||
           (s.serviceAccountName == 'glidepath-cloud-deployer' && variables.pipelineName in variables.cloudTasks &&
-            s.pipelineTaskName in variables.cloudTasks[variables.pipelineName]))
-      message: "A task may run as source-runner only where cicdRunAdmission.sourceTasks lists it, and as glidepath-cloud-deployer only where cicdRunAdmission.cloudDeployerTasks lists it (for this Pipeline); any other task runs as pipeline-runner."
+            s.pipelineTaskName in variables.cloudTasks[variables.pipelineName]) ||
+          (s.serviceAccountName == 'image-pusher' && variables.pipelineName in variables.pusherTasks &&
+            s.pipelineTaskName in variables.pusherTasks[variables.pipelineName]))
+      message: "A task may run as source-runner only where cicdRunAdmission.sourceTasks lists it, as image-pusher only where cicdRunAdmission.pusherTasks lists it, and as glidepath-cloud-deployer only where cicdRunAdmission.cloudDeployerTasks lists it (for this Pipeline); any other task runs as pipeline-runner."
+    - expression: >-
+        variables.pipelineName != 'build' || variables.isPush ||
+        variables.ps.exists(p, has(p.name) && p.name == 'pr-tag-only' && has(p.value) && type(p.value) == string && p.value == 'true')
+      message: "A build that is not started by a push (a pull request, a re-run from a comment) must pass pr-tag-only=true: that parameter decides which cache the build may write, and a pull request may write none (docs/admin/security.md, 'Image build and push')."
+    - expression: >-
+        !variables.ps.exists(p, has(p.name) && p.name == 'pr-tag-only' && has(p.value) && type(p.value) == string && p.value == 'true') ||
+        variables.ps.exists(p, has(p.name) && p.name == 'image-repo' && has(p.value) && type(p.value) == string && variables.appName != '' && p.value.endsWith('/' + variables.appName + '-pr'))
+      message: "pr-tag-only=true marks a pull request's build, which may push only to the application's own -pr image repository (<registry>/<owner>/<app-name>-pr)."
     - expression: >-
         !has(object.spec.taskRunTemplate) || !has(object.spec.taskRunTemplate.podTemplate) ||
         object.spec.taskRunTemplate.podTemplate.all(k, k == 'hostAliases')
@@ -192,6 +205,8 @@ spec:
   variables:
     - name: sourceTasks
       expression: {{ $c.sourceTasks | toJson | squote }}
+    - name: pusherTasks
+      expression: {{ $c.pusherTasks | toJson | squote }}
     - name: pipelineName
       expression: "object.spec.pipelineRef.params.filter(p, has(p.name) && p.name == 'name')[0].value"
     - name: specs
@@ -202,6 +217,12 @@ spec:
           variables.specs.exists(s, has(s.pipelineTaskName) && s.pipelineTaskName == t &&
             has(s.serviceAccountName) && s.serviceAccountName == 'source-runner'))
       message: "This Pipeline runs the repository's own code: its tasks named in cicdRunAdmission.sourceTasks ({{ range $p, $ts := $c.sourceTasks }}{{ $p }}: {{ join ", " $ts }}; {{ end }}) must run as source-runner (taskRunSpecs). Resync the repository's .tekton files (onboarding-resync) to regenerate it."
+    - expression: >-
+        !(variables.pipelineName in variables.pusherTasks) ||
+        variables.pusherTasks[variables.pipelineName].all(t,
+          variables.specs.exists(s, has(s.pipelineTaskName) && s.pipelineTaskName == t &&
+            has(s.serviceAccountName) && s.serviceAccountName == 'image-pusher'))
+      message: "This Pipeline pushes the image it built: its tasks named in cicdRunAdmission.pusherTasks ({{ range $p, $ts := $c.pusherTasks }}{{ $p }}: {{ join ", " $ts }}; {{ end }}) must run as image-pusher (taskRunSpecs), the only account that holds the registry push credential's pod. Resync the repository's .tekton files (onboarding-resync) to regenerate it."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

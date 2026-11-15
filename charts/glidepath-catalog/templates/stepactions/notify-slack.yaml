@@ -189,20 +189,20 @@ spec:
     # dead link otherwise costs nothing.
     DASHBOARD_URL="http://localhost:9097/#/namespaces/${APP_NAMESPACE}/pipelineruns/${PIPELINE_RUN_NAME}"
 
-    # build only - best-effort live lookup of build-image's own result, not a
-    # Tekton-level $(tasks.build-image.results.image-ref) param reference: Tekton
+    # build only - best-effort live lookup of push-image's own result, not a
+    # Tekton-level $(tasks.push-image.results.image-ref) param reference: Tekton
     # skips a finally task entirely if any param references a result from a task
     # that failed/didn't run, which would break notification on exactly the failure
     # case that matters most. Previously hand-reconstructed a guessed ref (a real
-    # bug, wrong once build-image started tagging <version>-<sha>) - querying the
+    # bug, wrong once the image started being tagged <version>-<sha>) - querying the
     # TaskRun result directly reports the exact tag pushed, and comes back empty
-    # cleanly when build-image never ran or failed.
+    # cleanly when push-image never ran or failed.
     if [[ -z "${IMAGE_REF}" && "${STAGE_NAME}" == "build" ]]; then
-      IMAGE_REF="$(kubectl get taskrun -n "${APP_NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME},tekton.dev/pipelineTask=build-image" \
+      IMAGE_REF="$(kubectl get taskrun -n "${APP_NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME},tekton.dev/pipelineTask=push-image" \
         -o jsonpath='{.items[0].status.results[?(@.name=="image-ref")].value}' 2>/dev/null || true)"
     fi
 
-    # release only - same reasoning as the build-image lookup above: a
+    # release only - same reasoning as the push-image lookup above: a
     # $(tasks.open-release-pr.results...) reference would skip this notify task
     # whenever open-release-pr fails, which is release's most likely failure point.
     pr_url="${PR_URL_PARAM}"

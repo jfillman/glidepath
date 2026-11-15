@@ -175,11 +175,12 @@ dev as an authenticated event, never as a push in the other direction. See
 
 ## Pipeline identities
 
-An Application's `-cicd` namespace runs three kinds of code, and they do not share a credential. The trust model, plainly:
+An Application's `-cicd` namespace runs four kinds of code, and they do not share a credential. The trust model, plainly:
 
 | Code | Runs as | Can reach the Kubernetes API? |
 |---|---|---|
-| The **repository's own code**: `build-source` (`build.sh`), `unit-test` (`test.sh`), `build-python-wheel-artifact`, `build-go-binary-artifact`, and the dependency installs those run | `source-runner` | **No.** No Role, no RoleBinding, `automountServiceAccountToken: false`, no projected token. |
+| The **repository's own code**: `build-source` (`build.sh`), `unit-test` (`test.sh`), `build-image` (the `Containerfile` `RUN` lines), `build-python-wheel-artifact`, `build-go-binary-artifact`, and the dependency installs those run | `source-runner` | **No.** No Role, no RoleBinding, `automountServiceAccountToken: false`, no projected token. `build-image` mounts **no registry push credential** (see [Image build and push](#image-build-and-push)). |
+| The **image push**: `push-image`, which holds the registry push credential and runs nothing from the repository | `image-pusher` | **No.** Same as `source-runner`: no Role, no token. It is a separate account so the admission policy can say which task may have it. |
 | The **catalog's own tasks** (preflight, gates, release, deploy, notify, ...), whose code the platform ships | `pipeline-runner` | Namespace-scoped, least RBAC (below). Cannot create a run. |
 | The **triggers** that chain the next stage, and the one-time onboarding bootstrap Job | `pipeline-trigger` | `create` on `pipelineruns` in this namespace, nothing else. No task runs as it. |
 
@@ -194,7 +195,7 @@ and write to its workspace, which is what it needs.
 What each part does.
 
 - **`source-runner`** is chosen per task in the run's `taskRunSpecs`. The generated `.tekton/` build run
-  (`deliver-onboarding-files`) carries the five entries (`build-source`, `unit-test`, `build-image` and the two artifact builds), a test run (generated, or chained by the Trigger) carries
+  (`deliver-onboarding-files`) carries six entries (`build-source`, `unit-test`, `build-image` and the two artifact builds as `source-runner`, and `push-image` as `image-pusher`), a test run (generated, or chained by the Trigger) carries
   `run-integration-script`, the Task that runs `./integration-test.sh` (it used to be a step of `run-testworkflow`, in the pod that
   reads `app-secrets` and writes the Testkube namespace). It has an `imagePullSecrets` reference so its pod can pull the toolbox image;
   nothing else.
@@ -205,18 +206,20 @@ What each part does.
   run it creates still executes as `pipeline-runner`.
 - **A pull request's `.tekton/` file is source too.** Pipelines-as-Code creates the PipelineRun from the file in the PR as its
   own controller identity, so no account's RBAC applies to that creation. RBAC cannot say "this run must be one of the catalog's",
-  so two ValidatingAdmissionPolicies in `glidepath-control-plane` (`templates/admission/cicd-run-shape.yaml`) do, for runs created
+  so ValidatingAdmissionPolicies in `glidepath-control-plane` (`templates/admission/cicd-run-shape.yaml`) do, for runs created
   by the Pipelines-as-Code controller in a `(app|infra)-*-cicd` namespace only:
   - `cicd-run-shape` (always Deny): `tekton.dev/v1` only, a cluster-resolver `pipelineRef` to one of the Pipelines in
     `cicdRunAdmission.pipelines` (the 18 PR-check and post-merge Pipelines the onboarding templates deliver, and the five flow
     stages), only the parameters each takes, shaped by `paramPatterns` and tied to what Pipelines-as-Code recorded (see below), no
-    inline `pipelineSpec`, run-wide account `pipeline-runner`, one `taskRunSpecs` entry per task and only for `source-runner` or
-    `glidepath-cloud-deployer` (which has its own policy), a `podTemplate` of `hostAliases` only, workspaces `emptyDir` or
-    `volumeClaimTemplate` only. Also on UPDATE. `cicd-run-no-taskruns` refuses a TaskRun from the PaC identity.
+    inline `pipelineSpec`, run-wide account `pipeline-runner`, one `taskRunSpecs` entry per task and only for `source-runner`, `image-pusher`
+    (only `push-image`, `cicdRunAdmission.pusherTasks`) or `glidepath-cloud-deployer` (which has its own policy), a `podTemplate` of
+    `hostAliases` only, workspaces `emptyDir` or `volumeClaimTemplate` only; a build that a push did not start (a pull request, a
+    comment re-run) must pass `pr-tag-only=true`, and `pr-tag-only=true` needs the `-pr` image repository (this is what keeps a pull
+    request from being treated as a main build: see Cache below). Also on UPDATE. `cicd-run-no-taskruns` refuses a TaskRun from the PaC identity.
   - `cicd-run-source-isolation`: a run of a Pipeline that runs the repository's code (`build`: `build-source`, `unit-test`, `build-image`
     and the two artifact builds; `test`: `run-integration-script`; the list is `cicdRunAdmission.sourceTasks` and the policy's message is
-    rendered from it) must give those tasks to `source-runner`. A PR that deletes those lines
-    from its `.tekton` file is refused, not obeyed. `cicdRunAdmission.sourceIsolationActions` sets what a refusal does.
+    rendered from it) must give those tasks to `source-runner`, and `push-image` (`cicdRunAdmission.pusherTasks`) to `image-pusher`. A PR that
+    deletes those lines from its `.tekton` file is refused, not obeyed. `cicdRunAdmission.sourceIsolationActions` sets what a refusal does.
   Every expression is `has()`-guarded and the match conditions cannot raise, so a CEL error cannot refuse requests cluster-wide.
 - **Tests.** `charts/glidepath-app/tests/pipeline_least_privilege_test.py` renders the charts and asserts each account, its
   automount, its effective RBAC, and that `source-runner` can do nothing (a negative test, run verb by verb);
@@ -225,6 +228,120 @@ What each part does.
 
 Forks. Pipelines-as-Code runs a pull request from a fork only after an owner or collaborator comments `/ok-to-test`
 (`remember-ok-to-test` is off, so every new commit needs it again). The policies apply to those runs as to any other.
+
+### Image build and push
+
+The `Containerfile` `RUN` lines are the repository's code, and rootless BuildKit runs them with `--oci-worker-no-process-sandbox` in
+the container that runs the build. Until this change that container also mounted the registry push credential, so a pull request
+author could read it from a `RUN` line. The credential is one shared one: the platform secret store's key
+`registry-credentials-dockerconfigjson`, copied by a `ClusterExternalSecret` into **every** namespace labelled
+`hangar.io/managed-secrets` (19 namespaces on the lab's dev cluster: each application's `-cicd` and `-dev` namespaces and `testkube`). It is not scoped
+per application, so it could push to other applications' repositories, base images and build caches. Now the build and the push
+are two tasks in two pods:
+
+| | `build-image` | `push-image` |
+|---|---|---|
+| Runs | the repository's `RUN` lines (BuildKit, rootless, no process sandbox) | the catalog's own script (toolbox image: `oras`, `jq`, `sha256sum`) and nothing from the repository |
+| Account | `source-runner` (no token, no RBAC) | `image-pusher` (no token, no RBAC) |
+| Secrets mounted | **none** of the push credential. At most the optional read-only pull credential `build-pull-credentials` | `registry-credentials` (the push credential), at `/var/run/registry-credentials` |
+| Workspace | read-write | **read-only**; only `.glidepath-out/` is read, as data |
+| Output | an OCI layout in `.glidepath-out/image` (and, on a main build, the cache in `.glidepath-out/cache`). Pushes nothing | the image pushed to the repository named by the run's `image-repo` parameter; the digest it computed and the registry confirmed |
+
+**How the layout is validated** (`charts/glidepath-catalog/files/lib/oci-layout.sh`, called before anything is pushed). The layout is
+read as data: `stat`, `wc`, `sha256sum` and `jq` over size-capped JSON; nothing is executed, sourced or extracted. Refused unless:
+
+- the directory is not a symlink and holds only `oci-layout`, `index.json`, `blobs/sha256/<64 hex>` (regular files) and an empty
+  `ingest/`: no symlink, device, socket or fifo, no other name (so no `..` and no separators);
+- every JSON document a consumer interprets (the layout marker, index, image index, manifests, image configs) has only keys from an
+  **exact-name allowlist** at each level, and repeats no key. This closes a parser differential: `jq` is case-sensitive and keeps the
+  last duplicate, while `oras` and registries decode with Go's `encoding/json`, which matches keys case-insensitively. A manifest with
+  `"layers": [good]` and `"Layers": [evil]` would pass a `jq` check while a consumer read the other list; here `Layers` (or any other
+  case or Unicode spelling of an allowed name) is an unknown key and refuses. Duplicates are found with `jq --stream`, the token-level
+  view that does not collapse them: every leaf path must be unique, no path may be both a leaf and a container, and every non-empty
+  container must close under a unique parent path (tested with repeated scalars, arrays, objects, mixed types and an escaped spelling of
+  the same key);
+- shapes are checked before values are read: `layers` and `manifests` are arrays of objects, descriptors have string `mediaType` and `digest` and a non-negative integer **number** `size`, `platform` is an object of strings, annotations are string-to-string and may not name a ref (`org.opencontainers.image.ref.name`, `io.containerd.image.name`: the push is by `layout@digest`, so an alias has no legitimate use); every JSON file is exactly one document with no BOM, no NUL byte and nothing after it; the exit status of every `jq` call is checked, so an element after a bad one cannot go unvalidated;
+- the image **config** blob is the author's own image configuration and nothing in the pipeline interprets it beyond `os`/`architecture`: it is **not** validated in depth (only its top-level, `config`, `rootfs` and `history` keys are allowlisted, and a repeated key anywhere in it is refused);
+- names and digests are matched as whole strings (a blob name or digest with a newline never passes), and no component of the path from the
+  workspace root to the layout is a symlink;
+- `index.json` has exactly one descriptor; every descriptor is a `sha256` digest, a size equal to the file's, content that hashes to the
+  digest, and no `urls`; the JSON documents are at most 1 MiB (a cache config 64 MiB);
+- media types are on an allowlist: OCI index and manifest, the OCI image config, OCI tar/tar+gzip/tar+zstd layers (a cache's config is the
+  BuildKit cache config); Docker types, foreign layers and anything else are refused; layers at most 512 per image manifest (8192 for a cache manifest: a `mode=max` cache keeps a layer per step of every stage and BuildKit documents no cap) and the distinct
+  blobs at most `imagePush.maxImageBytes` / `maxCacheBytes` (8 GiB each by default);
+- the platform set is exactly the one `cicd.yaml` asked for (`build.platforms`, read from the preflight task's validated config, not
+  from the layout): one platform is a single manifest; several are one index, never nested, each entry `linux`, none repeated, none
+  extra (an attestation manifest, `unknown/unknown`, is refused), each image config's `os/architecture` equal to its entry.
+
+`oras cp --from-oci-layout <layout>@<digest> <repository>:<tag>` then copies it. The **target comes only from the run's parameters**:
+`image-repo` (bound to the application's own repository by `cicd-run-shape`) and a tag built from the commit and the version string
+the build resolved, which `push-image` checks as an image tag (it is read from the repository's `package.json`, `pom.xml` and so on, so it
+is untrusted). Nothing in the workspace names a registry, repository or tag. The digest `push-image` reports is the one it computed from
+the validated layout and `oras resolve` then returned for the pushed tag; a mismatch fails the task. **Everything downstream** takes `repo@sha256:<digest>` (the `image-pinned-ref` result), never the tag, so a tag re-pointed after the push cannot change what is scanned, described or attested (the
+image scan, SBOM, API-spec attestation, the artifact builds' version, the Pipeline's `IMAGE_URL`/`IMAGE_DIGEST` for Chains and
+Conforma, the build notifications) takes the image reference, repository and digest from `push-image`. The tag form (`image-ref`) is kept for display and for the `artifact.published` event that chains into later flows; the tasks outside the build Pipeline that read an image (`resolve-image-ref`, `qa-gate`, `verify-image-provenance`, `verify-sast-attestation`, `open-release-pin-pr`, `api-compat-gate`, `deploy-*`) are not part of the build run: they start from a release record or a chained event, and `resolve-image-ref` resolves the tag to a digest with `oras resolve` (and pins it when `promotion.pinDigest` is on). A tag re-pointed between a build and those later flows is the registry-immutability question below, not something this change closes. The only result of `build-image`
+is `version`, which `push-image` validates and re-reports; a test fails if anything else reads a `build-image` result.
+
+**Tag overwrite and reruns.** A tag that exists is never overwritten. Before pushing a main build's tag (`<version>-<sha7>`),
+`push-image` resolves it. If it is already published, the run **pushes nothing and does not fail**: the published image is authoritative,
+its digest is what every later task uses (`repo@digest`), the result `image` says `reused (tag already published)`, both digests (published
+and this run's) are logged, and the freshly built layout is discarded. This is what makes a rerun of a main build for the same commit
+work (BuildKit builds are not reproducible, so the rebuilt digest differs). Who published the existing tag may be anyone holding the
+shared push credential, or whoever could start a build of that commit (a `v*` tag push, until slice T3 verifies ref protection); reuse
+means the pipeline then scans, describes (SBOM), attests the API spec of, and releases **that** image, which is the image that should be
+gated. The build provenance is the other side: Tekton Chains attests whatever digest the Pipeline's `IMAGE_URL`/`IMAGE_DIGEST` results
+name as built by the run, and a reused image was not built by it, so for a reused image those two results are **empty** and this run
+attests no build of it. The release gates verify the provenance attached to the digest (`verify-image-provenance` fails when there is
+none from the build Pipeline), which is the original run's; a reused digest with no original provenance therefore fails that gate rather
+than being vouched for here. The cache is not the image and may still be published. A pull request's tag (`<app>-pr`, the sha12) is
+replaced by each push or rerun of the PR: it lives in the -pr repository, is deployed to an ephemeral environment by that tag and is never
+released, so the newest build is the one wanted. The check is not a lock (a push can land between the resolve and the copy, and a registry
+error reads as "absent"), and a seven-character sha prefix is what the tag has always carried (not changed: other tasks and ephemeral
+environments reconstruct it). **Registry-side tag immutability is the real control**; where the registry offers it, turn it on for the
+application repositories.
+
+**Pull credential.** BuildKit still has to pull base images and import the cache. Anonymous pulls work for public bases; a private base
+image, a private cache package or a rate-limited registry needs a credential, and the build pod is where repository code can read it.
+So it is a separate, **read-only** one: a `kubernetes.io/dockerconfigjson` Secret named `buildPullCredential.secretName` (catalog
+value, default `build-pull-credentials`) in each `-cicd` namespace, mounted optionally and read-only at `/home/user/.docker`. The platform
+operator supplies it: create a registry token that can read packages and nothing else, store it in the platform secret store, and set
+`glidepath-control-plane` `buildPullCredential.remoteKey` to its key (the chart then renders the `ClusterExternalSecret`; both charts
+refuse the push credential's name or key). This chart creates no secret value. **The chart only refuses the push credential by name** (`registry-credentials`, and the push credential's remote key); a name check guarantees nothing about what the token in the Secret can do. Every pull request author in every application can read whatever this credential can read: a classic personal access token with `read:packages` reads every private package of its owner, not only the base images. Use a registry-scoped read-only token limited to the base-image repositories (and the cache packages), and keep the default, which is no pull credential, unless a private base image needs one. Without it the build pulls anonymously: public bases work;
+a private base image fails the build with a pull error; a private cache package fails to import, which BuildKit logs and treats as a cold
+cache. (Before this change a private base on the same registry worked because the push credential was mounted.)
+
+**Cache.** Importing the registry cache is a pull. Exporting it is a push, so it never happens in the build pod:
+
+- A **main build** (`pr-tag-only=false`) imports `<repo>-buildcache:latest` and exports its cache to an OCI layout in the workspace;
+  `push-image` pushes the image first, then validates the cache and publishes it to `<repo>-buildcache:latest`. A cache that is absent,
+  fails validation or fails to upload is **skipped with a warning and never fails the task** (the `cache` result says `published` or
+  `skipped: <why>`; it is never pushed if it failed validation): a real `mode=max` cache can be large and unusual, and the image must not
+  depend on it.
+- A **pull request's build** (`pr-tag-only=true`, `image-repo` ending `-pr`) imports the **main** cache and **exports nothing**: it can
+  read the cache a main build wrote and can never write one. `push-image` does not even look at a cache layout in the workspace for such
+  a build, and refuses `pr-tag-only=true` with a repository that is not the `-pr` one. The admission policy makes `pr-tag-only` follow the
+  event (a build that a push did not start must say `true`), so a pull request cannot claim to be a main build.
+- Cost: a pull request's layers that differ from main are rebuilt on every push to the pull request, instead of being reused from that
+  pull request's own previous build; a Containerfile whose changed stage is the first expensive one rebuilds everything after it. A main
+  build is as fast as before for the build step; the cache layout is written to the workspace (the volume, `build.sourceVolume.size`,
+  must hold the source, the image layout and the cache layout together: raise it for a large image; the default is small) and uploaded by
+  `push-image` (only blobs the registry lacks are sent). The extra pod adds roughly the pod start (a few seconds) and the validation
+  hashing of the layout.
+
+**Multi-arch** is unchanged: one `buildctl` invocation builds every platform (QEMU for foreign-platform `RUN` steps, `$BUILDPLATFORM`
+stages natively; [rootless-builds.md](rootless-builds.md)) and writes one OCI index; `push-image` pushes that index and every
+platform manifest by digest. No remote builder exists.
+
+**What per-application credential scoping needs (not built here).** With one shared credential, `push-image` can still push anywhere
+the credential reaches: a compromise of that trusted step (the catalog's script, the `oras` and `jq` in the toolbox image, the registry
+client), not repository code. To remove that, the platform needs either (a) a push credential **per application repository** (one
+secret-store key per application, a `ClusterExternalSecret` selecting that application's namespaces by label, and the registry's own
+per-repository permission, which a classic GitHub personal token does not offer, so a GitHub App installation token minted per run, or a registry with
+repository-scoped tokens) or (b) registry-side **repository-scoped tokens** minted per push by the
+broker from the run's identity. Either way the pull credential should stay a separate, read-only, platform-wide one. Until then the
+shared credential's reach is "every repository the credential's owner can write", and it also sits in the other credentialed
+catalog tasks' pods (`generate-sbom`, `attest-api-spec`, `build-artifact`'s publish step, `image-scan`, the release and verify tasks), none
+of which runs repository code.
 
 ### What remains possible for someone who can open a pull request
 
@@ -237,8 +354,8 @@ runs in the build and test stages before anything is merged.
 |---|---|---|
 | **(a) a Kubernetes token** | **No known path.** One unaudited lead. | `build.sh`, `test.sh`, `integration-test.sh`, installs, build backends and `Containerfile` `RUN` lines all run as `source-runner` (no token). The lead: a credentialed task that opens a repository-chosen path (a symlink to its own token) and prints or publishes it. Closed for `attest-api-spec`, `build-artifact`'s publish, `sast-scan`, the TestWorkflow file and the chart renders; `stage-preflight` reading `cicd.yaml` was not audited. |
 | **(b) write or delete a release record** | **No known path.** | It needs the token, so it is only as closed as (a). |
-| **(c) read a Secret** | **Yes: the registry push credential.** Nothing else known. | A `RUN` line in the `Containerfile`: `build-image` runs BuildKit with `--oci-worker-no-process-sandbox` in the container that mounts `registry-credentials`. |
-| **(d) push an image to another application's repository, or a base image** | **Yes, through (c).** Not through parameters. | Read the credential from a `RUN` line and push with it: the credential is the shared Ground registry one, not scoped per app. `image-repo` itself is now bound to the app's own repository, so the platform's own push cannot be redirected. |
+| **(c) read a Secret** | **Only the optional read-only pull credential** (`build-pull-credentials`, if the operator supplied one). **Not the registry push credential.** Nothing else known. | A `RUN` line in the `Containerfile` runs in `build-image`, which mounts no push credential and runs as `source-runner`. What it can read is the pull credential, which can only read packages. |
+| **(d) push an image to another application's repository, or a base image** | **No known path for repository code.** Not through parameters; not through a cache. | The push credential is only in `push-image`'s pod, which runs none of the repository's code and pushes what the validated layout and the run's parameters say (`image-repo` is bound to the app). A pull request writes no cache, so it cannot poison the cache a main build imports. What stays possible: its own `-pr` image (by design), and a compromise of the trusted push step (see "Image build and push"). |
 
 **B. Someone with push rights to the application repository** (can push `main` where it is not protected, any branch, and `v*` tags). They
 get everything in A, and:
@@ -247,8 +364,8 @@ get everything in A, and:
 |---|---|---|
 | **(a) a Kubernetes token** | **No known path for the platform's service accounts.** Code in the Testkube namespace is a separate account, not audited here. | A `test` flow applies the commit's `glidepath/<name>.yaml` (now checked: one TestWorkflow, no service-account choice, no host/secret/projected/PVC volume, no `envFrom`, secrets only via the placeholder) and runs it as Testkube's executor in the shared `testkube` namespace. What the executor's own account can do there is Testkube's, and is not constrained by this chart. |
 | **(b) write a release record** | **Yes, by releasing.** Not arbitrary content. | Push a `v1.2.3` tag, or `main`: the release flow's own task writes `release-tracking-*` for that commit, with that commit's `cicd.yaml` as input. That is a release of a commit nobody reviewed; it is gated downstream (the release PR, Clearance), not here. Forging a record's contents directly needs the token. |
-| **(c) read a Secret** | **Yes.** | The registry credential as in A. This application's own `app-secrets` through a TestWorkflow, by design. Another application's secret copy: the workflow cannot name it (checked at apply; and `vpol-testkube-secret-usage` in the cluster policies). |
-| **(d) push to another application's images** | **Yes, through the registry credential** (as in A). | As in A. |
+| **(c) read a Secret** | **Yes.** | Not the registry push credential (as in A). This application's own `app-secrets` through a TestWorkflow, by design. Another application's secret copy: the workflow cannot name it (checked at apply; and `vpol-testkube-secret-usage` in the cluster policies). |
+| **(d) push to another application's images** | **No known path for repository code** (as in A). | As in A. A push to `main` runs the main build, which publishes the main cache (the one pull requests read): code that reaches `main` is already reviewed or is the owner's, which is the ref-protection caveat below. |
 
 What each parameter on a `.tekton` file can now do: nothing beyond what the platform's Pipelines do with the values it validates. Images
 the pipelines RUN are not chosen by the repository: `build.agent` is an enum mapped by the catalog to fixed images, the toolbox,
@@ -259,11 +376,16 @@ limited by AWS, not by this chart.
 What this release does close, and how that was checked:
 
 - **The repository's scripts, installs and `RUN` lines** (`build.sh`, `test.sh`, `integration-test.sh`, dependency installs, build backends) run
-  as `source-runner` with no Kubernetes credential. That is the only thing they no longer have. Two of those steps still sit next to a
-  registry credential: `build-image`'s build-and-push step runs the `Containerfile` `RUN` lines with `registry-credentials` mounted at
-  `/home/user/.docker` (open, see A(c)), and `build-artifact`'s pod mounts it for its separate `publish` step (the build step does not
-  mount it; `publish` validates the path it pushes). The other build steps and `run-integration-script` mount no registry credential;
-  `run-integration-script` shares nothing with `run-testworkflow`'s pod.
+  as `source-runner` with no Kubernetes credential, and the image build no longer shares a pod with the registry push credential
+  (see "Image build and push"). `build-artifact`'s pod still mounts the credential for its separate `publish` step (the build step
+  does not mount it; `publish` validates the path it pushes). The other build steps and `run-integration-script` mount no registry
+  credential; `run-integration-script` shares nothing with `run-testworkflow`'s pod.
+- **The image build and the push credential**: `build-image` pushes nothing and mounts no push credential; `push-image`, a separate
+  pod as `image-pusher`, validates the OCI layout (symlinks, traversal, sizes, media types, platforms, digests) and pushes it to the
+  application's own repository, and every downstream task takes the digest from it. A pull request's build writes no cache. Checked
+  by `charts/glidepath-catalog/tests/image_push_split_test.py` (rendered accounts and mounts, hostile layouts, the push step against a fake
+  `oras`, the cache rules) and the two admission and identity tests. Not run against a real BuildKit or registry yet: nothing runs on a
+  cluster until a Glidepath release (the upgrade note says what to check first).
 - **A pull request's `.tekton` file** can no longer widen a run: it must start one of the Pipelines the platform itself starts
   from a file (the list is rendered from the onboarding templates and the flow generator, and a test compares them), pass only the
   parameters that Pipeline takes, with values of the expected shape, and the repository, revision, pull request and namespace
@@ -295,16 +417,15 @@ free plan) it is "Off here" and cannot be turned on.
 
 What is not closed, in the order to do it:
 
-1. **`build-image` and the registry credential** (A(c), A(d), B(c), B(d)): the push credential and the daemon share a container, and `RUN` lines run
-   without a process sandbox. `build-image` now runs as `source-runner`, so the pod holds no Kubernetes token, but the credential
-   is still reachable. The fix is architectural and was not attempted here: build with `--output type=oci` (no credential in the
-   build container) and push from a separate step or task, or run the daemon with its process sandbox on. Until then a pull
-   request author can obtain a credential that can push to this application's image repository.
+1. **One shared registry credential** (A(d), B(d), residual): repository code can no longer reach it, but the credential is still one
+   credential for every application's repositories, base images and caches, held by the catalog's trusted tasks. A compromise of
+   `push-image` (or of another credentialed catalog task) can push anywhere it reaches. Per-application scoping is in "Image build and
+   push"; it needs a credential per application repository, or repository-scoped tokens; it is not built.
 2. **Workspace trust in credentialed tasks.** `sast-scan` now scans a copy without `.git` or symlinks, and `attest-api-spec` and
    `build-artifact`'s publish step refuse symlinks and traversal. Any other task that runs git or a tool against the shared
    workspace after the build tasks have written to it, while holding a credential, needs the same care. Enumerated: `stage-preflight`
-   runs before the repository's code and clones fresh; `build-image` reads the workspace as the BuildKit context and has no token
-   now; no other catalog task runs git there (`deliver-onboarding-files` clones into its own directory). `build-artifact` still
+   runs before the repository's code and clones fresh; `build-image` reads the workspace as the BuildKit context and has no token or push credential now, and `push-image` reads only the validated
+   OCI layout from a read-only mount; no other catalog task runs git there (`deliver-onboarding-files` clones into its own directory). `build-artifact` still
    builds and publishes in one pod (different containers; only `publish` mounts the credential and it now validates the path);
    splitting it into two tasks is not done.
 3. **`pipeline-runner` still writes every `release-tracking-*` ConfigMap, namespace-wide, and still reads `app-secrets`**, for every
@@ -347,6 +468,57 @@ Order matters because a build run created from a `.tekton` file written before t
    deploy, test and release flows are refused.
 4. When no build run carries a source-isolation warning, set `sourceIsolationActions: [Deny]` (the default for a new install).
 5. Ask the owner of the cluster repository to let glidepath-api reruns carry the `source-runner` entries (item 6 above).
+
+**Image build and push (the build/push split).** This adds to the steps above; the same order applies.
+
+- Release `glidepath-app` (adds the `image-pusher` ServiceAccount), `glidepath-catalog` (splits `build-image`, adds `push-image`, and
+  the onboarding task writes `push-image` -> `image-pusher` into each `.tekton/` build file) and `glidepath-control-plane` (the policy
+  names `image-pusher` and `cicdRunAdmission.pusherTasks`) **together, before any app's resync PR merges**: an older control plane refuses a
+  `.tekton` file that names `image-pusher`.
+- Resync every app's `.tekton/` (the onboarding-resync PR, step 3). Until it merges, that app's `push-image` runs as `pipeline-runner`
+  (it works, and the build pod still holds no push credential, but the push pod has a token) and, with `sourceIsolationActions` on `[Warn,
+  Audit]`, the run is warned; in `[Deny]` it is refused.
+- **Pull credential (decide before the first build on the new catalog).** An app whose `Containerfile` `FROM`s a private image, or whose
+  cache package is private, needs `buildPullCredential.remoteKey` set in `glidepath-control-plane` (a read-only registry token in the platform
+  secret store; see "Image build and push"). Without it a private base image fails the build with a pull error and a private cache reads as
+  cold. Public bases are unaffected.
+- **Cache behaviour changes.** A pull request's build no longer exports a cache: it reads the main cache only, so its layers that differ
+  from main are rebuilt on each push to the pull request. A main build exports its cache to the workspace and `push-image` publishes it
+  to the same `<repo>-buildcache:latest` as before (the first build after the release imports the existing one). The old `<app>-pr-buildcache`
+  packages are no longer written or read and can be deleted.
+- **The workspace volume now holds the image and the cache layout** as well as the source. The default `build.sourceVolume.size` is
+  small (2Gi); an application whose image is large (or whose `mode=max` cache is) must raise it before this release reaches it, or the
+  build fails with no space left on the volume. `imagePush.maxImageBytes` and `maxCacheBytes` (8 GiB) are the limits `push-image` accepts.
+- **First live run: verify on one application before the rest** (nothing here has run on a cluster; the layout formats were written from
+  documentation). In order:
+  1. The workspace volume is writable by the build step's user (UID 1000): `build-image` now **writes** `.glidepath-out/` (the PVC's
+     `fsGroup`/permissions; the source checkout was only read by that step before).
+  2. A real `type=oci,tar=false` layout against the validator: the entry names (including `ingest/`), whether BuildKit adds
+     attestation manifests (the validator refuses an `unknown/unknown` entry; a single-platform build must be a plain manifest), the
+     image config's keys against the allowlist (a refused config names the rule; read the layout before loosening it).
+  3. The real `type=local` cache layout: the manifest and layer media types it uses, the layer count of a real `mode=max` cache, and
+     `tag=cache` in `index.json`.
+  4. `oras cp --from-oci-layout <dir>@sha256:...` on the **read-only** workspace mount. From oras-go's source (v2.5.0, used by oras 1.2.0)
+     an OCI layout opened as a copy *source* writes nothing when `oci-layout`, `index.json` and `blobs/` already exist (it creates the
+     marker or index only if missing, and `ingest/` only when pushing into a layout), so the mount stays read-only. If a real run
+     proves otherwise, copy the validated layout into an `emptyDir` in the push pod, re-verify every hash after the copy, and push from
+     there; do not make the workspace writable.
+  5. The registry credential reaches `oras`: `DOCKER_CONFIG=/var/run/registry-credentials` in the toolbox image (and `HOME`/working
+     directory of the step), for both the push and `oras resolve`.
+  6. A multi-arch build pushes an index with **all** child manifests (pull each platform by digest from the registry).
+  7. The toolbox image's `oras` supports `cp --from-oci-layout path@digest` and `resolve` (bump `toolboxImage` if it does not).
+  8. A pull request's build creates no `-buildcache` tag, and writes nothing to the main repository.
+  9. The cache package's visibility: if the cache package is private, the build's import needs the pull credential.
+  10. The workspace volume is big enough for the source, the image layout and the cache layout (`build.sourceVolume.size`).
+  11. Tekton Chains signs the PipelineRun's results from `push-image` (`IMAGE_URL`, `IMAGE_DIGEST`) and `verify-image-provenance` still
+      finds the build provenance.
+  12. A rerun of a main build for the same commit logs `reused`, pushes nothing, and its scan, SBOM and attestations use the published `repo@sha256:`; Chains attests no subject for it.
+  13. Tekton Chains signs nothing, and attests no build, when `IMAGE_URL`/`IMAGE_DIGEST` are empty (the reused-image case), and does not fail the run.
+  14. The tag-existence check: `oras resolve` of a missing tag prints a "not found" the script recognises (any other error fails the task before a push), against the real registry.
+  15. The second main build imports the published cache, and `image-scan`, `generate-sbom` and `attest-api-spec` ran against the
+      `repo@sha256:` reference.
+- Rollback: re-release the previous catalog and app charts; `build-image` then builds and pushes in one pod as before (with the push
+  credential in it again).
 
 Rolling back is the reverse: a build run is only refused by `cicd-run-source-isolation`, so set its actions to `[Audit]` first.
 

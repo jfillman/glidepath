@@ -51,7 +51,8 @@ from 5 to 239 s on repos of a few files, following node CPU load.
 |---|---|---|
 | TektonConfig `options.configMaps.config-defaults` (cluster repo) | 25m CPU, 32Mi | Every container that sets none, including Tekton's init containers |
 | `build-source` `run-build-script`, `run-tests` `unit-test`, `build-artifact` `build` | 250m, 256Mi | The app's own build and test work |
-| `build-image` `build-and-push` | 500m, 512Mi | Image build; both platforms in parallel in one step |
+| `build-image` `build` | 500m, 512Mi | Image build to an OCI layout; both platforms in parallel in one step |
+| `push-image` `push` | 100m, 128Mi | Validates the layout and copies it to the registry (hashing and upload, no build) |
 | `sast-scan` `scan` | 200m, 256Mi | Semgrep |
 | `image-scan` `scan` | 100m, 256Mi | Trivy client (the server does the DB work) |
 | `generate-sbom` `generate-and-attest` | 100m, 128Mi | Trivy SBOM + cosign |
