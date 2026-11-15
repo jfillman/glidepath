@@ -23,6 +23,10 @@ Notable changes to Glidepath. Newest first.
 - `build-artifact`'s publish step pushes only a regular file inside its output directory (no symlink, no `..`);
   `attest-api-spec` refuses a spec path that is a symlink, behind one, or climbs out; `sast-scan` scans a copy without `.git` or
   symlinks.
+- Admission: tags are decided on the full ref (a branch named `refs/tags/v1.0.0` is not a tag); `image-repo` must be the app's own
+  repository; `onboarding-resync` may target only `gitops-<app>` under the repository's owner, from a push; accounts per task per
+  Pipeline. A repository TestWorkflow is checked before it is applied; `helm template` in the gates refuses symlinks out of the chart and
+  no longer prints helm's error.
 - Clearance follow-up (not in this release): trust `app-*-cicd/clearance-gate`, then run the gate as it, then drop
   `app-*-cicd/pipeline-runner`.
 

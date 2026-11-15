@@ -100,6 +100,7 @@ spec:
         # this pod's own token would be read as a source file. The scan result is the same: Semgrep scans files, not history.
         SCAN_DIR="$(mktemp -d)"
         tar -c --exclude=./.git -f - . | tar -x -f - -C "${SCAN_DIR}"
+        find "${SCAN_DIR}" -name .git -prune -exec rm -rf {} + 2>/dev/null   # nested repositories too (vendored or submodule trees)
         find "${SCAN_DIR}" -type l -delete
         cd "${SCAN_DIR}"
         semgrep scan --metrics=off --config p/ci --config p/security-audit --error --json --output /tmp/scan-results.json . 2>&1 | tee /tmp/scan-output.txt

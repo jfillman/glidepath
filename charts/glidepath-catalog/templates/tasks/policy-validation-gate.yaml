@@ -254,6 +254,7 @@ spec:
         #!/usr/bin/env bash
         set -uo pipefail
         [[ -s /work/plan.txt ]] || exit 0
+        {{- include "glidepath-catalog.chartSafety" . | nindent 8 }}
         cd /work/repo
         # <type>-<app>-cicd runs this; the environment's namespace is <type>-<app>-<env> (app, or infra for an
         # InfraService: the Flight ApplicationSet's destination).
@@ -278,8 +279,12 @@ spec:
           for v in "${cluster}/base.yaml" "${cluster}/${env}/values.yaml" "${cluster}/${env}/release.yaml"; do
             [[ -f "${v}" ]] && vf+=(-f "${v}")
           done
+          if ! why="$(chart_safe "${chart}" "${vf[@]}")"; then
+            echo "FAIL ${cluster}/${env}: ${why}"; echo render-failed > "${out}/status"; rc=1
+            continue
+          fi
           if ! helm template "${APP_NAME}" "${chart}" --namespace "${type}-${APP_NAME}-${env}" "${vf[@]}" -f "${out}/injected.yaml" > "${out}/resources.yaml" 2> "${out}/render.err"; then
-            echo "FAIL ${cluster}/${env}: helm template failed"; cat "${out}/render.err"; echo render-failed > "${out}/status"; rc=1
+            echo "FAIL ${cluster}/${env}: helm template failed; ${chart_render_note}"; echo render-failed > "${out}/status"; rc=1
             continue
           fi
           echo "${cluster}/${env}: rendered $(grep -c '^kind:' "${out}/resources.yaml") objects with ${chart}"

@@ -454,3 +454,33 @@ the admission verdict Clearance records (C-8) is reached exactly as the policy-v
 {{- define "glidepath-catalog.policyEvalPrepare" -}}
 {{ .Files.Get "files/lib/policy-eval-prepare.py" }}
 {{- end -}}
+
+{{- /*
+glidepath-catalog.chartSafety: bash for a credentialed step that runs `helm template` on a chart and value files the repository can choose.
+Helm follows symlinks (.Files.Get, {{ fail ... }} can print a file), and the pod holds a ServiceAccount token, so a symlink that leaves
+the chart directory, or a symlinked value file, is refused before helm runs. Helm's own error text is never printed from such a pod
+(chart_render_note): it can carry file content.
+*/ -}}
+{{- define "glidepath-catalog.chartSafety" -}}
+# BEGIN chart-safety
+chart_safe() {
+  local dir="$1"; shift
+  local real f l t
+  # not a directory (a chart packaged as an archive, or missing): nothing to scan; helm reports it
+  real="$(cd -P -- "${dir}" 2>/dev/null && pwd -P)" || return 0
+  while IFS= read -r l; do
+    t="$(readlink -f -- "${l}" 2>/dev/null)" || t=""
+    case "${t}" in
+      "${real}"/*) ;;
+      *) echo "the chart contains a symlink that leaves the chart directory (${l#"${dir}"/})"; return 1;;
+    esac
+  done < <(find "${dir}" -type l)
+  for f in "$@"; do
+    [[ "${f}" == -* ]] && continue
+    [[ -L "${f}" ]] && { echo "a values file is a symlink (${f##*/})"; return 1; }
+  done
+  return 0
+}
+chart_render_note="helm's error text is withheld (it can contain file content, and this step holds credentials): run helm template locally on the same chart and value files to see it"
+# END chart-safety
+{{- end -}}

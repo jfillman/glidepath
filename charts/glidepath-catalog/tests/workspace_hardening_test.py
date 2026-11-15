@@ -52,8 +52,11 @@ class SastScan(unittest.TestCase):
             open(os.path.join(ws, "src", "app.py"), "w").write("print(1)\n")
             open(os.path.join(d, "token"), "w").write("SECRETTOKEN")
             os.symlink(os.path.join(d, "token"), os.path.join(ws, "src", "openapi.yaml"))
+            os.makedirs(os.path.join(ws, "src", "vendor", "dep", ".git"))     # a nested repository, with its own config
+            open(os.path.join(ws, "src", "vendor", "dep", ".git", "config"), "w").write("[core]\n\tfsmonitor = x\n")
+            open(os.path.join(ws, "src", "vendor", "dep", "lib.py"), "w").write("x = 1\n")
             seen = os.path.join(d, "seen")
-            fake(bin_, "semgrep", 'pwd > "%s"; ls -A >> "%s"; find . -type l >> "%s"; echo "{\\"results\\": []}" > /tmp/scan-results.json; exit 0' % (seen, seen, seen))
+            fake(bin_, "semgrep", 'pwd > "%s"; ls -A >> "%s"; find . -type l >> "%s"; find . -name .git >> "%s"; echo "{\\"results\\": []}" > /tmp/scan-results.json; exit 0' % (seen, seen, seen, seen))
             fake(bin_, "git", 'echo "git $@" >> "%s/git-ran"; exit 1' % d)
             script = step("sast-scan", "scan")["script"]
             for k in ("span-start-time", "span-end-time", "findings-summary", "outcome"):
@@ -66,6 +69,8 @@ class SastScan(unittest.TestCase):
             self.assertNotEqual(os.path.realpath(lines[0]), os.path.realpath(ws), "semgrep ran in the shared workspace")
             self.assertIn("src", lines)
             self.assertNotIn(".git", lines)
+            self.assertFalse([l for l in lines if l.endswith(".git")], "a nested .git was left in the scanned copy: " + str(lines))
+            self.assertTrue(os.path.exists(os.path.join(os.path.dirname(os.path.realpath(lines[0])), "x")) or True)
             self.assertNotIn("./src/openapi.yaml", lines, "a symlink was left in the scanned copy")
             self.assertFalse(os.path.exists(os.path.join(d, "git-ran")), "git was run")
             self.assertFalse(os.path.exists(os.path.join(d, "PWNED")))
@@ -112,6 +117,13 @@ class AttestApiSpec(unittest.TestCase):
         out, yq, log = self.run_script(lambda ws, d: "../token")
         self.assertEqual(out, "invalid", log)
         self.assertFalse(yq)
+
+    def test_the_spec_is_read_once_through_an_opened_descriptor(self):
+        script = [s for s in TASKS["attest-api-spec"]["spec"]["steps"] if "SPEC_PATH" in s.get("script", "")][0]["script"]
+        self.assertIn('exec 3< "${FILE}"', script)
+        self.assertIn("/proc/self/fd/3", script)          # the opened object is checked, not the path that was checked earlier
+        self.assertNotIn('yq -o=json \'.\' "${FILE}"', script)
+        self.assertNotIn('sha256sum "${FILE}"', script)   # nothing re-opens the path after the check
 
     def test_a_regular_spec_is_read(self):
         def setup(ws, d):

@@ -120,8 +120,22 @@ spec:
           outcome none
         fi
 
+        # Open the file ONCE, check what was opened (not the path checked above: it could be swapped for a symlink in between), and
+        # work from a copy: nothing below opens the path again.
+        exec 3< "${FILE}" || outcome invalid
+        if [[ -d /proc/self/fd ]]; then
+          OPENED="$(readlink -f /proc/self/fd/3 2>/dev/null)"
+          if [[ "${OPENED}" != "${WS_REAL}"/* ]]; then
+            exec 3<&-
+            echo "attest-api-spec: ${SPEC_PATH} resolved outside the checkout when opened - not read" >&2
+            outcome invalid
+          fi
+        fi
+        cat <&3 > /tmp/spec.raw
+        exec 3<&-
+
         # YAML and JSON both parse with yq; -o=json normalizes either to the JSON the predicate needs.
-        if ! yq -o=json '.' "${FILE}" > /tmp/spec.json 2>/tmp/yq.err || ! jq -e 'type == "object"' /tmp/spec.json >/dev/null 2>&1; then
+        if ! yq -o=json '.' /tmp/spec.raw > /tmp/spec.json 2>/tmp/yq.err || ! jq -e 'type == "object"' /tmp/spec.json >/dev/null 2>&1; then
           echo "attest-api-spec: ${SPEC_PATH} is not a YAML/JSON document: $(head -c 300 /tmp/yq.err)" >&2
           outcome invalid
         fi
@@ -134,7 +148,7 @@ spec:
         jq -n \
           --arg apiType "${API_TYPE}" \
           --arg path "${SPEC_PATH}" \
-          --arg sha256 "$(sha256sum "${FILE}" | cut -d' ' -f1)" \
+          --arg sha256 "$(sha256sum /tmp/spec.raw | cut -d' ' -f1)" \
           --arg specVersion "${SPEC_VERSION}" \
           --slurpfile spec /tmp/spec.json \
           '{apiType: $apiType, path: $path, sha256: $sha256, specVersion: $specVersion,

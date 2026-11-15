@@ -227,15 +227,33 @@ Forks. Pipelines-as-Code runs a pull request from a fork only after an owner or 
 
 ### What remains possible for someone who can open a pull request
 
-Read this before relying on the section above. "Someone who can open a pull request" means a person who can push a branch to the
-application repository (a fork needs an owner's `/ok-to-test` first; the answers are the same once it has it). Their code runs
-in the build and test stages before anything is merged. After this release:
+Read this before relying on the section above. Two kinds of person, because the platform gives them different things.
+
+**A. Someone who can open a pull request** (a branch in the application repository, or a fork after an owner's `/ok-to-test`). Their code
+runs in the build and test stages before anything is merged.
 
 | They want | Possible? | Shortest remaining path |
 |---|---|---|
-| **(a) a Kubernetes token in code they control** | **Not through any code they run.** One lead is open. | `build.sh`, `test.sh`, `integration-test.sh`, dependency installs, build backends and the `Containerfile`'s `RUN` lines (`build-image`) all run as `source-runner`: no token is mounted. The lead: a credentialed catalog task that opens a path the repository chooses and then logs or publishes what it read, where the path is a symlink to the pod's own token. `attest-api-spec` did publish the file (closed: it refuses symlinks and `..`); `stage-preflight` (`cicd.yaml`) and `run-testworkflow` (`glidepath/<name>.yaml`) only report parse errors, and were not audited line by line for echoing content. |
-| **(b) write or delete a `release-tracking-*` record** | **No known path from code.** It needs the token, so it is only as closed as (a). | The Role that can do it is `pipeline-runner`'s, held by every catalog task. A compromise of a catalog task, or the lead in (a), reaches it. |
-| **(c) read a Secret** | **Yes: the registry push credential.** Nothing else known. | `build-image` runs rootless BuildKit with `--oci-worker-no-process-sandbox`, and its `RUN` lines run beside the daemon in the same container, which mounts `registry-credentials` (a write credential for the image repository). A `RUN` can read the daemon's files and `/proc` and so the credential. `app-secrets` and every other Secret need the API token (not held) or a mount in a run of their own (no longer possible). `build-artifact`'s publish path is closed (it refuses anything but a regular file inside its output directory). |
+| **(a) a Kubernetes token** | **No known path.** One unaudited lead. | `build.sh`, `test.sh`, `integration-test.sh`, installs, build backends and `Containerfile` `RUN` lines all run as `source-runner` (no token). The lead: a credentialed task that opens a repository-chosen path (a symlink to its own token) and prints or publishes it. Closed for `attest-api-spec`, `build-artifact`'s publish, `sast-scan`, the TestWorkflow file and the chart renders; `stage-preflight` reading `cicd.yaml` was not audited. |
+| **(b) write or delete a release record** | **No known path.** | It needs the token, so it is only as closed as (a). |
+| **(c) read a Secret** | **Yes: the registry push credential.** Nothing else known. | A `RUN` line in the `Containerfile`: `build-image` runs BuildKit with `--oci-worker-no-process-sandbox` in the container that mounts `registry-credentials`. |
+| **(d) push an image to another application's repository, or a base image** | **Yes, through (c).** Not through parameters. | Read the credential from a `RUN` line and push with it: the credential is the shared Ground registry one, not scoped per app. `image-repo` itself is now bound to the app's own repository, so the platform's own push cannot be redirected. |
+
+**B. Someone with push rights to the application repository** (can push `main` where it is not protected, any branch, and `v*` tags). They
+get everything in A, and:
+
+| They want | Possible? | Shortest remaining path |
+|---|---|---|
+| **(a) a Kubernetes token** | **No known path for the platform's service accounts.** Code in the Testkube namespace is a separate account, not audited here. | A `test` flow applies the commit's `glidepath/<name>.yaml` (now checked: one TestWorkflow, no service-account choice, no host/secret/projected/PVC volume, no `envFrom`, secrets only via the placeholder) and runs it as Testkube's executor in the shared `testkube` namespace. What the executor's own account can do there is Testkube's, and is not constrained by this chart. |
+| **(b) write a release record** | **Yes, by releasing.** Not arbitrary content. | Push a `v1.2.3` tag, or `main`: the release flow's own task writes `release-tracking-*` for that commit, with that commit's `cicd.yaml` as input. That is a release of a commit nobody reviewed; it is gated downstream (the release PR, Clearance), not here. Forging a record's contents directly needs the token. |
+| **(c) read a Secret** | **Yes.** | The registry credential as in A. This application's own `app-secrets` through a TestWorkflow, by design. Another application's secret copy: the workflow cannot name it (checked at apply; and `vpol-testkube-secret-usage` in the cluster policies). |
+| **(d) push to another application's images** | **Yes, through the registry credential** (as in A). | As in A. |
+
+What each parameter on a `.tekton` file can now do: nothing beyond what the platform's Pipelines do with the values it validates. Images
+the pipelines RUN are not chosen by the repository: `build.agent` is an enum mapped by the catalog to fixed images, the toolbox,
+Semgrep, BuildKit and validator images are catalog values. Fields that name something to PUSH to: `image-repo` (bound to the app);
+cloud deploy targets in `cicd.yaml` name functions and services, and the web-identity role they assume is created per target by Airframe and
+limited by AWS, not by this chart.
 
 What this release does close, and how that was checked:
 
@@ -255,6 +273,14 @@ What this release does close, and how that was checked:
   TaskRun. This depends on Pipelines-as-Code writing its own annotations over anything the file sets; that is how its source reads
   and how a run looked live, but it was not exercised against a hostile file, so the upgrade note asks for it to be.
 - **Creating a run** needs `pipeline-trigger`, which no task runs as.
+- **`helm template` in credentialed pods** (`policy-validation-gate`, `clearance-gate`): a chart with a symlink leaving its directory,
+  or a symlinked value file, is refused before helm runs, and helm's error text is no longer printed from those pods (it can carry file
+  content, e.g. `{{ fail (.Files.Get ...) }}`); the log says to run helm locally. Not done: rendering in a pod with no token and
+  handing the output over as data, which would remove the class. `clearance-gate.yaml` edits are the include of the helper, a
+  `chart_safe` call inside `render()`, helm's stderr to `.helm-err`, and the two `FAIL` lines.
+- **A re-run from a commit comment** (`/retest` on a pushed commit) is recorded by Pipelines-as-Code with an event type its source
+  sets from the comment (not `push`; the exact string was not confirmed). A privileged Pipeline then fails the push-only rule and is
+  refused: the safe direction. Re-run those from the portal (glidepath-api rerun, once the cluster policy allows it) or push again.
 
 **Ref protection is a name check here, not a verification.** The policy cannot ask the git host whether a branch needs review or who may
 push a tag. Anyone who can push `main` (where it is not protected) or a `v1.2.3` tag can start the deploy, test, release and
@@ -266,7 +292,7 @@ free plan) it is "Off here" and cannot be turned on.
 
 What is not closed, in the order to do it:
 
-1. **`build-image` and the registry credential** (c): the push credential and the daemon share a container, and `RUN` lines run
+1. **`build-image` and the registry credential** (A(c), A(d), B(c), B(d)): the push credential and the daemon share a container, and `RUN` lines run
    without a process sandbox. `build-image` now runs as `source-runner`, so the pod holds no Kubernetes token, but the credential
    is still reachable. The fix is architectural and was not attempted here: build with `--output type=oci` (no credential in the
    build container) and push from a separate step or task, or run the daemon with its process sandbox on. Until then a pull
@@ -290,8 +316,10 @@ What is not closed, in the order to do it:
    task (and the agent-gate tasks that use the same audience) as it through `taskRunSpecs`; (c) confirm in Clearance's records that
    every registration now comes from the new principal; (d) remove `app-*-cicd/pipeline-runner` from the verifiers, and add the
    audience policy.
-5. **A TestWorkflow from the repository** (`glidepath/<name>.yaml`) runs in the Testkube namespace with the app's own `app-secrets`
-   materialised. That is the feature (a workflow gets its app's secrets); other apps' secrets are fenced by `vpol-testkube-secret-usage`.
+5. **A TestWorkflow from the repository** (`glidepath/<name>.yaml`) runs in the shared Testkube namespace under Testkube's executor, with the
+   app's own `app-secrets` materialised. The file is checked before it is applied (see B above), but the allowlist is of fields I
+   know of: Testkube adds fields over time, and a field this check does not name is allowed. What the executor's account can do in that
+   namespace is not constrained by this chart.
 6. **A rerun started through glidepath-api** copies the original run's `taskRunSpecs`. The policy that holds glidepath-api to a
    shape (`tower-identity-writes`, in the cluster repository, not here) says "no `taskRunSpecs`", so a rerun of a build or test
    run is refused until it allows entries of exactly `{pipelineTaskName, serviceAccountName: source-runner}` for the tasks in
