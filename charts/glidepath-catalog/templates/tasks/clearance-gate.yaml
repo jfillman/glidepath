@@ -359,6 +359,7 @@ spec:
         [[ -s /work/plan.txt ]] || { [[ "${RENDER_ONLY:-}" == true ]] && : > /work/skip-rest; exit 0; }
         type="${NAMESPACE%%-*}"
         mkdir -p /work/eval
+{{- include "glidepath-catalog.chartSafety" . | nindent 8 }}
         render() { # <tree dir> <cluster> <env> <chart> <out file> ; exit 2 when the environment does not exist in that tree
           local dir="$1" cluster="$2" env="$3" chart="$4" out="$5" ns_pattern="" vf=()
           [[ "${chart}" == default ]] && chart=/opt/airframe/charts/airframe-application && ns_pattern='{type}-{app}-{env}'
@@ -376,7 +377,8 @@ spec:
           done
           # The release name is the Argo CD Application's, <app>-<env>, as the chart stamps app.kubernetes.io/instance from it
           # (Clearance's Argo CD plugin renders the same way: providers/argocd/cmp).
-          helm template "${APP_NAME}-${env}" "${chart}" --namespace "${type}-${APP_NAME}-${env}" "${vf[@]}" -f "${out}.injected.yaml" > "${out}" 2> "${out}.err"
+          chart_safe "${chart}" "${vf[@]}" > "${out}.err" || return 1
+          helm template "${APP_NAME}-${env}" "${chart}" --namespace "${type}-${APP_NAME}-${env}" "${vf[@]}" -f "${out}.injected.yaml" > "${out}" 2> "${out}.helm-err"
         }
         rc=0
         while IFS='|' read -r cluster env chart protected; do
@@ -391,13 +393,13 @@ spec:
             echo render-failed > "${out}/status"; rc=1; continue
           fi
           if ! render /work/repo "${cluster}" "${env}" "${chart}" "${out}/head.yaml"; then
-            echo "FAIL ${cluster}/${env}: helm template of the PR head failed"; cat "${out}/head.yaml.err" 2>/dev/null; echo render-failed > "${out}/status"; rc=1; continue
+            echo "FAIL ${cluster}/${env}: helm template of the PR head failed: $(cat "${out}/head.yaml.err" 2>/dev/null || true) ${chart_render_note}"; echo render-failed > "${out}/status"; rc=1; continue
           fi
           render /work/base "${cluster}" "${env}" "${chart}" "${out}/base.yaml"
           case $? in
             0) ;;
             2) : > "${out}/base.yaml"; echo "${cluster}/${env}: new in this PR (no base tree)";;
-            *) echo "FAIL ${cluster}/${env}: helm template of the base failed"; cat "${out}/base.yaml.err"; echo render-failed > "${out}/status"; rc=1; continue;;
+            *) echo "FAIL ${cluster}/${env}: helm template of the base failed: $(cat "${out}/base.yaml.err" 2>/dev/null || true) ${chart_render_note}"; echo render-failed > "${out}/status"; rc=1; continue;;
           esac
           echo "${cluster}/${env}: rendered head ($(grep -c '^kind:' "${out}/head.yaml") objects) and base ($(grep -c '^kind:' "${out}/base.yaml") objects) with ${chart}"
           printf '%s\n%s\n' "${cluster}" "${env}" > "${out}/env"

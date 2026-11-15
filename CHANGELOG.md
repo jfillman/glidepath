@@ -19,6 +19,14 @@ Notable changes to Glidepath. Newest first.
   `source-runner`; `run-testworkflow` reports `fallback-needed` and, for that case, `outcome: delegated`.
 - The admission policy allows only the Pipelines the platform starts from a `.tekton` file, with their parameters validated and tied
   to what Pipelines-as-Code recorded; deploy/test/release start only from a push to `cicdRunAdmission.protectedBranches` or a tag.
+- `build-image` runs as `source-runner` too (its Containerfile `RUN` lines are the repository's code): no Kubernetes token in that pod.
+- `build-artifact`'s publish step pushes only a regular file inside its output directory (no symlink, no `..`);
+  `attest-api-spec` refuses a spec path that is a symlink, behind one, or climbs out; `sast-scan` scans a copy without `.git` or
+  symlinks.
+- Admission: tags are decided on the full ref (a branch named `refs/tags/v1.0.0` is not a tag); `image-repo` must be the app's own
+  repository; `onboarding-resync` may target only `gitops-<app>` under the repository's owner, from a push; accounts per task per
+  Pipeline. A repository TestWorkflow is checked before it is applied; `helm template` in the gates refuses symlinks out of the chart and
+  no longer prints helm's error.
 - Clearance follow-up (not in this release): trust `app-*-cicd/clearance-gate`, then run the gate as it, then drop
   `app-*-cicd/pipeline-runner`.
 

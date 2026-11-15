@@ -332,7 +332,37 @@ spec:
           echo "no app-secrets in this namespace - leaving ${SECRET_NAME} empty"
         fi
 
+        # BEGIN testworkflow-policy
+        # What a repository's TestWorkflow may be before it is applied into the shared testkube namespace (it runs there as
+        # Testkube's executor, with this app's Secret copy): one TestWorkflow, no service account selection, no host / secret /
+        # projected / PVC / CSI / NFS volume, no envFrom, secrets only through the placeholder, pull secrets only registry-credentials.
+        # Reads the file as JSON on stdin; prints one line per violation.
+        testworkflow_violations() {
+          jq -s -r '
+            if length != 1 then "the file must hold exactly one TestWorkflow document"
+            else .[0] as $d |
+              ( if (($d.apiVersion // "") | startswith("testworkflows.testkube.io/")) | not then "apiVersion must be testworkflows.testkube.io/..." else empty end ),
+              ( if $d.kind != "TestWorkflow" then "kind must be TestWorkflow" else empty end ),
+              ( if (($d.metadata.namespace // "testkube") != "testkube") then "metadata.namespace must be testkube (or unset)" else empty end ),
+              ( [$d | .. | objects | keys[] | select(. as $k | ["serviceAccountName","serviceAccount","hostPath","hostNetwork","hostPID","hostIPC","hostUsers","privileged","envFrom","secret","projected","persistentVolumeClaim","csi","nfs","nodeName"] | index($k))]
+                | unique[] | "the field \(.) is not allowed in a repository TestWorkflow" ),
+              ( [$d | .. | objects | select(has("secretKeyRef")) | .secretKeyRef.name | select(. != "__APP_SECRETS_NAME__")]
+                | unique[] | "secretKeyRef.name must be the literal __APP_SECRETS_NAME__ placeholder, not \(. // "(unset)")" ),
+              ( [$d | .. | objects | select(has("imagePullSecrets")) | .imagePullSecrets[]? | .name | select(. != "registry-credentials")]
+                | unique[] | "imagePullSecrets may name only registry-credentials, not \(.)" )
+            end' 2>&1
+        }
+        # END testworkflow-policy
         if [[ "${ROLE}" != "check-ride" ]]; then
+          if [[ -L "${WORKFLOW_FILE}" ]]; then
+            echo "error: ${WORKFLOW_FILE} is a symlink: refusing to read or apply it." >&2; exit 1
+          fi
+          VIOLATIONS="$(yq eval -o=json -I0 '.' "${WORKFLOW_FILE}" 2>/dev/null | testworkflow_violations)"
+          if [[ -n "${VIOLATIONS}" ]]; then
+            echo "error: ${WORKFLOW_FILE} is not an admissible repository TestWorkflow:" >&2
+            echo "${VIOLATIONS}" | sed 's/^/  - /' >&2
+            exit 1
+          fi
           echo "applying ${WORKFLOW_FILE} as TestWorkflow/${WORKFLOW_NAME} in testkube namespace"
           APPLIED="$(yq eval ".metadata.name = \"${WORKFLOW_NAME}\"
             | .spec.pod.imagePullSecrets = ((.spec.pod.imagePullSecrets // []) + [{\"name\": \"registry-credentials\"}] | unique_by(.name))" "${WORKFLOW_FILE}" \
