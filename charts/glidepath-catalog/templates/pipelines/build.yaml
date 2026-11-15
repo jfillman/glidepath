@@ -208,7 +208,7 @@ spec:
           - { name: name, value: image-scan }
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
-        - { name: image-ref, value: $(tasks.push-image.results.image-ref) }
+        - { name: image-ref, value: $(tasks.push-image.results.image-pinned-ref) }
         - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
         - { name: stage-span-id, value: $(tasks.preflight.results.span-id) }
         - { name: config-json, value: $(tasks.preflight.results.config-json) }
@@ -276,7 +276,7 @@ spec:
           - { name: name, value: generate-sbom }
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
-        - { name: image-ref, value: $(tasks.push-image.results.image-ref) }
+        - { name: image-ref, value: $(tasks.push-image.results.image-pinned-ref) }
         - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
         - { name: stage-span-id, value: $(tasks.preflight.results.span-id) }
 
@@ -296,7 +296,7 @@ spec:
       workspaces:
         - { name: source, workspace: source }
       params:
-        - { name: image-ref, value: $(tasks.push-image.results.image-ref) }
+        - { name: image-ref, value: $(tasks.push-image.results.image-pinned-ref) }
         - { name: spec-path, value: $(tasks.preflight.results.api-spec) }
         - { name: api-type, value: $(tasks.preflight.results.api-type) }
         - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }

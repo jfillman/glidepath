@@ -120,12 +120,33 @@ def make_image(root, platforms=("linux/amd64", "linux/arm64"), **kw):
     return top["digest"]
 
 
-def make_cache(root, config_media=CACHE_CONFIG, layer_media=LAYER_GZ):
+def make_raw_image(root, build_manifest_text, platform="linux/amd64"):
+    """A single-platform image whose manifest is the text build_manifest_text(config_desc_json, layer_desc_json) returns, so a test
+    can write keys a json.dumps never would (duplicates, other spellings)."""
+    arch = platform.split("/")[1]
+    cfg = jb({"architecture": arch, "os": "linux", "rootfs": {"type": "layers", "diff_ids": []}})
+    put(root, cfg)
+    layer = b"layer-0-" + arch.encode() + b"\0" * 64
+    put(root, layer)
+    text = build_manifest_text(json.dumps(desc(OCI_CONFIG, cfg)), json.dumps(desc(LAYER_GZ, layer))).encode()
+    put(root, text)
+    top = desc(OCI_MANIFEST, text)
+    write_top(root, top)
+    return top["digest"]
+
+
+EVIL_LAYER = '{"mediaType": "text/html", "digest": "sha256:' + "0" * 64 + '", "size": 1, "urls": ["http://evil.example/x"]}'
+
+
+def make_cache(root, config_media=CACHE_CONFIG, layer_media=LAYER_GZ, layers=1):
     cfg = jb({"layers": [], "records": []})
     put(root, cfg)
-    data = b"cache-layer" + b"\1" * 32
-    put(root, data)
-    m = jb({"schemaVersion": 2, "mediaType": OCI_MANIFEST, "config": desc(config_media, cfg), "layers": [desc(layer_media, data)]})
+    ls = []
+    for i in range(layers):
+        data = b"cache-layer-%d-" % i + b"\1" * 32
+        put(root, data)
+        ls.append(desc(layer_media, data))
+    m = jb({"schemaVersion": 2, "mediaType": OCI_MANIFEST, "config": desc(config_media, cfg), "layers": ls})
     put(root, m)
     top = desc(OCI_MANIFEST, m)
     write_top(root, top)
@@ -314,6 +335,141 @@ class LayoutValidator(unittest.TestCase):
     def test_a_foreign_layer_with_urls_is_refused(self):
         self.refused(lambda r, d: make_image(r, layer_extra={"urls": ["http://evil.example/layer"]}), "urls")
 
+    # ---- parser differential: jq is case-sensitive and last-wins, Go's encoding/json (oras, registries) folds case
+    def raw(self, build):
+        return lambda r, d: make_raw_image(r, build)
+
+    def test_the_raw_builder_itself_makes_an_accepted_image(self):
+        code, out, err, _ = self.check(self.raw(lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s]}' % (OCI_MANIFEST, c, l)),
+                                       want="linux/amd64")
+        self.assertEqual(code, 0, err)
+
+    def test_a_layers_key_that_differs_only_by_case_is_refused(self):
+        build = lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s], "Layers": [%s]}' % (OCI_MANIFEST, c, l, EVIL_LAYER)
+        err = self.refused(self.raw(build), "Layers beside layers", want="linux/amd64")
+        self.assertIn("allowlist", err)
+
+    def test_other_spellings_of_allowed_keys_are_refused(self):
+        spellings = [
+            lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "Config": %s, "config": %s, "layers": [%s]}' % (OCI_MANIFEST, c, c, l),
+            lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s], "LAYERS": []}' % (OCI_MANIFEST, c, l),
+            lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s], "layers\u017f": []}' % (OCI_MANIFEST, c, l),
+            lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s], "\u212aey": 1}' % (OCI_MANIFEST, c, l),
+            lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s], "subject": {}}' % (OCI_MANIFEST, c, l),
+            lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s]}' % (OCI_MANIFEST, c, l.replace('"digest"', '"Digest"')),
+            lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s]}' % (OCI_MANIFEST, c, l[:-1] + ', "data": "eA=="}'),
+        ]
+        for i, b in enumerate(spellings):
+            self.refused(self.raw(b), "spelling %d" % i, want="linux/amd64")
+
+    def test_a_duplicate_key_is_refused_whatever_the_value(self):
+        dups = {
+            "scalar": lambda c, l: '{"schemaVersion": 2, "schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s]}' % (OCI_MANIFEST, c, l),
+            "array with the same leaves": lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s], "layers": [%s]}' % (OCI_MANIFEST, c, l, EVIL_LAYER),
+            "object with other children": lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "config": {"annotations": {"a": "b"}}, "layers": [%s]}' % (OCI_MANIFEST, c, l),
+            "scalar then object": lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s], "annotations": "x", "annotations": {"a": "b"}}' % (OCI_MANIFEST, c, l),
+            "empty then object": lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s], "annotations": {}, "annotations": {"a": "b"}}' % (OCI_MANIFEST, c, l),
+            "escaped spelling of the same key": lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s], "l\\u0061yers": []}' % (OCI_MANIFEST, c, l),
+        }
+        for name, b in dups.items():
+            err = self.refused(self.raw(b), name, want="linux/amd64")
+        # and the well-formed neighbour of each (same keys, no repeat) is accepted, so the check is not refusing everything
+        ok = lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s], "annotations": {"a": "b"}}' % (OCI_MANIFEST, c, l)
+        code, out, err, _ = self.check(self.raw(ok), want="linux/amd64")
+        self.assertEqual(code, 0, err)
+
+    def test_a_duplicate_key_in_the_index_or_the_layout_marker_is_refused(self):
+        def index_dup(r, d):
+            digest = make_image(r)
+            text = open(os.path.join(r, "index.json")).read()
+            open(os.path.join(r, "index.json"), "w").write(text[:-1] + ', "schemaVersion": 2}')
+            return digest
+        self.refused(index_dup, "index dup")
+
+        def marker_dup(r, d):
+            digest = make_image(r)
+            open(os.path.join(r, "oci-layout"), "w").write('{"imageLayoutVersion": "1.0.0", "imageLayoutVersion": "1.0.0"}')
+            return digest
+        self.refused(marker_dup, "marker dup")
+
+        def index_case(r, d):
+            digest = make_image(r)
+            rewrite_json(os.path.join(r, "index.json"), lambda o: o["manifests"][0].update(Platform={"os": "linux"}))
+            return digest
+        self.refused(index_case, "Platform")
+
+    def test_a_config_with_a_second_spelling_of_os_or_a_duplicate_is_refused(self):
+        def cfg_case(r, d):
+            cfg = jb({"architecture": "amd64", "os": "linux", "OS": "windows", "rootfs": {"type": "layers", "diff_ids": []}})
+            return self.config_image(r, cfg)
+
+        def cfg_dup(r, d):
+            return self.config_image(r, b'{"architecture": "amd64", "os": "linux", "os": "windows", "rootfs": {"type": "layers", "diff_ids": []}}')
+        self.refused(cfg_case, "OS", want="linux/amd64")
+        self.refused(cfg_dup, "dup os", want="linux/amd64")
+
+    def config_image(self, r, cfg):
+        put(r, cfg)
+        layer = b"layer-0-amd64" + b"\0" * 64
+        put(r, layer)
+        m = jb({"schemaVersion": 2, "mediaType": OCI_MANIFEST, "config": desc(OCI_CONFIG, cfg), "layers": [desc(LAYER_GZ, layer)]})
+        put(r, m)
+        write_top(r, desc(OCI_MANIFEST, m))
+        return "x"
+
+    # ---- names and digests are matched whole, not line by line
+    def test_a_blob_name_with_a_newline_is_refused(self):
+        def build(r, d):
+            digest = make_image(r)
+            open(os.path.join(r, "blobs", "sha256", "a" * 64 + "\nX"), "w").write("x")
+            return digest
+        self.refused(build, "name\\nX")
+
+    def test_a_digest_with_a_newline_is_refused(self):
+        def build(r, d):
+            digest = make_image(r)
+            rewrite_json(os.path.join(r, "index.json"), lambda o: o["manifests"][0].update(digest=o["manifests"][0]["digest"] + "\nX"))
+            return digest
+        self.refused(build, "digest\\nX")
+
+        def layer_digest(r, d):
+            digest = make_image(r, ("linux/amd64",))
+            top = json.load(open(os.path.join(r, "index.json")))["manifests"][0]
+            m = json.load(open(blob_path(r, top["digest"])))
+            m["layers"][0]["digest"] += "\nX"
+            data = jb(m)
+            put(r, data)
+            write_top(r, desc(OCI_MANIFEST, data))
+            return digest
+        self.refused(layer_digest, "layer digest\\nX", want="linux/amd64")
+
+    # ---- the path to the layout
+    def test_a_symlink_in_the_path_to_the_layout_is_refused_but_only_below_the_root(self):
+        with tempfile.TemporaryDirectory() as d:
+            real = os.path.join(d, "real")
+            os.makedirs(os.path.join(real, "image"))
+            make_image(os.path.join(real, "image"))
+            ws = os.path.join(d, "ws")
+            os.makedirs(ws)
+            os.symlink(real, os.path.join(ws, ".glidepath-out"))
+            script = 'source "%s"; oci_layout_validate "%s" image "linux/amd64,linux/arm64" "%s"' % (LIB, os.path.join(ws, ".glidepath-out", "image"), ws)
+            p = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+            self.assertNotEqual(p.returncode, 0)
+            self.assertIn("symlink", p.stderr)
+            # the same layout reached without a symlink in the path passes
+            os.remove(os.path.join(ws, ".glidepath-out"))
+            os.rename(real, os.path.join(ws, ".glidepath-out"))
+            script = script.replace(os.path.join(ws, ".glidepath-out", "image"), os.path.join(ws, ".glidepath-out", "image"))
+            p = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, p.stderr)
+
+    # ---- a real mode=max cache is big
+    def test_a_cache_with_far_more_than_512_layers_is_accepted(self):
+        code, out, err, digest = self.check(lambda r, d: make_cache(r, layers=700), kind="cache", want="")
+        self.assertEqual(code, 0, err)
+        # while an image is still held to the image cap
+        self.refused(lambda r, d: make_image(r, ("linux/amd64",), layers=5), "image layer count", want="linux/amd64", env={"OCI_MAX_LAYERS": "4"})
+
     # ---- platforms
     def test_an_extra_platform_is_refused(self):
         err = self.refused(lambda r, d: make_image(r, ("linux/amd64", "linux/arm64", "linux/riscv64")), "extra platform")
@@ -366,7 +522,7 @@ class PushStep(unittest.TestCase):
         cls.step = step("push-image", "push")
         cls.script = cls.step["script"]
 
-    def run_push(self, setup, cache=None, pr=False, repo=None, version="1.2.3", config=None, resolve=None, extra_env=None):
+    def run_push(self, setup, cache=None, pr=False, repo=None, version="1.2.3", config=None, resolve=None, extra_env=None, mutate=None):
         """-> (exit code, oras calls (list of argv strings), results dict, stderr)"""
         with tempfile.TemporaryDirectory() as d:
             ws, bin_, res, creds, lib = (os.path.join(d, x) for x in ("ws", "bin", "res", "creds", "lib"))
@@ -384,8 +540,13 @@ class PushStep(unittest.TestCase):
                 cdir = os.path.join(out, "cache")
                 os.makedirs(cdir)
                 cache(cdir, d)
+            if mutate:
+                mutate(ws, d)
+            state = os.path.join(d, "pushed")
+            # resolve answers FAKE_RESOLVE once something was pushed; before that FAKE_RESOLVE_PRE, or "not found"
             executable(os.path.join(bin_, "oras"),
-                       'echo "$@" >> "%s"\nif [ "$1" = resolve ]; then echo "${FAKE_RESOLVE:-}"; fi' % log)
+                       'echo "$@" >> "%s"\ncase "$1" in\n cp) touch "%s";;\n resolve) if [ -e "%s" ]; then echo "${FAKE_RESOLVE:-}"; '
+                       'elif [ -n "${FAKE_RESOLVE_PRE:-}" ]; then echo "${FAKE_RESOLVE_PRE}"; else echo "not found" >&2; exit 1; fi;;\nesac' % (log, state, state))
             script = self.script.replace("$(workspaces.source.path)", ws)
             paths = {}
             for name in re.findall(r"\$\(results\.([A-Za-z_-]+)\.path\)", script):
@@ -506,11 +667,77 @@ class PushStep(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertEqual(calls, [])
 
-    def test_an_invalid_cache_is_refused_loudly_after_the_image_is_pushed(self):
+    def test_an_invalid_cache_is_skipped_with_a_warning_and_never_fails_the_task_or_blocks_the_image(self):
         code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r), cache=lambda r, d: make_cache(r, layer_media="text/html"))
-        self.assertNotEqual(code, 0)
-        self.assertEqual([c for c in calls if "buildcache" in c], [])
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c for c in calls if "buildcache" in c], [], "an invalid cache is never pushed")
+        self.assertEqual(len([c for c in calls if c.startswith("cp ")]), 1, "the image is pushed")
+        self.assertEqual(results["image-digest"], digest)
+        self.assertIn("warning", err)
         self.assertIn("refusing", err)
+        self.assertTrue(results["cache"].startswith("skipped"), results["cache"])
+
+    def test_the_cache_result_says_what_happened(self):
+        code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r), cache=lambda r, d: make_cache(r))
+        self.assertEqual(results["cache"], "published")
+        code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r), pr=True)
+        self.assertTrue(results["cache"].startswith("skipped"), results["cache"])
+        code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r))
+        self.assertTrue(results["cache"].startswith("skipped"), results["cache"])
+
+    def test_a_cache_with_hundreds_of_layers_is_published(self):
+        code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r), cache=lambda r, d: make_cache(r, layers=600))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(results["cache"], "published")
+
+    def test_the_pinned_reference_is_the_digest_of_what_was_pushed(self):
+        code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r))
+        self.assertEqual(results["image-pinned-ref"], "registry.example/o/app@" + digest)
+        self.assertEqual(results["image-ref"], "registry.example/o/app:1.2.3-" + SHA[:7])
+
+    def test_an_existing_main_tag_with_another_digest_is_refused(self):
+        code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r), extra_env={"FAKE_RESOLVE_PRE": "sha256:" + "9" * 64})
+        self.assertNotEqual(code, 0)
+        self.assertEqual([c for c in calls if c.startswith("cp ")], [])
+        self.assertEqual(results, {})
+        self.assertIn("already exists", err)
+
+    def test_an_existing_main_tag_with_the_same_digest_is_a_harmless_rerun(self):
+        def setup(r, d):
+            return make_image(r)
+        code, calls, results, err, digest = self.run_push(setup, resolve=None, extra_env={})
+        # FAKE_RESOLVE_PRE must equal the layout's digest, known only after setup: run once to learn it
+        code2, calls2, results2, err2, _ = self.run_push(setup, extra_env={"FAKE_RESOLVE_PRE": digest})
+        self.assertEqual(code2, 0, err2)
+        self.assertEqual(results2["image-digest"], digest)
+
+    def test_a_pull_request_tag_may_be_replaced(self):
+        # PR images are rebuilt per push to the PR (not reproducible), so their tag is not held to the check
+        code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r), pr=True, extra_env={"FAKE_RESOLVE_PRE": "sha256:" + "9" * 64})
+        self.assertEqual(code, 0, err)
+
+    def test_a_symlinked_output_directory_is_refused(self):
+        def mutate(ws, d):
+            real = os.path.join(d, "elsewhere")
+            os.rename(os.path.join(ws, ".glidepath-out"), real)
+            os.symlink(real, os.path.join(ws, ".glidepath-out"))
+        code, calls, results, err, _ = self.run_push(lambda r, d: make_image(r), mutate=mutate)
+        self.assertNotEqual(code, 0)
+        self.assertEqual([c for c in calls if c.startswith("cp ")], [])
+        self.assertIn("symlink", err)
+
+    def test_the_layers_case_is_refused_through_the_real_step(self):
+        build = lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s], "Layers": [%s]}' % (OCI_MANIFEST, c, l, EVIL_LAYER)
+        code, calls, results, err, _ = self.run_push(lambda r, d: make_raw_image(r, build), config={"build": {"platforms": ["amd64"]}})
+        self.assertNotEqual(code, 0)
+        self.assertEqual([c for c in calls if c.startswith("cp ")], [])
+        self.assertEqual(results, {})
+
+    def test_a_duplicate_key_is_refused_through_the_real_step(self):
+        build = lambda c, l: '{"schemaVersion": 2, "mediaType": "%s", "config": %s, "layers": [%s], "layers": [%s]}' % (OCI_MANIFEST, c, l, EVIL_LAYER)
+        code, calls, results, err, _ = self.run_push(lambda r, d: make_raw_image(r, build), config={"build": {"platforms": ["amd64"]}})
+        self.assertNotEqual(code, 0)
+        self.assertEqual([c for c in calls if c.startswith("cp ")], [])
 
     def test_no_cache_output_is_a_warning_not_a_failure(self):
         code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r))
@@ -635,7 +862,7 @@ class RenderedTasks(unittest.TestCase):
 
     def test_the_push_task_reports_the_trusted_results(self):
         names = {r["name"] for r in TASKS["push-image"]["spec"]["results"]}
-        self.assertEqual(names, {"image-digest", "image-ref", "image-repo", "version", "IMAGE_URL", "IMAGE_DIGEST"})
+        self.assertEqual(names, {"image-digest", "image-ref", "image-pinned-ref", "image-repo", "version", "IMAGE_URL", "IMAGE_DIGEST", "cache"})
 
     def test_the_image_limits_are_values(self):
         docs = render("--set", "imagePush.maxImageBytes=123", "--set", "imagePush.maxCacheBytes=456")
@@ -677,13 +904,24 @@ class BuildPipeline(unittest.TestCase):
             self.assertEqual(self.tasks[name]["runAfter"], ["push-image"], name)
         for name in ("image-scan", "generate-sbom", "attest-api-spec"):
             image_ref = [p["value"] for p in self.tasks[name]["params"] if p["name"] == "image-ref"][0]
-            self.assertEqual(image_ref, "$(tasks.push-image.results.image-ref)", name)
+            self.assertEqual(image_ref, "$(tasks.push-image.results.image-pinned-ref)", name)
         for name in ("build-python-wheel-artifact", "build-go-binary-artifact"):
             version = [p["value"] for p in self.tasks[name]["params"] if p["name"] == "version"][0]
             self.assertEqual(version, "$(tasks.push-image.results.version)", name)
         results = {r["name"]: r["value"] for r in PIPELINES["build"]["spec"]["results"]}
         self.assertEqual(results["IMAGE_DIGEST"], "$(tasks.push-image.results.image-digest)")
         self.assertEqual(results["IMAGE_URL"], "$(tasks.push-image.results.image-repo)")
+        debrief = PIPELINES["build"]["spec"]["finally"][0]
+        self.assertEqual([p["value"] for p in debrief["params"] if p["name"] == "image-ref-from-task"], ["push-image"])
+
+    def test_no_task_after_the_push_consumes_a_tag_only_reference(self):
+        # a tag can be re-pointed after the push: everything that scans, describes, attests or publishes takes repo@digest
+        for t in PIPELINES["build"]["spec"]["tasks"]:
+            for p in t.get("params", []):
+                self.assertNotEqual(p["value"], "$(tasks.push-image.results.image-ref)", "%s param %s consumes the tag" % (t["name"], p["name"]))
+        for name in ("image-scan", "generate-sbom", "attest-api-spec"):
+            self.assertIn(name, self.tasks)
+        # the tag form is for display and for chaining only: the finally task looks it up, by name, after the run
         debrief = PIPELINES["build"]["spec"]["finally"][0]
         self.assertEqual([p["value"] for p in debrief["params"] if p["name"] == "image-ref-from-task"], ["push-image"])
 

@@ -23,8 +23,9 @@
 # Cache. A pull request's build never writes a cache: it imports the main cache (a read) and exports nothing, and even if its
 # workspace holds a cache layout, pr-tag-only=true means this Task does not look at it. Only a main build (pr-tag-only=false, a
 # repository that is not the -pr one) publishes its cache, to <image-repo>-buildcache:latest, after validating it the same way.
-# So the cache a main build imports was written by a main build, never by a pull request. A cache that fails validation fails
-# this Task before anything is pushed; a cache that is simply absent, or fails to upload, is a warning (the next build is cold).
+# So the cache a main build imports was written by a main build, never by a pull request. A cache that fails validation, is absent or
+# fails to upload is skipped with a warning and the `cache` result says so; it never fails this Task and is never pushed (the next build
+# is cold). The image is validated and pushed first.
 #
 # What one shared credential still allows after this: this step, the catalog's own trusted code, can push to any repository the
 # credential reaches. Repository code cannot reach it. docs/admin/security.md says what per-application scoping needs.
@@ -67,7 +68,11 @@ spec:
     - name: image-digest
       description: The digest this Task validated, pushed and confirmed in the registry (the index digest for a multi-platform build).
     - name: image-ref
-      description: "<image-repo>:<tag> as pushed."
+      description: "<image-repo>:<tag> as pushed. A tag can be re-pointed: for display and for chaining only. Tasks that scan, describe, attest or release use image-pinned-ref."
+    - name: image-pinned-ref
+      description: "<image-repo>@<digest> of what was validated and pushed. What every later task in the build Pipeline consumes."
+    - name: cache
+      description: "published, or skipped: <why>. A main build's cache never fails this Task."
     - name: version
       description: The version, after the tag check.
     - name: image-repo
@@ -151,43 +156,55 @@ spec:
         IMAGE_REF="${IMAGE_REPO}:${TAG}"
         echo "target=${IMAGE_REF} platforms=${PLATFORMS}"
 
-        # 2. Validate everything that will be pushed before pushing anything.
-        OCI_MAX_TOTAL_BYTES="${MAX_IMAGE_BYTES}" oci_layout_validate "${IMAGE_DIR}" image "${PLATFORMS}" || exit 1
+        # 2. Validate the image before pushing anything. The workspace root is passed so no component of the path to the layout
+        # may be a symlink.
+        OCI_MAX_TOTAL_BYTES="${MAX_IMAGE_BYTES}" oci_layout_validate "${IMAGE_DIR}" image "${PLATFORMS}" "${WS}" || exit 1
         DIGEST="${OCI_LAYOUT_DIGEST}"
         echo "image layout valid: ${DIGEST}"
-        PUBLISH_CACHE=false
-        if [[ "${PR_TAG_ONLY}" == "false" && "${IMAGE_REPO}" != *-pr ]]; then
-          if [[ -e "${CACHE_DIR}" || -L "${CACHE_DIR}" ]]; then
-            OCI_MAX_TOTAL_BYTES="${MAX_CACHE_BYTES}" oci_layout_validate "${CACHE_DIR}" cache || exit 1
-            CACHE_DIGEST="${OCI_LAYOUT_DIGEST}"
-            PUBLISH_CACHE=true
-            echo "cache layout valid: ${CACHE_DIGEST}"
-          else
-            echo "warning: the build exported no cache layout; the next build starts cold"
+
+        # 3. A main build's tag (<version>-<sha7>) is not overwritten with a different image. A re-run that produced the same digest is
+        # fine. This is a check, not a lock: another push can land between the resolve and the copy, and a registry error
+        # reads as "absent". Registry-side tag immutability is the real control (docs/admin/security.md). A pull request's tag
+        # is replaced by each push to the PR, so it is not held to this.
+        if [[ "${PR_TAG_ONLY}" == "false" ]]; then
+          if EXISTING="$(oras resolve "${IMAGE_REF}" 2>/dev/null | tr -d '[:space:]')" && [[ -n "${EXISTING}" ]]; then
+            [[ "${EXISTING}" == "${DIGEST}" ]] || fail "${IMAGE_REF} already exists in the registry with digest ${EXISTING}, not ${DIGEST}: refusing to overwrite it (push a new commit, or ask the registry owner to delete the tag)"
           fi
         fi
 
-        # 3. Push the image: a copy of bytes by digest, nothing is executed or extracted.
+        # 4. Push the image: a copy of bytes by digest, nothing is executed or extracted.
         oras cp --from-oci-layout "${IMAGE_DIR}@${DIGEST}" "${IMAGE_REF}"
-        # 4. The registry's own answer for the tag must be the digest validated above.
+        # 5. The registry's own answer for the tag must be the digest validated above.
         RESOLVED="$(oras resolve "${IMAGE_REF}" | tr -d '[:space:]')"
         [[ "${RESOLVED}" == "${DIGEST}" ]] || fail "${IMAGE_REF} resolves to '${RESOLVED}' in the registry, not the validated ${DIGEST}"
         printf '%s' "${DIGEST}" > "$(results.image-digest.path)"
         printf '%s' "${DIGEST}" > "$(results.IMAGE_DIGEST.path)"
         printf '%s' "${IMAGE_REF}" > "$(results.image-ref.path)"
+        # what every later task uses: a tag can be re-pointed after the push, a digest cannot
+        printf '%s' "${IMAGE_REPO}@${DIGEST}" > "$(results.image-pinned-ref.path)"
         printf '%s' "${IMAGE_REPO}" > "$(results.image-repo.path)"
         printf '%s' "${IMAGE_REPO}" > "$(results.IMAGE_URL.path)"
         printf '%s' "${VERSION}" > "$(results.version.path)"
         echo "image-digest=${DIGEST}"
         echo "image-ref=${IMAGE_REF}"
 
-        # 5. The main build's cache, best effort once it has validated.
-        if [[ "${PUBLISH_CACHE}" == "true" ]]; then
-          if oras cp --from-oci-layout "${CACHE_DIR}@${CACHE_DIGEST}" "${IMAGE_REPO}-buildcache:latest"; then
-            echo "cache published: ${IMAGE_REPO}-buildcache:latest"
+        # 6. The main build's cache. Never fails the task and never blocks the image (which is already pushed): a cache that is absent,
+        # fails validation (a real mode=max cache can be large and unusual) or fails to upload is skipped with a warning, and the
+        # next build starts cold. A cache that fails validation is never pushed.
+        CACHE_RESULT="skipped: not a main build"
+        if [[ "${PR_TAG_ONLY}" == "false" && "${IMAGE_REPO}" != *-pr ]]; then
+          if [[ ! -e "${CACHE_DIR}" && ! -L "${CACHE_DIR}" ]]; then
+            CACHE_RESULT="skipped: the build exported no cache layout"
+          elif ! OCI_MAX_TOTAL_BYTES="${MAX_CACHE_BYTES}" oci_layout_validate "${CACHE_DIR}" cache "" "${WS}"; then
+            CACHE_RESULT="skipped: the cache layout failed validation"
+          elif oras cp --from-oci-layout "${CACHE_DIR}@${OCI_LAYOUT_DIGEST}" "${IMAGE_REPO}-buildcache:latest"; then
+            CACHE_RESULT="published"
           else
-            echo "warning: the cache could not be published; the next build starts cold" >&2
+            CACHE_RESULT="skipped: the cache could not be uploaded"
           fi
+          [[ "${CACHE_RESULT}" == "published" ]] || echo "warning: ${CACHE_RESULT}; the next build starts cold" >&2
         fi
+        printf '%s' "${CACHE_RESULT}" > "$(results.cache.path)"
+        echo "cache: ${CACHE_RESULT}"
         otel_task_span_send "push-image" "${FLOW_TRACEPARENT}" "${STAGE_SPAN_ID}" \
           "${SPAN_START}" "$(date -u +"%Y-%m-%dT%H:%M:%S.%NZ")" "Succeeded"

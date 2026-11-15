@@ -252,10 +252,20 @@ read as data: `stat`, `wc`, `sha256sum` and `jq` over size-capped JSON; nothing 
 
 - the directory is not a symlink and holds only `oci-layout`, `index.json`, `blobs/sha256/<64 hex>` (regular files) and an empty
   `ingest/`: no symlink, device, socket or fifo, no other name (so no `..` and no separators);
+- every JSON document a consumer interprets (the layout marker, index, image index, manifests, image configs) has only keys from an
+  **exact-name allowlist** at each level, and repeats no key. This closes a parser differential: `jq` is case-sensitive and keeps the
+  last duplicate, while `oras` and registries decode with Go's `encoding/json`, which matches keys case-insensitively. A manifest with
+  `"layers": [good]` and `"Layers": [evil]` would pass a `jq` check while a consumer read the other list; here `Layers` (or any other
+  case or Unicode spelling of an allowed name) is an unknown key and refuses. Duplicates are found with `jq --stream`, the token-level
+  view that does not collapse them: every leaf path must be unique, no path may be both a leaf and a container, and every non-empty
+  container must close under a unique parent path (tested with repeated scalars, arrays, objects, mixed types and an escaped spelling of
+  the same key);
+- names and digests are matched as whole strings (a blob name or digest with a newline never passes), and no component of the path from the
+  workspace root to the layout is a symlink;
 - `index.json` has exactly one descriptor; every descriptor is a `sha256` digest, a size equal to the file's, content that hashes to the
   digest, and no `urls`; the JSON documents are at most 1 MiB (a cache config 64 MiB);
 - media types are on an allowlist: OCI index and manifest, the OCI image config, OCI tar/tar+gzip/tar+zstd layers (a cache's config is the
-  BuildKit cache config); Docker types, foreign layers and anything else are refused; layers at most 512 per manifest and the distinct
+  BuildKit cache config); Docker types, foreign layers and anything else are refused; layers at most 512 per image manifest (8192 for a cache manifest: a `mode=max` cache keeps a layer per step of every stage and BuildKit documents no cap) and the distinct
   blobs at most `imagePush.maxImageBytes` / `maxCacheBytes` (8 GiB each by default);
 - the platform set is exactly the one `cicd.yaml` asked for (`build.platforms`, read from the preflight task's validated config, not
   from the layout): one platform is a single manifest; several are one index, never nested, each entry `linux`, none repeated, none
@@ -265,10 +275,12 @@ read as data: `stat`, `wc`, `sha256sum` and `jq` over size-capped JSON; nothing 
 `image-repo` (bound to the application's own repository by `cicd-run-shape`) and a tag built from the commit and the version string
 the build resolved, which `push-image` checks as an image tag (it is read from the repository's `package.json`, `pom.xml` and so on, so it
 is untrusted). Nothing in the workspace names a registry, repository or tag. The digest `push-image` reports is the one it computed from
-the validated layout and `oras resolve` then returned for the pushed tag; a mismatch fails the task. **Everything downstream** (the
+the validated layout and `oras resolve` then returned for the pushed tag; a mismatch fails the task. **Everything downstream** takes `repo@sha256:<digest>` (the `image-pinned-ref` result), never the tag, so a tag re-pointed after the push cannot change what is scanned, described or attested (the
 image scan, SBOM, API-spec attestation, the artifact builds' version, the Pipeline's `IMAGE_URL`/`IMAGE_DIGEST` for Chains and
-Conforma, the build notifications) takes the image reference, repository and digest from `push-image`. The only result of `build-image`
+Conforma, the build notifications) takes the image reference, repository and digest from `push-image`. The tag form (`image-ref`) is kept for display and for the `artifact.published` event that chains into later flows; the tasks outside the build Pipeline that read an image (`resolve-image-ref`, `qa-gate`, `verify-image-provenance`, `verify-sast-attestation`, `open-release-pin-pr`, `api-compat-gate`, `deploy-*`) are not part of the build run: they start from a release record or a chained event, and `resolve-image-ref` resolves the tag to a digest with `oras resolve` (and pins it when `promotion.pinDigest` is on). A tag re-pointed between a build and those later flows is the registry-immutability question below, not something this change closes. The only result of `build-image`
 is `version`, which `push-image` validates and re-reports; a test fails if anything else reads a `build-image` result.
+
+**Tag overwrite.** Before pushing a main build's tag (`<version>-<sha7>`), `push-image` resolves it: an existing tag with a *different* digest is refused (a re-run of the same commit that produced the same digest is fine; note BuildKit builds are not bit-for-bit reproducible, so a re-run usually produces a new digest and is refused until the tag is deleted or a new commit is pushed). A pull request's tag is replaced by each push and is not checked. This is a check, not a lock: a push can land between the resolve and the copy, a registry error reads as "absent", and a seven-character sha prefix is what the tag has always carried (not changed here: other tasks and ephemeral environments reconstruct it). **Registry-side tag immutability is the real control**; where the registry offers it, turn it on for the application repositories.
 
 **Pull credential.** BuildKit still has to pull base images and import the cache. Anonymous pulls work for public bases; a private base
 image, a private cache package or a rate-limited registry needs a credential, and the build pod is where repository code can read it.
@@ -276,15 +288,17 @@ So it is a separate, **read-only** one: a `kubernetes.io/dockerconfigjson` Secre
 value, default `build-pull-credentials`) in each `-cicd` namespace, mounted optionally and read-only at `/home/user/.docker`. The platform
 operator supplies it: create a registry token that can read packages and nothing else, store it in the platform secret store, and set
 `glidepath-control-plane` `buildPullCredential.remoteKey` to its key (the chart then renders the `ClusterExternalSecret`; both charts
-refuse the push credential's name or key). This chart creates no secret value. Without it the build pulls anonymously: public bases work;
+refuse the push credential's name or key). This chart creates no secret value. **The chart only refuses the push credential by name** (`registry-credentials`, and the push credential's remote key); a name check guarantees nothing about what the token in the Secret can do. Every pull request author in every application can read whatever this credential can read: a classic personal access token with `read:packages` reads every private package of its owner, not only the base images. Use a registry-scoped read-only token limited to the base-image repositories (and the cache packages), and keep the default, which is no pull credential, unless a private base image needs one. Without it the build pulls anonymously: public bases work;
 a private base image fails the build with a pull error; a private cache package fails to import, which BuildKit logs and treats as a cold
 cache. (Before this change a private base on the same registry worked because the push credential was mounted.)
 
 **Cache.** Importing the registry cache is a pull. Exporting it is a push, so it never happens in the build pod:
 
 - A **main build** (`pr-tag-only=false`) imports `<repo>-buildcache:latest` and exports its cache to an OCI layout in the workspace;
-  `push-image` validates it and, after the image is pushed, publishes it to `<repo>-buildcache:latest` (a failed upload is a warning; a
-  cache that fails validation fails the task, before anything is pushed).
+  `push-image` pushes the image first, then validates the cache and publishes it to `<repo>-buildcache:latest`. A cache that is absent,
+  fails validation or fails to upload is **skipped with a warning and never fails the task** (the `cache` result says `published` or
+  `skipped: <why>`; it is never pushed if it failed validation): a real `mode=max` cache can be large and unusual, and the image must not
+  depend on it.
 - A **pull request's build** (`pr-tag-only=true`, `image-repo` ending `-pr`) imports the **main** cache and **exports nothing**: it can
   read the cache a main build wrote and can never write one. `push-image` does not even look at a cache layout in the workspace for such
   a build, and refuses `pr-tag-only=true` with a repository that is not the `-pr` one. The admission policy makes `pr-tag-only` follow the
@@ -457,11 +471,31 @@ Order matters because a build run created from a `.tekton` file written before t
 - **The workspace volume now holds the image and the cache layout** as well as the source. The default `build.sourceVolume.size` is
   small (2Gi); an application whose image is large (or whose `mode=max` cache is) must raise it before this release reaches it, or the
   build fails with no space left on the volume. `imagePush.maxImageBytes` and `maxCacheBytes` (8 GiB) are the limits `push-image` accepts.
-- **Verify on one application first** (nothing here has run on a cluster): a main build and a pull request's build; that `push-image` logs
-  `image layout valid` and the digest, that `oras resolve` of the pushed tag equals the `IMAGE_DIGEST` the Pipeline reports, that the
-  second main build imports the cache, and that a pull request's build creates no `-buildcache` tag. If `push-image` refuses the output
-  of a real BuildKit, its log says which rule; do not loosen the validator to match without reading the layout. BuildKit's `tar=false`
-  OCI output and the `local` cache exporter's layout were written from its documentation, not observed.
+- **First live run: verify on one application before the rest** (nothing here has run on a cluster; the layout formats were written from
+  documentation). In order:
+  1. The workspace volume is writable by the build step's user (UID 1000): `build-image` now **writes** `.glidepath-out/` (the PVC's
+     `fsGroup`/permissions; the source checkout was only read by that step before).
+  2. A real `type=oci,tar=false` layout against the validator: the entry names (including `ingest/`), whether BuildKit adds
+     attestation manifests (the validator refuses an `unknown/unknown` entry; a single-platform build must be a plain manifest), the
+     image config's keys against the allowlist (a refused config names the rule; read the layout before loosening it).
+  3. The real `type=local` cache layout: the manifest and layer media types it uses, the layer count of a real `mode=max` cache, and
+     `tag=cache` in `index.json`.
+  4. `oras cp --from-oci-layout <dir>@sha256:...` on the **read-only** workspace mount. From oras-go's source (v2.5.0, used by oras 1.2.0)
+     an OCI layout opened as a copy *source* writes nothing when `oci-layout`, `index.json` and `blobs/` already exist (it creates the
+     marker or index only if missing, and `ingest/` only when pushing into a layout), so the mount stays read-only. If a real run
+     proves otherwise, copy the validated layout into an `emptyDir` in the push pod, re-verify every hash after the copy, and push from
+     there; do not make the workspace writable.
+  5. The registry credential reaches `oras`: `DOCKER_CONFIG=/var/run/registry-credentials` in the toolbox image (and `HOME`/working
+     directory of the step), for both the push and `oras resolve`.
+  6. A multi-arch build pushes an index with **all** child manifests (pull each platform by digest from the registry).
+  7. The toolbox image's `oras` supports `cp --from-oci-layout path@digest` and `resolve` (bump `toolboxImage` if it does not).
+  8. A pull request's build creates no `-buildcache` tag, and writes nothing to the main repository.
+  9. The cache package's visibility: if the cache package is private, the build's import needs the pull credential.
+  10. The workspace volume is big enough for the source, the image layout and the cache layout (`build.sourceVolume.size`).
+  11. Tekton Chains signs the PipelineRun's results from `push-image` (`IMAGE_URL`, `IMAGE_DIGEST`) and `verify-image-provenance` still
+      finds the build provenance.
+  12. The second main build imports the published cache, and `image-scan`, `generate-sbom` and `attest-api-spec` ran against the
+      `repo@sha256:` reference.
 - Rollback: re-release the previous catalog and app charts; `build-image` then builds and pushes in one pod as before (with the push
   credential in it again).
 
