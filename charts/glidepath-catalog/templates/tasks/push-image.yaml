@@ -1,0 +1,193 @@
+# catalog/tasks/push-image.yaml
+#
+# Publishes the image build-image built. build-image runs the repository's Containerfile RUN lines, which are the repository's
+# code (a pull request can change them), so it holds no registry push credential: it writes an OCI image layout into the
+# workspace (.glidepath-out/image) and, on a main build only, an OCI layout of its BuildKit cache (.glidepath-out/cache), and
+# pushes nothing. This Task is the only place the push credential (registry-credentials) is used for the image, and it runs
+# nothing the repository controls:
+#
+#   - It is a separate pod, run as the image-pusher ServiceAccount (the generated .tekton file's taskRunSpecs; the admission policy
+#     cicd-run-source-isolation requires it). The workspace is mounted read-only.
+#   - It reads the workspace as DATA. oci_layout_validate (files/lib/oci-layout.sh) checks the layout structurally before
+#     anything is pushed: only the layout's own file names, no symlink, device or fifo, every blob's size and sha256 checked
+#     against its descriptor, sizes bounded, media types on an allowlist, no foreign-layer urls, and the platform set exactly
+#     the one cicd.yaml asked for. `oras cp --from-oci-layout` then copies it: it reads and uploads bytes, it executes nothing and
+#     extracts nothing. No git, no helm, no build tool, no script from the workspace.
+#   - The push target comes only from this Task's parameters: image-repo is bound to the application's own repository by the
+#     admission policy (docs/admin/security.md), the tag is built here from the commit and a version string this Task checks
+#     (build-image's `version` result is untrusted data: it is read from the repository's package.json, pom.xml and so on).
+#     Nothing in the workspace names a registry, a repository or a tag.
+#   - The digest it reports is the one it computed from the validated layout and the registry then confirmed with
+#     `oras resolve` on the tag it pushed. A result the build task wrote is never read.
+#
+# Cache. A pull request's build never writes a cache: it imports the main cache (a read) and exports nothing, and even if its
+# workspace holds a cache layout, pr-tag-only=true means this Task does not look at it. Only a main build (pr-tag-only=false, a
+# repository that is not the -pr one) publishes its cache, to <image-repo>-buildcache:latest, after validating it the same way.
+# So the cache a main build imports was written by a main build, never by a pull request. A cache that fails validation fails
+# this Task before anything is pushed; a cache that is simply absent, or fails to upload, is a warning (the next build is cold).
+#
+# What one shared credential still allows after this: this step, the catalog's own trusted code, can push to any repository the
+# credential reaches. Repository code cannot reach it. docs/admin/security.md says what per-application scoping needs.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: push-image
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Validates the OCI layout build-image wrote, pushes it to the application's own repository with the registry push credential, and reports the digest it pushed.
+  workspaces:
+    - name: source
+      readOnly: true
+      description: Holds the build output under .glidepath-out/. Read as data only.
+  params:
+    - name: config-json
+      type: string
+      description: "validate-cicd-config's config-json result (trusted - the preflight task validated it). Only build.platforms is read here."
+    - name: image-repo
+      type: string
+      description: Destination registry/repo, e.g. ghcr.io/<org>/<app> (or <app>-pr for a pull request). Bound to the application by the admission policy.
+    - name: git-revision
+      type: string
+    - name: pr-tag-only
+      type: string
+      default: "false"
+      description: "\"true\" marks a pull request's build: the image is tagged <12-char-sha>, must go to a -pr repository, and no cache is published."
+    - name: version
+      type: string
+      description: "build-image's version result. UNTRUSTED (read from the repository's own files) - checked here as a tag before it is used."
+    - name: flow-traceparent
+      type: string
+      description: Root traceparent for the whole flow - gives the push-duration span its trace id.
+    - name: stage-span-id
+      type: string
+      description: The current stage's own span id - the push span is parented to it.
+  results:
+    - name: image-digest
+      description: The digest this Task validated, pushed and confirmed in the registry (the index digest for a multi-platform build).
+    - name: image-ref
+      description: "<image-repo>:<tag> as pushed."
+    - name: version
+      description: The version, after the tag check.
+    - name: image-repo
+      description: Bare repo name, no tag - the Pipeline-level IMAGE_URL result references it (Tekton rejects a Pipeline result that is a plain param).
+    - name: IMAGE_URL
+      description: Same as image-repo, under Tekton Chains' and Conforma's exact-cased type-hint name (docs/admin/image-signing.md, provenance-policy.md).
+    - name: IMAGE_DIGEST
+      description: Same as image-digest, under the same type-hint name.
+  # The registry push credential: a kubernetes.io/dockerconfigjson Secret named registry-credentials in the Application's own
+  # -cicd namespace. Only this Task's pod mounts it for the image; DOCKER_CONFIG points oras at it.
+  volumes:
+    - name: registry-credentials
+      secret:
+        secretName: registry-credentials
+        items:
+          - key: .dockerconfigjson
+            path: config.json
+  steps:
+    - name: push
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      computeResources:
+        requests: { cpu: 100m, memory: 128Mi }
+      env:
+        - name: IMAGE_REPO
+          value: $(params.image-repo)
+        - name: GIT_REVISION
+          value: $(params.git-revision)
+        - name: PR_TAG_ONLY
+          value: $(params.pr-tag-only)
+        - name: VERSION
+          value: $(params.version)
+        - name: CONFIG_JSON
+          value: $(params.config-json)
+        - name: FLOW_TRACEPARENT
+          value: $(params.flow-traceparent)
+        - name: STAGE_SPAN_ID
+          value: $(params.stage-span-id)
+        - name: DOCKER_CONFIG
+          value: /var/run/registry-credentials
+        - name: MAX_IMAGE_BYTES
+          value: {{ (.Values.imagePush).maxImageBytes | default 8589934592 | int64 | quote }}
+        - name: MAX_CACHE_BYTES
+          value: {{ (.Values.imagePush).maxCacheBytes | default 8589934592 | int64 | quote }}
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://otel-collector-opentelemetry-collector.observability.svc.cluster.local:4318
+      volumeMounts:
+        - name: registry-credentials
+          mountPath: /var/run/registry-credentials
+          readOnly: true
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        source "${PLATFORM_LIB}/otel.sh"
+        SPAN_START="$(date -u +"%Y-%m-%dT%H:%M:%S.%NZ")"
+        {{- include "glidepath-catalog.ociLayoutLib" . | nindent 8 }}
+
+        fail() { echo "error: $*" >&2; exit 1; }
+
+        WS="$(workspaces.source.path)"
+        OUT="${WS}/.glidepath-out"
+        IMAGE_DIR="${OUT}/image"
+        CACHE_DIR="${OUT}/cache"
+
+        # 1. The parameters, checked. The target is built from these alone.
+        repo_re='^[a-z0-9][a-z0-9.-]*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)+$'
+        [[ "${IMAGE_REPO}" =~ ${repo_re} ]] || fail "image-repo is not a repository name"
+        [[ "${GIT_REVISION}" =~ ^[0-9a-f]{40}$ ]] || fail "git-revision is not a 40-character commit"
+        [[ "${PR_TAG_ONLY}" == "true" || "${PR_TAG_ONLY}" == "false" ]] || fail "pr-tag-only is neither true nor false"
+        [[ "${VERSION}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,100}$ ]] || fail "the version the build resolved is not usable as an image tag (letters, digits, . _ - only, at most 101 characters)"
+        if [[ "${PR_TAG_ONLY}" == "true" ]]; then
+          # a pull request's build pushes only to the -pr repository, by the commit alone, and never publishes a cache
+          [[ "${IMAGE_REPO}" == *-pr ]] || fail "a pull request build (pr-tag-only=true) may push only to a -pr repository, not ${IMAGE_REPO}"
+          TAG="${GIT_REVISION:0:12}"
+        else
+          TAG="${VERSION}-${GIT_REVISION:0:7}"
+        fi
+        PLATFORMS="$(jq -r '(.build.platforms // ["arm64","amd64"]) | unique | map("linux/" + .) | join(",")' <<< "${CONFIG_JSON}")" \
+          || fail "config-json is not valid JSON"
+        [[ -n "${PLATFORMS}" ]] || fail "build.platforms resolved to an empty set: refusing to publish nothing"
+        IMAGE_REF="${IMAGE_REPO}:${TAG}"
+        echo "target=${IMAGE_REF} platforms=${PLATFORMS}"
+
+        # 2. Validate everything that will be pushed before pushing anything.
+        OCI_MAX_TOTAL_BYTES="${MAX_IMAGE_BYTES}" oci_layout_validate "${IMAGE_DIR}" image "${PLATFORMS}" || exit 1
+        DIGEST="${OCI_LAYOUT_DIGEST}"
+        echo "image layout valid: ${DIGEST}"
+        PUBLISH_CACHE=false
+        if [[ "${PR_TAG_ONLY}" == "false" && "${IMAGE_REPO}" != *-pr ]]; then
+          if [[ -e "${CACHE_DIR}" || -L "${CACHE_DIR}" ]]; then
+            OCI_MAX_TOTAL_BYTES="${MAX_CACHE_BYTES}" oci_layout_validate "${CACHE_DIR}" cache || exit 1
+            CACHE_DIGEST="${OCI_LAYOUT_DIGEST}"
+            PUBLISH_CACHE=true
+            echo "cache layout valid: ${CACHE_DIGEST}"
+          else
+            echo "warning: the build exported no cache layout; the next build starts cold"
+          fi
+        fi
+
+        # 3. Push the image: a copy of bytes by digest, nothing is executed or extracted.
+        oras cp --from-oci-layout "${IMAGE_DIR}@${DIGEST}" "${IMAGE_REF}"
+        # 4. The registry's own answer for the tag must be the digest validated above.
+        RESOLVED="$(oras resolve "${IMAGE_REF}" | tr -d '[:space:]')"
+        [[ "${RESOLVED}" == "${DIGEST}" ]] || fail "${IMAGE_REF} resolves to '${RESOLVED}' in the registry, not the validated ${DIGEST}"
+        printf '%s' "${DIGEST}" > "$(results.image-digest.path)"
+        printf '%s' "${DIGEST}" > "$(results.IMAGE_DIGEST.path)"
+        printf '%s' "${IMAGE_REF}" > "$(results.image-ref.path)"
+        printf '%s' "${IMAGE_REPO}" > "$(results.image-repo.path)"
+        printf '%s' "${IMAGE_REPO}" > "$(results.IMAGE_URL.path)"
+        printf '%s' "${VERSION}" > "$(results.version.path)"
+        echo "image-digest=${DIGEST}"
+        echo "image-ref=${IMAGE_REF}"
+
+        # 5. The main build's cache, best effort once it has validated.
+        if [[ "${PUBLISH_CACHE}" == "true" ]]; then
+          if oras cp --from-oci-layout "${CACHE_DIR}@${CACHE_DIGEST}" "${IMAGE_REPO}-buildcache:latest"; then
+            echo "cache published: ${IMAGE_REPO}-buildcache:latest"
+          else
+            echo "warning: the cache could not be published; the next build starts cold" >&2
+          fi
+        fi
+        otel_task_span_send "push-image" "${FLOW_TRACEPARENT}" "${STAGE_SPAN_ID}" \
+          "${SPAN_START}" "$(date -u +"%Y-%m-%dT%H:%M:%S.%NZ")" "Succeeded"

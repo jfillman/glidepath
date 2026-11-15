@@ -33,3 +33,4 @@ jobs:
       - run: python3 charts/glidepath-catalog/tests/workspace_hardening_test.py
       - run: python3 charts/glidepath-catalog/tests/chart_safety_test.py
       - run: python3 charts/glidepath-catalog/tests/testworkflow_policy_test.py
+      - run: python3 charts/glidepath-catalog/tests/image_push_split_test.py

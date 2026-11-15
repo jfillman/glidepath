@@ -484,3 +484,22 @@ chart_safe() {
 chart_render_note="helm's error text is withheld (it can contain file content, and this step holds credentials): run helm template locally on the same chart and value files to see it"
 # END chart-safety
 {{- end -}}
+
+{{- /*
+glidepath-catalog.ociLayoutLib: files/lib/oci-layout.sh (oci_layout_validate), to splice into the push-image step. Structural validation of
+the OCI layout the build pod wrote: the registry push credential is only used after it passes (docs/admin/security.md).
+*/ -}}
+{{- define "glidepath-catalog.ociLayoutLib" -}}
+{{ .Files.Get "files/lib/oci-layout.sh" }}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.buildPullSecretName: the name of the read-only pull credential the build pod may mount. Never the push credential.
+*/ -}}
+{{- define "glidepath-catalog.buildPullSecretName" -}}
+{{- $n := (.Values.buildPullCredential | default dict).secretName | default "build-pull-credentials" -}}
+{{- if eq $n "registry-credentials" -}}
+{{- fail "buildPullCredential.secretName cannot be registry-credentials: the build pod runs the repository's code and must never mount the push credential (docs/admin/security.md)" -}}
+{{- end -}}
+{{- $n -}}
+{{- end -}}
