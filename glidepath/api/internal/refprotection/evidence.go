@@ -38,6 +38,10 @@ type prState struct {
 	PullEvidence
 	commitSet map[string]bool
 	count     int // the pull request's own commit count
+	// rebaseRun (once per pull request): the commits a rebase merge landed from it, when what landed is its reviewed content
+	run            map[string]bool
+	runDone, runOK bool
+	runWhy         string
 }
 
 // do is one budgeted read. A status is returned, not judged.
@@ -383,48 +387,142 @@ func (e *engine) sameRepo(r *ghRepoRef) bool {
 
 // member: sha is one of the pull request's own commits, its merge commit, or a commit a rebase merge landed from it. GitHub
 // associates it with the pull request, and:
-//   - the approval covers the pull request's HEAD, so a merge commit that is not the head is accepted only when GitHub made it:
-//     committer web-flow with a verified signature (a merge commit or a squash). A merge pushed by hand, a child of the approved
-//     head with changes on top, has neither.
-//   - otherwise it is a rebase-merge tip: one parent that is not one of the pull request's own commits (a child of reviewed
-//     commits is "reviewed code plus something else", refused), and every commit of the run is within the CONTIGUOUS single-parent
-//     run of at most (commit count) commits ending at the merge commit.
-//
-// What stays open for a rebase merge: GitHub marks a rebase-landed commit by nothing this API shows (it is committed by the
-// merger and not signed), so a hand-made linear commit that is not a child of the head and that GitHub still records as the pull
-// request's merge commit would pass the run rule; the run is bounded by the pull request's commit count, not compared by content.
+//   - the approval covers the pull request's HEAD, so a merge commit that is not that head is accepted when GitHub made it:
+//     committer web-flow with a verified signature (a merge commit or a squash). That signature already says GitHub made the
+//     commit from the head through its merge button, so no content comparison is added for those. A merge pushed by hand has
+//     neither.
+//   - a rebase merge lands the pull request's commits as new, unsigned commits committed by the merger, so nothing GitHub signs
+//     covers them. They count only as a run whose CONTENT is the pull request's: see rebaseRun.
 func (e *engine) member(ctx context.Context, st *prState, sha string, idx map[string]int, list []rangeCommit) (bool, string, error) {
 	if st.commitSet[sha] {
 		return true, "", nil
 	}
-	if sha == st.MergeCommit {
-		info, err := e.info(ctx, sha, idx, list)
-		if err != nil {
-			return false, "", err
-		}
-		if strings.EqualFold(info.committer, "web-flow") && info.verified {
-			return true, "", nil
-		}
-		if len(info.parents) == 1 && !st.commitSet[info.parents[0]] {
-			return true, "", nil
-		}
-		return false, "whose merge commit was not made by GitHub (committer web-flow with a verified signature) and is not a rebase of it: a merge commit pushed by hand can carry changes nobody reviewed", nil
+	info, err := e.info(ctx, st.MergeCommit, idx, list)
+	if err != nil {
+		return false, "", err
 	}
-	if idx == nil {
-		return false, "", nil
+	if strings.EqualFold(info.committer, "web-flow") && info.verified {
+		// GitHub made the merge (or squash) commit: that is the pull request's merge commit, and nothing else of the pull request
+		// is a landed commit.
+		return sha == st.MergeCommit, "", nil
 	}
-	j, okj := idx[st.MergeCommit]
-	i, oki := idx[sha]
-	if !okj || !oki || i >= j || j-i >= st.count || len(list[j].parents) != 1 {
-		return false, "", nil
+	ok, why, err := e.rebaseRun(ctx, st)
+	if err != nil {
+		return false, "", err
 	}
-	for k := i; k < j; k++ {
-		next := list[k+1]
-		if len(next.parents) != 1 || next.parents[0] != list[k].sha {
+	if !ok {
+		if sha != st.MergeCommit && why == "" {
 			return false, "", nil
 		}
+		return false, why, nil
 	}
-	return len(list[i].parents) == 1, "", nil
+	return st.run[sha], "", nil
+}
+
+type ghFile struct {
+	Filename         string `json:"filename"`
+	Status           string `json:"status"`
+	SHA              string `json:"sha"`
+	PreviousFilename string `json:"previous_filename"`
+}
+
+// rebaseRun decides, once per pull request, whether its merge commit and the commits before it are a rebase merge of the pull
+// request: the run is exactly the pull request's commit count of single-parent commits ending at its merge commit (read as the
+// branch history from it, one read), and what the run changed (compare from the commit before the run to its tip) is, file by
+// file, the same as what the reviewed head changed (compare from that commit to the head: GitHub compares from the merge base):
+// the same files, the same status, the same resulting blob. Anything else is not that pull request's landing, so its commits
+// have no pull request. A rebase over a base that changed the same file produces a different blob and is refused (conservative:
+// re-run the review, or merge with a merge commit or a squash). A file list GitHub may have cut at its cap is unverifiable.
+func (e *engine) rebaseRun(ctx context.Context, st *prState) (bool, string, error) {
+	if st.runDone {
+		return st.runOK, st.runWhy, nil
+	}
+	ok, why, err := e.rebaseRunCompute(ctx, st)
+	if err != nil {
+		return false, "", err
+	}
+	st.runDone, st.runOK, st.runWhy = true, ok, why
+	return ok, why, nil
+}
+
+func (e *engine) rebaseRunCompute(ctx context.Context, st *prState) (bool, string, error) {
+	n := st.count
+	if n < 1 || n > maxRebaseCommits {
+		return false, "", &unverifiable{fmt.Sprintf("pull request #%d has %d commits: a rebase landing of more than %d commits is not read", st.Number, n, maxRebaseCommits)}
+	}
+	body, err := e.ok(ctx, fmt.Sprintf("commits?sha=%s&per_page=%d", st.MergeCommit, n+1))
+	if err != nil {
+		return false, "", err
+	}
+	var hist []ghCommit
+	if err := json.Unmarshal(body, &hist); err != nil {
+		return false, "", &unverifiable{fmt.Sprintf("GitHub's history of %s could not be read: %v", short(st.MergeCommit), err)}
+	}
+	notRun := fmt.Sprintf("whose merge commit was not made by GitHub (committer web-flow with a verified signature) and is not the tip of a rebase landing of it (a run of %d single-parent commits): a merge commit pushed by hand can carry changes nobody reviewed", n)
+	if len(hist) < n+1 || hist[0].SHA != st.MergeCommit {
+		return false, notRun, nil
+	}
+	st.run = map[string]bool{}
+	for i := 0; i < n; i++ {
+		if len(hist[i].Parents) != 1 || hist[i].Parents[0].SHA != hist[i+1].SHA {
+			return false, notRun, nil
+		}
+		st.run[hist[i].SHA] = true
+	}
+	parent := hist[n].SHA
+	if st.commitSet[parent] {
+		return false, notRun, nil // a rebase rewrites the commits: the pull request's own are not on the branch under it
+	}
+	landed, err := e.compareFiles(ctx, parent, st.MergeCommit)
+	if err != nil {
+		return false, "", err
+	}
+	reviewed, err := e.compareFiles(ctx, parent, st.Head)
+	if err != nil {
+		return false, "", err
+	}
+	for k := range landed {
+		if reviewed[k] != landed[k] {
+			return false, e.differs(st, k), nil
+		}
+	}
+	for k := range reviewed {
+		if landed[k] != reviewed[k] {
+			return false, e.differs(st, k), nil
+		}
+	}
+	return true, "", nil
+}
+
+func (e *engine) differs(st *prState, file string) string {
+	return fmt.Sprintf("%s (first difference: %s)", rebaseRefusal, file)
+}
+
+// rebaseRefusal is what a developer reads when a rebase merge's content is not the reviewed head's.
+const rebaseRefusal = "rebase-merged pull request whose landed content differs from its reviewed head: re-run the review or use a merge commit or squash"
+
+const maxRebaseCommits = 99
+
+// compareFiles is the files of GET compare/{a}...{b} (changes of b since the merge base), each as filename, status, resulting blob
+// and previous name. Paged to GitHub's cap of 300 files: a list that reaches it may be cut, which is unverifiable, never partial.
+func (e *engine) compareFiles(ctx context.Context, a, b string) (map[string]string, error) {
+	out := map[string]string{} // filename -> "status|blob|previous name"
+	err := e.paged(ctx, fmt.Sprintf("compare/%s...%s", a, b), maxListPages, func(body []byte) (int, error) {
+		var c struct {
+			Files []ghFile `json:"files"`
+		}
+		if err := json.Unmarshal(body, &c); err != nil {
+			return 0, err
+		}
+		for _, f := range c.Files {
+			out[f.Filename] = f.Status + "|" + f.SHA + "|" + f.PreviousFilename
+		}
+		return len(c.Files), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // info is the committer, signature verdict and parents of one commit: from the range list when it is there, else one read.

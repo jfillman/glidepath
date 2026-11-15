@@ -536,7 +536,7 @@ token ([below](#the-github-read-token); contents, pull requests and metadata). E
 one of `api.pipelineLogins` opened, with `X-App-Repo`/`X-App-Commit` trailers and a manifest whose image tag ends in that commit; it must be an ancestor of `to`
 per GitHub and its own commit must have review evidence. Release records (`release-tracking-*` ConfigMaps) are **not** read: the pipeline's account can write and
 delete them. A gitops history that shows an earlier release but yields no baseline is `unverifiable`, never `first` (security.md, "The range", says what stays open).
-An approver's write access is read per distinct approver (`approverPermissions`); a merge commit that is not the pull request's head must be GitHub's (web-flow, verified).
+An approver's write access is read per distinct approver (`approverPermissions`); a merge commit that is not the pull request's head must be GitHub's (web-flow, verified), and a rebase-merged pull request's landed commits must have the reviewed head's content, file by file (security.md; 3 more reads per rebase-merged pull request).
 
 **What the Clearance gate's proposer can read.** The same endpoint, called for a release's source commit (`repo` the source repository, `ref` the protected
 branch, `sha` the released commit): `evidence.commits` (each commit and the merged `pullRequest` that brought it into the branch), `evidence.pullRequests` (opener,

@@ -9,7 +9,7 @@ Notable changes to Glidepath. Newest first.
 - `GET /v1/apps/{app}/ref-protection` (API 0.13.0): `protected` now means every commit being released (the commits after the newest release the app's gitops repository corroborates, up to
   the released commit; a first release is the commit alone; at most 250) belongs to a pull request merged into the protected branch of the source repository
   and that pull request has an approving review on its final head, not dismissed, from someone with write access who is not a bot, not its opener and not an author or committer
-  of its commits; a merge commit that is not the approved head must be GitHub's (web-flow, verified). The start of the range comes from merged release pull requests in the
+  of its commits; a merge commit that is not the approved head must be GitHub's (web-flow, verified), and a rebase-merged pull request counts only if what landed equals the reviewed head file by file (a rebase over a base that touched the same file is refused). The start of the range comes from merged release pull requests in the
   gitops repository, never from the release-tracking ConfigMaps (the pipeline's account can write them); `api.pipelineLogins` must name the account that opens them. Verdicts `protected`, `unreviewed` (the commits are listed), `unverifiable`; `unprotected` and `unavailable` are gone. The answer carries
   `evidence` (commits, pull requests, openers, mergers, approvers: what the Clearance gate's proposer needs) and the ruleset and branch protection reads as an
   informational `configuration` that never decides. Read-only token only; no override yet (`evidence.accepted` is the empty place for an owner-declared baseline).

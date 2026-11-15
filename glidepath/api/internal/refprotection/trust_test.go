@@ -165,10 +165,14 @@ func TestAMergeCommitGitHubMadeIsAccepted(t *testing.T) {
 	}
 }
 
-func TestARebaseShapedTipPassesAndTheApprovedHeadPushedAsIsIsAccepted(t *testing.T) {
-	// a squash lands one commit that is not the head: it must be GitHub's
-	w := mergeWorld(t, []string{sh(1)}, "web-flow", true)                                 // one parent, not the head: looks like a rebase tip? no: web-flow unverified
-	needVerdict(t, mustCheck(t, checker(), w, "refs/heads/main", sh(30), nil), Protected) // one parent outside the PR: a rebase tip (open: see docs)
+func TestARebaseShapedTipNeedsTheReviewedContentAndTheApprovedHeadPushedAsIsIsAccepted(t *testing.T) {
+	// A commit with ONE parent that is not one of the pull request's commits looks like the tip of a rebase merge, whoever
+	// committed it: it is accepted only if what landed IS the reviewed content (rebase_test.go).
+	w := mergeWorld(t, []string{sh(1)}, "mallory", false)
+	needVerdict(t, mustCheck(t, checker(), w, "refs/heads/main", sh(30), nil), Protected) // the same content as the reviewed head: nothing differs
+	w = mergeWorld(t, []string{sh(1)}, "mallory", false)
+	w.commits[sh(30)].edits = map[string]string{"evil": "e"} // content nobody reviewed
+	needVerdict(t, mustCheck(t, checker(), w, "refs/heads/main", sh(30), nil), Unreviewed, "landed content differs from its reviewed head")
 	// the approved head itself landed on the branch by a push: exactly what was reviewed
 	w = newWorld(t)
 	w.land(&wCommit{sha: sh(1), author: "root", committer: "root"})

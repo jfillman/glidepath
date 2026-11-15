@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,7 +24,8 @@ type wCommit struct {
 	author       string // "" = GitHub could not link the author's email to an account
 	committer    string // "" = unlinked (see cname)
 	aname, cname string
-	unverified   bool // GitHub does not show its signature as verified (web-flow commits are verified otherwise)
+	edits        map[string]string // file -> blob sha this commit sets ("" removes it): its tree is its first parent's plus these
+	unverified   bool              // GitHub does not show its signature as verified (web-flow commits are verified otherwise)
 }
 
 type wReview struct {
@@ -238,8 +240,28 @@ func (w *world) GetJSON(_ context.Context, _, repo, path string) (int, []byte, e
 			status = "diverged"
 		}
 		total := len(list)
-		body := fmt.Sprintf(`{"status":%q,"total_commits":%d,"ahead_by":%d,"commits":%s}`, status, total, total, page(list, q))
+		var files []string
+		for _, f := range w.diffFiles(a, b) {
+			files = append(files, f)
+		}
+		body := fmt.Sprintf(`{"status":%q,"total_commits":%d,"ahead_by":%d,"commits":%s,"files":%s}`, status, total, total, page(list, q), page(files, q))
 		return reply(body)
+	case p == "commits":
+		// the branch history from q.sha, newest first, following first parents (what the rebase landing is read from)
+		n, _ := strconv.Atoi(q.Get("per_page"))
+		var items []string
+		for sha := q.Get("sha"); sha != "" && len(items) < n; {
+			c, ok := w.commits[sha]
+			if !ok {
+				break
+			}
+			items = append(items, c.json())
+			sha = ""
+			if len(c.parents) > 0 {
+				sha = c.parents[0]
+			}
+		}
+		return reply("[" + strings.Join(items, ",") + "]")
 	case strings.HasPrefix(p, "commits/") && strings.HasSuffix(p, "/pulls"):
 		sha := strings.TrimSuffix(strings.TrimPrefix(p, "commits/"), "/pulls")
 		if _, ok := w.commits[sha]; !ok {
@@ -440,3 +462,89 @@ func (w *world) gitopsJSON(path string) (int, []byte, error) {
 
 // withHistory is where the gitops history of the world is read from.
 func withHistory(w *world) *History { return &History{GitopsRepo: "gitops-app", App: "app"} }
+
+// ---- trees and compare files
+
+func (w *world) tree(sha string) map[string]string {
+	out := map[string]string{}
+	c, ok := w.commits[sha]
+	if !ok {
+		return out
+	}
+	if len(c.parents) > 0 {
+		for k, v := range w.tree(c.parents[0]) {
+			out[k] = v
+		}
+	}
+	for k, v := range c.edits {
+		if v == "" {
+			delete(out, k)
+		} else {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func (w *world) ancestors(sha string) map[string]bool {
+	seen := map[string]bool{}
+	var walk func(string)
+	walk = func(s string) {
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		if c, ok := w.commits[s]; ok {
+			for _, p := range c.parents {
+				walk(p)
+			}
+		}
+	}
+	walk(sha)
+	return seen
+}
+
+// mergeBase is the nearest common ancestor of a and b along b's first parents ("" if none).
+func (w *world) mergeBase(a, b string) string {
+	in := w.ancestors(a)
+	for s := b; s != ""; {
+		if in[s] {
+			return s
+		}
+		c, ok := w.commits[s]
+		if !ok || len(c.parents) == 0 {
+			return ""
+		}
+		s = c.parents[0]
+	}
+	return ""
+}
+
+// diffFiles is what compare a...b lists: b's tree against the merge base's, as GitHub's file objects.
+func (w *world) diffFiles(a, b string) []string {
+	base := w.tree(w.mergeBase(a, b))
+	head := w.tree(b)
+	var names []string
+	for k := range head {
+		names = append(names, k)
+	}
+	for k := range base {
+		if _, ok := head[k]; !ok {
+			names = append(names, k)
+		}
+	}
+	sort.Strings(names)
+	var out []string
+	for _, k := range names {
+		switch {
+		case head[k] == base[k]:
+		case base[k] == "":
+			out = append(out, fmt.Sprintf(`{"filename":%q,"status":"added","sha":%q}`, k, head[k]))
+		case head[k] == "":
+			out = append(out, fmt.Sprintf(`{"filename":%q,"status":"removed","sha":%q}`, k, base[k]))
+		default:
+			out = append(out, fmt.Sprintf(`{"filename":%q,"status":"modified","sha":%q}`, k, head[k]))
+		}
+	}
+	return out
+}
