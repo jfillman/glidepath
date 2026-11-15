@@ -176,10 +176,20 @@ spec:
         # each push or rerun of the PR replaces it with the newest build, so it is not held to this.
         REUSED=false
         if [[ "${PR_TAG_ONLY}" == "false" ]]; then
-          if EXISTING="$(oras resolve "${IMAGE_REF}" 2>/dev/null | tr -d '[:space:]')" && [[ -n "${EXISTING}" ]]; then
+          # The exit status and stderr of `oras resolve` are kept apart (no pipe hides the status). Only a recognised "not found"
+          # (oras prints "<ref>: not found" for a missing tag, and the registry's MANIFEST_UNKNOWN/NAME_UNKNOWN/404) means absent;
+          # any other failure (401, 5xx, network) fails the task before anything is pushed, because it could hide an existing tag.
+          RESOLVE_ERR="$(mktemp)"
+          if EXISTING="$(oras resolve "${IMAGE_REF}" 2>"${RESOLVE_ERR}")"; then
+            EXISTING="$(printf '%s' "${EXISTING}" | tr -d '[:space:]')"
             [[ "${EXISTING}" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "${IMAGE_REF} resolves to '${EXISTING:0:80}', which is not a digest"
             REUSED=true
+          elif grep -qiE 'not found|manifest unknown|name unknown|MANIFEST_UNKNOWN|NAME_UNKNOWN|404' "${RESOLVE_ERR}"; then
+            echo "${IMAGE_REF} is not published yet"
+          else
+            fail "could not check whether ${IMAGE_REF} already exists (refusing to push without knowing): $(head -c 300 "${RESOLVE_ERR}" | tr '\n' ' ')"
           fi
+          rm -f "${RESOLVE_ERR}"
         fi
         if [[ "${REUSED}" == "true" ]]; then
           echo "note: ${IMAGE_REF} is already published; reusing it, pushing nothing. published digest: ${EXISTING}; digest of this run's build: ${DIGEST}$([[ "${EXISTING}" == "${DIGEST}" ]] && echo ' (identical)' || echo ' (different: discarded)')" >&2
@@ -189,8 +199,9 @@ spec:
           # 4. Push the image: a copy of bytes by digest, nothing is executed or extracted.
           oras cp --from-oci-layout "${IMAGE_DIR}@${DIGEST}" "${IMAGE_REF}"
           # 5. The registry's own answer for the tag must be the digest validated above.
-          RESOLVED="$(oras resolve "${IMAGE_REF}" | tr -d '[:space:]')"
-          [[ "${RESOLVED}" == "${DIGEST}" ]] || fail "${IMAGE_REF} resolves to '${RESOLVED}' in the registry, not the validated ${DIGEST}"
+          RESOLVED="$(oras resolve "${IMAGE_REF}")" || fail "could not read back ${IMAGE_REF} after pushing it"
+          RESOLVED="$(printf '%s' "${RESOLVED}" | tr -d '[:space:]')"
+          [[ "${RESOLVED}" == "${DIGEST}" ]] || fail "${IMAGE_REF} now resolves to '${RESOLVED}', not the digest this run pushed (${DIGEST}): the tag was changed during the push, or the registry did not store it"
           PUSHED="${DIGEST}"
           IMAGE_STATE="built"
         fi

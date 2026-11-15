@@ -463,6 +463,98 @@ class LayoutValidator(unittest.TestCase):
             p = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
             self.assertEqual(p.returncode, 0, p.stderr)
 
+    # ---- shapes, bytes, annotations (the review's second round)
+    def bad_layers(self, extra):
+        def build(r, d):
+            digest = make_image(r, ("linux/amd64",))
+            top = json.load(open(os.path.join(r, "index.json")))["manifests"][0]
+            m = json.load(open(blob_path(r, top["digest"])))
+            m["layers"].append(extra)
+            data = jb(m)
+            put(r, data)
+            write_top(r, desc(OCI_MANIFEST, data))
+            return digest
+        return build
+
+    def test_a_layers_array_with_a_non_object_element_is_refused(self):
+        for extra in ("x", 5, [1], None, True):
+            self.refused(self.bad_layers(extra), "layers element %r" % (extra,), want="linux/amd64")
+
+    def test_a_malformed_descriptor_is_refused(self):
+        good = lambda: {"mediaType": LAYER_GZ, "digest": "sha256:" + "0" * 64, "size": 1}
+        cases = [dict(good(), size="1"), dict(good(), size=-1), dict(good(), size=1.5), dict(good(), digest=5), dict(good(), mediaType=5),
+                 dict(good(), annotations="x"), dict(good(), annotations={"a": 1}), dict(good(), annotations=[])]
+        for i, c in enumerate(cases):
+            self.refused(self.bad_layers(c), "descriptor case %d" % i, want="linux/amd64")
+
+    def test_malformed_index_entries_are_refused(self):
+        for mutate in (lambda o: o["manifests"].__setitem__(0, "x"),
+                       lambda o: o["manifests"][0].update(size="1"),
+                       lambda o: o["manifests"][0].update(platform="linux/amd64"),
+                       lambda o: o["manifests"][0].update(annotations={"a": 5})):
+            def build(r, d, mutate=mutate):
+                digest = make_image(r)
+                rewrite_json(os.path.join(r, "index.json"), mutate)
+                return digest
+            self.refused(build, "index entry")
+
+    def test_a_bom_trailing_bytes_a_second_document_or_a_nul_in_any_json_file_is_refused(self):
+        for name, mutate in (("bom", lambda b: b"\xef\xbb\xbf" + b), ("trailing garbage", lambda b: b + b" x"),
+                             ("second document", lambda b: b + b"{}"), ("nul", lambda b: b[:-1] + b"\0}")):
+            for target in ("oci-layout", "index.json"):
+                def build(r, d, mutate=mutate, target=target):
+                    digest = make_image(r)
+                    path = os.path.join(r, target)
+                    data = open(path, "rb").read()
+                    open(path, "wb").write(mutate(data))
+                    return digest
+                self.refused(build, "%s in %s" % (name, target))
+            # a manifest blob: rewrite it with the bytes and fix its descriptor so only the bytes are wrong
+            def manifest(r, d, mutate=mutate):
+                digest = make_image(r, ("linux/amd64",))
+                top = json.load(open(os.path.join(r, "index.json")))["manifests"][0]
+                data = mutate(open(blob_path(r, top["digest"]), "rb").read())
+                put(r, data)
+                write_top(r, desc(OCI_MANIFEST, data))
+                return digest
+            self.refused(manifest, "%s in a manifest" % name, want="linux/amd64")
+
+    def test_a_ref_name_alias_annotation_is_refused(self):
+        for key in ("org.opencontainers.image.ref.name", "io.containerd.image.name"):
+            def top(r, d, key=key):
+                digest = make_image(r)
+                rewrite_json(os.path.join(r, "index.json"), lambda o: o["manifests"][0].update(annotations={key: "x:latest"}))
+                return digest
+            self.refused(top, key + " in index.json")
+
+            def in_manifest(r, d, key=key):
+                digest = make_image(r, ("linux/amd64",))
+                top = json.load(open(os.path.join(r, "index.json")))["manifests"][0]
+                m = json.load(open(blob_path(r, top["digest"])))
+                m["annotations"] = {key: "x:latest"}
+                data = jb(m)
+                put(r, data)
+                write_top(r, desc(OCI_MANIFEST, data))
+                return digest
+            self.refused(in_manifest, key + " in a manifest", want="linux/amd64")
+        # an ordinary annotation is fine
+        def ok(r, d):
+            digest = make_image(r)
+            rewrite_json(os.path.join(r, "index.json"), lambda o: o["manifests"][0].update(annotations={"org.example/x": "y"}))
+            return digest
+        code, out, err, _ = self.check(ok)
+        self.assertEqual(code, 0, err)
+
+    def test_a_duplicate_key_deep_in_an_image_config_is_refused(self):
+        cfg = b'{"architecture": "amd64", "os": "linux", "config": {"Healthcheck": {"Test": ["a"]}, "Healthcheck": {"Test": ["b"]}}, "rootfs": {"type": "layers", "diff_ids": []}}'
+        self.refused(lambda r, d: self.config_image(r, cfg), "deep duplicate", want="linux/amd64")
+
+    def test_no_jq_call_in_the_validator_can_fail_unnoticed(self):
+        text = open(LIB).read()
+        code = "\n".join(l for l in text.splitlines() if not l.strip().startswith("#"))
+        self.assertNotRegex(code, r"\$\(jq ")
+        self.assertNotRegex(code, r"<\(jq ")
+
     # ---- a real mode=max cache is big
     def test_a_cache_with_far_more_than_512_layers_is_accepted(self):
         code, out, err, digest = self.check(lambda r, d: make_cache(r, layers=700), kind="cache", want="")
@@ -546,7 +638,8 @@ class PushStep(unittest.TestCase):
             # resolve answers FAKE_RESOLVE once something was pushed; before that FAKE_RESOLVE_PRE, or "not found"
             executable(os.path.join(bin_, "oras"),
                        'echo "$@" >> "%s"\ncase "$1" in\n cp) touch "%s";;\n resolve) if [ -e "%s" ]; then echo "${FAKE_RESOLVE:-}"; '
-                       'elif [ -n "${FAKE_RESOLVE_PRE:-}" ]; then echo "${FAKE_RESOLVE_PRE}"; else echo "not found" >&2; exit 1; fi;;\nesac' % (log, state, state))
+                       'elif [ -n "${FAKE_RESOLVE_ERR:-}" ]; then echo "${FAKE_RESOLVE_ERR}" >&2; exit 1; '
+                       'elif [ -n "${FAKE_RESOLVE_PRE:-}" ]; then echo "${FAKE_RESOLVE_PRE}"; else echo "Error: ${2}: not found" >&2; exit 1; fi;;\nesac' % (log, state, state))
             script = self.script.replace("$(workspaces.source.path)", ws)
             paths = {}
             for name in re.findall(r"\$\(results\.([A-Za-z_-]+)\.path\)", script):
@@ -740,6 +833,27 @@ class PushStep(unittest.TestCase):
         code, calls, results, err, _ = self.run_push(lambda r, d: make_image(r), extra_env={"FAKE_RESOLVE_PRE": "latest"})
         self.assertNotEqual(code, 0)
         self.assertEqual([c for c in calls if c.startswith("cp ")], [])
+
+    def test_a_registry_error_when_checking_the_tag_fails_the_task_before_any_push(self):
+        for err_text in ("Error response from registry: 500 Internal Server Error", "Error: 401 Unauthorized", "dial tcp: i/o timeout"):
+            code, calls, results, err, _ = self.run_push(lambda r, d: make_image(r), extra_env={"FAKE_RESOLVE_ERR": err_text})
+            self.assertNotEqual(code, 0, err_text)
+            self.assertEqual([c for c in calls if c.startswith("cp ")], [], err_text)
+            self.assertEqual(results, {}, err_text)
+            self.assertIn("could not check", err)
+
+    def test_only_a_recognised_not_found_means_the_tag_is_absent(self):
+        for err_text in ("Error: registry.example/o/app:1: not found", "MANIFEST_UNKNOWN: manifest unknown", "404 Not Found"):
+            code, calls, results, err, digest = self.run_push(lambda r, d: make_image(r), extra_env={"FAKE_RESOLVE_ERR": err_text})
+            self.assertEqual(code, 0, (err_text, err))
+            self.assertEqual(len([c for c in calls if c.startswith("cp ")]), 1, err_text)
+
+    def test_a_tag_that_changed_during_the_push_fails_with_a_clear_message(self):
+        code, calls, results, err, _ = self.run_push(lambda r, d: make_image(r), resolve="sha256:" + "7" * 64)
+        self.assertNotEqual(code, 0)
+        self.assertIn("now resolves to", err)
+        self.assertIn("not the digest this run pushed", err)
+        self.assertEqual(results, {})
 
     def test_a_pull_request_tag_is_replaced_by_a_rerun(self):
         # PR images live in the -pr repository, are rebuilt for each push or rerun of the PR and deployed to an ephemeral environment

@@ -260,6 +260,8 @@ read as data: `stat`, `wc`, `sha256sum` and `jq` over size-capped JSON; nothing 
   view that does not collapse them: every leaf path must be unique, no path may be both a leaf and a container, and every non-empty
   container must close under a unique parent path (tested with repeated scalars, arrays, objects, mixed types and an escaped spelling of
   the same key);
+- shapes are checked before values are read: `layers` and `manifests` are arrays of objects, descriptors have string `mediaType` and `digest` and a non-negative integer **number** `size`, `platform` is an object of strings, annotations are string-to-string and may not name a ref (`org.opencontainers.image.ref.name`, `io.containerd.image.name`: the push is by `layout@digest`, so an alias has no legitimate use); every JSON file is exactly one document with no BOM, no NUL byte and nothing after it; the exit status of every `jq` call is checked, so an element after a bad one cannot go unvalidated;
+- the image **config** blob is the author's own image configuration and nothing in the pipeline interprets it beyond `os`/`architecture`: it is **not** validated in depth (only its top-level, `config`, `rootfs` and `history` keys are allowlisted, and a repeated key anywhere in it is refused);
 - names and digests are matched as whole strings (a blob name or digest with a newline never passes), and no component of the path from the
   workspace root to the layout is a symlink;
 - `index.json` has exactly one descriptor; every descriptor is a `sha256` digest, a size equal to the file's, content that hashes to the
@@ -511,7 +513,9 @@ Order matters because a build run created from a `.tekton` file written before t
   11. Tekton Chains signs the PipelineRun's results from `push-image` (`IMAGE_URL`, `IMAGE_DIGEST`) and `verify-image-provenance` still
       finds the build provenance.
   12. A rerun of a main build for the same commit logs `reused`, pushes nothing, and its scan, SBOM and attestations use the published `repo@sha256:`; Chains attests no subject for it.
-  13. The second main build imports the published cache, and `image-scan`, `generate-sbom` and `attest-api-spec` ran against the
+  13. Tekton Chains signs nothing, and attests no build, when `IMAGE_URL`/`IMAGE_DIGEST` are empty (the reused-image case), and does not fail the run.
+  14. The tag-existence check: `oras resolve` of a missing tag prints a "not found" the script recognises (any other error fails the task before a push), against the real registry.
+  15. The second main build imports the published cache, and `image-scan`, `generate-sbom` and `attest-api-spec` ran against the
       `repo@sha256:` reference.
 - Rollback: re-release the previous catalog and app charts; `build-image` then builds and pushes in one pod as before (with the push
   credential in it again).

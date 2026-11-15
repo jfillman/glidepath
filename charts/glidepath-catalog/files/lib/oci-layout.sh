@@ -33,6 +33,12 @@
 # `jq --stream`, the token-level view of the file, before jq's own (last-wins) parse is trusted: every leaf path must be unique and
 # no path may be both a leaf and a container, and every non-empty container closes under a unique parent path (see _oci_nodups).
 #
+# Scope of the checks. The documents oras and registries interpret (the layout marker, index, image index, manifests, descriptors,
+# platforms) are validated in depth: exact keys, shapes and types, no ref-name annotations, one document, no BOM or NUL. The image
+# CONFIG blob is the author's own image configuration (entrypoint, env, labels) and nothing in this pipeline interprets it beyond
+# os/architecture; only its top-level, config, rootfs and history keys are allowlisted, and duplicate keys are refused anywhere in it.
+# It is not validated in depth. Every jq call's exit status is checked (_oci_get, _oci_shape, _oci_json).
+#
 # Portable bash 3.2+ and busybox/GNU/BSD userland (no associative arrays, no find -printf).
 
 OCI_MEDIA_INDEX="application/vnd.oci.image.index.v1+json"
@@ -120,6 +126,29 @@ _oci_media_in() {
 # _oci_json FILE FILTER: jq -e on a file already size-checked; only a fixed boolean filter, never printed content
 _oci_json() { jq -e "$2" "$1" >/dev/null 2>&1; }
 
+# _oci_get FILE FILTER: a value out of a document that passed the shape checks; the caller checks the status
+_oci_get() { jq -r "$2" "$1"; }
+
+# shapes: arrays hold objects, descriptors have string mediaType/digest and a non-negative integer NUMBER size, annotations are
+# string->string, and no annotation names a ref (the push is by layout@digest: a ref-name alias has no legitimate use here)
+_OCI_JQ_DEFS='def ann: type == "object" and all(.[]; type == "string");
+def annok: (has("annotations") | not) or (.annotations | ann);
+def refname: [.. | objects | .annotations? | objects | keys[]] | any(. == "org.opencontainers.image.ref.name" or . == "io.containerd.image.name");
+def desc: type == "object" and (.mediaType | type == "string") and (.digest | type == "string")
+  and (.size | (type == "number") and (. >= 0) and (. == floor)) and annok;
+def plat: type == "object" and all(.[]; type == "string");
+def entries: type == "array" and all(.[]; desc and ((has("platform") | not) or (.platform | plat)));'
+_oci_shape() { jq -e "${_OCI_JQ_DEFS}
+$2" "$1" >/dev/null 2>&1; }
+
+# every JSON file read: no UTF-8 BOM, no NUL byte, exactly one document and nothing after it
+_oci_bytes_ok() {
+  local f="$1"
+  [ "$(LC_ALL=C head -c 3 "${f}" | od -An -tx1 | tr -d ' \n')" != "efbbbf" ] || return 1
+  [ "$(LC_ALL=C tr -d '\000' < "${f}" | wc -c | tr -d ' ')" = "$(wc -c < "${f}" | tr -d ' ')" ] || return 1
+  jq -es 'length == 1' "${f}" >/dev/null 2>&1
+}
+
 # _oci_nodups FILE: no object in the document repeats a key (jq would keep the last, Go's decoder also the last, but a different
 # parser may keep the first). Over jq's token stream: leaf paths unique, closing parents unique, and no leaf path is also a container.
 _oci_nodups() {
@@ -158,6 +187,9 @@ _oci_path_clean() {
 
 # _oci_doc FILE DESC: a JSON document read by consumers: parseable, no duplicate keys
 _oci_doc() {
+  if ! _oci_bytes_ok "$1"; then
+    _oci_fail "$2 is not exactly one JSON document (a BOM, a NUL byte, a second document or trailing bytes)"; return 1
+  fi
   if ! _oci_nodups "$1"; then
     _oci_fail "$2 is not valid JSON or repeats a key"; return 1
   fi
@@ -167,13 +199,13 @@ _OCI_DESC_KEYS="mediaType digest size annotations"
 
 # _oci_manifest DIR DIGEST SIZE KIND [PLATFORM]: validate one image manifest (config, layers); PLATFORM os/arch checks the config
 _oci_manifest() {
-  local dir="$1" digest="$2" size="$3" kind="$4" platform="${5:-}" mf cfg cfg_media want_cfg n max_layers l_media l_digest l_size
+  local dir="$1" digest="$2" size="$3" kind="$4" platform="${5:-}" mf cfg cfg_media want_cfg n max_layers l_media l_digest l_size c_digest c_size c_platform layers_tsv
   _oci_check_blob "${dir}" "${digest}" "${size}" 1048576 || return 1
   mf="${_OCI_BLOB}"
   _oci_account "${digest}" "${size}" || return 1
   _oci_doc "${mf}" "a manifest" || return 1
-  if ! _oci_json "${mf}" '.schemaVersion == 2 and (.config | type == "object") and (.layers | type == "array")'; then
-    _oci_fail "a manifest is not a schema-2 image manifest"; return 1
+  if ! _oci_shape "${mf}" '.schemaVersion == 2 and (.config | desc) and (.layers | entries) and annok and (refname | not)'; then
+    _oci_fail "a manifest is not a schema-2 image manifest of well-formed descriptors, or names a ref in an annotation"; return 1
   fi
   # exact key names only: a "Layers" next to "layers" is an unknown key, so it refuses
   if ! _oci_keys "${mf}" '.' schemaVersion mediaType config layers annotations ||
@@ -183,16 +215,18 @@ _oci_manifest() {
   if ! _oci_json "${mf}" ".mediaType == \"${OCI_MEDIA_MANIFEST}\""; then
     _oci_fail "a manifest does not declare the OCI manifest media type"; return 1
   fi
-  cfg_media="$(jq -r '.config.mediaType // ""' "${mf}")"
+  cfg_media="$(_oci_get "${mf}" '.config.mediaType')" || return 1
   if [ "${kind}" = cache ]; then want_cfg="${OCI_MEDIA_CACHE_CONFIG}"; else want_cfg="${OCI_MEDIA_CONFIG}"; fi
   if [ "${cfg_media}" != "${want_cfg}" ]; then
     _oci_fail "a config has media type '${cfg_media:0:60}', expected ${want_cfg}"; return 1
   fi
   local cfg_max=1048576
   [ "${kind}" = cache ] && cfg_max=67108864
-  _oci_check_blob "${dir}" "$(jq -r '.config.digest // ""' "${mf}")" "$(jq -r '.config.size // ""' "${mf}")" "${cfg_max}" || return 1
+  c_digest="$(_oci_get "${mf}" '.config.digest')" || return 1
+  c_size="$(_oci_get "${mf}" '.config.size')" || return 1
+  _oci_check_blob "${dir}" "${c_digest}" "${c_size}" "${cfg_max}" || return 1
   cfg="${_OCI_BLOB}"
-  _oci_account "$(jq -r '.config.digest' "${mf}")" "$(jq -r '.config.size' "${mf}")" || return 1
+  _oci_account "${c_digest}" "${c_size}" || return 1
   _oci_doc "${cfg}" "a config" || return 1
   if ! _oci_json "${cfg}" 'type == "object"'; then
     _oci_fail "a config is not a JSON object"; return 1
@@ -205,30 +239,35 @@ _oci_manifest() {
        ! _oci_keys "${cfg}" '.history[]' created created_by author comment empty_layer; then
       _oci_fail "an image config has a key that is not on the allowlist (or differs from one only by case)"; return 1
     fi
-    if [ -n "${platform}" ] && [ "$(jq -r '(.os // "") + "/" + (.architecture // "")' "${cfg}")" != "${platform}" ]; then
+    c_platform="$(_oci_get "${cfg}" '(.os // "") + "/" + (.architecture // "")')" || return 1
+    if [ -n "${platform}" ] && [ "${c_platform}" != "${platform}" ]; then
       _oci_fail "an image config does not match its platform ${platform}"; return 1
     fi
   fi
-  n="$(jq -r '.layers | length' "${mf}")"
+  n="$(_oci_get "${mf}" '.layers | length')" || return 1
   max_layers="${_OCI_MAX_LAYERS}"
   [ "${kind}" = cache ] && max_layers="${_OCI_MAX_CACHE_LAYERS}"
   if [ "${n}" -gt "${max_layers}" ]; then
     _oci_fail "a manifest has ${n} layers, over the limit of ${max_layers}"; return 1
   fi
-  # one jq call for all layers; @tsv escapes tabs and newlines in values, so a value cannot add a field or a line
+  # one jq call for all layers (its status is checked); @tsv escapes tabs and newlines, so a value cannot add a field or a line
+  layers_tsv="$(_oci_get "${mf}" '.layers[] | [.mediaType, .digest, (.size | tostring)] | @tsv')" || { _oci_fail "could not read a manifest's layers"; return 1; }
   while IFS=$'\t' read -r l_media l_digest l_size; do
+    [ -n "${l_media}${l_digest}${l_size}" ] || continue
     # shellcheck disable=SC2086
     if ! _oci_media_in "${l_media}" ${OCI_MEDIA_LAYERS}; then
       _oci_fail "a layer has media type '${l_media:0:60}', which is not an OCI tar layer"; return 1
     fi
     _oci_check_blob "${dir}" "${l_digest}" "${l_size}" "${_OCI_MAX_TOTAL}" || return 1
     _oci_account "${l_digest}" "${l_size}" || return 1
-  done < <(jq -r '.layers[] | [(.mediaType // ""), (.digest // ""), ((.size // "") | tostring)] | @tsv' "${mf}")
+  done <<EOF_LAYERS
+${layers_tsv}
+EOF_LAYERS
   return 0
 }
 
 oci_layout_validate() {
-  local dir="$1" kind="${2:-image}" want="${3:-}" root="${4:-}" p rel name top_media top_digest top_size idx n i platform seen plats w count plist
+  local dir="$1" kind="${2:-image}" want="${3:-}" root="${4:-}" e_media e_digest e_size p rel name top_media top_digest top_size idx n i platform seen plats w count plist
   OCI_LAYOUT_DIGEST=""
   _OCI_SEEN="|"
   _OCI_TOTAL=0
@@ -279,8 +318,8 @@ oci_layout_validate() {
     _oci_fail "index.json is over 1 MiB"; return 1
   fi
   _oci_doc "${dir}/index.json" "index.json" || return 1
-  if ! _oci_json "${dir}/index.json" '.schemaVersion == 2 and (.manifests | type == "array") and (.manifests | length == 1) and (.manifests[0] | type == "object")'; then
-    _oci_fail "index.json is not a schema-2 index with exactly one manifest"; return 1
+  if ! _oci_shape "${dir}/index.json" '.schemaVersion == 2 and (.manifests | entries) and (.manifests | length == 1) and annok and (refname | not)'; then
+    _oci_fail "index.json is not a schema-2 index with exactly one well-formed descriptor, or names a ref in an annotation"; return 1
   fi
   if ! _oci_keys "${dir}/index.json" '.' schemaVersion mediaType manifests annotations ||
      ! _oci_keys "${dir}/index.json" '.manifests[]' mediaType digest size annotations platform ||
@@ -290,9 +329,9 @@ oci_layout_validate() {
   if _oci_json "${dir}/index.json" 'has("mediaType") and .mediaType != "application/vnd.oci.image.index.v1+json"'; then
     _oci_fail "index.json declares a media type other than the OCI index"; return 1
   fi
-  top_media="$(jq -r '.manifests[0].mediaType // ""' "${dir}/index.json")"
-  top_digest="$(jq -r '.manifests[0].digest // ""' "${dir}/index.json")"
-  top_size="$(jq -r '.manifests[0].size // ""' "${dir}/index.json")"
+  top_media="$(_oci_get "${dir}/index.json" '.manifests[0].mediaType')" || return 1
+  top_digest="$(_oci_get "${dir}/index.json" '.manifests[0].digest')" || return 1
+  top_size="$(_oci_get "${dir}/index.json" '.manifests[0].size')" || return 1
   # 3. the one descriptor, by kind
   if [ "${kind}" = cache ]; then
     if [ "${top_media}" != "${OCI_MEDIA_MANIFEST}" ]; then
@@ -325,8 +364,8 @@ oci_layout_validate() {
       idx="${_OCI_BLOB}"
       _oci_account "${top_digest}" "${top_size}" || return 1
       _oci_doc "${idx}" "the image index" || return 1
-      if ! _oci_json "${idx}" '.schemaVersion == 2 and (.manifests | type == "array") and all(.manifests[]; type == "object")'; then
-        _oci_fail "the image index is not a schema-2 index"; return 1
+      if ! _oci_shape "${idx}" '.schemaVersion == 2 and (.manifests | entries) and annok and (refname | not)'; then
+        _oci_fail "the image index is not a schema-2 index of well-formed descriptors, or names a ref in an annotation"; return 1
       fi
       if ! _oci_keys "${idx}" '.' schemaVersion mediaType manifests annotations ||
          ! _oci_keys "${idx}" '.manifests[]' mediaType digest size annotations platform ||
@@ -336,15 +375,18 @@ oci_layout_validate() {
       if _oci_json "${idx}" 'has("mediaType") and .mediaType != "application/vnd.oci.image.index.v1+json"'; then
         _oci_fail "the image index declares an unexpected media type"; return 1
       fi
-      n="$(jq -r '.manifests | length' "${idx}")"
+      n="$(_oci_get "${idx}" '.manifests | length')" || return 1
       if [ "${n}" -gt 8 ]; then
         _oci_fail "the image index holds ${n} images"; return 1
       fi
       seen=""
       i=0
       while [ "${i}" -lt "${n}" ]; do
-        platform="$(jq -r ".manifests[${i}].platform | (.os // \"?\") + \"/\" + (.architecture // \"?\")" "${idx}")"
-        if [ "$(jq -r ".manifests[${i}].mediaType // \"\"" "${idx}")" != "${OCI_MEDIA_MANIFEST}" ]; then
+        platform="$(_oci_get "${idx}" ".manifests[${i}].platform | (.os // \"?\") + \"/\" + (.architecture // \"?\")")" || return 1
+        e_media="$(_oci_get "${idx}" ".manifests[${i}].mediaType")" || return 1
+        e_digest="$(_oci_get "${idx}" ".manifests[${i}].digest")" || return 1
+        e_size="$(_oci_get "${idx}" ".manifests[${i}].size")" || return 1
+        if [ "${e_media}" != "${OCI_MEDIA_MANIFEST}" ]; then
           _oci_fail "the image index lists an entry that is not an OCI image manifest (nested index or other type)"; return 1
         fi
         if ! _oci_name_ok "${platform}" '^[a-z0-9?]+/[a-z0-9?]+$'; then
@@ -358,7 +400,7 @@ oci_layout_validate() {
           *"|${platform}|"*) _oci_fail "the image index lists platform ${platform} twice"; return 1;;
         esac
         seen="${seen}|${platform}"
-        _oci_manifest "${dir}" "$(jq -r ".manifests[${i}].digest // \"\"" "${idx}")" "$(jq -r ".manifests[${i}].size // \"\"" "${idx}")" image "${platform}" || return 1
+        _oci_manifest "${dir}" "${e_digest}" "${e_size}" image "${platform}" || return 1
         i=$(( i + 1 ))
       done
       if [ "${n}" -ne "${count}" ]; then
