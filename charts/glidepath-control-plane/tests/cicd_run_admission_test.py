@@ -77,12 +77,21 @@ SHA = "b01565a54f78f0f28d13ec2a2fca114b3f9b3569"
 REPO = "https://github.com/o/sample"
 
 
-def meta(event="push", branch="main", pr="17"):
+def meta(event="push", branch="main", pr="17", source=None):
+    """What PaC records on a run (live, hangar-dev): for a push, `branch` is the ref with refs/heads/ trimmed and `source-branch`
+    the full ref; for a pull request `branch` is the target and `source-branch` the head branch's short name."""
+    if source is None:
+        if event == "push":
+            source = branch if branch.startswith("refs/") else "refs/heads/" + branch
+        else:
+            source = "feature-x"
     return {
         "generateName": "x-",
         "annotations": {"pipelinesascode.tekton.dev/repo-url": REPO, "pipelinesascode.tekton.dev/sha": SHA,
-                        "pipelinesascode.tekton.dev/event-type": event, "pipelinesascode.tekton.dev/branch": branch},
-        "labels": {"pipelinesascode.tekton.dev/pull-request": pr},
+                        "pipelinesascode.tekton.dev/event-type": event, "pipelinesascode.tekton.dev/branch": branch,
+                        "pipelinesascode.tekton.dev/source-branch": source},
+        "labels": {"pipelinesascode.tekton.dev/pull-request": pr, "pipelinesascode.tekton.dev/url-org": "o",
+                   "pipelinesascode.tekton.dev/url-repository": "sample"},
     }
 
 
@@ -95,7 +104,7 @@ def prm(**kw):
     return [{"name": k.replace("_", "-"), "value": v} for k, v in kw.items()]
 
 
-BUILD_PARAMS = prm(git_url=REPO, git_revision=SHA, image_repo="ghcr.io/o/sample", pr_tag_only="false",
+BUILD_PARAMS = prm(git_url=REPO, git_revision=SHA, image_repo="registry.example/o/sample", pr_tag_only="false",
                    app_namespace=NS, app_name="sample", app_type="app", is_flow_terminal="false")
 
 
@@ -392,11 +401,14 @@ class CicdRunAdmission(unittest.TestCase):
         for bad in (
             [{"pipelineTaskName": "x", "serviceAccountName": "pipeline-trigger"}],
             [{"pipelineTaskName": "x", "serviceAccountName": "default"}],
+        ):
+            self.refused(run(taskRunSpecs=bad), msg="may run as")
+        for bad in (
             [{"pipelineTaskName": "x"}],
             [{"pipelineTaskName": "build-source", "serviceAccountName": "source-runner", "podTemplate": {"volumes": []}}],
             [{"pipelineTaskName": "build-source", "serviceAccountName": "source-runner", "stepSpecs": []}],
         ):
-            self.refused(run(taskRunSpecs=bad), msg="taskRunSpecs")
+            self.refused(run(taskRunSpecs=bad), msg="taskRunSpecs entries")
 
     def test_a_task_listed_twice_refused(self):
         twice = [{"pipelineTaskName": t, "serviceAccountName": "source-runner"} for t in SOURCE_TASKS]
@@ -424,6 +436,95 @@ class CicdRunAdmission(unittest.TestCase):
         self.assertTrue(evaluate(pol, tr, operation="UPDATE"))
         self.assertIsNone(evaluate(pol, tr, user="system:serviceaccount:tekton-pipelines:tekton-pipelines-controller"))
         self.assertIsNone(evaluate(pol, tr, user="kubernetes-admin"))
+
+    # ---- second review ----
+    def test_a_branch_named_like_a_tag_is_not_a_tag(self):
+        # `git push origin evil:refs/heads/refs/tags/v1.0.0`: PaC trims refs/heads/, so `branch` reads refs/tags/v1.0.0, but
+        # `source-branch` keeps the full ref. The decision is made on the full ref.
+        params = list(BUILD_PARAMS) + prm(env="prod")
+        lookalike = meta("push", "refs/tags/v1.0.0", source="refs/heads/refs/tags/v1.0.0")
+        self.refused(run("release", metadata=lookalike, taskRunSpecs=None, params=params), msg="protected branch")
+        real = meta("push", "refs/tags/v1.0.0", source="refs/tags/v1.0.0")
+        self.admitted(run("release", metadata=real, taskRunSpecs=None, params=params))
+
+    def test_a_tag_must_match_the_tag_pattern(self):
+        params = list(BUILD_PARAMS) + prm(env="prod")
+        for tag in ("refs/tags/anything", "refs/tags/v1.0", "refs/tags/v1.0.0-evil", "refs/tags/x/v1.0.0"):
+            self.refused(run("release", metadata=meta("push", tag, source=tag), taskRunSpecs=None, params=params), msg="protected branch")
+
+    def test_the_recorded_annotation_format_is_pinned(self):
+        # captured from a live push to main and a live pull request (values replaced); if Pipelines-as-Code changes how it
+        # spells these, this fails here and not as a refused release
+        with open(os.path.join(os.path.dirname(__file__), "fixtures", "pac-annotations.json")) as f:
+            fx = json.load(f)
+        for name in ("push_main", "pull_request_main"):
+            md = {"generateName": "x-", "annotations": fx[name]["annotations"], "labels": fx[name]["labels"]}
+            event = fx[name]["annotations"]["pipelinesascode.tekton.dev/event-type"]
+            pipeline, params = ("build", list(BUILD_PARAMS)) if event == "pull_request" else ("deploy", list(BUILD_PARAMS) + prm(env="dev"))
+            params = [dict(p, value=fx[name]["annotations"]["pipelinesascode.tekton.dev/repo-url"]) if p["name"] == "git-url" else
+                      dict(p, value=fx[name]["annotations"]["pipelinesascode.tekton.dev/sha"]) if p["name"] == "git-revision" else p for p in params]
+            self.admitted(run(pipeline, metadata=md, taskRunSpecs=None if pipeline != "build" else None, params=params) if pipeline != "build"
+                          else run(pipeline, metadata=md, params=params))
+
+    def test_the_image_repository_is_the_apps_own(self):
+        for bad in ("registry.example/o/other-app", "registry.example/victim/sample", "registry.example/o/sample-buildcache",
+                    "registry.example/o/sample/sub", "registry.example/o/base-image", "evil.example/o/sample-pr/x"):
+            params = [p if p["name"] != "image-repo" else {"name": "image-repo", "value": bad} for p in BUILD_PARAMS]
+            self.refused(run(params=params), msg="repository")
+        for good in ("registry.example/o/sample", "registry.example/o/sample-pr", "ghcr.io:5000/o/sample"):
+            params = [p if p["name"] != "image-repo" else {"name": "image-repo", "value": good} for p in BUILD_PARAMS]
+            self.admitted(run(params=params))
+
+    def test_the_image_repository_prefix_can_be_configured(self):
+        pols, _ = policies("--set", "cicdRunAdmission.imageRepoPrefixes={registry.example/ground-ns/}")
+        shape = pols["cicd-run-shape"]
+        for repo, ok in (("registry.example/ground-ns/sample", True), ("registry.example/ground-ns/sample-pr", True),
+                         ("registry.example/o/sample", False), ("registry.example/ground-ns/other", False)):
+            params = [p if p["name"] != "image-repo" else {"name": "image-repo", "value": repo} for p in BUILD_PARAMS]
+            out = evaluate(shape, run(params=params))
+            self.assertEqual(out == [], ok, (repo, out))
+
+    def test_onboarding_resync_targets_only_this_apps_gitops_repository(self):
+        good = prm(git_url=REPO, app_namespace=NS, app_name="sample", app_type="app", github_owner="o",
+                   gitops_repo_url="https://github.com/o/gitops-sample")
+        self.admitted(run("onboarding-resync", metadata=meta("push", "main"), taskRunSpecs=None, params=good))
+        for field, bad in (("gitops-repo-url", "https://github.com/victim/gitops-sample"),
+                           ("gitops-repo-url", "https://github.com/o/gitops-other"),
+                           ("gitops-repo-url", "https://github.com/o/sample"),
+                           ("gitops-repo-url", "https://evil.example/o/gitops-sample"),
+                           ("github-owner", "victim")):
+            params = [p if p["name"] != field else {"name": field, "value": bad} for p in good]
+            self.refused(run("onboarding-resync", metadata=meta("push", "main"), taskRunSpecs=None, params=params), msg="own")
+        # nothing in a pull request needs it (it runs when cicd.yaml changes on main), so a pull request cannot start it
+        self.refused(run("onboarding-resync", metadata=meta("pull_request", "main"), taskRunSpecs=None, params=good), msg="push event")
+
+    def test_a_service_account_is_allowed_only_on_the_tasks_that_need_it(self):
+        deployer = [{"pipelineTaskName": "deploy-aws-lambda", "serviceAccountName": "glidepath-cloud-deployer"},
+                    {"pipelineTaskName": "deploy-aws-ecs", "serviceAccountName": "glidepath-cloud-deployer"}]
+        deploy_md = meta("push", "main")
+        self.admitted(run("deploy", metadata=deploy_md, taskRunSpecs=deployer, params=list(BUILD_PARAMS) + prm(env="dev")))
+        # the PR build cannot attach the cloud deployer, to any task
+        for task in ("build-source", "build-image", "unit-test", "deploy-aws-lambda"):
+            specs = [{"pipelineTaskName": t, "serviceAccountName": "source-runner"} for t in SOURCE_TASKS if t != task]
+            specs.append({"pipelineTaskName": task, "serviceAccountName": "glidepath-cloud-deployer"})
+            self.refused(run("build", taskRunSpecs=specs), msg="may run as")
+        # source-runner only on the source tasks of its Pipeline
+        self.refused(run("deploy", metadata=deploy_md, taskRunSpecs=[{"pipelineTaskName": "debrief", "serviceAccountName": "source-runner"}],
+                         params=list(BUILD_PARAMS) + prm(env="dev")), msg="may run as")
+        self.refused(run("build", taskRunSpecs=[{"pipelineTaskName": "preflight", "serviceAccountName": "source-runner"}] +
+                         [{"pipelineTaskName": t, "serviceAccountName": "source-runner"} for t in SOURCE_TASKS]), msg="may run as")
+        # the cloud deployer on a task of another Pipeline
+        self.refused(run("release", metadata=deploy_md, taskRunSpecs=deployer, params=list(BUILD_PARAMS) + prm(env="dev")), msg="may run as")
+
+    def test_the_task_accounts_are_what_the_catalog_and_the_generator_use(self):
+        docs = render_catalog()
+        pipelines = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Pipeline"}
+        for pname, tasks in self.values["cloudDeployerTasks"].items():
+            names = {t["name"] for t in pipelines[pname]["spec"]["tasks"]}
+            self.assertLessEqual(set(tasks), names)
+        _, gen = generator_params()
+        for t in self.values["cloudDeployerTasks"]["deploy"]:
+            self.assertIn("pipelineTaskName: " + t, gen)
 
     # ---- source isolation ----
     def test_source_isolation_for_every_pipeline_that_runs_repository_code(self):

@@ -247,10 +247,22 @@ What this release does close, and how that was checked:
   from a file (the list is rendered from the onboarding templates and the flow generator, and a test compares them), pass only the
   parameters that Pipeline takes, with values of the expected shape, and the repository, revision, pull request and namespace
   parameters must equal what Pipelines-as-Code itself recorded for the event. Pipelines that deploy, release or test start only from a
-  push to a protected branch or a tag. It cannot name another ServiceAccount, add a pod template, embed a Pipeline, or start a
+  push to a protected branch or to a tag of the shape `v<major>.<minor>.<patch>`, decided on the full ref Pipelines-as-Code records
+  (`source-branch`), so a branch named `refs/tags/v1.0.0` is not a tag. `image-repo` must be this application's own repository
+  (`<registry>/<owner>/<app>` or `-pr`), so a build cannot push into another app's repository or cache; `onboarding-resync` may
+  target only `gitops-<app>` under the repository's own owner, and only from a push; a task may run as `source-runner` or
+  `glidepath-cloud-deployer` only where the Pipeline's task list says so. It cannot name another ServiceAccount, add a pod template, embed a Pipeline, or start a
   TaskRun. This depends on Pipelines-as-Code writing its own annotations over anything the file sets; that is how its source reads
   and how a run looked live, but it was not exercised against a hostile file, so the upgrade note asks for it to be.
 - **Creating a run** needs `pipeline-trigger`, which no task runs as.
+
+**Ref protection is a name check here, not a verification.** The policy cannot ask the git host whether a branch needs review or who may
+push a tag. Anyone who can push `main` (where it is not protected) or a `v1.2.3` tag can start the deploy, test, release and
+gitops-image-bump flows for that commit as `pipeline-runner`, with that commit's `cicd.yaml` as input: they can write
+`release-tracking-*` records, and a `test` run applies the commit's `glidepath/<name>.yaml` into the Testkube namespace with the app's
+Secret copied in. Closing it needs a host-side rule (a ruleset requiring review on the default branch, and a tag ruleset limiting who
+may create `v*` tags) and a platform check that the ref is covered; the check is not built. On a plan without rulesets (this lab's
+free plan) it is "Off here" and cannot be turned on.
 
 What is not closed, in the order to do it:
 

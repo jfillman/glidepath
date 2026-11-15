@@ -66,6 +66,20 @@ spec:
       expression: "has(object.metadata.annotations) ? object.metadata.annotations : {}"
     - name: lbls
       expression: "has(object.metadata.labels) ? object.metadata.labels : {}"
+    - name: appName
+      expression: >-
+        variables.ps.exists(p, has(p.name) && p.name == 'app-name' && has(p.value) && type(p.value) == string) ?
+        variables.ps.filter(p, has(p.name) && p.name == 'app-name' && has(p.value) && type(p.value) == string)[0].value : ''
+    - name: org
+      expression: "'pipelinesascode.tekton.dev/url-org' in variables.lbls ? variables.lbls['pipelinesascode.tekton.dev/url-org'] : ''"
+    - name: isPush
+      expression: "'pipelinesascode.tekton.dev/event-type' in variables.anns && variables.anns['pipelinesascode.tekton.dev/event-type'] == 'push'"
+    - name: srcRef
+      expression: "'pipelinesascode.tekton.dev/source-branch' in variables.anns ? variables.anns['pipelinesascode.tekton.dev/source-branch'] : ''"
+    - name: sourceTasks
+      expression: {{ $c.sourceTasks | toJson | squote }}
+    - name: cloudTasks
+      expression: {{ $c.cloudDeployerTasks | toJson | squote }}
   validations:
     - expression: "has(request.resource) && has(request.resource.version) && request.resource.version == 'v1'"
       message: "Only tekton.dev/v1 PipelineRuns are accepted from a .tekton file (v1beta1 has different fields for the same settings)."
@@ -101,19 +115,39 @@ spec:
       message: "This Pipeline (deploy, test, release, gitops-image-bump) is started only by a push event, not by a pull request."
     - expression: >-
         (has(variables.cfg.anyBranch) && variables.cfg.anyBranch) ||
-        ('pipelinesascode.tekton.dev/branch' in variables.anns &&
-          (variables.anns['pipelinesascode.tekton.dev/branch'] in {{ $c.protectedBranches | toJson }} ||
-           variables.anns['pipelinesascode.tekton.dev/branch'].startsWith('refs/tags/')))
-      message: "This Pipeline starts only from a protected branch (cicdRunAdmission.protectedBranches) or a tag, not from a side branch."
+        (variables.isPush ?
+          (variables.srcRef in [{{ range $i, $b := $c.protectedBranches }}{{ if $i }}, {{ end }}{{ printf "refs/heads/%s" $b | quote | replace "\"" "'" }}{{ end }}] ||
+           variables.srcRef.matches({{ $c.tagRefPattern | squote }})) :
+          ('pipelinesascode.tekton.dev/branch' in variables.anns && variables.anns['pipelinesascode.tekton.dev/branch'] in {{ $c.protectedBranches | toJson }}))
+      message: "This Pipeline starts only from a push to a protected branch (cicdRunAdmission.protectedBranches) or to a tag matching cicdRunAdmission.tagRefPattern (decided on the full ref), or, for a check, from a pull request into a protected branch."
+    - expression: >-
+        variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || p.name != 'image-repo' ||
+          (variables.appName != '' &&
+            ({{ if $c.imageRepoPrefixes }}{{ $c.imageRepoPrefixes | toJson }}.exists(x, p.value == x + variables.appName || p.value == x + variables.appName + '-pr'){{ else }}variables.org != '' &&
+              p.value.matches('^[a-z0-9.-]+(:[0-9]+)?/' + variables.org + '/' + variables.appName + '(-pr)?$'){{ end }})))
+      message: "image-repo must be this application's own image repository (<registry>/<owner>/<app-name>, or -pr): a build may not push anywhere else."
+    - expression: >-
+        variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || p.name != 'gitops-repo-url' ||
+          (variables.org != '' && variables.appName != '' && p.value == 'https://github.com/' + variables.org + '/gitops-' + variables.appName)) &&
+        variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || p.name != 'github-owner' ||
+          (variables.org != '' && p.value == variables.org))
+      message: "onboarding-resync may only target this application's own gitops repository (https://github.com/<owner>/gitops-<app-name>) under the repository's own owner."
     - expression: >-
         has(object.spec.taskRunTemplate) && has(object.spec.taskRunTemplate.serviceAccountName) &&
         object.spec.taskRunTemplate.serviceAccountName == 'pipeline-runner'
       message: "taskRunTemplate.serviceAccountName must be pipeline-runner."
     - expression: >-
         variables.specs.all(s, s.all(k, k in ['pipelineTaskName', 'serviceAccountName']) &&
-          has(s.serviceAccountName) && s.serviceAccountName in ['source-runner', 'glidepath-cloud-deployer'] &&
-          has(s.pipelineTaskName) && variables.specs.filter(t, has(t.pipelineTaskName) && t.pipelineTaskName == s.pipelineTaskName).size() == 1)
-      message: "taskRunSpecs may only give a task the source-runner or glidepath-cloud-deployer account, once per task, with no other override."
+          has(s.serviceAccountName) && has(s.pipelineTaskName) && type(s.pipelineTaskName) == string &&
+          variables.specs.filter(t, has(t.pipelineTaskName) && t.pipelineTaskName == s.pipelineTaskName).size() == 1)
+      message: "taskRunSpecs entries may name only a task and a serviceAccountName, once per task, with no other override."
+    - expression: >-
+        variables.specs.all(s, !has(s.serviceAccountName) || !has(s.pipelineTaskName) || type(s.pipelineTaskName) != string ||
+          (s.serviceAccountName == 'source-runner' && variables.pipelineName in variables.sourceTasks &&
+            s.pipelineTaskName in variables.sourceTasks[variables.pipelineName]) ||
+          (s.serviceAccountName == 'glidepath-cloud-deployer' && variables.pipelineName in variables.cloudTasks &&
+            s.pipelineTaskName in variables.cloudTasks[variables.pipelineName]))
+      message: "A task may run as source-runner only where cicdRunAdmission.sourceTasks lists it, and as glidepath-cloud-deployer only where cicdRunAdmission.cloudDeployerTasks lists it (for this Pipeline); any other task runs as pipeline-runner."
     - expression: >-
         !has(object.spec.taskRunTemplate) || !has(object.spec.taskRunTemplate.podTemplate) ||
         object.spec.taskRunTemplate.podTemplate.all(k, k == 'hostAliases')
