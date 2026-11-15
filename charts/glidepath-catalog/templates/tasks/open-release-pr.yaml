@@ -265,7 +265,7 @@ spec:
           oann() { jq -r --arg k "glidepath.io/origin-$1" '.metadata.annotations[$k] // empty' <<<"${run_json}"; }
           origin_chain_id="$(oann chain-id)"; origin_chain_slug="$(oann chain-slug)"; origin_trace_id="$(oann trace-id)"
           [[ "${origin_chain_id}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || origin_chain_id=""
-          [[ "${origin_chain_slug}" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || origin_chain_slug=""
+          [[ "${origin_chain_slug}" =~ ^[a-z]{2,20}-[a-z]{2,20}$ ]] || origin_chain_slug=""
           [[ "${origin_trace_id}" =~ ^[0-9a-f]{32}$ ]] || origin_trace_id=""
           [[ -n "${origin_chain_id}" ]] || { origin_chain_slug=""; origin_trace_id=""; }
           [[ -z "${origin_chain_id}" ]] || echo "promotion lineage: image built by chain ${origin_chain_id} (${origin_chain_slug:-no slug}), trace ${origin_trace_id:-unknown}"

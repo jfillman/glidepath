@@ -66,7 +66,7 @@ type Resolver struct{ Sources []Source }
 var (
 	uuidRE        = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	traceparentRE = regexp.MustCompile(`^00-([0-9a-f]{32})-[0-9a-f]{16}-0[01]$`)
-	slugRE        = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+	slugRE        = regexp.MustCompile(`^[a-z]{2,20}-[a-z]{2,20}$`)
 	digestRE      = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	commitRE      = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
