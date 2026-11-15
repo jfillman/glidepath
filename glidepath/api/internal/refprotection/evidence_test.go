@@ -608,6 +608,9 @@ func TestHostFailuresFailClosed(t *testing.T) {
 			}
 			verdict, has, _ := strings.Cut(tc.want, "|")
 			needVerdict(t, v, verdict, has)
+			if verdict == Unverifiable && v.Evidence != nil {
+				t.Fatalf("an unverifiable answer carries no evidence (the proposer would read it as an established range): %+v", v.Evidence)
+			}
 		})
 	}
 }

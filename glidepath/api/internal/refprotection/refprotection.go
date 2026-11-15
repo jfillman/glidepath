@@ -85,7 +85,7 @@ var (
 // gitops pull request it came from. The check still verifies it before it starts a range.
 type Candidate struct {
 	Sha     string `json:"sha"`
-	Release string `json:"release,omitempty"` // the release record's name
+	Release string `json:"release,omitempty"` // the gitops release pull request, <gitops repo>#<number>
 	Env     string `json:"env,omitempty"`
 	At      string `json:"at,omitempty"`
 }
@@ -227,7 +227,7 @@ func (c *Checker) Check(ctx context.Context, rd Reader, owner, repo, ref, sha st
 	err := c.decide(ctx, e, v, sha)
 	var u *unverifiable
 	if errors.As(err, &u) {
-		v.Verdict, v.Reasons, v.Missing = "", nil, nil
+		v.Verdict, v.Reasons, v.Missing, v.Evidence = "", nil, nil, nil // no partial evidence: it would read as an established range
 		v.finish(Unverifiable, u.why)
 		err = nil
 	}

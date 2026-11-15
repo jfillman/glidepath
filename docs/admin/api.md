@@ -513,7 +513,7 @@ the run unless the verdict is `protected`. It needs `get` on `refprotection.glid
  "reasons": ["review evidence is incomplete: 1 of 3 commits have no approved pull request (main, range 91ab…..7f3c…)"],
  "missing": ["4d5e6f7: no pull request: pushed to main directly (a direct push, a force push or an administrator's bypass)"],
  "evidence": {
-   "branch": "main", "mode": "range", "from": "91ab…", "fromRelease": "release-tracking-…", "to": "7f3c…",
+   "branch": "main", "mode": "range", "from": "91ab…", "fromRelease": "gitops-shop#412", "to": "7f3c…",
    "commits": [{"sha": "4d5e…", "reviewed": false, "reason": "no pull request: pushed to main directly (…)"},
                {"sha": "7f3c…", "pullRequest": 12, "reviewed": true}],
    "pullRequests": [{"number": 12, "url": "https://github.com/jfillman/shop/pull/12", "opener": "alice", "merger": "alice", "mergedAt": "2026-11-10T10:00:00Z",
