@@ -31,7 +31,7 @@
 //	PROTECTED_BRANCHES  comma-separated branches a release must come from, for GET /v1/apps/{app}/ref-protection
 //	                    (the chart's cicdRunAdmission.protectedBranches; default main)
 //	PIPELINE_LOGINS     comma-separated GitHub logins of the pipeline's own accounts whose approval never counts (the chart's
-//	                    refProtection.pipelineLogins; bots, typed Bot or named [bot], never count either)
+//	                    api.pipelineLogins; bots, typed Bot or named [bot], never count either)
 //	TAG_REF_PATTERN     the release tags' full-ref pattern (the chart's cicdRunAdmission.tagRefPattern; unset: every tag)
 //	BROKER_URL          the token broker, for per-request GitHub read tokens (default http://cdevents-broker-auth.platform-system.svc.cluster.local:8080)
 //	BROKER_TOKEN_PATH   this pod's projected ServiceAccount token for the broker, audience github-read-token
