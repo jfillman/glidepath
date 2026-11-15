@@ -4,6 +4,14 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### Fix: the control plane's admission policy `cicd-run-shape` compiles under the API server
+
+- `cicd-run-shape` was refused by the Kubernetes API server (the Argo CD Application could not sync, and the policy was never created): the `catalog` variable was a
+  CEL map literal with values of different shapes, and the tag pattern was an ordinary string holding `\.`. The catalog is now three one-shape values (Pipeline to
+  parameter names, the push-only names, the any-branch names) and the pattern a raw string. Behaviour is unchanged.
+- New CI check `hack/ci/vap-compile` (job `vap-compile`): a Go program that compiles every rendered `ValidatingAdmissionPolicy` with the API server's own CEL compiler,
+  for the default values and for `tests/values.vap-full.yaml` (every optional list). The cel-python behaviour tests stay.
+
 ### Pipeline trust T3: verified ref protection
 
 - Runs glidepath-api starts are verified from a stamped origin: a rerun copies the origin of the run it repeats (and no other annotation), promote and

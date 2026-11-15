@@ -1,0 +1,12 @@
+# Every optional list and switch of cicdRunAdmission set, so hack/ci/vap-compile compiles the expressions they produce too.
+# (Not a recommended configuration; it exists to be rendered.)
+cicdRunAdmission:
+  enabled: true
+  protectedBranches: [main, release, "stable-1.x"]
+  tagRefPattern: '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+  sourceIsolationActions: [Warn, Audit]
+  imageRepoPrefixes: ["ghcr.io/example-org/", "registry.example.org:5000/team/"]
+  workspaceStorageClassNames: [gp3, standard]
+  cloudDeployerTasks:
+    deploy: [deploy-aws-lambda, deploy-aws-ecs]
+    release: [deploy-aws-ecs]

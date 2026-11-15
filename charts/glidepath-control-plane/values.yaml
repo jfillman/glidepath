@@ -41,6 +41,11 @@ cicdRunAdmission:
   # resynced (docs/admin/security.md, upgrade note), then [Deny]. Anything but Deny is NOT enforcing: the chart annotates the
   # binding and, where prometheus-operator is installed, renders an alert that fires until it is Deny again.
   sourceIsolationActions: [Deny]
+  # What a refused run of cicd-run-shape (the shape a .tekton file may take: Pipelines, parameters, accounts, workspaces) and of cicd-run-no-taskruns does.
+  # [Deny] on a fresh install. While upgrading a cluster whose app repositories have not resynced their .tekton files, use [Warn, Audit] and then [Deny];
+  # anything but Deny is NOT enforcing (binding annotation, and an alert where prometheus-operator is installed). Only platform values set these.
+  shapeActions: [Deny]
+  noTaskRunsActions: [Deny]
   # The storage classes a .tekton file's workspace volumeClaimTemplate may name (it may also leave it unset, which is what the onboarding
   # templates do). Everything else about the template is fixed: ReadWriteOnce, 1 to 20Gi, no dataSource, volumeName or selector.
   workspaceStorageClassNames: []
