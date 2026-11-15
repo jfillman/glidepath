@@ -221,6 +221,7 @@ What each part does.
     rendered from it) must give those tasks to `source-runner`, and `push-image` (`cicdRunAdmission.pusherTasks`) to `image-pusher`. A PR that
     deletes those lines from its `.tekton` file is refused, not obeyed. `cicdRunAdmission.sourceIsolationActions` sets what a refusal does.
   Every expression is `has()`-guarded and the match conditions cannot raise, so a CEL error cannot refuse requests cluster-wide.
+- **The policies must compile under the API server.** cel-python (the behaviour tests) is more forgiving than the API server: it does not type-check map literals (every value of one must have the same type) or reject an invalid string escape (a regex backslash needs a raw string, `r'...'`). `hack/ci/vap-compile` (CI job `vap-compile`) compiles every rendered `ValidatingAdmissionPolicy` with the API server's own CEL compiler, for the default values and for a values file that sets every optional list.
 - **Tests.** `charts/glidepath-app/tests/pipeline_least_privilege_test.py` renders the charts and asserts each account, its
   automount, its effective RBAC, and that `source-runner` can do nothing (a negative test, run verb by verb);
   `charts/glidepath-control-plane/tests/cicd_run_admission_test.py` evaluates the policies' CEL over the platform's own templates

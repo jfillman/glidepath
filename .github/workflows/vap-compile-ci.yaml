@@ -1,0 +1,36 @@
+name: vap-compile-ci
+
+# Every ValidatingAdmissionPolicy the control-plane chart renders must compile under the Kubernetes API server's own CEL environment
+# (k8s.io/apiserver's admission CEL compiler, strict type checking). The cel-python behaviour tests (pipeline-identities-ci) evaluate the
+# expressions; they do not type-check a map literal or reject an invalid string escape the way the API server does, and a policy that the
+# API server refuses leaves the Argo CD Application unable to sync (2026-11-15: cicd-run-shape on hangar-dev). hack/ci/vap-compile renders the
+# chart with the default values and with a values file that sets every optional list, and compiles each expression. The Kubernetes version
+# of the CEL environment is set in hack/ci/vap-compile (the lab clusters' minor).
+
+on:
+  pull_request:
+    paths:
+      - "charts/glidepath-control-plane/**"
+      - "charts/glidepath-catalog/templates/**"
+      - "hack/ci/vap-compile/**"
+      - ".github/workflows/vap-compile-ci.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "charts/glidepath-control-plane/**"
+      - "charts/glidepath-catalog/templates/**"
+      - "hack/ci/vap-compile/**"
+      - ".github/workflows/vap-compile-ci.yaml"
+
+jobs:
+  vap-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: hack/ci/vap-compile/go.mod
+      # -count=1: the test reads the chart through helm, which Go's test cache does not see
+      - run: go test -count=1 ./...
+        working-directory: hack/ci/vap-compile
