@@ -158,8 +158,7 @@ class Identities(unittest.TestCase):
 
     def test_the_bootstrap_job_uses_the_trigger_account_and_its_token(self):
         jobs = [d for d in self.docs if d["kind"] == "Job" and d["metadata"]["name"] == "onboarding-resync-bootstrap"]
-        if not jobs:
-            self.skipTest("the fixture does not render the bootstrap hook")
+        self.assertEqual(len(jobs), 1, "the fixture must render the bootstrap hook (a skip here would hide a regression)")
         spec = jobs[0]["spec"]["template"]["spec"]
         self.assertEqual(spec["serviceAccountName"], "pipeline-trigger")
         self.assertIs(spec["automountServiceAccountToken"], True)
