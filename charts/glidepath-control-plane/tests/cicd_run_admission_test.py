@@ -622,6 +622,20 @@ class CicdRunAdmission(unittest.TestCase):
         self.refused(run(metadata=meta("push", "main"), params=with_params(BUILD_PARAMS, pr_tag_only="true")), msg="-pr")
         self.admitted(run(metadata=meta("push", "main"), params=with_params(BUILD_PARAMS, image_repo="registry.example/o/sample-pr", pr_tag_only="true")))
 
+    def test_the_pr_repository_is_exactly_the_apps_own_pr_repository(self):
+        # an application whose own repository name ends in -pr: its main repository must not satisfy the pull request rule
+        app = "sample-pr"
+        ns = "app-sample-pr-cicd"
+        base = with_params(BUILD_PARAMS, app_name=app, app_namespace=ns)
+        md = meta("pull_request", "main")
+        good = with_params(base, pr_tag_only="true", image_repo="registry.example/o/sample-pr-pr")
+        main = with_params(base, pr_tag_only="true", image_repo="registry.example/o/sample-pr")
+        self.admitted(run(metadata=md, params=good), namespace=ns)
+        self.refused(run(metadata=md, params=main), msg="-pr image repository", namespace=ns)
+        # and for an ordinary application another application's -pr repository is not its own
+        other = with_params(BUILD_PARAMS, pr_tag_only="true", image_repo="registry.example/o/other-pr")
+        self.refused(run(metadata=md, params=other), msg="repository")
+
     def test_pusher_tasks_are_derived_from_the_catalog(self):
         docs = render_catalog()
         tasks = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Task"}

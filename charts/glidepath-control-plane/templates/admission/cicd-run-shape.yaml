@@ -159,8 +159,8 @@ spec:
       message: "A build that is not started by a push (a pull request, a re-run from a comment) must pass pr-tag-only=true: that parameter decides which cache the build may write, and a pull request may write none (docs/admin/security.md, 'Image build and push')."
     - expression: >-
         !variables.ps.exists(p, has(p.name) && p.name == 'pr-tag-only' && has(p.value) && type(p.value) == string && p.value == 'true') ||
-        variables.ps.exists(p, has(p.name) && p.name == 'image-repo' && has(p.value) && type(p.value) == string && p.value.endsWith('-pr'))
-      message: "pr-tag-only=true marks a pull request's build, which may push only to the application's -pr image repository."
+        variables.ps.exists(p, has(p.name) && p.name == 'image-repo' && has(p.value) && type(p.value) == string && variables.appName != '' && p.value.endsWith('/' + variables.appName + '-pr'))
+      message: "pr-tag-only=true marks a pull request's build, which may push only to the application's own -pr image repository (<registry>/<owner>/<app-name>-pr)."
     - expression: >-
         !has(object.spec.taskRunTemplate) || !has(object.spec.taskRunTemplate.podTemplate) ||
         object.spec.taskRunTemplate.podTemplate.all(k, k == 'hostAliases')
