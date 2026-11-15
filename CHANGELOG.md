@@ -15,6 +15,10 @@ Notable changes to Glidepath. Newest first.
   from a `.tekton/` file (values `cicdRunAdmission`). **Upgrade order and what is not covered yet: docs/admin/security.md,
   "Pipeline identities".** `glidepath-app` and `glidepath-catalog` release together; resync every app's `.tekton/` before
   setting `sourceIsolationActions` to `[Deny]`.
+- `./integration-test.sh` (the test fallback) moves out of `run-testworkflow` into its own Task `run-integration-script`, run as
+  `source-runner`; `run-testworkflow` reports `fallback-needed` and, for that case, `outcome: delegated`.
+- The admission policy allows only the Pipelines the platform starts from a `.tekton` file, with their parameters validated and tied
+  to what Pipelines-as-Code recorded; deploy/test/release start only from a push to `cicdRunAdmission.protectedBranches` or a tag.
 - Clearance follow-up (not in this release): trust `app-*-cicd/clearance-gate`, then run the gate as it, then drop
   `app-*-cicd/pipeline-runner`.
 

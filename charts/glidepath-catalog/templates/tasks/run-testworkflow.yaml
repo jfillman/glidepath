@@ -20,7 +20,9 @@
 #   from the PipelineRun's own trusted platformIdentity-derived param, not anything a
 #   developer's commit controls, so this can't be spoofed by editing the workflow file.
 #   With no such file, ./integration-test.sh (the phase 1 fallback, run in the app's own
-#   agent image) still works; with neither, the step FAILS (2026-10-19 - it used to
+#   agent image) still works, but not in this Task: it is the repository's own code, so it runs
+#   in run-integration-script (test.yaml), as source-runner, with no Kubernetes credential and
+#   nothing of this Task's (app-secrets, the Testkube namespace); with neither, the step FAILS (2026-10-19 - it used to
 #   report `skipped` and succeed, which made a typo in test.name indistinguishable from
 #   a passed test). `skipped` now only ever means cicd.yaml's `test.enabled: false`.
 #
@@ -118,8 +120,10 @@ spec:
       default: "check-ride"
       description: "The check ride's name suffix: the synced TestWorkflow is <app-name>-<check-ride-name>. From the catalog's checkRide.workflowName."
   results:
+    - name: fallback-needed
+      description: "'true' when the repository has no glidepath/<name>.yaml but has ./integration-test.sh. The Pipeline then runs run-integration-script (as source-runner, with no Kubernetes credential) after this Task; this Task records nothing else for that case. 'false' otherwise."
     - name: outcome
-      description: "'passed'/'failed'/'timeout'/'skipped' - from the Testkube TestWorkflowExecution's own result.status (aborted-but-really-passed already corrected below), or the fallback script's exit code translated the same way. 'skipped' only ever means cicd.yaml's test.enabled is false; a missing workflow is 'failed'. Same outcome/findings-summary shape as catalog/tasks/sast-scan.yaml and image-scan.yaml, not a new convention."
+      description: "'passed'/'failed'/'timeout'/'skipped' - from the Testkube TestWorkflowExecution's own result.status (aborted-but-really-passed already corrected below), 'delegated' when the repository has no workflow file and ./integration-test.sh runs instead: that runs in run-integration-script, a Task of its own, and its own outcome result is the verdict. 'skipped' only ever means cicd.yaml's test.enabled is false; a missing workflow is 'failed'. Same outcome/findings-summary shape as catalog/tasks/sast-scan.yaml and image-scan.yaml, not a new convention."
     - name: step-summary
       description: "One line per Testkube step: '<step-name>: <status>' - empty for the fallback-script path and for 'skipped'."
     - name: execution-id
@@ -235,14 +239,14 @@ spec:
         # Every result is written up front with its failure value, so an early exit (a
         # CLI error under set -e, a kubectl refusal) still leaves a complete, honest
         # result set rather than an unset `outcome` - same reasoning as sast-scan.yaml's
-        # own onError: continue. The paths are shared with the next step, which
-        # overwrites `outcome` when the fallback script runs instead.
+        # own onError: continue.
         R="$(results.outcome.path)"; echo -n "failed" > "${R}"
         for r in step-summary execution-id workflow-source workflow-digest tests-total tests-passed tests-failed tests-skipped report-path image-repo image-digest IMAGE_URL IMAGE_DIGEST; do
           echo -n "" > "/tekton/results/${r}"
         done
         echo -n "${ROLE}" > "$(results.role.path)"
         echo -n "false" > "$(step.results.fallback-needed.path)"
+        echo -n "false" > "$(results.fallback-needed.path)"
 
         if [[ "${TEST_ENABLED}" != "true" ]]; then
           echo "test stage disabled in cicd.yaml (test.enabled: false), skipping"
@@ -306,7 +310,8 @@ spec:
             if [[ -f ./integration-test.sh ]]; then
               echo "no ${WORKFLOW_FILE} - falling back to ./integration-test.sh"
               echo -n "script" > "$(results.workflow-source.path)"
-              echo -n "true" | tee "$(step.results.fallback-needed.path)"
+              echo -n "true" | tee "$(step.results.fallback-needed.path)" > "$(results.fallback-needed.path)"
+              echo -n "delegated" > "$(results.outcome.path)"
               exit 0
             fi
             echo "error: test '${TEST_NAME}' names no workflow: ${WORKFLOW_FILE} does not exist in this commit and there is no ./integration-test.sh." >&2
@@ -554,44 +559,3 @@ spec:
           fi
           exit 1
         fi
-
-    - name: fallback-script
-      image: $(params.agent-image)
-      workingDir: $(workspaces.source.path)
-      env:
-        - name: IMAGE_REF
-          value: $(params.image-ref)
-        - name: FALLBACK_NEEDED
-          value: $(steps.execute-testworkflow.results.fallback-needed)
-        - name: TEST_ENV
-          value: $(params.env)
-        - name: TEST_NAME
-          value: $(params.test-name)
-        - name: REQUIRED
-          value: $(params.required)
-      script: |
-        #!/usr/bin/env bash
-        set -euo pipefail
-        if [[ "${FALLBACK_NEEDED}" != "true" ]]; then
-          exit 0
-        fi
-        # The previous step only sets fallback-needed when ./integration-test.sh exists.
-        echo "running '${TEST_NAME}' against env '${TEST_ENV}', image ${IMAGE_REF}"
-        chmod +x ./integration-test.sh
-        # set +e, not the whole script under set -e: `outcome` must still be written
-        # on a real failure - same reasoning as execute-testworkflow's own comment
-        # above on this Task's result contract.
-        set +e
-        ./integration-test.sh
-        FALLBACK_EXIT_CODE=$?
-        set -e
-        if [[ "${FALLBACK_EXIT_CODE}" -eq 0 ]]; then
-          echo -n "passed" | tee "$(results.outcome.path)"
-        else
-          echo -n "failed" | tee "$(results.outcome.path)"
-          if [[ "${REQUIRED}" == "false" ]]; then
-            echo "integration-test.sh failed, but this step is required: false - recorded as failed, the flow continues"
-            exit 0
-          fi
-        fi
-        exit "${FALLBACK_EXIT_CODE}"

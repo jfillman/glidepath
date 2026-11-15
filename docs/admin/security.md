@@ -194,7 +194,9 @@ and write to its workspace, which is what it needs.
 What each part does.
 
 - **`source-runner`** is chosen per task in the run's `taskRunSpecs`. The generated `.tekton/` build run
-  (`deliver-onboarding-files`) carries the four entries. It has an `imagePullSecrets` reference so its pod can pull the toolbox image;
+  (`deliver-onboarding-files`) carries the four entries, a test run (generated, or chained by the Trigger) carries
+  `run-integration-script`, the Task that runs `./integration-test.sh` (it used to be a step of `run-testworkflow`, in the pod that
+  reads `app-secrets` and writes the Testkube namespace). It has an `imagePullSecrets` reference so its pod can pull the toolbox image;
   nothing else.
 - **`pipeline-runner`** lost `create` on `pipelineruns` and `taskruns` (it keeps get/list/watch: `stage-debrief` and
   `comment-pr-check-result` read their own run). Its other grants are unchanged in this release: `app-secrets` `get` by name, and
@@ -205,11 +207,15 @@ What each part does.
   own controller identity, so no account's RBAC applies to that creation. RBAC cannot say "this run must be one of the catalog's",
   so two ValidatingAdmissionPolicies in `glidepath-control-plane` (`templates/admission/cicd-run-shape.yaml`) do, for runs created
   by the Pipelines-as-Code controller in a `(app|infra)-*-cicd` namespace only:
-  - `cicd-run-shape` (always Deny): a cluster-resolver `pipelineRef` to a catalog Pipeline, no inline `pipelineSpec`, run-wide
-    account `pipeline-runner`, per-task accounts only `source-runner` or `glidepath-cloud-deployer` (which has its own policy), a
-    `podTemplate` of `hostAliases` only, workspaces `emptyDir` or `volumeClaimTemplate` only.
-  - `cicd-run-source-isolation`: a run of the `build` Pipeline must give the four source tasks to `source-runner`. A PR that deletes
-    those lines from its `.tekton` file is refused, not obeyed. `cicdRunAdmission.sourceIsolationActions` sets what a refusal does.
+  - `cicd-run-shape` (always Deny): `tekton.dev/v1` only, a cluster-resolver `pipelineRef` to one of the Pipelines in
+    `cicdRunAdmission.pipelines` (the 18 PR-check and post-merge Pipelines the onboarding templates deliver, and the five flow
+    stages), only the parameters each takes, shaped by `paramPatterns` and tied to what Pipelines-as-Code recorded (see below), no
+    inline `pipelineSpec`, run-wide account `pipeline-runner`, one `taskRunSpecs` entry per task and only for `source-runner` or
+    `glidepath-cloud-deployer` (which has its own policy), a `podTemplate` of `hostAliases` only, workspaces `emptyDir` or
+    `volumeClaimTemplate` only. Also on UPDATE. `cicd-run-no-taskruns` refuses a TaskRun from the PaC identity.
+  - `cicd-run-source-isolation`: a run of a Pipeline that runs the repository's code (`build`: `build-source`, `unit-test` and the
+    two artifact builds; `test`: `run-integration-script`) must give those tasks to `source-runner`. A PR that deletes those lines
+    from its `.tekton` file is refused, not obeyed. `cicdRunAdmission.sourceIsolationActions` sets what a refusal does.
   Every expression is `has()`-guarded and the match conditions cannot raise, so a CEL error cannot refuse requests cluster-wide.
 - **Tests.** `charts/glidepath-app/tests/pipeline_least_privilege_test.py` renders the charts and asserts each account, its
   automount, its effective RBAC, and that `source-runner` can do nothing (a negative test, run verb by verb);
@@ -219,15 +225,44 @@ What each part does.
 Forks. Pipelines-as-Code runs a pull request from a fork only after an owner or collaborator comments `/ok-to-test`
 (`remember-ok-to-test` is off, so every new commit needs it again). The policies apply to those runs as to any other.
 
-### What this does not yet do
+### What remains possible for someone who can open a pull request
 
-Stated so nobody relies on more than is there. In order of value:
+Read this before relying on the section above. "Someone who can open a pull request" means a person who can push a branch to the
+application repository (a fork needs an owner's `/ok-to-test` first; the answers are the same once it has it). Their code runs
+in the build and test stages before anything is merged. After this release:
 
-1. **`pipeline-runner` still writes every `release-tracking-*` ConfigMap, namespace-wide, and still reads `app-secrets`.** Only the
-   release tasks (`open-release-pr`, `mark-release-merged`, `itsm-change`, `itsm-gate`, `clearance-gate`, `comment-pr-check-result`,
-   `resolve-release-tracking`) should write them. The repository's code can no longer reach them; a catalog task can. Splitting
-   `pipeline-runner` into a release-record writer, a gate account and a read-mostly account is the next change.
-2. **The Clearance audience is still minted for `pipeline-runner`.** Clearance trusts `app-*-cicd/pipeline-runner` as registrar
+| They want | Possible? | Shortest remaining path |
+|---|---|---|
+| **(a) a Kubernetes token in code they control** | **Yes.** | A `RUN` line in the `Containerfile`. `build-image` runs rootless BuildKit with `--oci-worker-no-process-sandbox`, in the same container as its push credentials and, until the next change, with `pipeline-runner`'s token mounted in that pod. A `RUN` shares the daemon's process space and user, so it can read the daemon's environment and files (`/proc/<pid>/root/...`), the token file included. Not by `build.sh`, `test.sh`, `integration-test.sh`, a dependency install, a build backend or an edited `.tekton` file: those hold none. |
+| **(b) write or delete a `release-tracking-*` record** | **Yes, with (a).** | With the token from (a): `pipeline-runner` can patch and delete every ConfigMap of its namespace. A second path needs no token of theirs: a credentialed catalog task that runs git or a tool against the workspace after their code has changed it (`sast-scan` runs while `unit-test` is still writing to the same volume) can be made to run their configuration. Both end at the same Role. |
+| **(c) read a Secret** | **Yes, two ways.** | (1) With the token from (a): `get` on `app-secrets` by name (the Secret exists only for apps that use Testkube). (2) `registry-credentials`: the `build-image` push credential sits in the BuildKit container that runs the `RUN` line (the same path as (a)); and `build-artifact`'s `build` step can write the path its `publish` step then pushes, so naming the credential file as the artifact publishes it to the registry. They cannot read Secrets through the API without the token, and cannot mount one in a run of their own any more. |
+
+What this release does close, and how that was checked:
+
+- **The repository's scripts and installs** (`build.sh`, `test.sh`, `integration-test.sh`, dependency installs, build backends) run
+  as `source-runner` with no Kubernetes credential, and the step that runs the code mounts no registry credential
+  (`build-artifact`'s separate `publish` step does, see (c)). `run-integration-script` is a Task of its own: nothing of
+  `run-testworkflow`'s pod is in it.
+- **A pull request's `.tekton` file** can no longer widen a run: it must start one of the Pipelines the platform itself starts
+  from a file (the list is rendered from the onboarding templates and the flow generator, and a test compares them), pass only the
+  parameters that Pipeline takes, with values of the expected shape, and the repository, revision, pull request and namespace
+  parameters must equal what Pipelines-as-Code itself recorded for the event. Pipelines that deploy, release or test start only from a
+  push to a protected branch or a tag. It cannot name another ServiceAccount, add a pod template, embed a Pipeline, or start a
+  TaskRun. This depends on Pipelines-as-Code writing its own annotations over anything the file sets; that is how its source reads
+  and how a run looked live, but it was not exercised against a hostile file, so the upgrade note asks for it to be.
+- **Creating a run** needs `pipeline-trigger`, which no task runs as.
+
+What is not closed, in the order to do it (items 1-2 are the next change; 3-6 after):
+
+1. **`build-image` and the registry credential** (the path in (a) and (c)): the push credential and the daemon share a container.
+   The fix is architectural: build in a daemon whose container holds no credential and push from a separate step or task, or use a
+   sandboxed daemon. Not attempted here. The token alone is removed next (an account with no token for `build-image`).
+2. **Credentialed tasks that run git or tools in the shared workspace** after repo code has written to it.
+3. **`pipeline-runner` still writes every `release-tracking-*` ConfigMap, namespace-wide, and still reads `app-secrets`**, for every
+   catalog task. Only the release tasks (`open-release-pr`, `mark-release-merged`, `itsm-change`, `itsm-gate`, `clearance-gate`,
+   `comment-pr-check-result`, `resolve-release-tracking`) should write them. Splitting `pipeline-runner` into a release-record
+   writer, a gate account and a read-mostly account is the change that makes (b) need a catalog-task compromise, not a token.
+4. **The Clearance audience is still minted for `pipeline-runner`.** Clearance trusts `app-*-cicd/pipeline-runner` as registrar
    (`CLEARANCE_VERIFIERS`). A dedicated `clearance-gate` ServiceAccount, plus a policy that only that account may hold a token
    of the `clearance` audience (the shape of the catalog-token policy Autopilot already has), needs Clearance to trust it first.
    Migration order: (a) in Clearance's `CLEARANCE_VERIFIERS`, add `app-*-cicd/clearance-gate` and `infra-*-cicd/clearance-gate`
@@ -235,15 +270,12 @@ Stated so nobody relies on more than is there. In order of value:
    task (and the agent-gate tasks that use the same audience) as it through `taskRunSpecs`; (c) confirm in Clearance's records that
    every registration now comes from the new principal; (d) remove `app-*-cicd/pipeline-runner` from the verifiers, and add the
    audience policy.
-3. **`run-testworkflow`'s fallback step runs the repository's `integration-test.sh`** in the same pod as the credentialed
-   `execute-testworkflow` step (it needs `app-secrets` and the Testkube namespace). Moving it to a task of its own, run as
-   `source-runner`, changes the task whose results the `qa` gate reads from provenance, so it is its own change.
-4. **`build-artifact` builds the repository's code in the same pod that later pushes with the registry credential.** Different
-   containers, and only the push step mounts the credential, but one pod. Splitting build and publish removes that.
-5. **A rerun started through glidepath-api** copies the original run's `taskRunSpecs`. The policy that holds
-   glidepath-api to a shape (`tower-identity-writes`, in the cluster repository, not here) says "no `taskRunSpecs`", so a rerun of a
-   build run is refused until it allows entries of exactly `{pipelineTaskName, serviceAccountName: source-runner}`. A new push or
-   `/retest` is not affected.
+5. **A TestWorkflow from the repository** (`glidepath/<name>.yaml`) runs in the Testkube namespace with the app's own `app-secrets`
+   materialised. That is the feature (a workflow gets its app's secrets); other apps' secrets are fenced by `vpol-testkube-secret-usage`.
+6. **A rerun started through glidepath-api** copies the original run's `taskRunSpecs`. The policy that holds glidepath-api to a
+   shape (`tower-identity-writes`, in the cluster repository, not here) says "no `taskRunSpecs`", so a rerun of a build or test
+   run is refused until it allows entries of exactly `{pipelineTaskName, serviceAccountName: source-runner}` for the tasks in
+   `cicdRunAdmission.sourceTasks`. A new push or `/retest` is not affected.
 
 ### Upgrade note
 
@@ -255,9 +287,15 @@ Order matters because a build run created from a `.tekton` file written before t
 2. Release `glidepath-control-plane` with `cicdRunAdmission.sourceIsolationActions: [Warn, Audit]`. `cicd-run-shape` is Deny from
    the start (every file the current onboarding delivers satisfies it, which the policy test checks). A not-yet-resynced build file is let through and warned.
 3. Merge the onboarding-resync PR in every app repository (the one that rewrites `.tekton/`). Until it merges that app's build
-   still runs its repository code as `pipeline-runner`; it has lost run creation, but not the ConfigMap grant.
+   still runs its repository code as `pipeline-runner`; it has lost run creation, but not the ConfigMap grant. While any app is in
+   this state `sourceIsolationActions` is not Deny, the binding carries the annotation `glidepath.io/enforcement: NOT ENFORCING` and
+   (with prometheus-operator) the alert `CicdRunSourceIsolationNotEnforcing` fires after 3 days. **It must not be left on.**
+   Also, before the first `[Deny]` of `cicd-run-shape`, check one real file: on a branch, add a bogus `git-revision` to a copy of
+   a check's `.tekton` file and confirm the run is refused (the policy compares it with what Pipelines-as-Code records).
+   Apps whose flows trigger on a branch other than `main` need `cicdRunAdmission.protectedBranches` set to include it, or their
+   deploy, test and release flows are refused.
 4. When no build run carries a source-isolation warning, set `sourceIsolationActions: [Deny]` (the default for a new install).
-5. Ask the owner of the cluster repository to let glidepath-api reruns carry the `source-runner` entries (item 5 above).
+5. Ask the owner of the cluster repository to let glidepath-api reruns carry the `source-runner` entries (item 6 above).
 
 Rolling back is the reverse: a build run is only refused by `cicd-run-source-isolation`, so set its actions to `[Audit]` first.
 

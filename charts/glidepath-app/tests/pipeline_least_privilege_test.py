@@ -170,7 +170,13 @@ class Identities(unittest.TestCase):
                 self.assertNotIn("source-runner", yaml.safe_dump(d), d["metadata"]["name"])
         for d in self.docs:
             if d["kind"] == "TriggerTemplate":
-                self.assertNotIn("source-runner", yaml.safe_dump(d))   # build is never chained, so no template names it
+                specs = [r["spec"].get("taskRunSpecs") for r in d["spec"]["resourcetemplates"] if r.get("kind") == "PipelineRun"]
+                stage = d["metadata"]["labels"].get("hangar.io/stage")
+                # build is never chained, so only the test stage names source-runner here
+                if stage == "test":
+                    self.assertEqual(specs, [[{"pipelineTaskName": "run-integration-script", "serviceAccountName": "source-runner"}]])
+                else:
+                    self.assertNotIn("source-runner", str(specs), d["metadata"]["name"])
 
 
 class SourceTasks(unittest.TestCase):
@@ -225,10 +231,33 @@ class SourceTasks(unittest.TestCase):
         self.assertEqual(pairs, [(t, "source-runner") for t in SOURCE_TASKS])
 
     def test_the_admission_policy_names_the_same_tasks(self):
-        text = open(os.path.join(CP, "templates", "admission", "cicd-run-shape.yaml")).read()
-        m = re.search(r"\[('build-source'[^\]]*)\]\.all", text)
+        values = yaml.safe_load(open(os.path.join(CP, "values.yaml")))["cicdRunAdmission"]
+        self.assertEqual(values["sourceTasks"], {"build": SOURCE_TASKS, "test": ["run-integration-script"]})
+
+    def test_the_test_pipeline_runs_the_repository_script_in_its_own_task(self):
+        # run-testworkflow holds credentials (app-secrets, the Testkube namespace, registry read): no step of it may run the
+        # repository's code, and the fallback is a task of its own, after it, only when run-testworkflow asked for it
+        steps = self.tasks["run-testworkflow"]["spec"]["steps"]
+        self.assertFalse([x["name"] for x in steps if x.get("image") == "$(params.agent-image)"])
+        for x in steps:
+            self.assertNotIn("./integration-test.sh\n", x.get("script", ""), x["name"])
+            self.assertNotIn("\n        ./integration-test.sh", x.get("script", ""), x["name"])
+        entry = [t for t in self.pipelines["test"]["spec"]["tasks"] if t["name"] == "run-integration-script"][0]
+        self.assertEqual(entry["runAfter"], ["run-testworkflow"])
+        self.assertEqual(entry["when"], [{"input": "$(tasks.run-testworkflow.results.fallback-needed)", "operator": "in", "values": ["true"]}])
+        task = self.tasks["run-integration-script"]["spec"]
+        text = yaml.safe_dump(task)
+        self.assertNotIn("serviceAccountToken", text)
+        self.assertNotIn("kubectl", text)
+        self.assertNotIn("secret", text.lower().replace("secrets", ""))
+        self.assertFalse(task.get("volumes"))
+        self.assertIn("fallback-needed", [r["name"] for r in self.tasks["run-testworkflow"]["spec"]["results"]])
+
+    def test_generated_test_run_hands_the_script_task_to_source_runner(self):
+        script = "\n".join(s.get("script", "") for s in self.tasks["deliver-onboarding-files"]["spec"]["steps"])
+        m = re.search(r'if \[\[ "\$\{root_stage\}" == "test" \]\]; then(.*?)\n\s+fi', script, re.S)
         self.assertIsNotNone(m)
-        self.assertEqual(re.findall(r"'([^']+)'", m.group(1)), SOURCE_TASKS)
+        self.assertEqual(re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: ([^\s\"]+)", m.group(1)), [("run-integration-script", "source-runner")])
 
 
 if __name__ == "__main__":

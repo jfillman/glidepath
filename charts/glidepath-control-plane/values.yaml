@@ -36,10 +36,72 @@ cicdRunAdmission:
   pacControllerUser: system:serviceaccount:tekton-pipelines:pipelines-as-code-controller
   # The one namespace a run's pipelineRef may resolve from.
   catalogNamespace: platform-catalog
-  # What a refused build run does (cicd-run-source-isolation: the build Pipeline's source-executing tasks must run as
-  # source-runner). [Deny] on a fresh install. While upgrading, use [Warn, Audit] until every app's .tekton has been
-  # resynced (docs/admin/security.md, upgrade note), then [Deny].
+  # What a refused run of cicd-run-source-isolation does (a Pipeline that runs the repository's code must give those tasks
+  # to source-runner). [Deny] on a fresh install. While upgrading, use [Warn, Audit] until every app's .tekton has been
+  # resynced (docs/admin/security.md, upgrade note), then [Deny]. Anything but Deny is NOT enforcing: the chart annotates the
+  # binding and, where prometheus-operator is installed, renders an alert that fires until it is Deny again.
   sourceIsolationActions: [Deny]
+  # A Pipeline that writes release state, or deploys, is started only by a push to one of these branches (or a tag), never from a
+  # pull request or a side branch, whatever the .tekton file says. The checks run on a pull request into one of these.
+  protectedBranches: [main]
+  # Tasks of each Pipeline that run the repository's own code (the ones whose steps run $(params.agent-image) or the
+  # repository's scripts). A run of the Pipeline must give them to source-runner. The chart test derives this from the catalog.
+  sourceTasks:
+    build: [build-source, unit-test, build-python-wheel-artifact, build-go-binary-artifact]
+    test: [run-integration-script]
+  # Every Pipeline a .tekton file may start, and what it may pass. Anything else (release-outcome-notify, promote,
+  # governance-check, ...) is started by the platform, never by a file in a repository. params: the only parameter names the
+  # Pipeline accepts from a .tekton file (what the onboarding templates and generated flow files pass; the chart test compares
+  # them). pushOnly: only a push event. anyBranch: not held to protectedBranches (the PR build). Values are checked by
+  # paramPatterns and, for repo-url/git-url, revision/git-revision, pr-number, app-namespace and app-name, against what
+  # Pipelines-as-Code itself recorded on the run (its annotations and labels) and the run's namespace.
+  pipelines:
+    # Checks (onboarding-templates/*): a pull request into a protected branch, or a push to one.
+    agent-definitions-check: { params: [repo-url, revision, pr-number] }
+    agent-gates-check: { params: [repo-url, revision, pr-number] }
+    agent-preflight-check: { params: [repo-url, revision, pr-number] }
+    agent-release: { params: [repo-url, revision, before, app-name] }
+    api-compat-check: { params: [repo-url, revision, pr-number] }
+    bypass-merge-check: { params: [repo-url, revision] }
+    cicd-validate-check: { params: [repo-url, revision, pr-number] }
+    clearance-gate-check: { params: [repo-url, revision, app-name, pr-number] }
+    image-scan-check: { params: [repo-url, revision, pr-number] }
+    itsm-check: { params: [repo-url, revision, pr-number] }
+    onboarding-resync: { params: [git-url, app-namespace, app-name, app-type, github-owner, gitops-repo-url] }
+    policy-validation-check: { params: [repo-url, revision, app-name, pr-number] }
+    propose-merge-check: { params: [repo-url, revision] }
+    provenance-check: { params: [repo-url, revision, pr-number, app-namespace, app-name] }
+    qa-check: { params: [repo-url, revision, pr-number] }
+    sast-check: { params: [repo-url, revision, pr-number] }
+    sbom-check: { params: [repo-url, revision, pr-number] }
+    values-check: { params: [repo-url, revision, app-name, pr-number] }
+    # A flow's first stage (the generated .tekton/flow-*.yaml). Build is the only stage a pull request may start.
+    build: { anyBranch: true, params: &flowParams [git-url, git-revision, git-tag, image-repo, pr-tag-only, app-namespace, app-name, app-type, is-flow-terminal, env, test-name, cluster, name, pin-file] }
+    test: { pushOnly: true, params: *flowParams }
+    deploy: { pushOnly: true, params: *flowParams }
+    release: { pushOnly: true, params: *flowParams }
+    gitops-image-bump: { pushOnly: true, params: *flowParams }
+  paramPatterns:
+    repo-url: '^https://[a-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+    git-url: '^https://[a-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+    gitops-repo-url: '^https://[a-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+    revision: '^[0-9a-f]{40}$'
+    git-revision: '^[0-9a-f]{40}$'
+    before: '^[0-9a-f]{40}$'
+    pr-number: '^[0-9]{1,9}$'
+    git-tag: '^refs/tags/[A-Za-z0-9._/-]{1,200}$'
+    image-repo: '^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9._/-]{1,200}$'
+    pr-tag-only: '^(true|false)$'
+    is-flow-terminal: '^(true|false)$'
+    app-type: '^(app|infra)$'
+    app-name: '^[a-z0-9][a-z0-9-]{0,62}$'
+    app-namespace: '^(app|infra)-[a-z0-9-]{1,62}-cicd$'
+    github-owner: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
+    env: '^[a-z0-9][a-z0-9-]{0,62}$'
+    test-name: '^[a-z0-9][a-z0-9-]{0,62}$'
+    cluster: '^[a-z0-9][a-z0-9-]{0,62}$'
+    name: '^[a-z0-9][a-z0-9-]{0,62}$'
+    pin-file: '^glidepath/releases/[a-z0-9-]{1,62}\.yaml$'
 
 # See templates/broker/interceptor.yaml's own header comment on its Namespace resource
 # for the full reasoning. Defaults false: every cluster installs via an ArgoCD

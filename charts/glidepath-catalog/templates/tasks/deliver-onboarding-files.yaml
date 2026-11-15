@@ -512,6 +512,13 @@ spec:
             - pipelineTaskName: build-go-binary-artifact
               serviceAccountName: source-runner"
           fi
+          # A test-rooted flow: run-integration-script runs the repository's ./integration-test.sh (see run-integration-script.yaml).
+          if [[ "${root_stage}" == "test" ]]; then
+            task_run_specs_block="
+          taskRunSpecs:
+            - pipelineTaskName: run-integration-script
+              serviceAccountName: source-runner"
+          fi
           # Run-wide taskRunTemplate.podTemplate (2026-10-08), not a per-task
           # taskRunSpecs entry naming `notify-backstage`: Tekton validates taskRunSpecs
           # pipelineTaskNames at admission against the target Pipeline ("does not exist
