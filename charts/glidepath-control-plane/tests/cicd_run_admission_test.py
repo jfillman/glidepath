@@ -29,6 +29,7 @@ VALUES = os.path.join(CHART, "tests", "values.example.yaml")
 PAC = "system:serviceaccount:tekton-pipelines:pipelines-as-code-controller"
 NS = "app-sample-cicd"
 SOURCE_TASKS = ["build-source", "unit-test", "build-image", "build-python-wheel-artifact", "build-go-binary-artifact"]
+PUSHER_TASKS = ["push-image"]
 TEST_TASKS = ["run-integration-script"]
 ENV = celpy.Environment()
 
@@ -108,16 +109,30 @@ BUILD_PARAMS = prm(git_url=REPO, git_revision=SHA, image_repo="registry.example/
                    app_namespace=NS, app_name="sample", app_type="app", is_flow_terminal="false")
 
 
+def with_params(params, **kw):
+    """BUILD_PARAMS with some values replaced (names as keyword arguments, _ for -)."""
+    new = {k.replace("_", "-"): v for k, v in kw.items()}
+    return [dict(p, value=new.get(p["name"], p["value"])) for p in params]
+
+
+# what the onboarding generator writes for a pull request's build: pr-tag-only and the -pr repository go together
+PR_BUILD_PARAMS = with_params(BUILD_PARAMS, pr_tag_only="true", image_repo="registry.example/o/sample-pr")
+
+
 def run(name="build", metadata=None, **spec):
+    md = metadata or meta("pull_request", "main")
+    pr_build = name == "build" and md.get("annotations", {}).get("pipelinesascode.tekton.dev/event-type") == "pull_request"
     base = {
         "apiVersion": "tekton.dev/v1", "kind": "PipelineRun",
-        "metadata": metadata or meta("pull_request", "main"),
+        "metadata": md,
         "spec": {
             "pipelineRef": ref(name),
-            "params": list(BUILD_PARAMS),
+            # the default run is a pull request's build, which is what the generator writes for one
+            "params": list(PR_BUILD_PARAMS if pr_build else BUILD_PARAMS),
             "taskRunTemplate": {"serviceAccountName": "pipeline-runner"},
             "workspaces": [{"name": "source", "volumeClaimTemplate": {"spec": {}}}],
-            "taskRunSpecs": [{"pipelineTaskName": t, "serviceAccountName": "source-runner"} for t in SOURCE_TASKS],
+            "taskRunSpecs": [{"pipelineTaskName": t, "serviceAccountName": "source-runner"} for t in SOURCE_TASKS]
+                            + [{"pipelineTaskName": t, "serviceAccountName": "image-pusher"} for t in PUSHER_TASKS],
         },
     }
     base["spec"].update(spec)
@@ -245,6 +260,28 @@ class CicdRunAdmission(unittest.TestCase):
         self.assertFalse([d for d in docs if d["kind"] == "PrometheusRule" and d["metadata"]["name"] == "cicd-run-source-isolation-not-enforcing"])
         bind = [d for d in docs if d["kind"] == "ValidatingAdmissionPolicyBinding" and d["metadata"]["name"] == "cicd-run-source-isolation"][0]
         self.assertNotIn("annotations", bind["metadata"])
+
+    def test_the_build_pull_credential_is_rendered_only_when_named_and_is_never_the_push_credential(self):
+        def ces(*extra):
+            return [d for d in render(*extra) if d["kind"] == "ClusterExternalSecret"]
+        base = {d["metadata"]["name"] for d in ces()}
+        self.assertIn("registry-credentials", base)
+        self.assertNotIn("build-pull-credentials", base, "nothing about a pull credential unless the operator names a key")
+        docs = ces("--set", "buildPullCredential.remoteKey=build-pull-dockerconfigjson")
+        pull = [d for d in docs if d["metadata"]["name"] == "build-pull-credentials"]
+        self.assertEqual(len(pull), 1)
+        spec = pull[0]["spec"]["externalSecretSpec"]
+        self.assertEqual(spec["target"]["name"], "build-pull-credentials")
+        self.assertEqual(spec["target"]["template"]["type"], "kubernetes.io/dockerconfigjson")
+        self.assertEqual(spec["data"], [{"secretKey": ".dockerconfigjson", "remoteRef": {"key": "build-pull-dockerconfigjson"}}])
+        # the push credential is untouched
+        push = [d for d in docs if d["metadata"]["name"] == "registry-credentials"][0]
+        self.assertEqual(push["spec"]["externalSecretSpec"]["data"][0]["remoteRef"]["key"], "registry-credentials-dockerconfigjson")
+        # and the build pod's credential cannot be configured to be the push credential
+        for bad in (("buildPullCredential.remoteKey=registry-credentials-dockerconfigjson",),
+                    ("buildPullCredential.remoteKey=x", "buildPullCredential.secretName=registry-credentials")):
+            r = subprocess.run(["helm", "template", "cp", CHART, "-f", VALUES] + [a for v in bad for a in ("--set", v)], capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0, bad)
 
     def test_off_renders_nothing(self):
         pols, binds = policies("--set", "cicdRunAdmission.enabled=false")
@@ -463,7 +500,7 @@ class CicdRunAdmission(unittest.TestCase):
         for name in ("push_main", "pull_request_main"):
             md = {"generateName": "x-", "annotations": fx[name]["annotations"], "labels": fx[name]["labels"]}
             event = fx[name]["annotations"]["pipelinesascode.tekton.dev/event-type"]
-            pipeline, params = ("build", list(BUILD_PARAMS)) if event == "pull_request" else ("deploy", list(BUILD_PARAMS) + prm(env="dev"))
+            pipeline, params = ("build", list(PR_BUILD_PARAMS)) if event == "pull_request" else ("deploy", list(BUILD_PARAMS) + prm(env="dev"))
             params = [dict(p, value=fx[name]["annotations"]["pipelinesascode.tekton.dev/repo-url"]) if p["name"] == "git-url" else
                       dict(p, value=fx[name]["annotations"]["pipelinesascode.tekton.dev/sha"]) if p["name"] == "git-revision" else p for p in params]
             if pipeline == "build":
@@ -472,13 +509,14 @@ class CicdRunAdmission(unittest.TestCase):
                 self.admitted(run(pipeline, metadata=md, taskRunSpecs=None, params=params))
 
     def test_the_image_repository_is_the_apps_own(self):
+        push = meta("push", "main")
         for bad in ("registry.example/o/other-app", "registry.example/victim/sample", "registry.example/o/sample-buildcache",
                     "registry.example/o/sample/sub", "registry.example/o/base-image", "evil.example/o/sample-pr/x"):
             params = [p if p["name"] != "image-repo" else {"name": "image-repo", "value": bad} for p in BUILD_PARAMS]
-            self.refused(run(params=params), msg="repository")
+            self.refused(run(metadata=push, params=params), msg="repository")
         for good in ("registry.example/o/sample", "registry.example/o/sample-pr", "ghcr.io:5000/o/sample"):
             params = [p if p["name"] != "image-repo" else {"name": "image-repo", "value": good} for p in BUILD_PARAMS]
-            self.admitted(run(params=params))
+            self.admitted(run(metadata=push, params=params))
 
     def test_the_image_repository_prefix_can_be_configured(self):
         pols, _ = policies("--set", "cicdRunAdmission.imageRepoPrefixes={registry.example/ground-ns/}")
@@ -486,7 +524,7 @@ class CicdRunAdmission(unittest.TestCase):
         for repo, ok in (("registry.example/ground-ns/sample", True), ("registry.example/ground-ns/sample-pr", True),
                          ("registry.example/o/sample", False), ("registry.example/ground-ns/other", False)):
             params = [p if p["name"] != "image-repo" else {"name": "image-repo", "value": repo} for p in BUILD_PARAMS]
-            out = evaluate(shape, run(params=params))
+            out = evaluate(shape, run(metadata=meta("push", "main"), params=params))
             self.assertEqual(out == [], ok, (repo, out))
 
     def test_onboarding_resync_targets_only_this_apps_gitops_repository(self):
@@ -548,8 +586,9 @@ class CicdRunAdmission(unittest.TestCase):
 
     # ---- source isolation ----
     def test_source_isolation_for_every_pipeline_that_runs_repository_code(self):
-        for specs in (None, [], [{"pipelineTaskName": t, "serviceAccountName": "source-runner"} for t in SOURCE_TASKS[:3]],
-                      [{"pipelineTaskName": t, "serviceAccountName": "pipeline-runner"} for t in SOURCE_TASKS]):
+        pusher = [{"pipelineTaskName": t, "serviceAccountName": "image-pusher"} for t in PUSHER_TASKS]
+        for specs in (None, [], [{"pipelineTaskName": t, "serviceAccountName": "source-runner"} for t in SOURCE_TASKS[:3]] + pusher,
+                      [{"pipelineTaskName": t, "serviceAccountName": "pipeline-runner"} for t in SOURCE_TASKS] + pusher):
             self.refused(run(taskRunSpecs=specs), self.iso, "source-runner")
         # the review's case: the test Pipeline, no taskRunSpecs, runs ./integration-test.sh with pipeline-runner's token
         params = list(BUILD_PARAMS) + prm(env="dev", test_name="integration")
@@ -560,6 +599,70 @@ class CicdRunAdmission(unittest.TestCase):
         self.admitted(t)
         other = run("cicd-validate-check", taskRunSpecs=None, params=prm(repo_url=REPO, revision=SHA, pr_number="17"))
         self.assertIsNone(evaluate(self.iso, other))
+
+    def test_the_push_task_must_run_as_image_pusher(self):
+        sources = [{"pipelineTaskName": t, "serviceAccountName": "source-runner"} for t in SOURCE_TASKS]
+        for specs in (sources, sources + [{"pipelineTaskName": "push-image", "serviceAccountName": "pipeline-runner"}],
+                      sources + [{"pipelineTaskName": "push-image", "serviceAccountName": "source-runner"}]):
+            self.refused(run(taskRunSpecs=specs), self.iso, "image-pusher")
+        self.admitted(run(), self.iso)
+
+    def test_image_pusher_is_allowed_only_on_the_push_task_of_the_build_pipeline(self):
+        sources = [{"pipelineTaskName": t, "serviceAccountName": "source-runner"} for t in SOURCE_TASKS]
+        self.admitted(run(taskRunSpecs=sources + [{"pipelineTaskName": "push-image", "serviceAccountName": "image-pusher"}]))
+        for task in ("build-image", "build-source", "unit-test", "preflight", "generate-sbom", "debrief"):
+            specs = [s for s in sources if s["pipelineTaskName"] != task] + [{"pipelineTaskName": task, "serviceAccountName": "image-pusher"}]
+            self.refused(run(taskRunSpecs=specs + [{"pipelineTaskName": "push-image", "serviceAccountName": "image-pusher"}]), msg="may run as")
+        # source-runner (repository code) may not be given the push task, nor the pusher to another Pipeline's task
+        self.refused(run(taskRunSpecs=sources + [{"pipelineTaskName": "push-image", "serviceAccountName": "source-runner"}]), msg="may run as")
+        self.refused(run("deploy", metadata=meta("push", "main"), params=list(BUILD_PARAMS) + prm(env="dev"),
+                         taskRunSpecs=[{"pipelineTaskName": "push-image", "serviceAccountName": "image-pusher"}]), msg="may run as")
+
+    def test_a_pull_request_build_must_say_so_and_use_the_pr_repository(self):
+        # the cache a build may write follows pr-tag-only; a pull request may not claim to be a main build, nor a main build's repository
+        self.admitted(run(metadata=meta("pull_request", "main"), params=PR_BUILD_PARAMS))
+        self.refused(run(metadata=meta("pull_request", "main"), params=BUILD_PARAMS), msg="pr-tag-only=true")
+        self.refused(run(metadata=meta("pull_request", "main"), params=with_params(BUILD_PARAMS, pr_tag_only="true")), msg="-pr")
+        self.refused(run(metadata=meta("pull_request", "main"), params=with_params(PR_BUILD_PARAMS, pr_tag_only="false")), msg="pr-tag-only=true")
+        # an event that is neither push nor pull_request (a comment re-run) is held the same way
+        self.refused(run(metadata=meta("incoming", "main"), params=BUILD_PARAMS), msg="pr-tag-only=true")
+        # a push is a main build
+        self.admitted(run(metadata=meta("push", "main"), params=BUILD_PARAMS))
+        self.refused(run(metadata=meta("push", "main"), params=with_params(BUILD_PARAMS, pr_tag_only="true")), msg="-pr")
+        self.admitted(run(metadata=meta("push", "main"), params=with_params(BUILD_PARAMS, image_repo="registry.example/o/sample-pr", pr_tag_only="true")))
+
+    def test_the_pr_repository_is_exactly_the_apps_own_pr_repository(self):
+        # an application whose own repository name ends in -pr: its main repository must not satisfy the pull request rule
+        app = "sample-pr"
+        ns = "app-sample-pr-cicd"
+        base = with_params(BUILD_PARAMS, app_name=app, app_namespace=ns)
+        md = meta("pull_request", "main")
+        good = with_params(base, pr_tag_only="true", image_repo="registry.example/o/sample-pr-pr")
+        main = with_params(base, pr_tag_only="true", image_repo="registry.example/o/sample-pr")
+        self.admitted(run(metadata=md, params=good), namespace=ns)
+        self.refused(run(metadata=md, params=main), msg="-pr image repository", namespace=ns)
+        # and for an ordinary application another application's -pr repository is not its own
+        other = with_params(BUILD_PARAMS, pr_tag_only="true", image_repo="registry.example/o/other-pr")
+        self.refused(run(metadata=md, params=other), msg="repository")
+
+    def test_pusher_tasks_are_derived_from_the_catalog(self):
+        docs = render_catalog()
+        tasks = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Task"}
+        pipelines = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Pipeline"}
+        for pname, listed in self.values["pusherTasks"].items():
+            self.assertTrue(listed)
+            by_name = {t["name"]: t for t in pipelines[pname]["spec"]["tasks"]}
+            for t in listed:
+                ref_name = [p["value"] for p in by_name[t]["taskRef"]["params"] if p["name"] == "name"][0]
+                task = tasks[ref_name]["spec"]
+                # holds the push credential, runs nothing of the repository's, reads the workspace read-only
+                self.assertIn("registry-credentials", yaml.safe_dump(task["volumes"]))
+                self.assertFalse(repo_code(tasks[ref_name]), t)
+                self.assertTrue([w for w in task["workspaces"] if w.get("readOnly")], t)
+            self.assertFalse(set(listed) & set(self.values["sourceTasks"].get(pname, [])), "a task cannot be both")
+        # the generator hands exactly those tasks to image-pusher
+        _, gen = generator_params()
+        self.assertEqual(re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: image-pusher", gen), self.values["pusherTasks"]["build"])
 
     def test_not_this_policys_concern(self):
         hostile = run(pipelineSpec={"tasks": []}, taskRunTemplate={"serviceAccountName": "default"})

@@ -64,6 +64,11 @@ cicdRunAdmission:
   sourceTasks:
     build: [build-source, unit-test, build-image, build-python-wheel-artifact, build-go-binary-artifact]
     test: [run-integration-script]
+  # Tasks of each Pipeline that hold the registry push credential and run nothing from the repository (push-image validates the
+  # OCI layout build-image wrote, then pushes it). A run of the Pipeline must give them to image-pusher, an account with no
+  # Role and no token, and no other task may run as it. The chart test derives this from the catalog.
+  pusherTasks:
+    build: [push-image]
   # Every Pipeline a .tekton file may start, and what it may pass. Anything else (release-outcome-notify, promote,
   # governance-check, ...) is started by the platform, never by a file in a repository. params: the only parameter names the
   # Pipeline accepts from a .tekton file (what the onboarding templates and generated flow files pass; the chart test compares
@@ -412,6 +417,16 @@ chains:
 # name/kind stay values (not hardcoded in every downstream chart) so a future backend
 # swap is still a one-file change here, same reasoning as before, just already landed
 # on Infisical instead of still deferring to it.
+# The READ-ONLY registry credential the image build pod may mount (glidepath-catalog buildPullCredential): to pull private base
+# images and import the main build cache. remoteKey is the key in the platform secret store of a kubernetes.io/dockerconfigjson
+# value whose token can read packages and nothing else (never the push credential's key, registry-credentials-dockerconfigjson:
+# the build pod runs the repository's code and can read this). Empty (default): nothing is rendered, the build pulls anonymously,
+# and a private base image or a private cache package fails its pull. The platform operator creates the secret-store entry; this
+# chart only copies it into every namespace the platform manages, as a Secret named secretName (the catalog's value, default
+# build-pull-credentials).
+buildPullCredential:
+  remoteKey: ""
+  secretName: build-pull-credentials
 secretStore:
   # Name of the ClusterSecretStore object rendered by
   # templates/secretstore/cluster-secret-store.yaml - every downstream ExternalSecret

@@ -29,6 +29,7 @@ CATALOG = os.path.join(ROOT, "charts", "glidepath-catalog")
 CP = os.path.join(ROOT, "charts", "glidepath-control-plane")
 NS = "app-x-cicd"   # the chart derives the real namespace from platformIdentity.appName; rules_for reads it back
 SOURCE_TASKS = ["build-source", "unit-test", "build-image", "build-python-wheel-artifact", "build-go-binary-artifact"]
+PUSHER_TASKS = ["push-image"]
 
 CICD = {
     "apiVersion": "platform/v1", "kind": "PipelineConfig",
@@ -156,6 +157,31 @@ class Identities(unittest.TestCase):
                         self.assertEqual(r["spec"]["taskRunTemplate"]["serviceAccountName"], "pipeline-runner")
         self.assertGreater(runs, 3)
 
+    def test_image_pusher_has_no_token_and_no_rbac(self):
+        sa = self.sas["image-pusher"]
+        self.assertIs(sa.get("automountServiceAccountToken"), False)
+        self.assertEqual(sa.get("imagePullSecrets"), [{"name": "registry-credentials"}])
+        self.assertEqual(rules_for(self.docs, "image-pusher"), [], "image-pusher must be granted nothing")
+        for kind in ("RoleBinding", "ClusterRoleBinding"):
+            for b in self.docs:
+                if b["kind"] == kind:
+                    for s in b.get("subjects") or []:
+                        self.assertNotEqual(s.get("name"), "image-pusher", b["metadata"]["name"])
+        # the negative test, verb by verb
+        rules = rules_for(self.docs, "image-pusher")
+        for group, res, verb in (("", "secrets", "get"), ("", "configmaps", "get"), ("", "configmaps", "patch"),
+                                 ("tekton.dev", "pipelineruns", "create"), ("tekton.dev", "taskruns", "create"),
+                                 ("", "serviceaccounts/token", "create"), ("", "pods", "create")):
+            self.assertFalse(allows(rules, group, res, verb), f"{verb} {group}/{res}")
+
+    def test_the_four_accounts_are_distinct_and_only_the_two_credential_free_ones_are_task_accounts_here(self):
+        self.assertEqual({"pipeline-runner", "source-runner", "image-pusher", "pipeline-trigger"} - set(self.sas), set())
+
+    def test_nothing_else_runs_as_image_pusher(self):
+        for d in self.docs:
+            if d["kind"] in ("Job", "Deployment", "CronJob", "StatefulSet", "TriggerTemplate", "Task"):
+                self.assertNotIn("image-pusher", yaml.safe_dump(d), d["metadata"]["name"])
+
     def test_the_bootstrap_job_uses_the_trigger_account_and_its_token(self):
         jobs = [d for d in self.docs if d["kind"] == "Job" and d["metadata"]["name"] == "onboarding-resync-bootstrap"]
         self.assertEqual(len(jobs), 1, "the fixture must render the bootstrap hook (a skip here would hide a regression)")
@@ -202,6 +228,7 @@ class SourceTasks(unittest.TestCase):
         self.assertEqual({k: refs[k] for k in SOURCE_TASKS},
                          {"build-source": "build-source", "unit-test": "run-tests", "build-image": "build-image",
                           "build-python-wheel-artifact": "build-artifact", "build-go-binary-artifact": "build-artifact"})
+        self.assertEqual(refs["push-image"], "push-image")
 
     def test_every_build_task_that_runs_an_agent_image_is_on_the_list(self):
         # A task whose step runs $(params.agent-image) runs the repository's code. If one is added to the build Pipeline
@@ -232,11 +259,23 @@ class SourceTasks(unittest.TestCase):
         self.assertIsNotNone(m, "the build taskRunSpecs block is missing from deliver-onboarding-files")
         block = m.group(1)
         pairs = re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: ([^\s\"]+)", block)
-        self.assertEqual(pairs, [(t, "source-runner") for t in SOURCE_TASKS])
+        self.assertEqual(pairs, [(t, "source-runner") for t in SOURCE_TASKS] + [(t, "image-pusher") for t in PUSHER_TASKS])
 
     def test_the_admission_policy_names_the_same_tasks(self):
         values = yaml.safe_load(open(os.path.join(CP, "values.yaml")))["cicdRunAdmission"]
         self.assertEqual(values["sourceTasks"], {"build": SOURCE_TASKS, "test": ["run-integration-script"]})
+        self.assertEqual(values["pusherTasks"], {"build": PUSHER_TASKS})
+
+    def test_the_build_task_mounts_no_push_credential_and_the_push_task_runs_no_repository_code(self):
+        build = self.tasks["build-image"]["spec"]
+        self.assertNotIn("registry-credentials", yaml.safe_dump(build))
+        self.assertEqual([v["secret"]["secretName"] for v in build.get("volumes", []) if "secret" in v], ["build-pull-credentials"])
+        push = self.tasks["push-image"]["spec"]
+        self.assertEqual([v["secret"]["secretName"] for v in push["volumes"] if "secret" in v], ["registry-credentials"])
+        self.assertFalse(runs_repo_code(self.tasks["push-image"]), "push-image must not run the build agent or the builder")
+        self.assertNotIn("projected", yaml.safe_dump(push))
+        # the two never share a pod: different Tasks, and the Pipeline runs push-image after build-image, by reference
+        self.assertEqual([t for t in self.pipelines["build"]["spec"]["tasks"] if t["name"] == "push-image"][0]["runAfter"], ["build-image"])
 
     def test_the_test_pipeline_runs_the_repository_script_in_its_own_task(self):
         # run-testworkflow holds credentials (app-secrets, the Testkube namespace, registry read): no step of it may run the

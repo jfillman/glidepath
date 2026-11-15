@@ -240,7 +240,7 @@ spec:
     # see notify-slack.yaml's identical block for why (finally tasks are skipped if a
     # param references a result from a task that failed/didn't run).
     if [[ -z "${IMAGE_REF}" && "${STAGE_NAME}" == "build" ]]; then
-      IMAGE_REF="$(kubectl get taskrun -n "${APP_NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME},tekton.dev/pipelineTask=build-image" \
+      IMAGE_REF="$(kubectl get taskrun -n "${APP_NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME},tekton.dev/pipelineTask=push-image" \
         -o jsonpath='{.items[0].status.results[?(@.name=="image-ref")].value}' 2>/dev/null || true)"
     fi
 

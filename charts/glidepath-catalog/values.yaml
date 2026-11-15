@@ -49,6 +49,24 @@ rbac:
 # 2026-10-26: bumped for the Kyverno CLI 1.19.0 (the policy-validation release check, ADR-0028).
 # 2026-10-31: bumped for checks-only repositories (build optional; pipelines/test/deploy/api/ephemeralEnvironments need it).
 toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-31-checks-only
+# Image build and push are two tasks (docs/admin/security.md, "Image build and push"). build-image runs the repository's
+# Containerfile RUN lines as source-runner, with no push credential; push-image, a separate pod, holds the push credential
+# (the registry-credentials Secret) and copies only a layout it has validated.
+#
+# buildPullCredential: the READ-ONLY registry credential the build pod may mount so BuildKit can pull base images and import the
+# main build cache when those are private (or when anonymous pulls are rate limited). A kubernetes.io/dockerconfigjson Secret
+# named secretName, in each -cicd namespace, whose token can read packages and nothing else. The platform operator supplies it
+# (glidepath-control-plane buildPullCredential.remoteKey renders the ClusterExternalSecret that copies it). The volume is
+# optional: without the Secret the build pulls anonymously, so a private base image or a private cache package fails the pull
+# (the cache then reads as cold; a private base fails the build). It can never be the push credential: the chart refuses that name.
+buildPullCredential:
+  secretName: build-pull-credentials
+# imagePush: what push-image accepts (oci-layout.sh). Total bytes of distinct blobs in the layout it validates and then pushes:
+# the image, and separately the cache a main build exports. The workspace volume (build.sourceVolume) must hold the source, the
+# image layout and the cache layout together.
+imagePush:
+  maxImageBytes: 8589934592
+  maxCacheBytes: 8589934592
 # The image the cicd-validate check (tasks/cicd-validate.yaml, docs/admin/contract.md) runs `glidepath validate`
 # with: tools/validate.Containerfile, carrying the validator, the schema and the contract of one commit of this repo.
 # Public, like the toolbox. validate-image-ci publishes it on every change to those files and sets this line to the
