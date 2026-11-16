@@ -341,12 +341,17 @@ spec:
             SECRET_JSONS="${SECRET_JSONS}${SRC_JSON}"$'\n'
           fi
         done
+        # REPLACE the placeholder's data with this run's snapshot, every run: a merge patch only adds keys, so a key
+        # from an earlier run whose cleanup never ran (and whose source Secret has since gone) would survive. A JSON
+        # patch `add /data` replaces the member whether or not it exists (the cleanup below removes it), under the
+        # `patch` verb this step already has on the one Secret (get/update/patch); neither source empties it.
         if [[ -n "${SECRET_JSONS}" ]]; then
-          PATCH_DATA="$(jq -c -s '{data: (map(.data // {}) | add)}' <<< "${SECRET_JSONS}")"
-          kubectl -n testkube patch secret "${SECRET_NAME}" --type merge -p "${PATCH_DATA}"
+          MERGED="$(jq -c -s 'map(.data // {}) | add' <<< "${SECRET_JSONS}")"
         else
-          echo "no app-secrets or dex-check-ride-credentials in this namespace - leaving ${SECRET_NAME} empty"
+          echo "no app-secrets or dex-check-ride-credentials in this namespace - emptying ${SECRET_NAME}"
+          MERGED='{}'
         fi
+        kubectl -n testkube patch secret "${SECRET_NAME}" --type json -p "$(jq -c -n --argjson d "${MERGED}" '[{op: "add", path: "/data", value: $d}]')"
 
         # BEGIN testworkflow-policy
         # What a repository's TestWorkflow may be before it is applied into the shared testkube namespace (it runs there as
