@@ -405,7 +405,7 @@ paths:
         Needs `get` on `releases.glidepath.hangar.io` in the app's namespace. The run as the cluster holds it (status,
         every task of the Pipeline in order, pending ones included, and its params), the chain id its preflight task minted, the PR and change request once
         open-release-pr has them, and the release record that chain id names. `phase` is the record's state once there
-        is one (proposed, merged, progressing, healthy, ...), else the run's (running, failed, cancelled, or finished:
+        is one (proposed, merged, progressing, healthy, ...), else the run's (queued, running, failed, cancelled, or finished:
         it succeeded without a record). 404 once Tekton has deleted the run (about an hour after it finished): the
         record stays, GET /v1/apps/{app}/releases. 400 for a PipelineRun that is not a release run.
       x-glidepath-tier: T0
@@ -1366,7 +1366,7 @@ components:
         env: { type: string }
         cluster: { type: string }
         initiator: { type: string }
-        status: { type: string, enum: [pending, running, succeeded, failed, cancelled] }
+        status: { type: string, enum: [pending, queued, running, succeeded, failed, cancelled], description: "queued: Pipelines-as-Code created the run beyond the repository's concurrency limit (spec.status PipelineRunPending); it has not started. Additive: a client that does not know it should treat it as not yet running. pending: no status yet." }
         reason: { type: string }
         message: { type: string }
         startTime: { type: string }
@@ -1388,7 +1388,7 @@ components:
         prUrl: { type: string }
         changeRequest: { type: string }
         origin: { $ref: "#/components/schemas/ReleaseOrigin" }
-        phase: { type: string, description: "The record's state once there is one, else the run's (running, failed, cancelled, finished)" }
+        phase: { type: string, description: "The record's state once there is one, else the run's (queued, running, failed, cancelled, finished)" }
         record: { nullable: true, allOf: [{ $ref: "#/components/schemas/Release" }] }
     LiveRuns:
       type: object
