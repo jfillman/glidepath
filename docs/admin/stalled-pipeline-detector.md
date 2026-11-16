@@ -19,6 +19,12 @@ CDEvent therefore either creates the PipelineRun once or hits a harmless
 `AlreadyExists`. This detector covers the opposite failure: a stage finishing and
 **nothing** happening next.
 
+**Queued runs are not covered either.** With Pipelines-as-Code's `concurrency_limit` set
+([pipeline-performance.md](pipeline-performance.md#queueing-gate-runs)) a run waits as a pending PipelineRun. The detector
+only reads PipelineRuns that have already succeeded with a completion time, so a queued run is never flagged, and it never
+cancels anything. A queue that stops draining (a leaked slot in the PaC watcher) is not detected here; the recovery is in
+that page ("If a repository's queue stalls").
+
 ## Detection mechanism
 
 Uses two labels every flow-generated PipelineRun carries - `hangar.io/flow` and

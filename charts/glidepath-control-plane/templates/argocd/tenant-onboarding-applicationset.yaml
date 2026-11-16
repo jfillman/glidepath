@@ -122,6 +122,15 @@ spec:
               observability:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
+              {{- /* Pipelines-as-Code's per-repository queue: only the limits that are set, so unset forwards nothing. */}}
+              {{- $pac := dict }}
+              {{- range $k := list "concurrencyLimit" "appRepoConcurrencyLimit" "gitopsRepoConcurrencyLimit" }}
+              {{- if not (kindIs "invalid" (index ($.Values.pipelinesAsCode | default dict) $k)) }}{{ $_ := set $pac $k (index $.Values.pipelinesAsCode $k) }}{{ end }}
+              {{- end }}
+              {{- with $pac }}
+              pipelinesAsCode:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
               {{- with (.Values.aws | default dict).accountId }}
               # The fleet's AWS account (clusters.yaml aws:): glidepath-app's cloud deploy identity.
               cloudIdentity:
