@@ -30,6 +30,14 @@
 #                              push-image) as image-pusher. Separate so it can be rolled out in audit first.
 #   cicd-run-no-taskruns       PaC never creates a TaskRun; one from its identity is refused.
 #
+# A push event spells its source ref two ways (Pipelines-as-Code v0.52.0, pkg/provider/github/parse_payload.go): a real push records
+# the full ref (refs/heads/main, refs/tags/v1.2.3, :698-700), a re-run of that push's check from the git host (check_run /
+# check_suite "rerequested", :752-808 and :815-851) records event-type push with the check suite's head_branch, the bare
+# name (main, :765, :824, :846-848). Both are admitted for a protected branch; the bare form is never a tag (a tag has no
+# head_branch, PaC refuses that re-run, :804 and :843) and a bare name must equal a protectedBranches entry exactly, so a push
+# to any other branch is still refused. Pipelines-as-Code overwrites these annotations on the run (pkg/kubeinteraction/labels.go:112-114),
+# so a .tekton file cannot set them.
+#
 # This is the first of two layers on a ref. It decides on the ref's NAME (a configured protected branch, or a tag of the release
 # shape) and on what Pipelines-as-Code recorded; it cannot see whether the git host protects that ref. The second layer is
 # the catalog's verify-ref-protection task, the first task of every privileged Pipeline and of the build, which asks
@@ -139,6 +147,7 @@ spec:
         variables.pipelineName in variables.anyBranch ||
         (variables.isPush ?
           (variables.srcRef in [{{ range $i, $b := $c.protectedBranches }}{{ if $i }}, {{ end }}{{ printf "refs/heads/%s" $b | quote | replace "\"" "'" }}{{ end }}] ||
+           variables.srcRef in {{ $c.protectedBranches | toJson }} ||
            variables.srcRef.matches(r'{{ $c.tagRefPattern }}')) :
           ('pipelinesascode.tekton.dev/branch' in variables.anns && variables.anns['pipelinesascode.tekton.dev/branch'] in {{ $c.protectedBranches | toJson }}))
       message: "This Pipeline starts only from a push to a protected branch (cicdRunAdmission.protectedBranches) or to a tag matching cicdRunAdmission.tagRefPattern (decided on the full ref), or, for a check, from a pull request into a protected branch."

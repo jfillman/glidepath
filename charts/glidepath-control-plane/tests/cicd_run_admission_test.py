@@ -588,6 +588,90 @@ class CicdRunAdmission(unittest.TestCase):
         for tag in ("refs/tags/anything", "refs/tags/v1.0", "refs/tags/v1.0.0-evil", "refs/tags/x/v1.0.0"):
             self.refused(run("release", metadata=meta("push", tag, source=tag), taskRunSpecs=None, params=params), msg="protected branch")
 
+    # ---- the event shapes Pipelines-as-Code v0.52.0 records at runtime (parse_payload.go), not what the template files say ----
+    def test_a_rerun_of_a_push_check_records_the_bare_branch_and_is_admitted(self):
+        # check_run / check_suite "rerequested" on a push: event-type push, source-branch = the check suite's head_branch, bare
+        # (parse_payload.go:765,824,846-848,851). This is what the gitops repos' bypass-check-42rhw (app-parachute-cicd) carried:
+        # event-type push, source-branch main, branch main, on-event [push], on-target-branch [main].
+        bare = meta("push", "main", source="main")
+        params = list(BUILD_PARAMS) + prm(env="prod")
+        self.admitted(run("bypass-merge-check", metadata=bare, taskRunSpecs=None, params=prm(repo_url=REPO, revision=SHA)))
+        for stage in ("test", "deploy", "release", "gitops-image-bump"):
+            self.admitted(run(stage, metadata=bare, taskRunSpecs=None, params=params))
+        # the real push of the same ref still is
+        self.admitted(run("bypass-merge-check", metadata=meta("push", "main"), taskRunSpecs=None, params=prm(repo_url=REPO, revision=SHA)))
+
+    def test_a_push_to_any_other_branch_is_refused_in_either_spelling(self):
+        params = list(BUILD_PARAMS) + prm(env="prod")
+        for src in ("refs/heads/attacker-branch", "attacker-branch", "refs/heads/main-evil", "main-evil", "Main", "refs/heads/release-1",
+                    "refs/tags/main", "refs/heads/refs/heads/main", "", "v1.0.0", "refs/tags/v1.0"):
+            for name, kw in (("bypass-merge-check", prm(repo_url=REPO, revision=SHA)), ("release", params), ("deploy", params)):
+                self.refused(run(name, metadata=meta("push", "attacker-branch", source=src), taskRunSpecs=None, params=kw),
+                             msg="protected branch")
+        # a bare tag name is not a tag: only the full refs/tags/ ref is (and a GitHub re-run of a tag push cannot exist, head_branch is null)
+        self.refused(run("release", metadata=meta("push", "v1.0.0", source="v1.0.0"), taskRunSpecs=None, params=params), msg="protected branch")
+
+    def test_a_merged_pull_request_is_a_push_and_a_closed_one_never_starts_a_run(self):
+        # PaC never matches a template against pull_request closed (pipelineascode.go:81-82, it only cancels), so a merged PR starts
+        # bypass-merge-check through the PUSH its merge makes. A pull_request-typed run into a branch that is not protected is refused.
+        chk = run("bypass-merge-check", metadata=meta("pull_request", "side"), taskRunSpecs=None, params=prm(repo_url=REPO, revision=SHA))
+        self.refused(chk, msg="protected branch")
+        chk = run("bypass-merge-check", metadata=meta("pull_request", "main"), taskRunSpecs=None, params=prm(repo_url=REPO, revision=SHA))
+        self.admitted(chk)
+        # the push a merge into a side branch makes
+        self.refused(run("bypass-merge-check", metadata=meta("push", "side"), taskRunSpecs=None, params=prm(repo_url=REPO, revision=SHA)),
+                     msg="protected branch")
+        self.refused(run("bypass-merge-check", metadata=meta("push", "side", source="side"), taskRunSpecs=None, params=prm(repo_url=REPO, revision=SHA)),
+                     msg="protected branch")
+
+    def test_source_branch_main_does_not_forge_a_push_or_a_pull_request(self):
+        # A file can write any annotation, but Pipelines-as-Code overwrites every key it records (kubeinteraction/labels.go:112-114), so the
+        # policy sees PaC's value. What a fork or a branch can still influence is the HEAD branch name of a pull request, which PaC records as
+        # source-branch: a PR from a branch named main into `side`, or a push event whose branch is another one, must not pass.
+        params = list(BUILD_PARAMS) + prm(env="prod")
+        pr_from_main = meta("pull_request", "side", source="main")
+        self.refused(run("sast-check", metadata=pr_from_main, taskRunSpecs=None, params=prm(repo_url=REPO, revision=SHA, pr_number="17")),
+                     msg="protected branch")
+        self.refused(run("release", metadata=pr_from_main, taskRunSpecs=None, params=params), msg="push event")
+        # a release that asks for push-only from a comment-triggered event (retest-comment, incoming) stays refused
+        for event in ("retest-comment", "test-comment", "ok-to-test-comment", "incoming", "cancel-comment"):
+            self.refused(run("release", metadata=meta(event, "main", source="main"), taskRunSpecs=None, params=params), msg="push event")
+
+    def test_comment_triggered_retests_of_a_pull_request_check(self):
+        # /retest on a pull request: event-type retest-comment, branch = the PR's base, source-branch = its head (parse_payload.go:80-100)
+        ok = run("sast-check", metadata=meta("retest-comment", "main", source="release-abc"), taskRunSpecs=None, params=prm(repo_url=REPO, revision=SHA, pr_number="17"))
+        self.admitted(ok)
+        bad = run("sast-check", metadata=meta("retest-comment", "side", source="release-abc"), taskRunSpecs=None, params=prm(repo_url=REPO, revision=SHA, pr_number="17"))
+        self.refused(bad, msg="protected branch")
+
+    def test_every_template_is_admitted_in_every_event_shape_pac_can_record_for_it(self):
+        found = delivered_templates()
+        self.assertGreater(len(found), 15, "vacuous")
+        shapes_seen = 0
+        for path, d in found:
+            base = os.path.basename(path)
+            if base.startswith("pull-request-") and base != "pull-request-merged.yaml":
+                shapes = [("pull_request", "main", "feature-x"), ("retest-comment", "main", "feature-x"), ("pull_request_labeled", "main", "feature-x")]
+                refused = [("pull_request", "side", "feature-x"), ("retest-comment", "side", "feature-x")]
+            else:
+                # a push (full ref) and a re-run of its check from the git host (bare head_branch)
+                shapes = [("push", "main", "refs/heads/main"), ("push", "main", "main")]
+                refused = [("push", "side", "refs/heads/side"), ("push", "side", "side"), ("pull_request", "side", "main")]
+            for event, branch, source in shapes:
+                dd = copy.deepcopy(d)
+                dd["metadata"] = dict(meta(event, branch, source=source), generateName=d["metadata"].get("generateName", "x-"))
+                self.admitted(dd)
+                shapes_seen += 1
+            for event, branch, source in refused:
+                dd = copy.deepcopy(d)
+                dd["metadata"] = dict(meta(event, branch, source=source), generateName=d["metadata"].get("generateName", "x-"))
+                # the PR build is the one Pipeline that is not held to a branch
+                if template_pipeline(d) in self.values["pipelines"] and self.values["pipelines"][template_pipeline(d)].get("anyBranch"):
+                    continue
+                self.refused(dd, msg="")
+                shapes_seen += 1
+        self.assertGreater(shapes_seen, 60, "vacuous")
+
     def test_the_recorded_annotation_format_is_pinned(self):
         # captured from a live push to main and a live pull request (values replaced); if Pipelines-as-Code changes how it
         # spells these, this fails here and not as a refused release
