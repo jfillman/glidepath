@@ -439,41 +439,66 @@ class Survives(unittest.TestCase):
         self.assertNotIn("kubectl apply", calls)
         self.assertEqual(self.record(fx)["state"], "progressing")
 
-    # ---- a PR already merged: a re-run refuses, changing nothing; what is not this release is not refused ----
-    def refused(self, fx):
-        p = self.run_step(fx)
-        self.assertNotEqual(p.returncode, 0)
-        self.assertIn("is already merged", p.stderr)
-        self.assertIn(PR_URL, p.stderr)
+    # ---- a PR already merged: the record is repaired from it when it is this release; nothing else is opened ----
+    def assert_no_side_effects(self, fx):
         calls = self.calls(fx)
-        for c in ("curl POST pulls", "itsm create", "itsm link", "git push", "git clone", "kubectl apply"):
+        for c in ("curl POST pulls", "itsm create", "itsm link", "git push", "git clone"):
             self.assertNotIn(c, calls)
-        self.assertIsNone(self.record(fx))
 
-    def test_a_re_run_whose_PR_is_already_merged_is_refused_with_no_side_effects(self):
-        self.refused(self.fixture(others=[self.merged_pr()], commit_chain=CHAIN))
+    def test_a_merged_PR_with_no_record_is_repaired_and_nothing_is_opened(self):
+        fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN)
+        p = self.run_step(fx)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assert_no_side_effects(fx)
+        rec = self.record(fx)
+        self.assertEqual((rec["prUrl"], rec["state"], rec["mergedAt"], rec["prCreatedAt"]), (PR_URL, "merged", "2026-11-16T11:00:00Z", "2026-11-16T09:00:00Z"))
+        self.assertEqual((rec["changeRequestId"], rec["changeRequestNumber"]), ("chg-1", "CHG0010034"))
+        self.assertIn("repairedAt", rec)
+        self.assertIn("merge-time steps", rec["repairNote"])
+        self.assertIn("REPAIRED", p.stdout)
+
+    def test_a_merged_PR_with_its_record_present_is_a_no_op(self):
+        data = dict(self.GOLDEN, state="healthy", mergedAt="2026-11-16T11:00:00Z")
+        fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN, record=data)
+        p = self.run_step(fx)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assert_no_side_effects(fx)
+        for c in ("kubectl apply", f"kubectl patch {RECORD}"):
+            self.assertNotIn(c, self.calls(fx))
+        self.assertEqual(self.record(fx), data)
+
+    def test_a_merged_PR_re_run_with_a_new_chain_id_repairs_under_the_original_chain(self):
+        other = "99999999-0000-4000-8000-000000000000"
+        fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN, chain=other)
+        self.assertEqual(self.run_step(fx).returncode, 0)
+        self.assertEqual(self.record(fx)["releaseId"], f"{CHAIN}:hangar-prod/prod")
+        self.assertFalse(os.path.exists(os.path.join(fx, "cm", f"release-tracking-{other}.json")))
 
     def test_a_merged_PR_of_the_same_branch_name_for_another_cluster_is_not_this_release(self):
         fx = self.fixture(others=[self.merged_pr()], commit_id=f"{CHAIN}:other-cluster/prod")
         self.assertEqual(self.run_step(fx).returncode, 0)
         self.assertIn("curl POST pulls", self.calls(fx))
+        self.assertNotIn("repairedAt", self.record(fx) or {})
 
     def test_a_merged_PR_carrying_another_image_is_not_this_release(self):
         fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN, commit_tag="1.0.1-aaaaaaa")
         self.assertEqual(self.run_step(fx).returncode, 0)
         self.assertIn("curl POST pulls", self.calls(fx))
+        self.assertNotIn("repairedAt", self.record(fx) or {})
 
     def test_a_merged_PR_into_another_base_is_not_this_release(self):
         other = dict(self.merged_pr(), base={"ref": "release-x"})
         fx = self.fixture(others=[other], commit_chain=CHAIN)
         self.assertEqual(self.run_step(fx).returncode, 0)
         self.assertIn("curl POST pulls", self.calls(fx))
+        self.assertNotIn("repairedAt", self.record(fx) or {})
 
     def test_a_merged_PR_the_environment_has_moved_on_from_is_not_this_release(self):
         # promoted again after a rollback: main's release file carries another tag now
         fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN, current_tag="0.9.0-bbbbbbb")
         self.assertEqual(self.run_step(fx).returncode, 0)
         self.assertIn("curl POST pulls", self.calls(fx))
+        self.assertNotIn("repairedAt", self.record(fx) or {})
 
     def test_a_merged_PR_whose_release_file_cannot_be_read_fails_the_run(self):
         fx = self.fixture({"github:contents": {"fail": 99}}, others=[self.merged_pr()], commit_chain=CHAIN)

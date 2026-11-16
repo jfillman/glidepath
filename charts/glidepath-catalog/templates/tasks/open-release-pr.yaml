@@ -335,7 +335,10 @@ spec:
             kubectl patch configmap "${name}" -n "${NAMESPACE}" --type merge -p "${patch}" >/dev/null || return 1
           else
             kubectl create configmap "${name}" -n "${NAMESPACE}" "${lits[@]}" \
-              --from-literal="state=proposed" --from-literal="stateAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --from-literal="state=${record_initial_state}" --from-literal="stateAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              ${record_merged_at:+--from-literal="mergedAt=${record_merged_at}"} \
+              ${record_repaired_at:+--from-literal="repairedAt=${record_repaired_at}"} \
+              ${record_repaired_at:+--from-literal="repairNote=written by a re-run from the already merged PR; the merge-time steps (mark-release-merged, the change tool implement/close) did not run for this release"} \
               --dry-run=client -o yaml \
               | kubectl apply -f - || return 1
           fi
@@ -414,6 +417,8 @@ spec:
         # Runs in the current shell (a command's globals survive) and captures stdout in late_out, stderr in late_err.
         late_attempts="${LATE_ATTEMPTS:-5}"; late_backoff="${LATE_BACKOFF_SECONDS:-2}"
         late_out=""; late_err=""; post_pr_errors=""; post_pr_public=""; post_pr_classes=""
+        # A record for a PR that was already merged when this run found it (repair_merged_pr): state merged, GitHub's own merged_at, repairedAt.
+        record_initial_state="proposed"; record_merged_at=""; record_repaired_at=""
         retry_late() { # <label> <command...> -> 0, or 1 once the attempts are spent or the failure cannot be transient
           local label="$1"; shift
           local n=1 delay="${late_backoff}" of ef
@@ -544,6 +549,43 @@ spec:
           fetch_release_file main || { echo "error: could not read the release file on main from GitHub; re-run this release later." >&2; exit 1; }
           [[ "$(yq '.release.image.tag // ""' <<<"${rf_content}" 2>/dev/null)" == "${tag}" ]] || return 1
           return 0
+        }
+        # The branch's merged PR is this release (merged_pr_is_this_release) and it has no record (2026-11-16: merged by the owner after
+        # the step died). Opens nothing, creates no change; writes the record under the chain the PR's commit names, as the merge
+        # would have left it: state merged, mergedAt = GitHub's merged_at (nothing invented), plus repairedAt and a note that the
+        # merge-time steps did not run. A record that exists is left alone.
+        repair_merged_pr() {
+          local url sha created merged_at body err
+          url="$(jq -r '.html_url' <<<"${merged_pr}")"; sha="$(jq -r '.head.sha // ""' <<<"${merged_pr}")"
+          created="$(jq -r '.created_at' <<<"${merged_pr}")"; merged_at="$(jq -r '.merged_at' <<<"${merged_pr}")"
+          body="$(jq -r '.body // ""' <<<"${merged_pr}")"
+          adopt_original_chain "${sha}"
+          [[ -n "${CHAIN_ID}" ]] || { echo "error: ${url} is merged but no chain id names its release; nothing to record." >&2; exit 1; }
+          if err="$(kubectl get configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" -o name 2>&1)"; then
+            echo "release PR ${url} is already merged and release-tracking-${CHAIN_ID} exists: nothing to open and nothing to repair"
+            emit_results "${url}" "${created}"
+            exit 0
+          elif [[ "${err}" != *NotFound* && "${err}" != *"not found"* ]]; then
+            echo "error: could not read release-tracking-${CHAIN_ID}: ${err}" >&2
+            exit 1
+          fi
+          change_id=""
+          if itsm_enabled; then
+            change_id="${CHANGE_REQUEST_ID}"
+            [[ -n "${change_id}" ]] || change_id="$(sed -nE 's/.*<!-- glidepath:change-request:([^ ]+) -->.*/\1/p' <<<"${body}" | head -1)"
+            if [[ -n "${change_id}" ]] && retry_late "reading the change request" ensure_change_request "${body}"; then
+              [[ -z "${late_out}" ]] || echo "${late_out}"
+            fi
+          fi
+          record_initial_state="merged"; record_merged_at="${merged_at}"; record_repaired_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          if ! retry_late "writing the release record" write_release_record "${url}" "${created}"; then
+            echo "error: ${url} is merged but its release record could not be written. Re-run this release." >&2
+            exit 1
+          fi
+          [[ -z "${late_out}" ]] || echo "${late_out}"
+          echo "REPAIRED: ${url} was already merged (${merged_at}) with no release record; release-tracking-${CHAIN_ID} written from it (state merged, repairedAt set). Nothing was opened, no change request was created, and the merge-time steps (mark-release-merged, the change tool's implement) did not run for it."
+          emit_results "${url}" "${created}"
+          exit 0
         }
         emit_results() { # <pr-url> <pr-created-at>
           echo "$1" | tee "$(results.pr-url.path)"
@@ -747,10 +789,9 @@ spec:
           exit 0
         fi
         # The branch's PR is already merged and is this release (2026-11-16: merged by the owner, no record): a second PR and a
-        # second change for an image that is already released are what a re-run must not make, so it stops here, changing nothing.
+        # second change for an image that is already released are what a re-run must not make; the record is repaired from it.
         if [[ -n "${merged_pr}" ]] && merged_pr_is_this_release; then
-          echo "error: the release PR for this revision is already merged ($(jq -r '.html_url' <<<"${merged_pr}")); nothing was opened and no change request was created. If its release record is missing, see docs/admin/release-state.md#a-release-pr-that-is-already-merged." >&2
-          exit 1
+          repair_merged_pr
         fi
 
         reissue_guard || exit 1
