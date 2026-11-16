@@ -140,15 +140,18 @@ if url == os.environ["ITSM_WEBHOOK_URL"]:
     if spec:
         if spec.get("http", "000") == "000":
             sys.stderr.write("curl: (7) Failed to connect to itsm-mock port 8080 after 5 ms: Couldn't connect to server\n"); sys.stdout.write("\n000"); sys.exit(7)
-        sys.stdout.write("denied\n" + spec["http"]); sys.exit(0)
+        sys.stdout.write(spec.get("body", "denied") + "\n" + spec["http"]); sys.exit(0)
     sys.stdout.write(json.dumps({"id": "chg-1", "number": "CHG0010034", "url": "https://itsm.test/chg-1", "state": "new", "approval": "requested", "approved": False}) + "\n200")
     sys.exit(0)
 if "/pulls?state=open" in url:  # the reissue guard's list of open PRs
     print("[]"); sys.exit(0)
-if "/contents/" in url:  # the release file on a PR's head
+if "/contents/" in url:  # the release file at a ref: commit.yaml (a PR head), current.yaml (main), else 404
     log("curl GET contents")
-    if not os.path.exists(fx + "/commit.yaml"): sys.exit(22)
-    print(open(fx + "/commit.yaml").read(), end=""); sys.exit(0)
+    if inject("github:contents"): sys.stderr.write("curl: (7) Failed to connect\n"); sys.exit(7)
+    ref = url.split("ref=")[1]
+    f = fx + ("/current.yaml" if ref == "main" else "/commit.yaml")
+    if "values.yaml" in url or not os.path.exists(f): sys.stdout.write('{"message":"Not Found"}\n404'); sys.exit(0)
+    sys.stdout.write(open(f).read() + "\n200"); sys.exit(0)
 if "/pulls?head=" in url:
     log("curl GET pulls?head"); spec = inject("github:list")
     if spec: sys.stderr.write("curl: (7) Failed to connect\n"); sys.exit(7)
@@ -211,7 +214,7 @@ class Survives(unittest.TestCase):
         put(os.path.join(cls.lib, "github-app.sh"), 'github_app_installation_token() { echo tok; }\n')
         put(os.path.join(cls.lib, "retry.sh"), 'with_retry() { shift; [[ "$1" == "--" ]] && shift; "$@"; }\n')
 
-    def fixture(self, inject=None, pr=None, record=None, stale=None, annotations=None, itsm="webhook", others=None, commit_chain=None, chain=CHAIN):
+    def fixture(self, inject=None, pr=None, record=None, stale=None, annotations=None, itsm="webhook", others=None, commit_chain=None, chain=CHAIN, commit_id=None, current_tag="1.0.2-7150a18", commit_tag="1.0.2-7150a18"):
         fx = tempfile.mkdtemp(dir=self.tmp)
         os.makedirs(os.path.join(fx, "cm"))
         put(os.path.join(fx, "inject.json"), json.dumps(inject or {}))
@@ -220,11 +223,13 @@ class Survives(unittest.TestCase):
         if pr:
             put(os.path.join(fx, "pr.json"), json.dumps(pr))
         if record is not None:
-            put(os.path.join(fx, "cm", f"{RECORD}.json"), json.dumps({"metadata": {"name": RECORD, "labels": {}}, "data": record, "applied": list(record)}))
+            put(os.path.join(fx, "cm", f"{RECORD}.json"), json.dumps({"metadata": {"name": RECORD, "labels": {"hangar.io/app": "shop", "hangar.io/env": "prod", "hangar.io/cluster": "hangar-prod"}}, "data": record, "applied": list(record)}))
         if others is not None:
             put(os.path.join(fx, "others.json"), json.dumps(others))
-        if commit_chain:
-            put(os.path.join(fx, "commit.yaml"), f"release:\n  image: {{}}\nreleaseTracking:\n  releaseId: {commit_chain}:hangar-prod/prod\n")
+        rid = commit_id or (f"{commit_chain}:hangar-prod/prod" if commit_chain else None)
+        if rid:
+            put(os.path.join(fx, "commit.yaml"), f"release:\n  image:\n    tag: {commit_tag}\nreleaseTracking:\n  releaseId: {rid}\n")
+            put(os.path.join(fx, "current.yaml"), f"release:\n  image:\n    tag: {current_tag}\nreleaseTracking:\n  releaseId: {rid}\n")
         if stale:
             put(os.path.join(fx, "stale.txt"), stale)
         if annotations is not None:
@@ -260,7 +265,7 @@ class Survives(unittest.TestCase):
         return {"html_url": PR_URL, "number": 312, "state": "open", "merged_at": None, "head": {"sha": "abc123"}, "created_at": "2026-11-16T09:00:00Z", "body": body}
 
     def merged_pr(self, merged_at="2026-11-16T11:00:00Z", body="**App**: shop\n<!-- glidepath:change-request:chg-1 -->"):
-        return {"html_url": PR_URL, "number": 312, "state": "closed", "merged_at": merged_at, "head": {"sha": "abc123"}, "created_at": "2026-11-16T09:00:00Z", "body": body}
+        return {"html_url": PR_URL, "number": 312, "state": "closed", "merged_at": merged_at, "base": {"ref": "main"}, "head": {"sha": "abc123"}, "created_at": "2026-11-16T09:00:00Z", "body": body}
 
     # ---- a normal run ----
     GOLDEN = {
@@ -295,6 +300,7 @@ class Survives(unittest.TestCase):
         self.assertEqual(rec["prUrl"], PR_URL)
         self.assertEqual(rec["state"], "proposed")
         self.assertIn("the change request could not be linked to this PR", rec["postPrError"])
+        self.assertTrue(rec["postPrError"].startswith("[connection refused]"))
         self.assertEqual(self.calls(fx).count("itsm link"), 3)  # bounded
         self.assertEqual([c for c in self.calls(fx) if c.startswith("sleep")], ["sleep 2", "sleep 4"])  # with backoff
         self.assertIn("error: the change request could not be linked to this PR", p.stderr)
@@ -433,50 +439,54 @@ class Survives(unittest.TestCase):
         self.assertNotIn("kubectl apply", calls)
         self.assertEqual(self.record(fx)["state"], "progressing")
 
-    # ---- a merged PR with no record (2026-11-16) ----
-    def test_a_merged_PR_with_no_record_is_repaired_and_nothing_is_opened(self):
-        fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN)
+    # ---- a PR already merged: a re-run refuses, changing nothing; what is not this release is not refused ----
+    def refused(self, fx):
         p = self.run_step(fx)
-        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("is already merged", p.stderr)
+        self.assertIn(PR_URL, p.stderr)
         calls = self.calls(fx)
-        for c in ("curl POST pulls", "itsm create", "itsm link", "git push", "git clone"):
+        for c in ("curl POST pulls", "itsm create", "itsm link", "git push", "git clone", "kubectl apply"):
             self.assertNotIn(c, calls)
-        rec = self.record(fx)
-        self.assertEqual((rec["prUrl"], rec["state"], rec["mergedAt"], rec["prCreatedAt"]), (PR_URL, "merged", "2026-11-16T11:00:00Z", "2026-11-16T09:00:00Z"))
-        self.assertEqual((rec["changeRequestId"], rec["changeRequestNumber"]), ("chg-1", "CHG0010034"))
-        self.assertIn("REPAIRED", p.stdout)
+        self.assertIsNone(self.record(fx))
 
-    def test_a_merged_PR_with_its_record_present_is_a_no_op(self):
-        data = dict(self.GOLDEN, state="healthy", mergedAt="2026-11-16T11:00:00Z")
-        fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN, record=data)
-        p = self.run_step(fx)
-        self.assertEqual(p.returncode, 0, p.stderr)
-        calls = self.calls(fx)
-        for c in ("curl POST pulls", "itsm create", "itsm link", "git push", "kubectl apply", f"kubectl patch {RECORD}"):
-            self.assertNotIn(c, calls)
-        self.assertEqual(self.record(fx), data)
+    def test_a_re_run_whose_PR_is_already_merged_is_refused_with_no_side_effects(self):
+        self.refused(self.fixture(others=[self.merged_pr()], commit_chain=CHAIN))
 
-    def test_a_merged_PR_whose_release_finished_and_was_replaced_is_a_new_release(self):
-        # re-promoting a revision after a rollback: the branch name is the same, the earlier release is rolled-back
-        data = dict(self.GOLDEN, state="rolled-back")
-        fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN, record=data, chain="99999999-0000-4000-8000-000000000000")
-        p = self.run_step(fx)
-        self.assertEqual(p.returncode, 0, p.stderr)
+    def test_a_merged_PR_of_the_same_branch_name_for_another_cluster_is_not_this_release(self):
+        fx = self.fixture(others=[self.merged_pr()], commit_id=f"{CHAIN}:other-cluster/prod")
+        self.assertEqual(self.run_step(fx).returncode, 0)
         self.assertIn("curl POST pulls", self.calls(fx))
 
-    def test_a_merged_PR_too_old_to_be_this_release_is_a_new_release(self):
-        fx = self.fixture(others=[self.merged_pr(merged_at="2020-01-01T00:00:00Z")], commit_chain=CHAIN)
-        p = self.run_step(fx)
-        self.assertEqual(p.returncode, 0, p.stderr)
+    def test_a_merged_PR_carrying_another_image_is_not_this_release(self):
+        fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN, commit_tag="1.0.1-aaaaaaa")
+        self.assertEqual(self.run_step(fx).returncode, 0)
         self.assertIn("curl POST pulls", self.calls(fx))
+
+    def test_a_merged_PR_into_another_base_is_not_this_release(self):
+        other = dict(self.merged_pr(), base={"ref": "release-x"})
+        fx = self.fixture(others=[other], commit_chain=CHAIN)
+        self.assertEqual(self.run_step(fx).returncode, 0)
+        self.assertIn("curl POST pulls", self.calls(fx))
+
+    def test_a_merged_PR_the_environment_has_moved_on_from_is_not_this_release(self):
+        # promoted again after a rollback: main's release file carries another tag now
+        fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN, current_tag="0.9.0-bbbbbbb")
+        self.assertEqual(self.run_step(fx).returncode, 0)
+        self.assertIn("curl POST pulls", self.calls(fx))
+
+    def test_a_merged_PR_whose_release_file_cannot_be_read_fails_the_run(self):
+        fx = self.fixture({"github:contents": {"fail": 99}}, others=[self.merged_pr()], commit_chain=CHAIN)
+        p = self.run_step(fx)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("curl POST pulls", self.calls(fx))
 
     def test_a_PR_closed_unmerged_is_never_reopened_and_a_new_PR_follows_the_normal_path(self):
         closed = dict(self.merged_pr(), merged_at=None)
         fx = self.fixture(others=[closed])
         p = self.run_step(fx)
         self.assertEqual(p.returncode, 0, p.stderr)
-        calls = self.calls(fx)
-        self.assertEqual(calls.count("curl POST pulls"), 1)
+        self.assertEqual(self.calls(fx).count("curl POST pulls"), 1)
         self.assertEqual(self.record(fx)["state"], "proposed")
 
     # ---- the chain id of a re-run ----
@@ -488,12 +498,46 @@ class Survives(unittest.TestCase):
         self.assertEqual(self.record(fx)["releaseId"], f"{CHAIN}:hangar-prod/prod")
         self.assertFalse(os.path.exists(os.path.join(fx, "cm", f"release-tracking-{other}.json")))
 
-    def test_a_merged_PR_re_run_with_a_new_chain_id_repairs_under_the_original_chain(self):
-        other = "99999999-0000-4000-8000-000000000000"
-        fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN, chain=other)
-        self.assertEqual(self.run_step(fx).returncode, 0)
+    # ---- the chain id in the PR's commit is not trusted blindly ----
+    def refused_chain(self, **kw):
+        fx = self.fixture(pr=self.existing_pr(), chain="99999999-0000-4000-8000-000000000000", **kw)
+        p = self.run_step(fx)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("refused", p.stderr)
+        self.assertNotIn("kubectl apply", self.calls(fx))
+        self.assertNotIn("kubectl patch " + RECORD, self.calls(fx))
+        self.assertNotIn("itsm get", self.calls(fx))
+        return fx
+
+    def test_an_edited_releaseId_pointing_at_another_apps_chain_is_refused(self):
+        foreign = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        fx = self.fixture(pr=self.existing_pr(), chain="99999999-0000-4000-8000-000000000000", commit_chain=foreign)
+        put(os.path.join(fx, "cm", f"release-tracking-{foreign}.json"), json.dumps({"metadata": {"name": f"release-tracking-{foreign}", "labels": {"hangar.io/app": "other", "hangar.io/env": "prod", "hangar.io/cluster": "hangar-prod"}}, "data": {"changeRequestId": "their-change"}}))
+        p = self.run_step(fx)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("another app, environment or cluster", p.stderr)
+        self.assertNotIn("itsm get", self.calls(fx))
+        self.assertNotIn("kubectl apply", self.calls(fx))
+
+    def test_a_releaseId_for_another_cluster_or_environment_is_refused(self):
+        self.refused_chain(commit_id=f"{CHAIN}:hangar-prod/staging")
+        self.refused_chain(commit_id=f"{CHAIN}:other/prod")
+
+    def test_an_uppercase_chain_id_is_refused(self):
+        self.refused_chain(commit_chain=CHAIN.upper())
+
+    def test_a_release_file_that_cannot_be_read_fails_the_run_and_does_not_fall_back(self):
+        fx = self.fixture({"github:contents": {"fail": 99}}, pr=self.existing_pr())
+        p = self.run_step(fx)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("re-run this release later", p.stderr)
+        self.assertIsNone(self.record(fx))
+
+    def test_a_readable_release_file_without_a_releaseId_falls_back_to_this_runs_chain(self):
+        fx = self.fixture(pr=self.existing_pr())  # contents answer 404
+        p = self.run_step(fx)
+        self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(self.record(fx)["releaseId"], f"{CHAIN}:hangar-prod/prod")
-        self.assertFalse(os.path.exists(os.path.join(fx, "cm", f"release-tracking-{other}.json")))
 
     # ---- empty values never blank a record ----
     def test_a_re_run_that_cannot_read_its_annotations_does_not_blank_what_the_record_holds(self):
@@ -551,6 +595,27 @@ class Survives(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertNotIn("itsm create", self.calls(fx))
         self.assertEqual(self.record(fx)["changeRequestId"], "chg-1")
+
+    # ---- the PR comment carries a reason class only ----
+    def test_the_PR_comment_carries_a_reason_class_and_no_text_from_the_tool(self):
+        fx = self.fixture({"itsm:link": {"fail": 99, "http": "500", "body": "SECRETBODY " + "x" * 700}})
+        p = self.run_step(fx)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        with open(os.path.join(fx, "comment.txt")) as f:
+            comment = f.read()
+        self.assertIn("(HTTP 500)", comment)
+        for leak in ("SECRETBODY", "itsm.test", "xxxx"):
+            self.assertNotIn(leak, comment)
+        self.assertLessEqual(len(self.record(fx)["postPrError"]), 600)
+        self.assertTrue(self.record(fx)["postPrError"].startswith("[HTTP 500]"))
+        self.assertEqual(self.calls(fx).count("curl POST comment"), 1)
+
+    def test_a_re_run_that_fails_the_same_way_does_not_comment_again(self):
+        fx = self.fixture({"itsm:link": {"fail": 99, "http": "500", "body": "b" * 700}})
+        self.assertEqual(self.run_step(fx).returncode, 0)
+        self.assertEqual(self.run_step(fx).returncode, 0)  # the PR is open now: a re-run
+        self.assertEqual(self.run_step(fx).returncode, 0)
+        self.assertEqual(self.calls(fx).count("curl POST comment"), 1)
 
 
 if __name__ == "__main__":
