@@ -53,6 +53,8 @@ func withReissue(t *testing.T, allow map[string]bool, recs ...runtime.Object) (*
 	s, store, gh, logs := withEnvs(t, allow)
 	s.Envs.Records = releases.Reader{CS: fake.NewSimpleClientset(recs...)}
 	gh.pulls["jfillman/gitops-shop#7"] = pull(7, "closed", false, oldBranch)
+	// prod's source environment, staging, carries the closed release's image (promote reads this file).
+	gh.files["jfillman/gitops-shop/hangar-prod/staging/release.yaml"] = "release:\n  image: { repository: ghcr.io/jfillman/shop, tag: 1.2.3-abc1234 }\n"
 	return s, store, gh, logs
 }
 
@@ -118,36 +120,42 @@ func TestReissueRefusals(t *testing.T) {
 	newer := record(newChain, prodLabels, closedRelease(map[string]string{"releaseId": newChain + ":hangar-prod/prod", "prCreatedAt": "2026-11-11T10:00:00Z", "state": "proposed", "prUrl": "https://github.com/jfillman/gitops-shop/pull/8"}))
 	mergedLater := record(newChain, prodLabels, closedRelease(map[string]string{"releaseId": newChain + ":hangar-prod/prod", "prCreatedAt": "2026-11-09T10:00:00Z", "state": "healthy", "mergedAt": "2026-11-10T11:00:00Z"}))
 	for name, c := range map[string]struct {
-		over   map[string]string
-		extra  *recordFixture
-		pr     map[string]any // replaces PR #7
-		open   map[string]any // another open PR
-		cicd   string
-		status int
-		in     string
+		over    map[string]string
+		extra   *recordFixture
+		pr      map[string]any // replaces PR #7
+		open    map[string]any // another open PR
+		cicd    string
+		srcFile string
+		status  int
+		in      string
 	}{
-		"merged state":            {over: map[string]string{"state": "merged"}, status: 422, in: "is merged: only a release whose PR was closed without merging"},
-		"healthy":                 {over: map[string]string{"state": "healthy"}, status: 422, in: "is healthy"},
-		"progressing":             {over: map[string]string{"state": "progressing"}, status: 422, in: "is progressing"},
-		"superseded":              {over: map[string]string{"state": "superseded"}, status: 422, in: "is superseded"},
-		"rolled back":             {over: map[string]string{"state": "rolled-back"}, status: 422, in: "is rolled-back"},
-		"PR still open":           {pr: pull(7, "open", false, oldBranch), status: 422, in: "release PR #7 is still open"},
-		"PR merged":               {pr: pull(7, "closed", true, oldBranch), status: 422, in: "release PR #7 was merged"},
-		"another PR is open":      {open: pull(9, "open", false, "release-prod-1234567a"), status: 422, in: "a release PR for prod is already open (https://github.com/jfillman/gitops-shop/pull/9)"},
-		"a newer release":         {extra: &recordFixture{newer}, status: 422, in: "a newer release of shop to prod on hangar-prod was opened since"},
-		"merged since":            {extra: &recordFixture{mergedLater}, status: 422, in: "was merged after this one was opened"},
-		"a rollback":              {over: map[string]string{"kind": "rollback"}, status: 422, in: "is a rollback: only a promotion's PR can be reissued"},
-		"another app's image":     {over: map[string]string{"image": "ghcr.io/jfillman/other:1.2.3-abc1234"}, status: 422, in: "not an image of shop"},
-		"image of another commit": {over: map[string]string{"image": "ghcr.io/jfillman/shop:1.2.3-ffff000"}, status: 422, in: "the image's own sha is not that commit"},
-		"a short commit":          {over: map[string]string{"gitRevision": "abc1234"}, status: 422, in: "records no full commit sha"},
-		"another source repo":     {over: map[string]string{"gitUrl": "https://github.com/jfillman/other"}, status: 422, in: "records source"},
-		"another repo's PR":       {over: map[string]string{"prUrl": "https://github.com/jfillman/other/pull/7"}, status: 422, in: "records no release PR in jfillman/gitops-shop"},
-		"no PR":                   {over: map[string]string{"prUrl": ""}, status: 422, in: "records no release PR"},
-		"another branch":          {pr: pull(7, "closed", false, "feature-x"), status: 422, in: `feature-x`},
-		"no creation time":        {over: map[string]string{"prCreatedAt": ""}, status: 422, in: "no PR creation time"},
-		"no image":                {over: map[string]string{"image": ""}, status: 422, in: "records no image"},
-		"env left the order":      {cicd: "deploy:\n  environments:\n    - { name: dev, tier: ground }\n    - { name: staging, tier: flight, cluster: hangar-prod }\n", status: 422, in: "no longer in shop's cicd.yaml release order"},
-		"a ground env":            {cicd: "deploy:\n  environments:\n    - { name: prod, tier: ground }\n", status: 422, in: "is a Ground environment"},
+		"merged state":             {over: map[string]string{"state": "merged"}, status: 422, in: "is merged: only a release whose PR was closed without merging"},
+		"healthy":                  {over: map[string]string{"state": "healthy"}, status: 422, in: "is healthy"},
+		"progressing":              {over: map[string]string{"state": "progressing"}, status: 422, in: "is progressing"},
+		"superseded":               {over: map[string]string{"state": "superseded"}, status: 422, in: "is superseded"},
+		"rolled back":              {over: map[string]string{"state": "rolled-back"}, status: 422, in: "is rolled-back"},
+		"PR still open":            {pr: pull(7, "open", false, oldBranch), status: 422, in: "release PR #7 is still open"},
+		"PR merged":                {pr: pull(7, "closed", true, oldBranch), status: 422, in: "release PR #7 was merged"},
+		"another PR is open":       {open: pull(9, "open", false, "release-prod-1234567a"), status: 422, in: "a release PR for prod is already open (https://github.com/jfillman/gitops-shop/pull/9)"},
+		"a newer release":          {extra: &recordFixture{newer}, status: 422, in: "a newer release of shop to prod on hangar-prod was opened since"},
+		"merged since":             {extra: &recordFixture{mergedLater}, status: 422, in: "was merged after this one was opened"},
+		"a rollback":               {over: map[string]string{"kind": "rollback"}, status: 422, in: "is a rollback: only a promotion's PR can be reissued"},
+		"another app's image":      {over: map[string]string{"image": "ghcr.io/jfillman/other:1.2.3-abc1234"}, status: 422, in: "not an image of shop"},
+		"image of another commit":  {over: map[string]string{"image": "ghcr.io/jfillman/shop:1.2.3-ffff000"}, status: 422, in: "the image's own sha is not that commit"},
+		"a short commit":           {over: map[string]string{"gitRevision": "abc1234"}, status: 422, in: "records no full commit sha"},
+		"another source repo":      {over: map[string]string{"gitUrl": "https://github.com/jfillman/other"}, status: 422, in: "records source"},
+		"another repo's PR":        {over: map[string]string{"prUrl": "https://github.com/jfillman/other/pull/7"}, status: 422, in: "records no release PR in jfillman/gitops-shop"},
+		"no PR":                    {over: map[string]string{"prUrl": ""}, status: 422, in: "records no release PR"},
+		"another branch":           {pr: pull(7, "closed", false, "feature-x"), status: 422, in: `feature-x`},
+		"no creation time":         {over: map[string]string{"prCreatedAt": ""}, status: 422, in: "no PR creation time"},
+		"no image":                 {over: map[string]string{"image": ""}, status: 422, in: "records no image"},
+		"env left the order":       {cicd: "deploy:\n  environments:\n    - { name: dev, tier: ground }\n    - { name: staging, tier: flight, cluster: hangar-prod }\n", status: 422, in: "no longer in shop's cicd.yaml release order"},
+		"already reissued":         {over: map[string]string{"state": "closed", "reissuedBy": newChain}, status: 422, in: "was already reissued (by release " + newChain + ")"},
+		"source rolled back":       {srcFile: "release:\n  image: { repository: ghcr.io/jfillman/shop, tag: 1.3.0-5555aaa }\n", status: 422, in: "staging no longer carries release " + oldChain + "'s image: it carries ghcr.io/jfillman/shop:1.3.0-5555aaa"},
+		"wrong registry":           {over: map[string]string{"image": "other.registry/jfillman/shop:1.2.3-abc1234"}, status: 422, in: "records image repository other.registry/jfillman/shop, but staging's release file names ghcr.io/jfillman/shop"},
+		"wrong owner":              {over: map[string]string{"image": "ghcr.io/other/shop:1.2.3-abc1234"}, status: 422, in: "records image repository ghcr.io/other/shop"},
+		"first env no ran release": {cicd: "deploy:\n  environments:\n    - { name: prod, tier: flight, cluster: hangar-prod }\n", status: 422, in: "first environment"},
+		"a ground env":             {cicd: "deploy:\n  environments:\n    - { name: prod, tier: ground }\n", status: 422, in: "is a Ground environment"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			objs := []runtime.Object{record(oldChain, prodLabels, closedRelease(c.over))}
@@ -163,6 +171,9 @@ func TestReissueRefusals(t *testing.T) {
 			}
 			if c.cicd != "" {
 				gh.files["jfillman/shop/cicd.yaml"] = c.cicd
+			}
+			if c.srcFile != "" {
+				gh.files["jfillman/gitops-shop/hangar-prod/staging/release.yaml"] = c.srcFile
 			}
 			st, out, body := postJSON(t, s, reissuePath(oldChain), hdr("rel", "k-"+strings.NewReplacer(" ", "-", "'", "").Replace(name)), "")
 			if st != c.status || !strings.Contains(body, c.in) || out["rule"] != "GP-API-422" {
@@ -191,6 +202,23 @@ func TestReissueRefusals(t *testing.T) {
 	// No Idempotency-Key, or a bad one.
 	if st, _, _ := postJSON(t, s, reissuePath(oldChain), hdr("rel", ""), ""); st != 400 {
 		t.Fatalf("no key: %d", st)
+	}
+}
+
+// The first environment has no source environment: the repository must be one a release of the app that ran used.
+func TestReissueFirstEnvironmentNeedsAKnownRepository(t *testing.T) {
+	first := "deploy:\n  environments:\n    - { name: prod, tier: flight, cluster: hangar-prod }\n"
+	ran := record("99999999-aaaa-4bbb-8ccc-dddddddddddd", prodLabels, closedRelease(map[string]string{"releaseId": "x:hangar-prod/prod", "state": "superseded", "prCreatedAt": "2026-11-01T10:00:00Z"}))
+	s, _, gh, _ := withReissue(t, reissuers, record(oldChain, prodLabels, closedRelease(nil)), ran)
+	gh.files["jfillman/shop/cicd.yaml"] = first
+	if st, _, body := postJSON(t, s, reissuePath(oldChain), hdr("rel", "k-f1"), ""); st != 201 {
+		t.Fatalf("a repository a release that ran used: %d %s", st, body)
+	}
+	other := record("99999999-aaaa-4bbb-8ccc-dddddddddddd", prodLabels, closedRelease(map[string]string{"releaseId": "x:hangar-prod/prod", "state": "superseded", "prCreatedAt": "2026-11-01T10:00:00Z", "image": "ghcr.io/jfillman/shop-old:1-abc1234"}))
+	s, _, gh, _ = withReissue(t, reissuers, record(oldChain, prodLabels, closedRelease(nil)), other)
+	gh.files["jfillman/shop/cicd.yaml"] = first
+	if st, _, body := postJSON(t, s, reissuePath(oldChain), hdr("rel", "k-f2"), ""); st != 422 || !strings.Contains(body, "cannot be established") {
+		t.Fatalf("%d %s", st, body)
 	}
 }
 
@@ -293,6 +321,7 @@ func TestReissueRefusesACommitThatDoesNotResolve(t *testing.T) {
 	rev := "ffff000" + strings.Repeat("0", 33)
 	s, store, gh, _ := withReissue(t, reissuers, record(oldChain, prodLabels, closedRelease(map[string]string{"gitRevision": rev, "image": "ghcr.io/jfillman/shop:1.2.3-ffff000"})))
 	gh.pulls["jfillman/gitops-shop#7"] = pull(7, "closed", false, "release-prod-ffff0000")
+	gh.files["jfillman/gitops-shop/hangar-prod/staging/release.yaml"] = "release:\n  image: { repository: ghcr.io/jfillman/shop, tag: 1.2.3-ffff000 }\n"
 	st, out, body := postJSON(t, s, reissuePath(oldChain), hdr("rel", "k-c"), "")
 	if st != 422 || out["rule"] != "GP-API-422" || !strings.Contains(body, "does not resolve") || len(store.writes()) != 0 {
 		t.Fatalf("%d %s", st, body)

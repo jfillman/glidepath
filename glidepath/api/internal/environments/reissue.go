@@ -77,6 +77,11 @@ func (c *Client) reissueCheck(ctx context.Context, app *apps.App, gh GitHub, rec
 			stateHint(st)}
 	}
 
+	// 1b. Once per release, from the record itself: the first reissue's run may have been pruned, and the record outlives it.
+	if by := d["reissuedBy"]; by != "" {
+		return nil, Refused{fmt.Sprintf("release %s was already reissued (by release %s)", chain, by), "follow that release, or promote again from the source environment"}
+	}
+
 	// 2. Its release PR, from the git host, never the caller: it must be one of this app's gitops PRs, closed and not merged.
 	m := regexp.MustCompile(`^https://github\.com/` + regexp.QuoteMeta(c.Owner) + `/` + regexp.QuoteMeta(repos.Gitops) + `/pull/([0-9]+)$`).FindStringSubmatch(d["prUrl"])
 	if m == nil {
@@ -143,6 +148,12 @@ func (c *Client) reissueCheck(ctx context.Context, app *apps.App, gh GitHub, rec
 		return nil, Refused{fmt.Sprintf("%s is a Ground environment: glidepath-api promotes to Flight environments only", env), ""}
 	}
 
+	// 4b. The image is the one the app's source environment carries now, and its repository (registry and path, exactly) is the
+	// one that environment's release file names: the same source promote reads, never the record (which pipeline-runner can write).
+	if err := c.reissueSourceCheck(ctx, app, gh, plan, env, cluster, chain, image); err != nil {
+		return nil, err
+	}
+
 	// 5. Never replay an old release over a newer one: refused when any other release of the app to this environment and
 	// cluster was opened after this one, or merged after this one was opened (its commit is then what the environment has).
 	created := jsTime(d["prCreatedAt"])
@@ -202,6 +213,55 @@ func (c *Client) reissueCheck(ctx context.Context, app *apps.App, gh GitHub, rec
 
 	return &reissueSource{chain: chain, releaseID: d["releaseId"], env: env, cluster: cluster, image: image, gitURL: fmt.Sprintf("https://github.com/%s/%s", c.Owner, repos.Source),
 		gitRevision: rev, prURL: d["prUrl"], prNumber: number}, nil
+}
+
+// reissueSourceCheck re-reads what promote reads. For an environment with a predecessor in the app's release order, that
+// environment's release file must still carry this image's tag (staging rolled back since: refused, naming what it carries now)
+// and name exactly this image's repository. The first environment has no source environment: the repository must then equal
+// that of a release of this app that ran (the API has no other registry of its own), and none to compare is a refusal.
+func (c *Client) reissueSourceCheck(ctx context.Context, app *apps.App, gh GitHub, plan *Plan, env, cluster, chain, image string) error {
+	i := strings.LastIndex(image, ":")
+	repo, tag := image[:i], image[i+1:]
+	if idx := plan.index(env); idx > 0 {
+		srcEnv := plan.Order[idx-1]
+		tier, srcCluster := "upper", cluster
+		if plan.isLower(srcEnv) {
+			tier = "lower"
+		} else {
+			for _, u := range plan.Upper {
+				if strings.EqualFold(u.Name, srcEnv) && u.Cluster != "" {
+					srcCluster = u.Cluster
+				}
+			}
+		}
+		src, err := c.resolveSource(ctx, gh, ReposOf(app), PromoteRequest{Cluster: cluster, SourceEnv: srcEnv, SourceCluster: srcCluster}, tier)
+		if err != nil {
+			var he github.HTTPError
+			if errors.As(err, &he) && (he.Status == 404 || he.Status == 422) {
+				return Refused{fmt.Sprintf("the commit of the image %s carries does not resolve in %s/%s", srcEnv, c.Owner, ReposOf(app).Source), ""}
+			}
+			return err
+		}
+		if src.imageTag != tag {
+			return Refused{fmt.Sprintf("%s no longer carries release %s's image: it carries %s:%s, not %s", srcEnv, chain, src.imageRepo, src.imageTag, image),
+				"promote again from " + srcEnv}
+		}
+		if src.imageRepo != repo {
+			return Refused{fmt.Sprintf("release %s records image repository %s, but %s's release file names %s", chain, repo, srcEnv, src.imageRepo), ""}
+		}
+		return nil
+	}
+	all, err := c.Records.List(ctx, app.Namespace, app.Name)
+	if err != nil {
+		return err
+	}
+	for _, r := range all {
+		st := r.Data["state"]
+		if (ranStates[st] || st == "superseded" || st == "rolled-back") && strings.HasPrefix(r.Data["image"], repo+":") {
+			return nil
+		}
+	}
+	return Refused{fmt.Sprintf("%s is the app's first environment, and no release of %s that ran used image repository %s, so it cannot be established as the app's own", env, app.Name, repo), ""}
 }
 
 // oncePlan reads the app's release plan at most once per request (a list checks several candidates against the same plan).

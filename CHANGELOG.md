@@ -4,6 +4,10 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### Reissue a release PR that was closed unmerged
+
+- `POST /v1/apps/{app}/releases/{chainId}/reissue` starts the app's `promote-release` run for a closed release's own image and commit; `open-release-pr` opens a fresh PR as a new release linked by `reissueOf`/`reissuedBy` (the old record ends `closed`). `GET /v1/apps/{app}/releases/reissuable` lists candidates. Refused unless the record is `proposed`/`closed`, its PR closed unmerged, it was not already reissued (`reissuedBy`), its image repository (exact) and tag match what the source environment's release file carries, no newer release or open PR exists (checked again at PR time by `open-release-pr`, which then fails without changing anything), and the commit resolves. The old record is linked with a `resourceVersion`-preconditioned patch; `close_stale_proposals` never closes a release newer than the reissued one. docs/admin/api.md "Reissue a release PR", release-state.md, security.md.
+
 ### Promotion lineage: a promotion links back to the flow that built its image
 
 - glidepath-api resolves the build of the image a promote or rollback releases, server-side, from the build's own run (on the cluster, else Tekton Results), bound to the image repository and the commit being

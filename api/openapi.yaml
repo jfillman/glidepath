@@ -464,11 +464,12 @@ paths:
         commit, the environment and the cluster are the closed release's own, read from its release record; the PR's state is
         read from the git host. Refused (422, with the reason) unless the record exists for the app and is `proposed` or
         `closed` (never merged, ran, superseded or rolled back); its PR is closed and not merged; it is a promotion (a rollback is
-        started again, not reissued); the record's image and commit are well formed and belong to the app; the environment is still
+        started again, not reissued); it was not already reissued (`reissuedBy`); the record's image and commit are well formed and belong to the app,
+        and the image's repository (exactly) and tag are what the source environment's release file carries (the first environment: a repository a release that ran used); the environment is still
         a Flight environment of the app; no other release of the app to that environment and cluster was opened after it or merged
         since; and no other release PR for the environment is open. Starts the app's `promote-release` run (same service account,
         labels and origin stamps as promote), whose open-release-pr opens a NEW PR from the current default branch of the gitops repo
-        and a NEW release record (`reissueOf` names this one; this one ends `closed` with `reissuedBy`). The closed PR is never
+        and a NEW release record (`reissueOf` names this one; this one ends `closed` with `reissuedBy`). open-release-pr repeats the newer-release and open-PR checks at PR time and fails without changing anything if they no longer hold. The closed PR is never
         reopened or pushed to. The run is named from the closed release's chain id, so a release is reissued at most once; the same
         Idempotency-Key replays. A delegate must send X-Glidepath-On-Behalf-Of.
       x-glidepath-tier: T2

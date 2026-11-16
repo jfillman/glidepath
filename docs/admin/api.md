@@ -396,7 +396,12 @@ a commit, an environment, a cluster or a chain: they are the closed release's, r
    image, commit or source repository are malformed or not this app's (the image's repository is not `<app>`, its sha is not the
    recorded commit, the commit is not a full sha, `gitUrl` is another repository), or the PR was not opened from
    `release-<env>-<sha8>`;
+3b. the record already has `reissuedBy` (the first reissue's run may be pruned; the record is what says it happened);
 4. the environment is no longer a Flight environment in the app's `cicd.yaml` order;
+4b. the **source environment** (the one before it in the release order, read as promote reads it) no longer carries this image
+   (staging rolled back since: the reason names the environment and what it carries now), or the record's image **repository**
+   (registry and path, exactly) is not the one that environment's release file names. The first environment has no source
+   environment: its repository must equal that of a release of the app that ran, and none to compare is a refusal;
 5. a **newer release** of the app to this environment and cluster was opened since, or one was **merged** after this one
    was opened (a reissue never replays an old release over a newer one);
 6. **another release PR for the environment is open** (checked per environment name: the git host does not say which cluster a
@@ -406,6 +411,13 @@ a commit, an environment, a cluster or a chain: they are the closed release's, r
    (`promote-<env>-<sha8>-<6 hex of sha256(app/reissue/env/cluster/chain)>`), so a release is reissued **at most once**; a
    second call with another key is refused and names the first run (re-run it if it failed). The same key replays (`200`,
    `"replayed": true`).
+
+**Re-checked at PR time.** Checks 5 and 6 are made when the call arrives, and the run opens its PR minutes later. When the run
+carries `reissue-of`, `open-release-pr` repeats them from the cluster and the git host before it creates anything: the reissued
+release must still be the newest for the app, environment and cluster, and no other release PR for the environment may be open;
+if not, the run fails and changes nothing. A reissue also never closes a release newer than the one it reissues
+(`close_stale_proposals` skips it), and marking the old record `closed`/`reissuedBy` is a JSON patch with a `resourceVersion`
+precondition, re-read on conflict, so a record the relay has moved to `merged` is never overwritten.
 
 `404` for a release record that does not exist for the app (another app's is not found through this one); `400` for a
 malformed chain id or `Idempotency-Key`. `?dryRun=true` does every check and a server-side dry run of the create.
