@@ -66,6 +66,8 @@ if verb == "get" and a[1] == "configmap":
         if os.path.exists(fx + "/stale.txt"): print(open(fx + "/stale.txt").read(), end="")
         sys.exit(0)
     name = a[2]
+    if name.startswith("release-tracking-") and inject("kubectl:get"):
+        sys.stderr.write("Unable to connect to the server: dial tcp: connection refused\n"); sys.exit(1)
     cm = load(name)
     if cm is None:
         sys.stderr.write('Error from server (NotFound): configmaps "%s" not found\n' % name); sys.exit(1)
@@ -86,7 +88,10 @@ if verb == "apply":
     if inject("kubectl:apply"):
         sys.stderr.write("error: the connection to the server was refused\n"); sys.exit(1)
     name = o["metadata"]["name"]; cm = load(name) or {"metadata": {"name": name, "labels": {}}, "data": {}}
-    cm["data"].update(o["data"]); save(name, cm); print("configmap/%s configured" % name); sys.exit(0)
+    # apply is three-way: a key the last apply set and this one does not carry is deleted, a key only others set stays
+    for k in cm.get("applied", []):
+        if k not in o["data"]: cm["data"].pop(k, None)
+    cm["data"].update(o["data"]); cm["applied"] = list(o["data"]); save(name, cm); print("configmap/%s configured" % name); sys.exit(0)
 if verb == "patch":
     name = a[2]; log("kubectl patch " + name)
     if inject("kubectl:patch"):
@@ -122,7 +127,8 @@ def inject(key):
     f = fx + "/count-" + key.replace(":", "_")
     n = len(open(f).read().split()) if os.path.exists(f) else 0
     open(f, "a").write("x ")
-    return spec if n < spec["fail"] else None
+    after = spec.get("after", 0)
+    return spec if after <= n < after + spec["fail"] else None
 url = [x for x in a if x.startswith("http")][-1]
 method = a[a.index("-X") + 1] if "-X" in a else "GET"
 data = a[a.index("-d") + 1] if "-d" in a else ""
@@ -139,17 +145,27 @@ if url == os.environ["ITSM_WEBHOOK_URL"]:
     sys.exit(0)
 if "/pulls?state=open" in url:  # the reissue guard's list of open PRs
     print("[]"); sys.exit(0)
+if "/contents/" in url:  # the release file on a PR's head
+    log("curl GET contents")
+    if not os.path.exists(fx + "/commit.yaml"): sys.exit(22)
+    print(open(fx + "/commit.yaml").read(), end=""); sys.exit(0)
 if "/pulls?head=" in url:
     log("curl GET pulls?head"); spec = inject("github:list")
     if spec: sys.stderr.write("curl: (7) Failed to connect\n"); sys.exit(7)
-    print(json.dumps([pr_obj()] if pr_obj() else [])); sys.exit(0)
+    extra = json.load(open(fx + "/others.json")) if os.path.exists(fx + "/others.json") else []
+    print(json.dumps(([pr_obj()] if pr_obj() else []) + extra)); sys.exit(0)
+if method == "POST" and "/comments" in url:
+    log("curl POST comment"); spec = inject("github:comment")
+    if spec: sys.stderr.write("curl: (7) Failed to connect\n"); sys.exit(7)
+    open(fx + "/comment.txt", "w").write(json.loads(data)["body"]); sys.exit(0)
 if method == "POST" and url.endswith("/pulls"):
     log("curl POST pulls"); spec = inject("github:post")
     body = json.loads(data)
+    if spec and spec.get("malformed"): print("{}"); sys.exit(0)
     if spec and spec.get("lost"):  # GitHub created the PR, the answer was lost
-        json.dump({"html_url": os.environ["PR_URL"], "number": 312, "created_at": "2026-11-16T12:00:00Z", "body": body["body"]}, open(pr, "w"))
+        json.dump({"html_url": os.environ["PR_URL"], "number": 312, "state": "open", "merged_at": None, "head": {"sha": "abc123"}, "created_at": "2026-11-16T12:00:00Z", "body": body["body"]}, open(pr, "w"))
     if spec: sys.stderr.write("curl: (22) The requested URL returned error: 502\n"); sys.exit(22)
-    p = {"html_url": os.environ["PR_URL"], "number": 312, "created_at": "2026-11-16T12:00:00Z", "body": body["body"]}
+    p = {"html_url": os.environ["PR_URL"], "number": 312, "state": "open", "merged_at": None, "head": {"sha": "abc123"}, "created_at": "2026-11-16T12:00:00Z", "body": body["body"]}
     json.dump(p, open(pr, "w")); print(json.dumps(p)); sys.exit(0)
 if method == "PATCH":
     log("curl PATCH pull"); spec = inject("github:patch")
@@ -195,7 +211,7 @@ class Survives(unittest.TestCase):
         put(os.path.join(cls.lib, "github-app.sh"), 'github_app_installation_token() { echo tok; }\n')
         put(os.path.join(cls.lib, "retry.sh"), 'with_retry() { shift; [[ "$1" == "--" ]] && shift; "$@"; }\n')
 
-    def fixture(self, inject=None, pr=None, record=None, stale=None, annotations=None, itsm="webhook"):
+    def fixture(self, inject=None, pr=None, record=None, stale=None, annotations=None, itsm="webhook", others=None, commit_chain=None, chain=CHAIN):
         fx = tempfile.mkdtemp(dir=self.tmp)
         os.makedirs(os.path.join(fx, "cm"))
         put(os.path.join(fx, "inject.json"), json.dumps(inject or {}))
@@ -204,12 +220,17 @@ class Survives(unittest.TestCase):
         if pr:
             put(os.path.join(fx, "pr.json"), json.dumps(pr))
         if record is not None:
-            put(os.path.join(fx, "cm", f"{RECORD}.json"), json.dumps({"metadata": {"name": RECORD, "labels": {}}, "data": record}))
+            put(os.path.join(fx, "cm", f"{RECORD}.json"), json.dumps({"metadata": {"name": RECORD, "labels": {}}, "data": record, "applied": list(record)}))
+        if others is not None:
+            put(os.path.join(fx, "others.json"), json.dumps(others))
+        if commit_chain:
+            put(os.path.join(fx, "commit.yaml"), f"release:\n  image: {{}}\nreleaseTracking:\n  releaseId: {commit_chain}:hangar-prod/prod\n")
         if stale:
             put(os.path.join(fx, "stale.txt"), stale)
         if annotations is not None:
             put(os.path.join(fx, "run.json"), json.dumps({"metadata": {"annotations": annotations}}))
         self.itsm = itsm
+        self.chain = chain
         return fx
 
     def run_step(self, fx, **env_extra):
@@ -218,7 +239,7 @@ class Survives(unittest.TestCase):
                    ITSM_PROVIDER=self.itsm, ITSM_WEBHOOK_URL="https://itsm.test/webhook", ITSM_CREDENTIALS_DIR=os.path.join(fx, "no-creds"),
                    CHANGE_REQUEST_ID="", IMAGE_REF="ghcr.io/o/shop:1.0.2-7150a18", IMAGE_DIGEST="none", GIT_URL="https://github.com/o/shop",
                    APP_NAME="shop", GIT_REVISION="7150a186aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ENV="prod", CLUSTER="hangar-prod",
-                   APP_NAMESPACE="app-shop", CHAIN_ID=CHAIN, FLOW_START_TIME="2026-11-16T11:00:00Z", CONFIG_JSON="{}", INITIATOR="",
+                   APP_NAMESPACE="app-shop", CHAIN_ID=self.chain, FLOW_START_TIME="2026-11-16T11:00:00Z", CONFIG_JSON="{}", INITIATOR="",
                    RELEASE_KIND="promote", ROLLBACK_OF="", ROLLBACK_REASON="", REF_PROTECTION="verified", PIPELINE_RUN_NAME="run1",
                    NAMESPACE="app-shop-cicd", GITHUB_TOKEN_BROKER_URL="http://broker")
         env.update(env_extra)
@@ -236,7 +257,10 @@ class Survives(unittest.TestCase):
             return json.load(f)["data"]
 
     def existing_pr(self, body="**App**: shop\n<!-- glidepath:change-request:chg-1 -->"):
-        return {"html_url": PR_URL, "number": 312, "created_at": "2026-11-16T09:00:00Z", "body": body}
+        return {"html_url": PR_URL, "number": 312, "state": "open", "merged_at": None, "head": {"sha": "abc123"}, "created_at": "2026-11-16T09:00:00Z", "body": body}
+
+    def merged_pr(self, merged_at="2026-11-16T11:00:00Z", body="**App**: shop\n<!-- glidepath:change-request:chg-1 -->"):
+        return {"html_url": PR_URL, "number": 312, "state": "closed", "merged_at": merged_at, "head": {"sha": "abc123"}, "created_at": "2026-11-16T09:00:00Z", "body": body}
 
     # ---- a normal run ----
     GOLDEN = {
@@ -245,7 +269,7 @@ class Survives(unittest.TestCase):
         "originChainSlug": "", "originTraceId": "", "reissueOf": "", "appNamespace": "app-shop", "appName": "shop", "env": "prod",
         "cluster": "hangar-prod", "gitUrl": "https://github.com/o/shop", "gitRevision": "7150a186aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "flowStartTime": "2026-11-16T11:00:00Z", "configJson": "{}", "changeRequestId": "chg-1", "changeRequestNumber": "CHG0010034",
-        "changeRequestUrl": "https://itsm.test/chg-1", "changeRequestState": "new", "state": "proposed", "stateAt": "2026-11-16T12:00:00Z",
+        "changeRequestUrl": "https://itsm.test/chg-1", "changeRequestState": "new", "changeLinkedAt": "2026-11-16T12:00:00Z", "state": "proposed", "stateAt": "2026-11-16T12:00:00Z",
     }
 
     def test_a_normal_run_writes_the_same_record_and_the_record_comes_before_the_change_link(self):
@@ -270,10 +294,10 @@ class Survives(unittest.TestCase):
         rec = self.record(fx)
         self.assertEqual(rec["prUrl"], PR_URL)
         self.assertEqual(rec["state"], "proposed")
-        self.assertIn("did not take the PR link for change CHG0010034", rec["postPrError"])
+        self.assertIn("the change request could not be linked to this PR", rec["postPrError"])
         self.assertEqual(self.calls(fx).count("itsm link"), 3)  # bounded
         self.assertEqual([c for c in self.calls(fx) if c.startswith("sleep")], ["sleep 2", "sleep 4"])  # with backoff
-        self.assertIn("error: the change tool did not take the PR link", p.stderr)
+        self.assertIn("error: the change request could not be linked to this PR", p.stderr)
         self.assertEqual(self.calls(fx).count("curl POST pulls"), 1)
 
     def test_a_transient_change_tool_failure_is_retried_and_leaves_nothing_on_the_record(self):
@@ -389,6 +413,136 @@ class Survives(unittest.TestCase):
         for k in ("prCreatedAt",):  # a re-run takes the PR's own created_at
             first.pop(k), again.pop(k)
         self.assertEqual(again, first)
+
+    # ---- item: the relay-moved record is completed with a patch, never an apply that drops keys ----
+    def test_a_re_run_completes_an_existing_record_with_a_patch_not_an_apply(self):
+        data = dict(self.GOLDEN, state="healthy", stateAt="2026-11-16T12:30:00Z")
+        fx = self.fixture(pr=self.existing_pr(), record=data)
+        self.assertEqual(self.run_step(fx).returncode, 0)
+        calls = self.calls(fx)
+        self.assertNotIn("kubectl apply", calls)
+        self.assertIn(f"kubectl patch {RECORD}", calls)
+        self.assertEqual(self.record(fx)["state"], "healthy")
+
+    def test_a_failing_read_of_the_existing_record_is_not_taken_for_a_missing_one(self):
+        data = dict(self.GOLDEN, state="progressing")
+        fx = self.fixture({"kubectl:get": {"fail": 99}}, pr=self.existing_pr(), record=data)
+        p = self.run_step(fx)
+        self.assertNotEqual(p.returncode, 0)
+        calls = self.calls(fx)
+        self.assertNotIn("kubectl apply", calls)
+        self.assertEqual(self.record(fx)["state"], "progressing")
+
+    # ---- a merged PR with no record (2026-11-16) ----
+    def test_a_merged_PR_with_no_record_is_repaired_and_nothing_is_opened(self):
+        fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN)
+        p = self.run_step(fx)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        calls = self.calls(fx)
+        for c in ("curl POST pulls", "itsm create", "itsm link", "git push", "git clone"):
+            self.assertNotIn(c, calls)
+        rec = self.record(fx)
+        self.assertEqual((rec["prUrl"], rec["state"], rec["mergedAt"], rec["prCreatedAt"]), (PR_URL, "merged", "2026-11-16T11:00:00Z", "2026-11-16T09:00:00Z"))
+        self.assertEqual((rec["changeRequestId"], rec["changeRequestNumber"]), ("chg-1", "CHG0010034"))
+        self.assertIn("REPAIRED", p.stdout)
+
+    def test_a_merged_PR_with_its_record_present_is_a_no_op(self):
+        data = dict(self.GOLDEN, state="healthy", mergedAt="2026-11-16T11:00:00Z")
+        fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN, record=data)
+        p = self.run_step(fx)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        calls = self.calls(fx)
+        for c in ("curl POST pulls", "itsm create", "itsm link", "git push", "kubectl apply", f"kubectl patch {RECORD}"):
+            self.assertNotIn(c, calls)
+        self.assertEqual(self.record(fx), data)
+
+    def test_a_merged_PR_whose_release_finished_and_was_replaced_is_a_new_release(self):
+        # re-promoting a revision after a rollback: the branch name is the same, the earlier release is rolled-back
+        data = dict(self.GOLDEN, state="rolled-back")
+        fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN, record=data, chain="99999999-0000-4000-8000-000000000000")
+        p = self.run_step(fx)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("curl POST pulls", self.calls(fx))
+
+    def test_a_merged_PR_too_old_to_be_this_release_is_a_new_release(self):
+        fx = self.fixture(others=[self.merged_pr(merged_at="2020-01-01T00:00:00Z")], commit_chain=CHAIN)
+        p = self.run_step(fx)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("curl POST pulls", self.calls(fx))
+
+    def test_a_PR_closed_unmerged_is_never_reopened_and_a_new_PR_follows_the_normal_path(self):
+        closed = dict(self.merged_pr(), merged_at=None)
+        fx = self.fixture(others=[closed])
+        p = self.run_step(fx)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        calls = self.calls(fx)
+        self.assertEqual(calls.count("curl POST pulls"), 1)
+        self.assertEqual(self.record(fx)["state"], "proposed")
+
+    # ---- the chain id of a re-run ----
+    def test_a_re_run_with_a_new_chain_id_completes_the_record_under_the_original_chain(self):
+        other = "99999999-0000-4000-8000-000000000000"
+        fx = self.fixture(pr=self.existing_pr(), commit_chain=CHAIN, chain=other)
+        p = self.run_step(fx)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.record(fx)["releaseId"], f"{CHAIN}:hangar-prod/prod")
+        self.assertFalse(os.path.exists(os.path.join(fx, "cm", f"release-tracking-{other}.json")))
+
+    def test_a_merged_PR_re_run_with_a_new_chain_id_repairs_under_the_original_chain(self):
+        other = "99999999-0000-4000-8000-000000000000"
+        fx = self.fixture(others=[self.merged_pr()], commit_chain=CHAIN, chain=other)
+        self.assertEqual(self.run_step(fx).returncode, 0)
+        self.assertEqual(self.record(fx)["releaseId"], f"{CHAIN}:hangar-prod/prod")
+        self.assertFalse(os.path.exists(os.path.join(fx, "cm", f"release-tracking-{other}.json")))
+
+    # ---- empty values never blank a record ----
+    def test_a_re_run_that_cannot_read_its_annotations_does_not_blank_what_the_record_holds(self):
+        data = dict(self.GOLDEN, originChainId="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", originChainSlug="quiet-falcon", reissueOf=OLD)
+        fx = self.fixture(pr=self.existing_pr(), record=data)  # no run.json: the run cannot be read
+        self.assertEqual(self.run_step(fx).returncode, 0)
+        rec = self.record(fx)
+        self.assertEqual((rec["originChainId"], rec["originChainSlug"], rec["reissueOf"]), (data["originChainId"], "quiet-falcon", OLD))
+
+    # ---- the failure is where a person sees it; the link is retried until taken ----
+    def test_a_failed_link_is_commented_on_the_PR_once(self):
+        fx = self.fixture({"itsm:link": {"fail": 99}})
+        self.assertEqual(self.run_step(fx).returncode, 0)
+        self.assertEqual(self.calls(fx).count("curl POST comment"), 1)
+        with open(os.path.join(fx, "comment.txt")) as f:
+            self.assertIn("The release itself is unaffected", f.read())
+        self.assertNotIn("changeLinkedAt", self.record(fx))
+
+    def test_a_comment_that_cannot_be_posted_does_not_fail_the_step(self):
+        fx = self.fixture({"itsm:link": {"fail": 99}, "github:comment": {"fail": 99}})
+        self.assertEqual(self.run_step(fx).returncode, 0)
+        self.assertIn("postPrError", self.record(fx))
+
+    def test_a_re_run_retries_the_link_while_the_record_has_no_link_noted(self):
+        data = {k: v for k, v in self.GOLDEN.items() if k != "changeLinkedAt"}  # no postPrError either
+        fx = self.fixture(pr=self.existing_pr(), record=data)
+        self.assertEqual(self.run_step(fx).returncode, 0)
+        self.assertEqual(self.calls(fx).count("itsm link"), 1)
+        self.assertIn("changeLinkedAt", self.record(fx))
+        # and once noted, a further re-run does not link again
+        fx2 = self.fixture(pr=self.existing_pr(), record=self.GOLDEN)
+        self.assertEqual(self.run_step(fx2).returncode, 0)
+        self.assertEqual(self.calls(fx2).count("itsm link"), 0)
+
+    # ---- what is said when the PR call and its lookup disagree ----
+    def test_a_PR_answer_that_is_not_a_PR_is_a_failed_call(self):
+        fx = self.fixture({"github:post": {"fail": 99, "malformed": True}})
+        p = self.run_step(fx)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIsNone(self.record(fx))
+        self.assertNotIn("/null", p.stdout + p.stderr)
+
+    def test_when_the_call_and_the_lookup_both_fail_it_says_it_does_not_know(self):
+        fx = self.fixture({"github:post": {"fail": 99}, "github:list": {"fail": 99, "after": 1}})
+        p = self.run_step(fx)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("could not confirm whether the release PR was opened", p.stderr)
+        self.assertNotIn("was not opened: the call failed and GitHub lists no open PR", p.stderr)
+        self.assertIsNone(self.record(fx))
 
 
 if __name__ == "__main__":
