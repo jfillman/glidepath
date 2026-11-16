@@ -373,7 +373,7 @@ func (c *Client) startRun(ctx context.Context, app *apps.App, p releaseRun, keyH
 			return nil, pipelineruns.Conflict{What: fmt.Sprintf("PipelineRun %s exists and is not this %s's run for this Idempotency-Key", name, kind)}
 		}
 		// A replay reports what the run it found carries, not what this call would resolve now.
-		s := &Started{Name: name, Replayed: true}
+		s := &Started{Name: name, Replayed: true, ReissueLinked: a[pipelineruns.AnnotationReissueOf] != ""}
 		if a[pipelineruns.AnnotationOriginChainID] != "" {
 			s.Origin = &Origin{ChainID: a[pipelineruns.AnnotationOriginChainID], ChainSlug: a[pipelineruns.AnnotationOriginChainSlug], TraceID: a[pipelineruns.AnnotationOriginTraceID]}
 		}

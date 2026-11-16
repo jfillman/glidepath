@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/github"
@@ -57,7 +58,7 @@ func normGitURL(u string) string {
 
 // reissueCheck is every precondition, in the order that gives the clearest reason first. A Refused is an answer; any other
 // error is a failed read.
-func (c *Client) reissueCheck(ctx context.Context, app *apps.App, gh GitHub, rec *releases.Record, siblings func() ([]releases.Record, error)) (*reissueSource, error) {
+func (c *Client) reissueCheck(ctx context.Context, app *apps.App, gh GitHub, rec *releases.Record, siblings func() ([]releases.Record, error), planOf func() (*Plan, error)) (*reissueSource, error) {
 	d := rec.Data
 	chain := chainOf(rec)
 	repos := ReposOf(app)
@@ -131,7 +132,7 @@ func (c *Client) reissueCheck(ctx context.Context, app *apps.App, gh GitHub, rec
 	}
 
 	// 4. The environment must still be one of the app's Flight environments, as its own cicd.yaml says now.
-	plan, err := fetchPlan(ctx, gh, c.Owner, repos)
+	plan, err := planOf()
 	if err != nil {
 		return nil, err
 	}
@@ -189,6 +190,11 @@ func (c *Client) reissueCheck(ctx context.Context, app *apps.App, gh GitHub, rec
 
 	// 7. The commit to release is a real commit of the app repo (the same read promote makes of an image tag's sha).
 	if full, err := gh.CommitSHA(ctx, c.Owner, repos.Source, rev); err != nil {
+		// The git host saying the commit is not there (404, or 422 for a sha it cannot resolve) is an answer about this release.
+		var he github.HTTPError
+		if errors.As(err, &he) && (he.Status == 404 || he.Status == 422) {
+			return nil, Refused{fmt.Sprintf("commit %s of release %s does not resolve in %s/%s", rev[:12], chain, c.Owner, repos.Source), ""}
+		}
 		return nil, err
 	} else if full != rev {
 		return nil, Refused{fmt.Sprintf("commit %s of release %s does not resolve in %s/%s", rev[:12], chain, c.Owner, repos.Source), ""}
@@ -196,6 +202,19 @@ func (c *Client) reissueCheck(ctx context.Context, app *apps.App, gh GitHub, rec
 
 	return &reissueSource{chain: chain, releaseID: d["releaseId"], env: env, cluster: cluster, image: image, gitURL: fmt.Sprintf("https://github.com/%s/%s", c.Owner, repos.Source),
 		gitRevision: rev, prURL: d["prUrl"], prNumber: number}, nil
+}
+
+// oncePlan reads the app's release plan at most once per request (a list checks several candidates against the same plan).
+func (c *Client) oncePlan(ctx context.Context, gh GitHub, app *apps.App) func() (*Plan, error) {
+	var (
+		once sync.Once
+		plan *Plan
+		err  error
+	)
+	return func() (*Plan, error) {
+		once.Do(func() { plan, err = fetchPlan(ctx, gh, c.Owner, ReposOf(app)) })
+		return plan, err
+	}
 }
 
 func orDefault(s, d string) string {
@@ -246,7 +265,7 @@ func (c *Client) Reissue(ctx context.Context, app *apps.App, chain, initiator, k
 	}
 	src, err := c.reissueCheck(ctx, app, gh, rec, func() ([]releases.Record, error) {
 		return c.Records.ListEnv(ctx, app.Namespace, app.Name, rec.Data["env"], rec.Data["cluster"])
-	})
+	}, c.oncePlan(ctx, gh, app))
 	if err != nil {
 		var nc notClosed
 		if errors.As(err, &nc) {
@@ -267,7 +286,7 @@ func (c *Client) Reissue(ctx context.Context, app *apps.App, chain, initiator, k
 		return nil, err
 	}
 	return &ReissueResult{Mode: "pipeline", PipelineRun: s.Name, Reissues: src.chain, ClosedPR: src.prURL, Env: src.env, Cluster: src.cluster, Image: src.image,
-		Linked: s.ReissueLinked || s.Replayed, Replayed: s.Replayed, DryRun: dryRun, Object: s.Object, Origin: s.Origin, OriginUnknown: unknownText(s.OriginUnknown)}, nil
+		Linked: s.ReissueLinked, Replayed: s.Replayed, DryRun: dryRun, Object: s.Object, Origin: s.Origin, OriginUnknown: unknownText(s.OriginUnknown)}, nil
 }
 
 // Reissuable is one release whose PR was closed without merging and which is still the newest for its environment and
@@ -309,6 +328,7 @@ func (c *Client) Reissuable(ctx context.Context, app *apps.App) ([]Reissuable, e
 	sort.Slice(keys, func(i, j int) bool { return keys[i].env+"/"+keys[i].cluster < keys[j].env+"/"+keys[j].cluster })
 	gh := c.GitHub(app.Name)
 	prefetch(ctx, gh, c.Owner, ReposOf(app).Gitops)
+	planOf := c.oncePlan(ctx, gh, app)
 	out := []Reissuable{}
 	for _, k := range keys {
 		rec := newest[k]
@@ -317,7 +337,7 @@ func (c *Client) Reissuable(ctx context.Context, app *apps.App) ([]Reissuable, e
 			continue
 		}
 		siblings := group[k]
-		_, err := c.reissueCheck(ctx, app, gh, &rec, func() ([]releases.Record, error) { return siblings, nil })
+		_, err := c.reissueCheck(ctx, app, gh, &rec, func() ([]releases.Record, error) { return siblings, nil }, planOf)
 		var nc notClosed
 		if errors.As(err, &nc) {
 			continue // its PR is open (or merged): not a candidate

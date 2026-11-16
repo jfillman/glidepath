@@ -271,6 +271,34 @@ func TestReissueWithoutTheAnnotationAllowed(t *testing.T) {
 	}
 }
 
+// A replay reports what the run it found carries: an unlinked run is not "linked" on replay (PR Lens finding).
+func TestReissueReplayOfAnUnlinkedRunIsNotLinked(t *testing.T) {
+	s, store, _, _ := withReissue(t, reissuers, record(oldChain, prodLabels, closedRelease(nil)))
+	store.refuseWhen = func(obj map[string]any) error {
+		if _, ok := obj["metadata"].(map[string]any)["annotations"].(map[string]any)[pipelineruns.AnnotationReissueOf]; ok {
+			return apierrors.NewForbidden(pipelineruns.GVR.GroupResource(), "x", errors.New("A run glidepath-api starts may carry only the annotations glidepath.io/origin-ref"))
+		}
+		return nil
+	}
+	if st, out, body := postJSON(t, s, reissuePath(oldChain), hdr("rel", "k-r"), ""); st != 201 || out["linked"] != false {
+		t.Fatalf("%d %s", st, body)
+	}
+	if st, out, body := postJSON(t, s, reissuePath(oldChain), hdr("rel", "k-r"), ""); st != 200 || out["replayed"] != true || out["linked"] != false {
+		t.Fatalf("replay of an unlinked run: %d %s", st, body)
+	}
+}
+
+// A commit the git host cannot resolve is an answer about the release (422), not a failed read (502).
+func TestReissueRefusesACommitThatDoesNotResolve(t *testing.T) {
+	rev := "ffff000" + strings.Repeat("0", 33)
+	s, store, gh, _ := withReissue(t, reissuers, record(oldChain, prodLabels, closedRelease(map[string]string{"gitRevision": rev, "image": "ghcr.io/jfillman/shop:1.2.3-ffff000"})))
+	gh.pulls["jfillman/gitops-shop#7"] = pull(7, "closed", false, "release-prod-ffff0000")
+	st, out, body := postJSON(t, s, reissuePath(oldChain), hdr("rel", "k-c"), "")
+	if st != 422 || out["rule"] != "GP-API-422" || !strings.Contains(body, "does not resolve") || len(store.writes()) != 0 {
+		t.Fatalf("%d %s", st, body)
+	}
+}
+
 func TestListReissuable(t *testing.T) {
 	// prod: the newest release's PR was closed unmerged -> listed, eligible. staging: newest release's PR is open -> not listed.
 	stagingLabels := map[string]string{"hangar.io/env": "staging", "hangar.io/cluster": "hangar-prod"}
