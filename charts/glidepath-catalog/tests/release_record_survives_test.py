@@ -544,6 +544,14 @@ class Survives(unittest.TestCase):
         self.assertNotIn("was not opened: the call failed and GitHub lists no open PR", p.stderr)
         self.assertIsNone(self.record(fx))
 
+    def test_a_re_run_with_no_body_marker_reads_the_change_the_record_holds_and_creates_none(self):
+        # the first attempt saved change chg-1 on the record but its PR-body update failed: the body has no marker
+        fx = self.fixture(pr=self.existing_pr(body="**App**: shop"), record=dict(self.GOLDEN, state="proposed"))
+        p = self.run_step(fx)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertNotIn("itsm create", self.calls(fx))
+        self.assertEqual(self.record(fx)["changeRequestId"], "chg-1")
+
 
 if __name__ == "__main__":
     unittest.main()

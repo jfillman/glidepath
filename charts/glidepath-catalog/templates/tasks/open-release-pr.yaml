@@ -680,6 +680,11 @@ spec:
           fi
           marker_id=""
           if itsm_enabled; then
+            # The change a previous attempt recorded counts as named even when the PR body never got its marker (the body update
+            # failed): reading it is a get, a create here would open a second change.
+            if [[ -z "${CHANGE_REQUEST_ID}" && "${existing_body}" != *"glidepath:change-request:"* && "${have_record}" == 1 ]]; then
+              CHANGE_REQUEST_ID="$(kubectl get configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" -o jsonpath='{.data.changeRequestId}' 2>/dev/null || true)"
+            fi
             marker_id="${CHANGE_REQUEST_ID}"
             [[ -n "${marker_id}" ]] || marker_id="$(sed -nE 's/.*<!-- glidepath:change-request:([^ ]+) -->.*/\1/p' <<<"${existing_body}" | head -1)"
           fi
