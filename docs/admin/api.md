@@ -471,6 +471,15 @@ promote or rollback just started (its `pipelineRun`), from the moment of the cli
  "chainId": "7200a685-...", "prUrl": "", "changeRequest": "", "phase": "running", "record": null}
 ```
 
+**`status` is one of `pending` (no status yet), `queued`, `running`, `succeeded`, `failed`, `cancelled`.** `queued` is a run
+waiting for a concurrency slot: with the per-repository limit (Pipelines-as-Code `concurrency_limit`), runs beyond it are created
+with `spec.status: PipelineRunPending` (condition `Unknown`, reason `PipelineRunPending`) and start when a slot frees. The API reads
+that from the run's own spec and condition, not from the `pipelinesascode.tekton.dev/state` label or annotation (which can outlive
+the wait). It was reported as `running` before; the value is new, so a client with a closed list should treat an unknown status as
+"not finished". `phase` is `queued` while a record does not exist yet. The record's state machine is unchanged. Cancel
+(`POST .../pipelineruns/{name}/cancel`) patches `spec.status` on a queued run exactly as on a running one; that Tekton then
+cancels a pending run without starting it is Tekton's documented behaviour and has not been exercised here.
+
 `tasks` is every task of the Pipeline in its own order (`status.pipelineSpec`), then its finally tasks, so one not
 started yet is `pending` where it will run; `params` are the run's string params (`image-ref`, `git-url`,
 `git-revision`, ...). The run and its TaskRuns come from the cluster (never cached: it is followed one run at a time); the chain id is
