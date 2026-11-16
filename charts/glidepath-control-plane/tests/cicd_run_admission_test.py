@@ -545,6 +545,26 @@ class CicdRunAdmission(unittest.TestCase):
         self.assertIn("UPDATE", self.pols["cicd-run-shape"]["matchConstraints"]["resourceRules"][0]["operations"])
         self.refused(run(pipelineSpec={"tasks": []}), operation="UPDATE")
 
+    def test_a_run_pipelines_as_code_queues_is_admitted_pending_and_when_it_starts(self):
+        # Repository concurrency_limit: PaC creates every run of the repository with spec.status PipelineRunPending and
+        # state=queued, patches the execution order on it, and the watcher later clears spec.status and sets state=started.
+        # Nothing in the policy reads spec.status or the state, so the same shape is admitted at each step.
+        for event in ("pull_request", "push"):
+            md = meta(event, "main")
+            md.setdefault("labels", {})["pipelinesascode.tekton.dev/state"] = "queued"
+            md["annotations"]["pipelinesascode.tekton.dev/state"] = "queued"
+            md["annotations"]["pipelinesascode.tekton.dev/execution-order"] = "%s/a,%s/b" % (NS, NS)
+            queued = run("build", metadata=md, status="PipelineRunPending")
+            self.admitted(queued)
+            self.admitted(queued, operation="UPDATE")
+            started = copy.deepcopy(queued)
+            del started["spec"]["status"]
+            started["metadata"]["labels"]["pipelinesascode.tekton.dev/state"] = "started"
+            started["metadata"]["annotations"]["pipelinesascode.tekton.dev/state"] = "started"
+            self.admitted(started, operation="UPDATE")
+        # and a queued run is held to the same shape as any other: pending does not excuse an inline pipelineSpec
+        self.refused(run(pipelineSpec={"tasks": []}, status="PipelineRunPending"))
+
     def test_pac_never_creates_a_taskrun(self):
         pol = self.pols["cicd-run-no-taskruns"]
         tr = {"apiVersion": "tekton.dev/v1", "kind": "TaskRun", "metadata": {}, "spec": {"taskRef": {"name": "x"}}}

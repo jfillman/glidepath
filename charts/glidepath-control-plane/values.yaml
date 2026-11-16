@@ -325,6 +325,17 @@ defaultChart: {}
 # Forwarded to every app's glidepath-app; empty forwards nothing.
 observability: {}
 
+# Pipelines-as-Code's per-repository queue for every app's Repository CRs (the app repo and gitops-<app>): the `concurrency_limit`
+# of each, a whole number of at least 1. Pipelines-as-Code creates the runs of a limited repository pending and starts them as
+# others finish; a pending run's timeout clock has not started. A release pull request starts ten gate runs in one second, and on a
+# small cluster that stalled task resolution and etcd until gates timed out (docs/admin/pipeline-performance.md, "Queueing gate
+# runs"). null (the default) forwards nothing: no limit. appRepoConcurrencyLimit / gitopsRepoConcurrencyLimit override
+# concurrencyLimit for one kind of repository. Apron sets concurrencyLimit from cluster.yaml glidepath.gateConcurrency.
+pipelinesAsCode:
+  concurrencyLimit: null
+  appRepoConcurrencyLimit: null
+  gitopsRepoConcurrencyLimit: null
+
 # See templates/argocd/tenant-onboarding-applicationset.yaml's own header comment for
 # the real name collision this guards against and why it's a value, not an in-place
 # rename.

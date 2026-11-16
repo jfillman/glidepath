@@ -330,6 +330,17 @@ platformCicdRepoUrl: ""
 backstageHostAliasIP: ""
 backstageHostAliasHostname: ""
 
+# Pipelines-as-Code's per-repository queue (docs/admin/pipeline-performance.md, "Queueing gate runs"): the `concurrency_limit` of
+# this app's Repository CRs (the app repo and gitops-<app>), a whole number of at least 1. Pipelines-as-Code then creates the
+# runs of a repository pending and starts at most this many at a time, so a release pull request's ten gates do not all start
+# in the same second. unset (the default) = no limit and the CRs render as they always did. The control plane forwards the
+# cluster's setting here (its pipelinesAsCode values; apron's glidepath.gateConcurrency), and a forwarded value wins over one in cicd.yaml.
+# appRepoConcurrencyLimit / gitopsRepoConcurrencyLimit override concurrencyLimit for one repository. extraGitopsRepos are never limited.
+pipelinesAsCode:
+  concurrencyLimit: null
+  appRepoConcurrencyLimit: null
+  gitopsRepoConcurrencyLimit: null
+
 # Placeholder only - a real install MUST override every field here via
 # `-f platform-identity.yaml`. Left empty rather than a fake example so an accidental
 # install without that file fails loudly instead of deploying to a plausible-looking
