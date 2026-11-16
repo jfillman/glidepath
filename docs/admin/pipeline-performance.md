@@ -66,7 +66,11 @@ TaskRun timeout. Raise a step's request only together with the node's headroom.
 
 ## Release gates
 
-A gitops release PR runs eight gate PipelineRuns.
+A gitops release PR runs ten gate PipelineRuns on the lab: nine that match every release branch (`api-compat`,
+`clearance-gate`, `image-scan`, `itsm`, `policy-validation`, `provenance`, `qa`, `sast`, `sbom`) and `values`, which runs when
+the PR changes a values or release file. Two more gitops templates are not on that path: `merged` runs on the merge
+(a push), and `agent-gates` runs on every PR to main but is delivered only where Clearance's GitHub App does not report the
+agent checks, so a cluster that delivers it starts eleven. Counted from `charts/glidepath-app/files/onboarding-templates/gitops-repo/`.
 
 - **The image gates do not clone.** `sast`, `image-scan`, `sbom` and the image half of `provenance` share the
   `resolve-promoted-image` StepAction: the PR's base, the files changed between that base and the head commit,
@@ -109,8 +113,8 @@ How it behaves (Pipelines-as-Code v0.52.0, Tekton Pipelines v1.15.0):
   start first at a limit of 3. Order does not matter to the promotion fan-in, which every gate's `finally` feeds.
 - **The timeout clock starts when the run starts.** Tekton sets `status.startTime` on the first reconcile after the run
   is no longer pending, and every timeout (`tasks`, `finally`, `pipeline`) counts from it. Time in the queue does not
-  count, so no gate timeout changes. At a limit of 3, ten gates run in about four waves (an estimate, not measured): wall
-  time is roughly four times the slowest gate in a wave, and each gate still has its own full budget.
+  count, so no gate timeout changes. At a limit of 3, ten gates run in four waves of 3, 3, 3 and 1 (eleven would also be four); wall
+  time is roughly four times the slowest gate in a wave (an estimate, not measured), and each gate still has its own full budget.
 - **The GitHub check reads `queued`** (title "Queued"/"Pending") until the run starts, then "CI has Started".
 - **`/retest <gate>-` creates new runs through the same path**, so they queue behind what is running. `/cancel`
   patches `spec.status: CancelledRunFinally`, which Tekton accepts on a pending run, so a queued run can be cancelled and
