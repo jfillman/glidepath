@@ -53,6 +53,11 @@ type Hub struct {
 	Buffer     int           // changes queued per viewer before it counts as lagged; 0 = 256
 	Log        *slog.Logger
 
+	// Test hooks, nil in production. afterSend runs after each change is queued to a viewer (poll holds the watch
+	// lock); afterPoll runs at the end of every poll cycle in the watch's goroutine.
+	afterSend func()
+	afterPoll func()
+
 	mu      sync.Mutex
 	watches map[string]*watch
 	streams int
@@ -186,6 +191,9 @@ func (h *Hub) run(ctx context.Context, w *watch) {
 	first := true
 	for {
 		err := h.poll(ctx, w)
+		if h.afterPoll != nil {
+			h.afterPoll()
+		}
 		if first {
 			w.err = err
 			close(w.ready)
@@ -254,6 +262,9 @@ func (h *Hub) poll(ctx context.Context, w *watch) error {
 		for _, c := range changes {
 			select {
 			case s.C <- c:
+				if h.afterSend != nil {
+					h.afterSend()
+				}
 			default: // the viewer fell behind: it reconnects for a fresh snapshot rather than miss a change
 				s.Lagged = true
 				delete(w.subs, s)

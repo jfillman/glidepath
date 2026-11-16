@@ -42,9 +42,19 @@ func tr(name, rv string) Obj {
 	return Obj{"kind": "TaskRun", "metadata": map[string]any{"name": name, "resourceVersion": rv}}
 }
 
+// The viewer must not read while the watch queues its changes: a reader that keeps pace is not lagging, and
+// whether it keeps pace is a scheduler race. So the test reads nothing until the watch has dropped the viewer
+// (observed through the afterPoll hook, no wall-clock bound), then drains what was queued.
 func TestALaggingViewerIsClosedNotSkipped(t *testing.T) {
 	st := &listStore{objs: []Obj{tr("a", "1")}}
+	polled := make(chan struct{}, 1)
 	h := &Hub{Client: &Client{Store: st, TTL: time.Millisecond}, Interval: 5 * time.Millisecond, Buffer: 1}
+	h.afterPoll = func() {
+		select {
+		case polled <- struct{}{}:
+		default:
+		}
+	}
 	sub, snap, err := h.Subscribe(context.Background(), "ns")
 	if err != nil || len(snap.TaskRuns) != 1 {
 		t.Fatalf("%v %v", snap, err)
@@ -53,19 +63,27 @@ func TestALaggingViewerIsClosedNotSkipped(t *testing.T) {
 	st.mu.Lock()
 	st.objs = []Obj{tr("a", "2"), tr("b", "1"), tr("c", "1")} // three changes, room for one
 	st.mu.Unlock()
-	deadline := time.After(2 * time.Second)
-	for {
+	hang := time.After(time.Minute) // a hang guard only, never the assertion
+	for subscribed := true; subscribed; {
 		select {
-		case _, ok := <-sub.C:
-			if !ok {
-				if !sub.Lagged {
-					t.Fatal("closed without being lagged")
-				}
-				return
-			}
-		case <-deadline:
-			t.Fatal("a viewer that fell behind was never closed")
+		case <-polled:
+		case <-hang:
+			t.Fatal("the watch never dropped the lagging viewer")
 		}
+		sub.w.mu.Lock()
+		_, subscribed = sub.w.subs[sub]
+		sub.w.mu.Unlock()
+	}
+	// Dropped: exactly the one change that fit was queued, then the channel is closed and Lagged is set.
+	n := 0
+	for range sub.C {
+		n++
+	}
+	if n != 1 {
+		t.Fatalf("queued %d changes, want 1", n)
+	}
+	if !sub.Lagged {
+		t.Fatal("closed without being lagged")
 	}
 }
 

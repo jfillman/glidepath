@@ -74,6 +74,14 @@ until `apiImage` is set; `api-ci.yaml` builds a multi-arch image on every merge 
 touches the API or the contract and sets `apiImage` to its `sha-` tag, the same loop the broker
 images use. The contract is baked into the image, so `GET /v1/contract` always matches the code.
 
+**A red `api-ci` run on a push to main means no image.** The `image` job needs the `test` job, so when tests
+fail on main no image is built, `apiImage` is not bumped, and the lab keeps running the previous
+glidepath-api image with nothing else signalling it. The failed run's job summary says so. To see which image is
+live: `kubectl -n platform-system get deploy glidepath-api -o jsonpath='{.spec.template.spec.containers[0].image}'`
+(the `sha-` tag is the commit it was built from); compare it with `apiImage` in
+`charts/glidepath-control-plane/values.yaml` on main. Fix the failure on main (or re-run the workflow if the
+test was a flake) to get the image built.
+
 Tekton Results is read through `tekton-results-relay`, the hop Tower used itself until phase 6 (2026-10-30). The
 relay holds the Results read grant; the API decides who may ask before it asks.
 
