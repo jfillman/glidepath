@@ -217,8 +217,7 @@ func (c *Client) reissueCheck(ctx context.Context, app *apps.App, gh GitHub, rec
 
 // reissueSourceCheck re-reads what promote reads. For an environment with a predecessor in the app's release order, that
 // environment's release file must still carry this image's tag (staging rolled back since: refused, naming what it carries now)
-// and name exactly this image's repository. The first environment has no source environment: the repository must then equal
-// that of a release of this app that ran (the API has no other registry of its own), and none to compare is a refusal.
+// and name exactly this image's repository. The first environment has no source environment: its own gitops release file is the anchor.
 func (c *Client) reissueSourceCheck(ctx context.Context, app *apps.App, gh GitHub, plan *Plan, env, cluster, chain, image string) error {
 	i := strings.LastIndex(image, ":")
 	repo, tag := image[:i], image[i+1:]
@@ -251,17 +250,33 @@ func (c *Client) reissueSourceCheck(ctx context.Context, app *apps.App, gh GitHu
 		}
 		return nil
 	}
-	all, err := c.Records.List(ctx, app.Namespace, app.Name)
-	if err != nil {
-		return err
-	}
-	for _, r := range all {
-		st := r.Data["state"]
-		if (ranStates[st] || st == "superseded" || st == "rolled-back") && strings.HasPrefix(r.Data["image"], repo+":") {
-			return nil
+	// No source environment: the anchor is the environment's own release file in the gitops repository (default branch), which
+	// pipeline-runner cannot write (a release PR changes it only through review and merge), never another release record, which it
+	// can. No file yet, or one naming another repository, is a refusal.
+	repos := ReposOf(app)
+	var fileRepo, path string
+	for _, cand := range []string{cluster + "/" + env + "/release.yaml", cluster + "/" + env + "/values.yaml"} {
+		content, gerr := gh.Contents(ctx, c.Owner, repos.Gitops, cand)
+		if gerr != nil {
+			continue
+		}
+		doc, perr := parse(content, cand)
+		if perr != nil {
+			return perr
+		}
+		path = cand
+		if fileRepo = promotableRepo(doc); fileRepo != "" {
+			break
 		}
 	}
-	return Refused{fmt.Sprintf("%s is the app's first environment, and no release of %s that ran used image repository %s, so it cannot be established as the app's own", env, app.Name, repo), ""}
+	if fileRepo == "" {
+		return Refused{fmt.Sprintf("%s is the app's first environment and has no release file naming an image repository yet (%s/%s/release.yaml in %s), so the image repository of release %s cannot be verified", env, cluster, env, repos.Gitops, chain),
+			"promote the first image from Tower, which a person reviews"}
+	}
+	if fileRepo != repo {
+		return Refused{fmt.Sprintf("release %s records image repository %s, but %s names %s", chain, repo, path, fileRepo), ""}
+	}
+	return nil
 }
 
 // oncePlan reads the app's release plan at most once per request (a list checks several candidates against the same plan).

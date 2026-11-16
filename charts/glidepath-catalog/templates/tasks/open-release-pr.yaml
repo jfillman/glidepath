@@ -349,7 +349,8 @@ spec:
             if [[ -n "${reissue_of:-}" ]]; then
               pc="$(kubectl get configmap "${name}" -n "${NAMESPACE}" -o jsonpath='{.data.prCreatedAt}' 2>/dev/null || true)"
               rc="$(reissue_old_created)"
-              [[ -z "${rc}" || "${pc:0:19}" > "${rc:0:19}" ]] && continue
+              # only a record strictly older than the reissued one: a newer, equal or undated one is left alone
+              [[ -z "${rc}" || -z "${pc}" || ! "${pc:0:19}" < "${rc:0:19}" ]] && continue
             fi
             url="$(kubectl get configmap "${name}" -n "${NAMESPACE}" -o jsonpath='{.data.prUrl}' 2>/dev/null)"
             [[ "${url}" =~ ^https://github\.com/${owner}/${gitops_repo}/pull/([0-9]+)$ ]] || continue
@@ -410,9 +411,20 @@ spec:
             echo "error: reissue refused: a newer release of ${APP_NAME} to ${ENV} on ${CLUSTER} (${newer}) was opened after the one being reissued (${reissue_of}); replaying it over that one is not allowed. Nothing was changed." >&2
             return 1
           fi
-          open_prs="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${owner}/${gitops_repo}/pulls?state=open&per_page=100" \
-            | jq -r --arg re "^release-(rollback-)?${ENV}-[0-9a-zA-Z]{1,40}\$" '.[] | select(.head.ref | test($re)) | .html_url' | head -1)" || { echo "error: reissue: could not list the open release PRs." >&2; return 1; }
+          # Every page of the open PRs (100 each): a repository with more open PRs than one page must not fail open. More than 20
+          # pages, or a page that cannot be read, fails closed.
+          local page=1 got=0 hits
+          open_prs=""
+          while :; do
+            hits="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${owner}/${gitops_repo}/pulls?state=open&per_page=100&page=${page}")" || { echo "error: reissue: could not list the open release PRs." >&2; return 1; }
+            got="$(jq 'length' <<<"${hits}")"
+            open_prs="$(jq -r --arg re "^release-(rollback-)?${ENV}-[0-9a-zA-Z]{1,40}\$" '.[] | select(.head.ref | test($re)) | .html_url' <<<"${hits}" | head -1)"
+            [[ -z "${open_prs}" ]] || break
+            (( got >= 100 )) || break
+            (( page < 20 )) || { echo "error: reissue: more than 2000 open PRs; cannot show that no release PR for ${ENV} is open." >&2; return 1; }
+            page=$((page + 1))
+          done
           if [[ -n "${open_prs}" ]]; then
             echo "error: reissue refused: a release PR for ${ENV} is open (${open_prs}). Nothing was changed." >&2
             return 1

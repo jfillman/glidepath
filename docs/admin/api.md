@@ -401,7 +401,8 @@ a commit, an environment, a cluster or a chain: they are the closed release's, r
 4b. the **source environment** (the one before it in the release order, read as promote reads it) no longer carries this image
    (staging rolled back since: the reason names the environment and what it carries now), or the record's image **repository**
    (registry and path, exactly) is not the one that environment's release file names. The first environment has no source
-   environment: its repository must equal that of a release of the app that ran, and none to compare is a refusal;
+   environment: the anchor is its own gitops release file (`<cluster>/<env>/release.yaml` on the default branch, which only a reviewed
+   merge changes), never other release records; no file yet, or one naming another repository, is a refusal;
 5. a **newer release** of the app to this environment and cluster was opened since, or one was **merged** after this one
    was opened (a reissue never replays an old release over a newer one);
 6. **another release PR for the environment is open** (checked per environment name: the git host does not say which cluster a
@@ -411,6 +412,10 @@ a commit, an environment, a cluster or a chain: they are the closed release's, r
    (`promote-<env>-<sha8>-<6 hex of sha256(app/reissue/env/cluster/chain)>`), so a release is reissued **at most once**; a
    second call with another key is refused and names the first run (re-run it if it failed). The same key replays (`200`,
    `"replayed": true`).
+
+**Known limits.** The source-environment check uses the environment before this one in the release order, so a release that was one
+of several environments a single pipeline released to can be refused falsely (it fails closed; promote again). A window of tens of
+seconds remains between the PR-time guard and the PR's creation.
 
 **Re-checked at PR time.** Checks 5 and 6 are made when the call arrives, and the run opens its PR minutes later. When the run
 carries `reissue-of`, `open-release-pr` repeats them from the cluster and the git host before it creates anything: the reissued

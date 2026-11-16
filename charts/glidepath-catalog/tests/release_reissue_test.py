@@ -72,7 +72,10 @@ esac
         put(os.path.join(bin_, "curl"), '''#!/usr/bin/env bash
 u="${@: -1}"; echo "curl $u" >> "$FX/calls"
 case "$u" in
-  *"pulls?state=open"*) cat "$FX/pulls.json" ;;
+  *"pulls?state=open"*)
+    pg="${u##*page=}"; [[ "$u" == *page=* ]] || pg=1
+    f="$FX/pulls-$pg.json"; [[ -f "$f" ]] || { [[ "$pg" == 1 ]] && f="$FX/pulls.json" || f="$FX/empty.json"; }
+    cat "$f" ;;
   */pulls/1) echo '{"state":"closed","merged":false}' ;;
   *) exit 22 ;;
 esac
@@ -194,16 +197,34 @@ esac
         p, _ = self.guard([], pulls=[{"head": {"ref": "release-prod-eu-abc12345"}, "html_url": "u"}, {"head": {"ref": "feature-x"}, "html_url": "u"}])
         self.assertEqual(p.returncode, 0, p.stderr)
 
+    def test_the_guard_pages_through_every_open_PR_and_fails_closed_past_the_cap(self):
+        page1 = [{"head": {"ref": f"feature-{i}"}, "html_url": "u"} for i in range(100)]
+        items = [cm(f"release-tracking-{OLD}", {"prCreatedAt": "2026-11-10T10:00:00Z"})]
+        fx = self.fixture({f"cm-release-tracking-{OLD}.json": items[0], "list.json": {"items": items}, "pulls.json": page1,
+                           "pulls-2.json": [{"head": {"ref": "release-prod-abc12345"}, "html_url": "https://github.com/o/gitops-shop/pull/150"}], "empty.json": []})
+        p = self.run_fn(fx, "reissue_guard")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("pull/150", p.stderr)  # found on the second page
+        # a full page after full page, never ending: closed, not open
+        files = {f"cm-release-tracking-{OLD}.json": items[0], "list.json": {"items": items}, "empty.json": []}
+        for n in range(1, 21):
+            files[f"pulls-{n}.json"] = page1
+        p = self.run_fn(self.fixture(files), "reissue_guard")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("more than 2000", p.stderr)
+
     def test_the_guard_is_wired_before_a_change_request_or_a_branch_exists(self):
         self.assertLess(SCRIPT.index("reissue_guard || exit 1"), SCRIPT.index('workdir="$(mktemp -d)"'))
         self.assertLess(SCRIPT.index("reissue_guard || exit 1"), SCRIPT.index("git push --quiet --force"))
 
     # ---- close_stale_proposals never closes a release newer than the reissued one ----
     def test_close_stale_skips_a_release_newer_than_the_one_reissued(self):
-        names = [f"release-tracking-{n}" for n in ("old2", "newer")]
+        names = [f"release-tracking-{n}" for n in ("old2", "newer", "equal", "undated")]
         files = {"list.json": {"items": []}, f"cm-release-tracking-{OLD}.json": cm(f"release-tracking-{OLD}", {"prCreatedAt": "2026-11-10T10:00:00Z"}),
                  "cm-release-tracking-old2.json": cm("release-tracking-old2", {"state": "proposed", "prCreatedAt": "2026-11-05T00:00:00Z", "prUrl": "https://github.com/o/gitops-shop/pull/1"}),
-                 "cm-release-tracking-newer.json": cm("release-tracking-newer", {"state": "proposed", "prCreatedAt": "2026-11-12T00:00:00Z", "prUrl": "https://github.com/o/gitops-shop/pull/2"})}
+                 "cm-release-tracking-newer.json": cm("release-tracking-newer", {"state": "proposed", "prCreatedAt": "2026-11-12T00:00:00Z", "prUrl": "https://github.com/o/gitops-shop/pull/2"}),
+                 "cm-release-tracking-equal.json": cm("release-tracking-equal", {"state": "proposed", "prCreatedAt": "2026-11-10T10:00:00Z", "prUrl": "https://github.com/o/gitops-shop/pull/3"}),
+                 "cm-release-tracking-undated.json": cm("release-tracking-undated", {"state": "proposed", "prUrl": "https://github.com/o/gitops-shop/pull/4"})}
         fx = self.fixture(files)
         wrapper = os.path.join(self.tmp, "kc.sh")
         # `kubectl get configmap -l ... -o jsonpath=<names>` lists the proposed records
@@ -212,7 +233,8 @@ esac
         self.assertEqual(p.returncode, 0, p.stderr)
         patched = self.patched(fx)
         self.assertIn("release-tracking-old2", patched)
-        self.assertNotIn("release-tracking-newer", patched)
+        for n in ("newer", "equal", "undated"):
+            self.assertNotIn(f"release-tracking-{n}", patched, n)  # only strictly older, dated records are closed
 
 
 if __name__ == "__main__":
