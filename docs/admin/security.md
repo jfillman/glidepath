@@ -221,6 +221,18 @@ What each part does.
     rendered from it) must give those tasks to `source-runner`, and `push-image` (`cicdRunAdmission.pusherTasks`) to `image-pusher`. A PR that
     deletes those lines from its `.tekton` file is refused, not obeyed. `cicdRunAdmission.sourceIsolationActions` sets what a refusal does.
   Every expression is `has()`-guarded and the match conditions cannot raise, so a CEL error cannot refuse requests cluster-wide.
+- **A gitops repository's `.tekton/` files are read from its default branch.** `pipelinesAsCode.gitopsRepoProvenance: default_branch`
+  (control plane: the same key; Apron: `glidepath.gitopsPipelineProvenance`) sets `spec.settings.pipelinerun_provenance` on the
+  `gitops-<app>` Repository CR, and Pipelines-as-Code then builds every run for that repository from `.tekton/` at the default branch's
+  head at the time of the event (it resolves the branch with the GitHub API on every pull request, push and `/retest`), not from the pull
+  request's head. A pull request to a gitops repository can no longer change the pipeline that judges it, and a release pull request
+  opened before a resync is judged by the current files: no `/retest` or reissue is needed. The run still describes the pull request:
+  the sha, source-branch, event-type and pull-request annotations, and the `{{ revision }}` and `{{ pull_request_number }}` the files
+  pass, are the event's, so `cicd-run-shape` and `verify-ref-protection` judge exactly what they did. Only the definition moves. What
+  it costs: a resync pull request's own checks run the files on `main`, not the ones it delivers (the delivered files take effect for
+  every open pull request when it merges, so merge a resync when no gate run is in flight). The app repository is not changed (its
+  `.tekton/` build file is meant to change in a pull request, and `cicd-run-shape` bounds what it may do). `extraGitopsRepos` are not
+  changed either. Unset keeps today's behaviour (`source`).
 - **The policies must compile under the API server.** cel-python (the behaviour tests) is more forgiving than the API server: it does not type-check map literals (every value of one must have the same type) or reject an invalid string escape (a regex backslash needs a raw string, `r'...'`). `hack/ci/vap-compile` (CI job `vap-compile`) compiles every rendered `ValidatingAdmissionPolicy` with the API server's own CEL compiler, for the default values and for a values file that sets every optional list.
 - **Tests.** `charts/glidepath-app/tests/pipeline_least_privilege_test.py` renders the charts and asserts each account, its
   automount, its effective RBAC, and that `source-runner` can do nothing (a negative test, run verb by verb);

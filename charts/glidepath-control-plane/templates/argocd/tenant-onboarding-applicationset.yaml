@@ -124,7 +124,7 @@ spec:
               {{- end }}
               {{- /* Pipelines-as-Code's per-repository queue: only the limits that are set, so unset forwards nothing. */}}
               {{- $pac := dict }}
-              {{- range $k := list "concurrencyLimit" "appRepoConcurrencyLimit" "gitopsRepoConcurrencyLimit" }}
+              {{- range $k := list "concurrencyLimit" "appRepoConcurrencyLimit" "gitopsRepoConcurrencyLimit" "gitopsRepoProvenance" }}
               {{- if not (kindIs "invalid" (index ($.Values.pipelinesAsCode | default dict) $k)) }}{{ $_ := set $pac $k (index $.Values.pipelinesAsCode $k) }}{{ end }}
               {{- end }}
               {{- with $pac }}

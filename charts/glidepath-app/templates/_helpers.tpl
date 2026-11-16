@@ -244,6 +244,22 @@ else fails the render (the CRD's minimum is 1, and Pipelines-as-Code reads 0 as 
 {{- end -}}
 
 {{/*
+glidepath-app.pacGitopsProvenance - the Pipelines-as-Code `spec.settings.pipelinerun_provenance` for the gitops-<app> Repository CR, or ""
+for none (the default: the CR then renders exactly as it did before the value existed, and Pipelines-as-Code reads .tekton from the
+pull request's head, its own "source"). Only "default_branch" and "source" exist in Pipelines-as-Code v0.52.0's CRD; anything else fails
+the render rather than being rejected by the API server at sync.
+*/}}
+{{- define "glidepath-app.pacGitopsProvenance" -}}
+{{- $v := (.Values.pipelinesAsCode | default dict).gitopsRepoProvenance -}}
+{{- if not (kindIs "invalid" $v) -}}
+{{- if not (and (kindIs "string" $v) (has $v (list "default_branch" "source"))) -}}
+{{- fail (printf "pipelinesAsCode.gitopsRepoProvenance is %v: default_branch, source, or unset (Pipelines-as-Code's pipelinerun_provenance)" $v) -}}
+{{- end -}}
+{{- $v -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 glidepath-app.checksOnly - "true" when cicd.yaml declares no build: a checks-only repository (configuration only).
 It builds, deploys and releases nothing, so it has no flows, environments, build cache or Argo CD Applications; it
 keeps its registration (namespace, Pipelines-as-Code Repository, pipeline-runner) and the PR checks every repository

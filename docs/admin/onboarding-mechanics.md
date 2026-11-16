@@ -184,6 +184,15 @@ after a platform upgrade (both its app repository and its gitops repository are 
    `step-deliver-app-repo-files` and `step-deliver-gitops-repo-files` logs.
 3. Merge the resync pull request in each repository (`onboarding-resync` branch, one open PR per repository at a time).
 
+**A release pull request opened before the resync merged.** By default Pipelines-as-Code builds a pull request's runs from the `.tekton/`
+files on that pull request's own head, so a release pull request opened before a gitops repository's resync keeps starting gates from
+the old files (a gate whose Pipeline gained a workspace fails with `InvalidWorkspaceBindings`) and `/retest` cannot fix it: resync when
+no release pull request is open, or close it and promote again. With `pipelinesAsCode.gitopsRepoProvenance: default_branch` (Apron:
+`glidepath.gitopsPipelineProvenance`) the gitops repository's runs are built from `.tekton/` on its default branch instead, so a
+release pull request opened at any time is judged by the current files and a `/retest` after the resync merges is enough. The trade-off
+is that a resync pull request's own checks run the files on `main`, not the ones it delivers (only `agent-gates`, and a `values`
+check when it touches a values file, match a resync branch at all). Details: docs/admin/security.md.
+
 The gitops step's last log line is one of two facts, each with its count:
 
 - `gitops repo: N of M template files differ from .tekton/ (...) - opening the resync PR`

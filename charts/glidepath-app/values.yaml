@@ -340,6 +340,11 @@ pipelinesAsCode:
   concurrencyLimit: null
   appRepoConcurrencyLimit: null
   gitopsRepoConcurrencyLimit: null
+  # Where Pipelines-as-Code reads the gitops-<app> repository's .tekton files from (its Repository's settings.pipelinerun_provenance):
+  # default_branch = the default branch, so a pull request cannot change the pipeline that judges it and a release pull request opened
+  # before a resync is judged by the current files; source = the pull request's head. unset = today's behaviour (source). The app
+  # repository and extraGitopsRepos are never changed. The control plane forwards the cluster's setting (apron: glidepath.gitopsPipelineProvenance).
+  gitopsRepoProvenance: null
 
 # Placeholder only - a real install MUST override every field here via
 # `-f platform-identity.yaml`. Left empty rather than a fake example so an accidental
