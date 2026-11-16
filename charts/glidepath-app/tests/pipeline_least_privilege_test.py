@@ -124,6 +124,8 @@ class Identities(unittest.TestCase):
             for verb in ("create", "update", "patch", "delete"):
                 self.assertFalse(allows(rules, "tekton.dev", res, verb), f"{verb} {res}")
         self.assertTrue(allows(rules, "", "secrets", "get", "app-secrets"))
+        # Airframe's Dex component publishes the check ride's credentials here (docs/admin/app-secrets.md)
+        self.assertTrue(allows(rules, "", "secrets", "get", "dex-check-ride-credentials"))
         self.assertFalse(allows(rules, "", "secrets", "get", "anything-else"))
         for verb in ("list", "watch", "create", "patch", "update", "delete"):
             self.assertFalse(allows(rules, "", "secrets", verb), verb)

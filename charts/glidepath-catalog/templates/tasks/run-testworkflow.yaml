@@ -328,12 +328,24 @@ spec:
         fi
         echo -n "${WORKFLOW_SOURCE}" > "$(results.workflow-source.path)"
 
-        echo "materializing this namespace's app-secrets into testkube/${SECRET_NAME}"
-        if kubectl get secret app-secrets >/dev/null 2>&1; then
-          PATCH_DATA="$(kubectl get secret app-secrets -o json | jq -c '{data: .data}')"
+        # Two sources, merged into the one placeholder: app-secrets (the app's own Infisical keys, synced by
+        # the app-secrets ExternalSecret) and dex-check-ride-credentials (DEX_TOKEN_URL / DEX_CLIENT_ID /
+        # DEX_CLIENT_SECRET, published into this namespace by Airframe's Dex component when the app sets
+        # spec.checkRide.namespace; docs/admin/app-secrets.md). Either may be absent. The Dex Secret is
+        # read last, so its keys win over a same-named key in app-secrets.
+        echo "materializing this namespace's app-secrets and dex-check-ride-credentials into testkube/${SECRET_NAME}"
+        SECRET_JSONS=""
+        for src in app-secrets dex-check-ride-credentials; do
+          if SRC_JSON="$(kubectl get secret "${src}" -o json 2>/dev/null)"; then
+            echo "  found ${src}"
+            SECRET_JSONS="${SECRET_JSONS}${SRC_JSON}"$'\n'
+          fi
+        done
+        if [[ -n "${SECRET_JSONS}" ]]; then
+          PATCH_DATA="$(jq -c -s '{data: (map(.data // {}) | add)}' <<< "${SECRET_JSONS}")"
           kubectl -n testkube patch secret "${SECRET_NAME}" --type merge -p "${PATCH_DATA}"
         else
-          echo "no app-secrets in this namespace - leaving ${SECRET_NAME} empty"
+          echo "no app-secrets or dex-check-ride-credentials in this namespace - leaving ${SECRET_NAME} empty"
         fi
 
         # BEGIN testworkflow-policy

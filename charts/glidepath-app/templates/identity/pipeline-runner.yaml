@@ -40,8 +40,11 @@ rules:
   # this pipeline with - not a general secrets-read grant.
   - apiGroups: [""]
     resources: ["secrets"]
-    resourceNames: ["app-secrets"]
+    resourceNames: ["app-secrets", "dex-check-ride-credentials"]
     verbs: ["get"]
+  # dex-check-ride-credentials is published into this namespace by Airframe's Dex component (spec.checkRide)
+  # for the check ride, and forwarded to Testkube beside app-secrets by the same step. It holds an OAuth client
+  # id and secret for this app's own Dex client; nothing else in this namespace reads it.
   # release-tracking ConfigMaps (open-release-pr.yaml writes release-tracking-<chain-id>
   # holding pr-url/pr-created-at, since those can't be committed to git before the PR
   # exists - see that Task's own header; release-outcome-notify.yaml's
