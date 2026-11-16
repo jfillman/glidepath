@@ -560,7 +560,12 @@ What this release does close, and how that was checked:
   parameters that Pipeline takes, with values of the expected shape, and the repository, revision, pull request and namespace
   parameters must equal what Pipelines-as-Code itself recorded for the event. Pipelines that deploy, release or test start only from a
   push to a protected branch or to a tag of the shape `v<major>.<minor>.<patch>`, decided on the full ref Pipelines-as-Code records
-  (`source-branch`), so a branch named `refs/tags/v1.0.0` is not a tag. `image-repo` must be this application's own repository
+  (`source-branch`), so a branch named `refs/tags/v1.0.0` is not a tag. A push records its ref in two spellings, and both are
+  accepted for a protected branch: the full ref (`refs/heads/main`, a real push) and the bare name (`main`), which Pipelines-as-Code
+  v0.52.0 records for a re-run of a push's check from the git host (check_run / check_suite `rerequested`, `event-type: push`). The
+  bare name must equal a `protectedBranches` entry exactly; a bare tag name is never a tag (a tag has no head branch, so such a re-run
+  cannot exist). A run that Pipelines-as-Code starts from a comment (`retest-comment`, `incoming`) is not a push and so does not start a
+  push-only Pipeline. `image-repo` must be this application's own repository
   (`<registry>/<owner>/<app>` or `-pr`), so a build cannot push into another app's repository or cache; `onboarding-resync` may
   target only `gitops-<app>` under the repository's own owner, and only from a push; a task may run as `source-runner` or
   `glidepath-cloud-deployer` only where the Pipeline's task list says so. It cannot name another ServiceAccount, add a pod template, embed a Pipeline, or start a
