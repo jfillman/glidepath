@@ -35,6 +35,19 @@ jobs:
       - name: go test
         working-directory: glidepath/api
         run: go test -race ./...
+      # A red push to main is not just a red check: the image job below never runs, so no glidepath-api image is
+      # built for this commit and the lab keeps running the previous one (2026-11-15: ten hours on a stale API).
+      - name: Say what a failed push run means
+        if: failure() && github.event_name == 'push'
+        run: |
+          {
+            echo "### No glidepath-api image was built for ${GITHUB_SHA}"
+            echo
+            echo "The tests failed on a push to main, so the image job did not run and apiImage was not bumped:"
+            echo "the lab keeps the previous glidepath-api image. Fix main or re-run this workflow."
+            echo "See which image is live: \`kubectl -n platform-system get deploy glidepath-api -o jsonpath='{.spec.template.spec.containers[0].image}'\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "::error title=No glidepath-api image for ${GITHUB_SHA}::tests failed on main; the lab keeps the previous image"
 
   image:
     if: github.event_name == 'push'

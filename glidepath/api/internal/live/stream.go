@@ -53,6 +53,9 @@ type Hub struct {
 	Buffer     int           // changes queued per viewer before it counts as lagged; 0 = 256
 	Log        *slog.Logger
 
+	// Test hook, nil in production: runs at the end of every poll cycle in the watch's goroutine.
+	afterPoll func()
+
 	mu      sync.Mutex
 	watches map[string]*watch
 	streams int
@@ -186,6 +189,9 @@ func (h *Hub) run(ctx context.Context, w *watch) {
 	first := true
 	for {
 		err := h.poll(ctx, w)
+		if h.afterPoll != nil {
+			h.afterPoll()
+		}
 		if first {
 			w.err = err
 			close(w.ready)
