@@ -372,6 +372,69 @@ starts with `rollback-of` the current release's id, `rollback-reason`, and `conf
 Tower held its request up to 90 s for the run's PR; the API answers as soon as the run exists, and the PR
 appears where Tower's release tracker already follows the run (`GET /release-run` accepts these names).
 
+### Reissue a release PR
+
+`POST /v1/apps/{app}/releases/{chainId}/reissue` with an `Idempotency-Key` and **no body** (one is ignored). A release PR
+that was closed without merging is replaced by a fresh one: the app's own `promote-release` template starts the `release`
+Pipeline for the closed release's own image and commit, and its `open-release-pr` opens a **new** pull request from the
+**current** default branch of the gitops repo (and a new release record). The closed PR is never reopened or pushed to:
+the review-evidence code treats a release PR as a baseline only when it has exactly one commit and was never reopened or
+force-pushed ([refprotection](security.md#ref-protection)), and a new PR is how that stays true. A human merges the new PR,
+as for every release.
+
+Same tier (T2), same verb (`promote` on `environments`, so the `glidepath-api-releaser` role), same caller rules (a delegate
+names the person: `GP-AUTH-004`), same audit line and same run shape as promote. Nothing in the request chooses an image,
+a commit, an environment, a cluster or a chain: they are the closed release's, read from its release record
+(`release-tracking-<chainId>`), and the PR's state is read from the git host through the broker's read-only token.
+
+**Refused with `GP-API-422` and a reason, in this order:**
+
+1. the record is not in state `proposed` or `closed` (a release that merged, ran, was superseded or was rolled back is not
+   reissuable; see [the states](release-state.md#reissue));
+2. no release PR of this app's gitops repo is recorded, or that PR is still **open**, or it was **merged**;
+3. the record is a rollback (start it again from the Deployments tab), has no image (written before ADR-0021 phase 4), or its
+   image, commit or source repository are malformed or not this app's (the image's repository is not `<app>`, its sha is not the
+   recorded commit, the commit is not a full sha, `gitUrl` is another repository), or the PR was not opened from
+   `release-<env>-<sha8>`;
+4. the environment is no longer a Flight environment in the app's `cicd.yaml` order;
+5. a **newer release** of the app to this environment and cluster was opened since, or one was **merged** after this one
+   was opened (a reissue never replays an old release over a newer one);
+6. **another release PR for the environment is open** (checked per environment name: the git host does not say which cluster a
+   PR is for, so this is stricter, never looser);
+7. the commit does not resolve in the app repository;
+8. the release was already reissued: the run is named from the closed release's chain id
+   (`promote-<env>-<sha8>-<6 hex of sha256(app/reissue/env/cluster/chain)>`), so a release is reissued **at most once**; a
+   second call with another key is refused and names the first run (re-run it if it failed). The same key replays (`200`,
+   `"replayed": true`).
+
+`404` for a release record that does not exist for the app (another app's is not found through this one); `400` for a
+malformed chain id or `Idempotency-Key`. `?dryRun=true` does every check and a server-side dry run of the create.
+
+```json
+{"mode": "pipeline", "pipelineRun": "promote-prod-abc1234d-bd320d", "reissues": "11111111-2222-4333-8444-555555555555",
+ "closedPrUrl": "https://github.com/jfillman/gitops-shop/pull/7", "env": "prod", "cluster": "hangar-prod",
+ "image": "ghcr.io/jfillman/shop:1.2.3-abc1234", "linked": true}
+```
+
+**A new chain, linked to the old.** The reissue is a new release: a new chain id (the `release` Pipeline's preflight mints it),
+a new record and a new PR. The run carries `glidepath.io/reissue-of: <closed chain id>`, stamped by the API from the record it
+read and never from a parameter (admission refuses every `glidepath.io/` annotation on a run a `.tekton` file creates);
+`open-release-pr` writes it on the new record as `reissueOf` and marks the closed one `reissuedBy` (ending it `closed` if it was
+still `proposed`). `GET /v1/apps/{app}/releases/{chainId}` returns both as `reissue: {of, by}`. A cluster whose admission policy
+for glidepath-api's runs does not yet list `glidepath.io/reissue-of` is not refused: the run starts without it and the answer says
+`"linked": false`.
+
+**What works for which release.** A Tower promotion has a `promote-release` template and its record carries `image`,
+`gitRevision`, `gitUrl`, `env` and `cluster`. A release that was **a step of a build flow** (Backstage) writes the same record
+keys (`image` is the `IMAGE_REF` the step released, `gitRevision` the flow's commit), and the template's parameters (env, cluster,
+git-url, git-revision, image-ref, initiator) express all of it, so it is reissued the same way, as a promotion-shaped run (its own
+flow, `hangar.io/flow: promote`). What differs from the original step: the reissue starts its own flow, so `flowStartTime` (the
+lead-time anchor) is the reissue's, and the build's `configJson` is read again from `cicd.yaml` at the commit. An app with no
+`promote-release` template (not a Kubernetes target) is refused with the template's name, like promote.
+
+`GET /v1/apps/{app}/releases/reissuable` (T0, `list` on `releases`) lists the candidates: for each environment and cluster, the
+**newest** record, when it is `proposed` or `closed` and its PR is closed unmerged, with `eligible` and, when not, the `reason`.
+
 ### Promotion lineage
 
 A promotion is its own flow: it keeps its own chain id and slug, and its release record is `release-tracking-<its chain>`
@@ -509,7 +572,7 @@ never takes an owner from the request.
 
 ### Who may promote
 
-`promote` and `rollback` on `environments.glidepath.hangar.io` in the app's namespace, held by the chart's
+`promote` and `rollback` (and reissue, which is a promote) on `environments.glidepath.hangar.io` in the app's namespace, held by the chart's
 `glidepath-api-releaser` ClusterRole and bound cluster-wide by `api.releasers` (empty by default), or app by app with
 a RoleBinding. It holds no read and no re-run: an operator is not a releaser, and a releaser that should read the
 plans needs `glidepath-api-reader`. As for every write, a delegate must name the person (`GP-AUTH-004`) and the API

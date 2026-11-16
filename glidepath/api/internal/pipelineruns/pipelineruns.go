@@ -52,6 +52,9 @@ const (
 	AnnotationOriginTraceID     = "glidepath.io/origin-trace-id"
 	AnnotationOriginTraceparent = "glidepath.io/origin-traceparent"
 	AnnotationOriginFinishedAt  = "glidepath.io/origin-finished-at"
+	// AnnotationReissueOf is the chain id of the release a reissue replaces (docs/admin/release-state.md#reissue): set by glidepath-api
+	// alone, from the release record it read, and written into the new record by open-release-pr. Information, never a gate.
+	AnnotationReissueOf = "glidepath.io/reissue-of"
 
 	// maxGeneratedPrefix is the API server's own limit on a generateName prefix (63 - 5 random
 	// characters), kept so a re-run's name is as long as the one Tower's generateName got.

@@ -121,6 +121,15 @@ jobs:
       - run: pip install pyyaml
       - run: python3 charts/glidepath-catalog/tests/promotion_lineage_test.py
 
+  # Reissue: open-release-pr's reissueOf field and the closed record's reissuedBy link, against a fake kubectl.
+  release-reissue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: pip install pyyaml
+      - run: python3 charts/glidepath-catalog/tests/release_reissue_test.py
+
   # The promotion fan-in (ADR-0029 phase 3): comment-pr-check-result's promotion-ready step.
   promotion-fan-in:
     runs-on: ubuntu-latest

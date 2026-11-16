@@ -420,6 +420,25 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/releases/reissuable:
+    get:
+      operationId: listReissuableReleases
+      summary: The releases whose PR was closed without merging and which a reissue could replace
+      description: >-
+        Needs `list` on `releases.glidepath.hangar.io`. For each environment and cluster, the NEWEST release record; when it
+        is `proposed` or `closed`, its pull request is read from the git host, and the release is listed when that PR is closed
+        and not merged. `eligible` says whether POST /v1/apps/{app}/releases/{chainId}/reissue would be accepted now; when not,
+        `reason` says why. A release whose PR is open or merged is not listed.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The candidates, content: { application/json: { schema: { type: object, required: [releases], properties: { releases: { type: array, items: { $ref: "#/components/schemas/Reissuable" } } } } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
   /v1/apps/{app}/releases/{chainId}:
     get:
       operationId: getRelease
@@ -435,6 +454,39 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/releases/{chainId}/reissue:
+    post:
+      operationId: reissueRelease
+      summary: Replace a release PR that was closed without merging with a fresh one (the release Pipeline; a human merges)
+      description: >-
+        Needs `promote` on `environments.glidepath.hangar.io` in the app's namespace, like promote. No body: the image, the
+        commit, the environment and the cluster are the closed release's own, read from its release record; the PR's state is
+        read from the git host. Refused (422, with the reason) unless the record exists for the app and is `proposed` or
+        `closed` (never merged, ran, superseded or rolled back); its PR is closed and not merged; it is a promotion (a rollback is
+        started again, not reissued); the record's image and commit are well formed and belong to the app; the environment is still
+        a Flight environment of the app; no other release of the app to that environment and cluster was opened after it or merged
+        since; and no other release PR for the environment is open. Starts the app's `promote-release` run (same service account,
+        labels and origin stamps as promote), whose open-release-pr opens a NEW PR from the current default branch of the gitops repo
+        and a NEW release record (`reissueOf` names this one; this one ends `closed` with `reissuedBy`). The closed PR is never
+        reopened or pushed to. The run is named from the closed release's chain id, so a release is reissued at most once; the same
+        Idempotency-Key replays. A delegate must send X-Glidepath-On-Behalf-Of.
+      x-glidepath-tier: T2
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { name: chainId, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,200}$" } }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+        - { $ref: "#/components/parameters/DryRun" }
+        - { $ref: "#/components/parameters/DryRunHeader" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "201": { description: The release run started, content: { application/json: { schema: { $ref: "#/components/schemas/ReissueResult" } } } }
+        "200": { description: A replay or a dry run, content: { application/json: { schema: { $ref: "#/components/schemas/ReissueResult" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
   /v1/apps/{app}/evidence:
     get:
@@ -1412,6 +1464,12 @@ components:
         origin:
           allOf: [{ $ref: "#/components/schemas/ReleaseOrigin" }]
           description: "The flow that built this release's image, from `originChainId`, `originChainSlug` and `originTraceId` in `data`; absent when the release is a flow's own step or its origin was not resolved."
+        reissue:
+          type: object
+          description: "Present on a release that replaced a closed one (`of`: the chain id it reissued, from `reissueOf`) and on the closed one (`by`: the chain that replaced it, from `reissuedBy`)."
+          properties:
+            of: { type: string }
+            by: { type: string }
         clearance:
           type: object
           required: [id]
@@ -1423,6 +1481,37 @@ components:
           properties:
             id: { type: string, description: "The Clearance change id" }
             tree: { type: string, description: "The manifest-tree digest the change was registered for (sha256:<hex>)" }
+    Reissuable:
+      type: object
+      required: [chainId, env, cluster, prUrl, state, eligible]
+      properties:
+        chainId: { type: string, description: "The closed release's chain id: the {chainId} of the reissue call" }
+        releaseId: { type: string }
+        env: { type: string }
+        cluster: { type: string }
+        image: { type: string }
+        prUrl: { type: string, description: The closed pull request }
+        state: { type: string, enum: [proposed, closed] }
+        eligible: { type: boolean, description: Whether a reissue would be accepted now }
+        reason: { type: string, description: Why not, when eligible is false }
+        hint: { type: string }
+    ReissueResult:
+      type: object
+      required: [mode, pipelineRun, reissues, env, cluster, image, linked]
+      properties:
+        mode: { type: string, enum: [pipeline] }
+        pipelineRun: { type: string, description: "promote-<env>-<sha8>-<6 hex>; GET /v1/apps/{app}/releases/runs/{name} follows it" }
+        reissues: { type: string, description: The closed release's chain id }
+        closedPrUrl: { type: string }
+        env: { type: string }
+        cluster: { type: string }
+        image: { type: string }
+        linked: { type: boolean, description: "The run carries glidepath.io/reissue-of, so the new record names the one it replaces. False only while the cluster's admission policy for glidepath-api's runs does not allow the annotation yet." }
+        replayed: { type: boolean }
+        dryRun: { type: boolean }
+        object: { type: object }
+        origin: { $ref: "#/components/schemas/ReleaseOrigin" }
+        originUnknown: { type: string }
     FleetRelease:
       type: object
       required: [name, namespace, labels, data]
