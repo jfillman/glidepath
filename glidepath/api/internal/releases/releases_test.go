@@ -114,3 +114,16 @@ func TestGetClearanceJoin(t *testing.T) {
 		}
 	}
 }
+
+// A reissue links two records: the new one says what it replaces (reissueOf), the closed one what replaced it (reissuedBy).
+func TestRecordCarriesTheReissueLink(t *testing.T) {
+	if r := newRecord("release-tracking-a", map[string]string{"state": "proposed"}); r.Reissue != nil {
+		t.Fatalf("no link: %+v", r.Reissue)
+	}
+	if r := newRecord("release-tracking-b", map[string]string{"reissueOf": "a"}); r.Reissue == nil || r.Reissue.Of != "a" || r.Reissue.By != "" {
+		t.Fatalf("new release: %+v", r.Reissue)
+	}
+	if r := newRecord("release-tracking-a", map[string]string{"reissuedBy": "b", "state": "closed"}); r.Reissue == nil || r.Reissue.By != "b" || r.Reissue.Of != "" {
+		t.Fatalf("closed release: %+v", r.Reissue)
+	}
+}

@@ -30,6 +30,8 @@ type fakeStore struct {
 	objs    map[string]map[string]any
 	actions []action
 	refuse  error // returned by every create and patch
+	// refuseWhen, when set, is asked about each created run: a non-nil answer refuses that create (admission policy tests).
+	refuseWhen func(obj map[string]any) error
 }
 
 func copyObj(o map[string]any) map[string]any {
@@ -56,6 +58,11 @@ func (f *fakeStore) Create(_ context.Context, ns string, obj map[string]any, dry
 	f.actions = append(f.actions, action{verb: "create", name: name, dryRun: dryRun})
 	if f.refuse != nil {
 		return f.refuse
+	}
+	if f.refuseWhen != nil {
+		if err := f.refuseWhen(obj); err != nil {
+			return err
+		}
 	}
 	if _, ok := f.objs[name]; ok {
 		return apierrors.NewAlreadyExists(pipelineruns.GVR.GroupResource(), name)

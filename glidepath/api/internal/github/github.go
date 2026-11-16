@@ -410,3 +410,72 @@ func (s *Session) OpenPR(ctx context.Context, owner, repo, branch string) (strin
 	}
 	return prs[0].HTMLURL, nil
 }
+
+// PullRequest is the facts of one pull request a reissue reads: whether it is open, whether it merged, and the branch it
+// was opened from. Everything comes from the git host, never from the caller.
+type PullRequest struct {
+	Number  int
+	State   string // open or closed
+	Merged  bool
+	HeadRef string
+	URL     string
+}
+
+// PullRequest reads pull request number in owner/repo (GET pulls/{n}).
+func (s *Session) PullRequest(ctx context.Context, owner, repo string, number int) (PullRequest, error) {
+	res, err := s.get(ctx, owner, repo, fmt.Sprintf("%s/repos/%s/%s/pulls/%d", s.b.api(), owner, repo, number), "application/vnd.github+json")
+	if err != nil {
+		return PullRequest{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		return PullRequest{}, HTTPError{res.StatusCode, fmt.Sprintf("reading pull request %s/%s#%d failed with %d", owner, repo, number, res.StatusCode)}
+	}
+	var pr struct {
+		Number  int    `json:"number"`
+		State   string `json:"state"`
+		Merged  bool   `json:"merged"`
+		HTMLURL string `json:"html_url"`
+		Head    struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(&pr); err != nil {
+		return PullRequest{}, fmt.Errorf("reading pull request %s/%s#%d: %w", owner, repo, number, err)
+	}
+	return PullRequest{Number: pr.Number, State: pr.State, Merged: pr.Merged, HeadRef: pr.Head.Ref, URL: pr.HTMLURL}, nil
+}
+
+// OpenPRsFrom lists the open pull requests of owner/repo whose head branch starts with one of prefixes (the newest 100
+// open ones: a gitops repo has a handful). Used to refuse a reissue while another release PR for the environment is open.
+func (s *Session) OpenPRsFrom(ctx context.Context, owner, repo string, prefixes ...string) ([]PullRequest, error) {
+	q := url.Values{"state": {"open"}, "per_page": {"100"}}
+	res, err := s.get(ctx, owner, repo, fmt.Sprintf("%s/repos/%s/%s/pulls?%s", s.b.api(), owner, repo, q.Encode()), "application/vnd.github+json")
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		return nil, HTTPError{res.StatusCode, fmt.Sprintf("listing open pull requests of %s/%s failed with %d", owner, repo, res.StatusCode)}
+	}
+	var prs []struct {
+		Number  int    `json:"number"`
+		HTMLURL string `json:"html_url"`
+		Head    struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(&prs); err != nil {
+		return nil, fmt.Errorf("listing open pull requests of %s/%s: %w", owner, repo, err)
+	}
+	out := []PullRequest{}
+	for _, p := range prs {
+		for _, pre := range prefixes {
+			if strings.HasPrefix(p.Head.Ref, pre) {
+				out = append(out, PullRequest{Number: p.Number, State: "open", HeadRef: p.Head.Ref, URL: p.HTMLURL})
+				break
+			}
+		}
+	}
+	return out, nil
+}

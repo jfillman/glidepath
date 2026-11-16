@@ -35,15 +35,16 @@ const (
 // only, and the GitHub routes check the request carries that repo's token.
 type ghStub struct {
 	mu     sync.Mutex
-	files  map[string]string // owner/repo/path -> content
-	prs    map[string]string // owner/repo head -> html_url
-	mints  []string          // repos a token was minted for
+	files  map[string]string         // owner/repo/path -> content
+	prs    map[string]string         // owner/repo head -> html_url
+	pulls  map[string]map[string]any // owner/repo#number -> the pull request (reissue reads one)
+	mints  []string                  // repos a token was minted for
 	calls  []string
 	server *httptest.Server
 }
 
 func newGH(t *testing.T) *ghStub {
-	g := &ghStub{files: map[string]string{}, prs: map[string]string{}}
+	g := &ghStub{files: map[string]string{}, prs: map[string]string{}, pulls: map[string]map[string]any{}}
 	g.server = httptest.NewServer(http.HandlerFunc(g.serve))
 	t.Cleanup(g.server.Close)
 	return g
@@ -101,6 +102,24 @@ func (g *ghStub) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusUnprocessableEntity)
 	case "pulls":
+		if len(parts) == 4 { // one pull request by number
+			if pr, ok := g.pulls[owner+"/"+repo+"#"+parts[3]]; ok {
+				json.NewEncoder(w).Encode(pr)
+				return
+			}
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("head") == "" && r.URL.Query().Get("state") == "open" { // every open PR of the repo (reissue)
+			open := []map[string]any{}
+			for k, pr := range g.pulls {
+				if strings.HasPrefix(k, owner+"/"+repo+"#") && pr["state"] == "open" {
+					open = append(open, pr)
+				}
+			}
+			json.NewEncoder(w).Encode(open)
+			return
+		}
 		if u, ok := g.prs[owner+"/"+repo+" "+r.URL.Query().Get("head")]; ok && r.URL.Query().Get("state") == "open" {
 			json.NewEncoder(w).Encode([]map[string]string{{"html_url": u}})
 			return

@@ -273,6 +273,17 @@ spec:
           echo "warning: could not read this run's annotations; the release record carries no origin (the release itself is unaffected)." >&2
         fi
 
+        # Reissue (docs/admin/release-state.md#reissue): glidepath-api stamps the chain id of the release whose PR was closed
+        # unmerged on a run it starts for POST .../releases/{chainId}/reissue, from that release's own record, never from a
+        # parameter (admission refuses any glidepath.io/ annotation on a run a .tekton file creates). This is a NEW release
+        # with its own chain id and PR; the record says which one it replaces. Information only, shape-checked, empty when none.
+        reissue_of=""
+        if [[ -n "${run_json:-}" ]]; then
+          reissue_of="$(jq -r '.metadata.annotations["glidepath.io/reissue-of"] // empty' <<<"${run_json}")"
+          [[ "${reissue_of}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ && "${reissue_of}" != "${CHAIN_ID}" ]] || reissue_of=""
+          [[ -z "${reissue_of}" ]] || echo "reissue: this release replaces ${reissue_of}, whose PR was closed without merging"
+        fi
+
         # The dev-side release record (ADR-0021): prUrl/prCreatedAt as before, plus
         # everything glidepath-relay's /facts endpoint needs to rebuild this
         # release's CDEvent when the upper cluster reports a Rollout fact for it. One
@@ -300,6 +311,7 @@ spec:
             --from-literal="originChainId=${origin_chain_id}" \
             --from-literal="originChainSlug=${origin_chain_slug}" \
             --from-literal="originTraceId=${origin_trace_id}" \
+            --from-literal="reissueOf=${reissue_of}" \
             --from-literal="appNamespace=${APP_NAMESPACE}" \
             --from-literal="appName=${APP_NAME}" \
             --from-literal="env=${ENV}" \
@@ -328,11 +340,18 @@ spec:
         # When a new release PR opens, each such record whose PR GitHub reports closed and unmerged is closed here. A
         # record still open, merged, or unreadable is left alone. Best-effort: it never fails the release.
         close_stale_proposals() {
-          local name url number pr
+          local name url number pr pc rc
           for name in $(kubectl get configmap -n "${NAMESPACE}" \
               -l "hangar.io/subcomponent=release-tracking,hangar.io/app=${APP_NAME},hangar.io/env=${ENV},hangar.io/cluster=${CLUSTER}" \
               -o jsonpath='{range .items[?(@.data.state=="proposed")]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
             [[ "${name}" == "release-tracking-${CHAIN_ID}" ]] && continue
+            # A reissue never closes a release NEWER than the one it reissues (one that opened since is the one to merge).
+            if [[ -n "${reissue_of:-}" ]]; then
+              pc="$(kubectl get configmap "${name}" -n "${NAMESPACE}" -o jsonpath='{.data.prCreatedAt}' 2>/dev/null || true)"
+              rc="$(reissue_old_created)"
+              # only a record strictly older than the reissued one: a newer, equal or undated one is left alone
+              [[ -z "${rc}" || -z "${pc}" || ! "${pc:0:19}" < "${rc:0:19}" ]] && continue
+            fi
             url="$(kubectl get configmap "${name}" -n "${NAMESPACE}" -o jsonpath='{.data.prUrl}' 2>/dev/null)"
             [[ "${url}" =~ ^https://github\.com/${owner}/${gitops_repo}/pull/([0-9]+)$ ]] || continue
             number="${BASH_REMATCH[1]}"
@@ -344,6 +363,72 @@ spec:
               -p "$(jq -n --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{data: {state: "closed", stateAt: $now}}')" >/dev/null \
               && echo "${name}: proposed -> closed (#${number} was closed unmerged)"
           done
+          return 0
+        }
+
+        # The reissued release's own record: it was closed unmerged (close_stale_proposals ends a proposed one when the new PR
+        # opens); this adds who replaced it. Only a record of this app, environment and cluster that is not already linked, and
+        # only when it is still proposed or closed (a record the relay owns is never touched). Best-effort, never fails the release.
+        link_reissued() {
+          [[ -n "${reissue_of}" && -n "${CHAIN_ID}" ]] || return 0
+          local old="release-tracking-${reissue_of}" cm st rv attempt
+          for attempt in 1 2 3; do
+            cm="$(kubectl get configmap "${old}" -n "${NAMESPACE}" -o json 2>/dev/null)" || return 0
+            [[ "$(jq -r '.metadata.labels["hangar.io/app"] + "/" + .metadata.labels["hangar.io/env"] + "/" + .metadata.labels["hangar.io/cluster"]' <<<"${cm}")" == "${APP_NAME}/${ENV}/${CLUSTER}" ]] || return 0
+            [[ -z "$(jq -r '.data.reissuedBy // empty' <<<"${cm}")" ]] || return 0
+            st="$(jq -r '.data.state // "proposed"' <<<"${cm}")"
+            # Never move a record the relay owns (merged, progressing, healthy, ...) to closed, whatever happened since it was read.
+            case "${st}" in proposed|closed) ;; *) return 0 ;; esac
+            rv="$(jq -r '.metadata.resourceVersion' <<<"${cm}")"
+            # A JSON patch with a resourceVersion precondition: if anything wrote the record since it was read, the patch fails
+            # and the record is read again (and judged again), never overwritten.
+            if kubectl patch configmap "${old}" -n "${NAMESPACE}" --type json -p "$(jq -n --arg rv "${rv}" --arg by "${CHAIN_ID}" --arg st "${st}" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                '[{op: "test", path: "/metadata/resourceVersion", value: $rv}, {op: "add", path: "/data/reissuedBy", value: $by}]
+                 + (if $st == "proposed" then [{op: "add", path: "/data/state", value: "closed"}, {op: "add", path: "/data/stateAt", value: $now}] else [] end)')" >/dev/null 2>&1; then
+              echo "${old}: reissued by ${CHAIN_ID} (state closed)"
+              return 0
+            fi
+            echo "${old} changed while it was being linked; reading it again" >&2
+          done
+          return 0
+        }
+
+        # A reissue's run was started minutes before its PR opens, and the checks glidepath-api made then can be stale now. At PR
+        # time, from the cluster and the git host: the reissued release must still be the newest for this app, environment and
+        # cluster, and no other release PR for the environment may be open. Fails the run, closing nothing, when either is not so.
+        reissue_old_created() {
+          kubectl get configmap "release-tracking-${reissue_of}" -n "${NAMESPACE}" -o jsonpath='{.data.prCreatedAt}' 2>/dev/null || true
+        }
+        reissue_guard() {
+          [[ -n "${reissue_of}" ]] || return 0
+          local created newer open_prs
+          created="$(reissue_old_created)"
+          [[ -n "${created}" ]] || { echo "error: reissue: the release being reissued (${reissue_of}) has no readable record, so it cannot be shown to be the newest." >&2; return 1; }
+          newer="$(kubectl get configmap -n "${NAMESPACE}" -l "hangar.io/subcomponent=release-tracking,hangar.io/app=${APP_NAME},hangar.io/env=${ENV},hangar.io/cluster=${CLUSTER}" -o json \
+            | jq -r --arg old "release-tracking-${reissue_of}" --arg own "release-tracking-${CHAIN_ID}" --arg c "${created:0:19}" \
+              '.items[] | select(.metadata.name != $old and .metadata.name != $own) | select(((.data.prCreatedAt // "")[0:19]) > $c) | (.data.releaseId // .metadata.name)' | head -1)"
+          if [[ -n "${newer}" ]]; then
+            echo "error: reissue refused: a newer release of ${APP_NAME} to ${ENV} on ${CLUSTER} (${newer}) was opened after the one being reissued (${reissue_of}); replaying it over that one is not allowed. Nothing was changed." >&2
+            return 1
+          fi
+          # Every page of the open PRs (100 each): a repository with more open PRs than one page must not fail open. More than 20
+          # pages, or a page that cannot be read, fails closed.
+          local page=1 got=0 hits
+          open_prs=""
+          while :; do
+            hits="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${owner}/${gitops_repo}/pulls?state=open&per_page=100&page=${page}")" || { echo "error: reissue: could not list the open release PRs." >&2; return 1; }
+            got="$(jq 'length' <<<"${hits}")"
+            open_prs="$(jq -r --arg re "^release-(rollback-)?${ENV}-[0-9a-zA-Z]{1,40}\$" '.[] | select(.head.ref | test($re)) | .html_url' <<<"${hits}" | head -1)"
+            [[ -z "${open_prs}" ]] || break
+            (( got >= 100 )) || break
+            (( page < 20 )) || { echo "error: reissue: more than 2000 open PRs; cannot show that no release PR for ${ENV} is open." >&2; return 1; }
+            page=$((page + 1))
+          done
+          if [[ -n "${open_prs}" ]]; then
+            echo "error: reissue refused: a release PR for ${ENV} is open (${open_prs}). Nothing was changed." >&2
+            return 1
+          fi
           return 0
         }
 
@@ -420,6 +505,7 @@ spec:
           exit 0
         fi
 
+        reissue_guard || exit 1
         ensure_change_request ""
 
         workdir="$(mktemp -d)"
@@ -619,6 +705,7 @@ spec:
         if [[ -n "${CHAIN_ID}" ]]; then
           write_release_record "${pr_url}" "${pr_created_at}"
           close_stale_proposals || true
+          link_reissued || true
         else
           echo "warning: no chain-id for this release - pr-url/pr-created-at won't reach release-outcome-notify.yaml (app onboarded before chain-id existed, or a manual/direct invocation)." >&2
         fi

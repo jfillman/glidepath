@@ -43,6 +43,7 @@ One ConfigMap per release, `release-tracking-<chain-id>`, in the Application's o
 | `changeRequestId`, `changeRequestNumber`, `changeRequestUrl` | `open-release-pr` | The release's change request in the change tool ([change-management.md](change-management.md)); empty without a provider. |
 | `changeRequestState`, `changeRequestApproval`, `rolledBackByChange` | `itsm-gate`, `itsm-change` | The change as last seen by the gate, then `implementing`, `implementing-failed`, `closed-successful` or `closed-unsuccessful` (with the rollback's emergency change). |
 | `originChainId`, `originChainSlug`, `originTraceId` | `open-release-pr` | Promotion lineage ([api.md](api.md#promotion-lineage)): the flow that built the image a promotion or rollback releases, read from the annotations glidepath-api stamped on the run (never a parameter), shape-checked, empty when there is none. The release keeps its own chain id. `GET /v1/apps/{app}/releases/{chainId}` returns them as `origin: {chainId, chainSlug, traceId}`; `GET /v1/apps/{app}/releases?fromChain=<chain>` lists what came from a build. |
+| `reissueOf`, `reissuedBy` | `open-release-pr` | [Reissue](#reissue): `reissueOf` on the new release names the chain id of the closed one it replaces (read from the run's `glidepath.io/reissue-of` annotation, which glidepath-api stamps, never a parameter); `reissuedBy` on the closed one names the new chain. `GET /v1/apps/{app}/releases/{chainId}` returns them as `reissue: {of, by}`. |
 | `clearanceId`, `clearanceTree` | `clearance-gate` (G-ARGO-6) | The Clearance change the release's PR was registered as, and the manifest-tree digest it was registered for. Written right after `POST /v1/clearances` answers; absent for a release to an unprotected environment. `GET /v1/apps/{app}/releases/{chainId}` returns them as `clearance: {id, tree}`, and `release-log-emit` copies them into the release log as `clearance_id` and `clearance_tree`. |
 | label `hangar.io/stall-alerted` | sweeper | The state a `ReleaseStalled` Event was already raised for. |
 
@@ -160,6 +161,30 @@ Tenant Applications retry (limit 5, backoff up to 10 minutes), about 15 minutes 
   `healthy` (the rollback-eligibility window, below).
 
 The knobs are env vars on the CronJob (`RELEASE_STALL_MINUTES`, `RECORD_TTL_DAYS`, `KEEP_HEALTHY`).
+
+## Reissue
+
+A release PR can be closed without merging (the gitops repo's checks could never start on it, or it was opened against stale
+files). Closing makes no push, so the record stays `proposed` until a later release PR for the same app, environment and cluster
+opens and `open-release-pr` closes it. `POST /v1/apps/{app}/releases/{chainId}/reissue` ([api.md](api.md#reissue-a-release-pr))
+starts a **new release** of the closed one's own image and commit: a new chain id, a new record, a new PR cut from the current
+default branch of the gitops repo. It does not keep the chain id: a record is one chain, one environment and one PR, and every
+reader of `prUrl`, `prCreatedAt` and `state` (the rollback plan's "newest ran release", the sweeper's clocks, the stall alert,
+`close_stale_proposals`, the fleet views, Tower's Ops Wall) would otherwise have to cope with a record whose PR changed under it.
+With a new chain no existing reader changes, and each record stays a true account of one PR.
+
+| Record | State from reissue | Fields |
+|---|---|---|
+| the closed release | `proposed` becomes `closed` (by the reissued run's `open-release-pr`, as `close_stale_proposals` already does for any closed PR); a `closed` one stays | `reissuedBy` = the new chain id |
+| the new release | `proposed`, then the normal machine | `reissueOf` = the closed chain id; everything else as any promotion's |
+
+Why `closed` and not `superseded`: `superseded` is the relay's word for a release that ran healthy and was replaced
+(rollback eligibility reads it). The closed release never ran; its PR was closed, which is what `closed` says.
+
+**States a reissue is accepted from:** `proposed` (the usual one) and `closed`, and only while the record is the newest for its
+app, environment and cluster. **Refused from:** `merged`, `progressing`, `healthy`, `sync-failed`, `aborted`, `degraded` (the
+release happened or is happening), `superseded`, `rolled-back` (it ran and was replaced). There are no `pending` or `blocked`
+record states: a release whose gates cannot start is a `proposed` record with a PR checks never ran on.
 
 ## Rollback (ADR-0021 phase 4)
 

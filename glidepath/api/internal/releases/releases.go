@@ -33,6 +33,15 @@ type Record struct {
 	// Origin is the build flow of the image this release carries, when it is a promotion or rollback whose origin was
 	// resolved (docs/admin/api.md#promotion-lineage): the promotion keeps its own chain id, and this is the link back.
 	Origin *OriginRef `json:"origin,omitempty"`
+	// Reissue links a release whose PR was closed unmerged to the release that replaced it (docs/admin/release-state.md#reissue):
+	// `of` is set on the new release (the chain it reissues), `by` on the old one (the chain that replaced it).
+	Reissue *ReissueRef `json:"reissue,omitempty"`
+}
+
+// ReissueRef is reissueOf and reissuedBy of the record: chain ids.
+type ReissueRef struct {
+	Of string `json:"of,omitempty"`
+	By string `json:"by,omitempty"`
 }
 
 // OriginRef is the flow that built a release's image: originChainId, originChainSlug and originTraceId of the record.
@@ -58,6 +67,9 @@ func newRecord(name string, d map[string]string) Record {
 	}
 	if id := d["originChainId"]; id != "" {
 		r.Origin = &OriginRef{ChainID: id, ChainSlug: d["originChainSlug"], TraceID: d["originTraceId"]}
+	}
+	if d["reissueOf"] != "" || d["reissuedBy"] != "" {
+		r.Reissue = &ReissueRef{Of: d["reissueOf"], By: d["reissuedBy"]}
 	}
 	return r
 }

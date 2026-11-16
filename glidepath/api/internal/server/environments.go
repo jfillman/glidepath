@@ -136,3 +136,39 @@ func (s *Server) rollbackEnvironment(ctx context.Context, w http.ResponseWriter,
 	writeTowerJSON(w, status, out)
 	return nil
 }
+
+// reissueRelease starts the release run that replaces a release PR closed without merging, once per Idempotency-Key. Same tier,
+// verb (promote on environments), caller rules and audit as promoteEnvironment; the body is ignored: the image, commit,
+// environment and cluster are the closed release's own record's, and the PR's state is read from the git host.
+func (s *Server) reissueRelease(ctx context.Context, w http.ResponseWriter, r *http.Request, c *auth.Caller, app *apps.App) error {
+	dry, err := dryRun(r)
+	if err != nil {
+		return err
+	}
+	key := r.Header.Get("Idempotency-Key")
+	if err = pipelineruns.ValidKey(key); err != nil {
+		return err
+	}
+	chain := r.PathValue("chainId")
+	out, err := s.Envs.Reissue(ctx, app, chain, initiator(c), key, dry)
+	if err != nil {
+		return err
+	}
+	note(w, "reissues", out.Reissues, "env", out.Env, "cluster", out.Cluster, "created", out.PipelineRun, "replayed", out.Replayed, "linked", out.Linked, "closedPrUrl", out.ClosedPR)
+	status := http.StatusOK
+	if !out.Replayed && !dry {
+		status = http.StatusCreated
+	}
+	writeTowerJSON(w, status, out)
+	return nil
+}
+
+// listReissuable is the releases whose PR was closed without merging and which a reissue could replace (T0).
+func (s *Server) listReissuable(ctx context.Context, w http.ResponseWriter, _ *http.Request, _ *auth.Caller, app *apps.App) error {
+	out, err := s.Envs.Reissuable(ctx, app)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"releases": out})
+	return nil
+}
