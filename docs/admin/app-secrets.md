@@ -110,6 +110,20 @@ A Secret volume mounts one file per data key, named after the key - this is exac
 what `notify-slack.yaml` already does for `slack-webhook-url`, sourced from
 `app-secrets`.
 
+## Dex credentials for a check ride
+
+An app that attaches Airframe's `Dex` component can have the check ride's credentials published for it:
+with `spec.checkRide.namespace: app-<app>-cicd` on the Dex component, Airframe keeps a Secret
+`dex-check-ride-credentials` (keys `DEX_TOKEN_URL`, `DEX_CLIENT_ID`, `DEX_CLIENT_SECRET`) in this
+namespace, equal to the client's credentials and following their rotation. No `secrets:` entry and no
+Infisical key is involved, and nobody creates the Secret.
+
+The test stage's `run-testworkflow` Task forwards it into `testkube/<app>-app-secrets` beside `app-secrets`
+(either may be absent; where a key is in both, the Dex one wins), and `pipeline-runner` may `get` it by name.
+The check ride reads the three keys as optional env, as before. Airframe's
+`docs/user/dex-check-ride-credentials.md` has the declaration and the migration of a hand-made
+`app-secrets`.
+
 ## Enabling Slack notifications for an Application
 
 1. Onboard the Application through idp's `NodeJSApplication` XR first, if it hasn't
