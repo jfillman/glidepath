@@ -263,7 +263,8 @@ What each part does.
   `gitops-<app>` Repository CR, and Pipelines-as-Code then builds every run for that repository from `.tekton/` at the default branch's
   head at the time of the event (it resolves the branch with the GitHub API on every pull request, push and `/retest`), not from the pull
   request's head. A pull request to a gitops repository can no longer change the pipeline that judges it, and a release pull request
-  opened before a resync is judged by the current files: no `/retest` or reissue is needed. The run still describes the pull request:
+  opened before a resync is judged by the current files from then on: no reissue is needed, but a check that had already finished
+  before the resync merged keeps its old result, so `/retest` those checks to run them with the new files. The run still describes the pull request:
   the sha, source-branch, event-type and pull-request annotations, and the `{{ revision }}` and `{{ pull_request_number }}` the files
   pass, are the event's, so `cicd-run-shape` and `verify-ref-protection` judge exactly what they did. Only the definition moves. What
   it costs: a resync pull request's own checks run the files on `main`, not the ones it delivers (the delivered files take effect for
