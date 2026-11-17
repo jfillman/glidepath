@@ -335,6 +335,10 @@ pipelinesAsCode:
   concurrencyLimit: null
   appRepoConcurrencyLimit: null
   gitopsRepoConcurrencyLimit: null
+  # default_branch makes Pipelines-as-Code read each app's gitops-<app> repository's .tekton files from its default branch, not from the
+  # pull request's head (docs/admin/security.md). null (the default) forwards nothing: today's behaviour. Apron sets it from cluster.yaml
+  # glidepath.gitopsPipelineProvenance. The app repositories are not affected.
+  gitopsRepoProvenance: null
 
 # See templates/argocd/tenant-onboarding-applicationset.yaml's own header comment for
 # the real name collision this guards against and why it's a value, not an in-place
