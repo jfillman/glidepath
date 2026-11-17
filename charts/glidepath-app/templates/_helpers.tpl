@@ -246,7 +246,7 @@ else fails the render (the CRD's minimum is 1, and Pipelines-as-Code reads 0 as 
 {{/*
 glidepath-app.pacGitopsProvenance - the Pipelines-as-Code `spec.settings.pipelinerun_provenance` for the gitops-<app> Repository CR, or ""
 for none (the default: the CR then renders exactly as it did before the value existed, and Pipelines-as-Code reads .tekton from the
-pull request's head, its own "source"). Only "default_branch" and "source" exist in Pipelines-as-Code v0.52.0's CRD; anything else fails
+pull request's head, its own "source"). Only "default_branch" and "source" exist in Pipelines-as-Code v0.49.0's CRD; anything else fails
 the render rather than being rejected by the API server at sync.
 */}}
 {{- define "glidepath-app.pacGitopsProvenance" -}}
