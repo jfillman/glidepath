@@ -62,7 +62,8 @@ jobs:
       - run: go run github.com/neilpa/yajsv@v1.4.1 -s schemas/cicd.schema.json docs/user/examples/*.yaml
 
   # The config-only build exemption every push flow carries, evaluated with cel-go (what Pipelines-as-Code uses)
-  # against 15 push payloads: cicd.yaml/glidepath//.tekton/ changes never build, the first onboarding merge does.
+  # against push payloads: cicd.yaml/glidepath//.tekton/ changes never build, the first onboarding merge does; and the
+  # propose-merge audit trigger skips a push of only glidepath/envs/<env>.release.yaml and starts for every other push.
   build-exemption-cel:
     runs-on: ubuntu-latest
     steps:
