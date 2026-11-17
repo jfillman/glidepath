@@ -47,22 +47,36 @@ spec:
   # Without them Chains silently skips signing (no image subject to attest) despite
   # reporting chains.tekton.dev/signed: "true". IMAGE_URL/IMAGE_DIGEST must reference a
   # $(tasks.*.results.*) - a plain $(params.*) is rejected by Tekton's admission webhook,
-  # which is why build-image.yaml carries a dedicated `image-repo` result just for this.
+  # which is why push-image.yaml carries a dedicated `image-repo` result just for this. They come from push-image, the task
+  # that validated and pushed the image, never from build-image (whose results are untrusted: it runs the repository's code).
   # See docs/image-signing.md and docs/provenance-policy.md.
   results:
     - name: IMAGE_URL
-      value: $(tasks.build-image.results.image-repo)
+      value: $(tasks.push-image.results.IMAGE_URL)
     - name: IMAGE_DIGEST
-      value: $(tasks.build-image.results.image-digest)
+      value: $(tasks.push-image.results.IMAGE_DIGEST)
     - name: CHAINS-GIT_URL
       value: $(tasks.preflight.results.url)
     - name: CHAINS-GIT_COMMIT
       value: $(tasks.preflight.results.commit)
   tasks:
+    # Pipeline trust T3: nothing runs before this. It reads the ref and commit Pipelines-as-Code recorded on this run (no
+    # parameter) and refuses the run unless the git host protects that ref (glidepath-api); see tasks/verify-ref-protection.yaml.
+    # No `when`, no retries, not in finally: every other task runs after it.
+    - name: verify-ref-protection
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: verify-ref-protection }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: pipeline-kind, value: build }
     # Everything that precedes the stage's real work, in one pod: flow/stage trace ids,
     # pipelinerun.started, the clone (when the workspace is bound) and cicd.yaml
     # validation. Replaced five single-purpose Tasks on 2026-10-09 - see stage-preflight.yaml.
     - name: preflight
+      runAfter: [verify-ref-protection]
       taskRef:
         resolver: cluster
         params:
@@ -169,12 +183,35 @@ spec:
         - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
         - { name: stage-span-id, value: $(tasks.preflight.results.span-id) }
 
+    # The only task that holds the registry push credential for the image, and the source of every image reference and digest
+    # below. It validates the OCI layout build-image wrote and pushes it to the application's own repository (push-image.yaml).
+    # build-image runs the repository's Containerfile RUN lines and pushes nothing: its only result, `version`, is untrusted data
+    # that push-image checks as a tag. image-repo, git-revision and pr-tag-only are the run's own parameters (the admission policy
+    # binds them to the application and the event), never anything from the workspace. Runs as image-pusher (taskRunSpecs).
+    - name: push-image
+      runAfter: [build-image]
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: push-image }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      workspaces:
+        - { name: source, workspace: source }
+      params:
+        - { name: config-json, value: $(tasks.preflight.results.config-json) }
+        - { name: image-repo, value: $(params.image-repo) }
+        - { name: git-revision, value: $(params.git-revision) }
+        - { name: pr-tag-only, value: $(params.pr-tag-only) }
+        - { name: version, value: $(tasks.build-image.results.version) }
+        - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
+        - { name: stage-span-id, value: $(tasks.preflight.results.span-id) }
 
-    # Unlike sast-scan, runAfter stays build-image - there's no image to scan until
-    # BuildKit has pushed one. A failing scan can't unpublish the already-pushed dev image,
+    # Unlike sast-scan, runAfter is push-image - there's no image to scan until
+    # push-image has pushed one. A failing scan can't unpublish the already-pushed dev image,
     # but it still fails this Task, which fails the whole PipelineRun (red build).
     - name: image-scan
-      runAfter: [build-image]
+      runAfter: [push-image]
       when:
         - { input: $(tasks.preflight.results.image-scan), operator: in, values: ["true"] }
       taskRef:
@@ -184,7 +221,7 @@ spec:
           - { name: name, value: image-scan }
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
-        - { name: image-ref, value: $(tasks.build-image.results.image-ref) }
+        - { name: image-ref, value: $(tasks.push-image.results.image-pinned-ref) }
         - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
         - { name: stage-span-id, value: $(tasks.preflight.results.span-id) }
         - { name: config-json, value: $(tasks.preflight.results.config-json) }
@@ -195,10 +232,10 @@ spec:
     # Two independent task entries against the same build-artifact Task, each gated on
     # its own cicd.yaml build.artifacts entry - see build-artifact.yaml's header comment
     # for why this is two entries rather than one type-branching entry. runAfter
-    # build-image for its resolved `version` result, not the image itself - see that
+    # push-image for its checked `version` result, not the image itself - see that
     # comment.
     - name: build-python-wheel-artifact
-      runAfter: [build-image]
+      runAfter: [push-image]
       when:
         - { input: $(tasks.preflight.results.artifacts-python-wheel), operator: in, values: ["true"] }
       taskRef:
@@ -213,13 +250,13 @@ spec:
         - { name: artifact-type, value: "python-wheel" }
         - { name: agent-image, value: $(tasks.preflight.results.agent-image) }
         - { name: image-repo, value: $(params.image-repo) }
-        - { name: version, value: $(tasks.build-image.results.version) }
+        - { name: version, value: $(tasks.push-image.results.version) }
         - { name: app-name, value: $(params.app-name) }
         - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
         - { name: stage-span-id, value: $(tasks.preflight.results.span-id) }
 
     - name: build-go-binary-artifact
-      runAfter: [build-image]
+      runAfter: [push-image]
       when:
         - { input: $(tasks.preflight.results.artifacts-go-binary), operator: in, values: ["true"] }
       taskRef:
@@ -234,15 +271,15 @@ spec:
         - { name: artifact-type, value: "go-binary" }
         - { name: agent-image, value: $(tasks.preflight.results.agent-image) }
         - { name: image-repo, value: $(params.image-repo) }
-        - { name: version, value: $(tasks.build-image.results.version) }
+        - { name: version, value: $(tasks.push-image.results.version) }
         - { name: app-name, value: $(params.app-name) }
         - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
         - { name: stage-span-id, value: $(tasks.preflight.results.span-id) }
 
-    # Real (not stub) as of Phase 3 item 8.7. runAfter stays build-image, same reasoning
+    # Real (not stub) as of Phase 3 item 8.7. runAfter is push-image, same reasoning
     # as image-scan - nothing to attest until the image is pushed.
     - name: generate-sbom
-      runAfter: [build-image]
+      runAfter: [push-image]
       when:
         - { input: $(tasks.preflight.results.sbom), operator: in, values: ["true"] }
       taskRef:
@@ -252,7 +289,7 @@ spec:
           - { name: name, value: generate-sbom }
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
-        - { name: image-ref, value: $(tasks.build-image.results.image-ref) }
+        - { name: image-ref, value: $(tasks.push-image.results.image-pinned-ref) }
         - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
         - { name: stage-span-id, value: $(tasks.preflight.results.span-id) }
 
@@ -260,7 +297,7 @@ spec:
     # version carries the spec it was built with. Optional and never fails the build: no file means no API
     # (attest-api-spec.yaml's header). Skipped when no cicd.yaml was validated (api-spec empty).
     - name: attest-api-spec
-      runAfter: [build-image]
+      runAfter: [push-image]
       when:
         - { input: $(tasks.preflight.results.api-spec), operator: notin, values: [""] }
       taskRef:
@@ -272,7 +309,7 @@ spec:
       workspaces:
         - { name: source, workspace: source }
       params:
-        - { name: image-ref, value: $(tasks.build-image.results.image-ref) }
+        - { name: image-ref, value: $(tasks.push-image.results.image-pinned-ref) }
         - { name: spec-path, value: $(tasks.preflight.results.api-spec) }
         - { name: api-type, value: $(tasks.preflight.results.api-type) }
         - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
@@ -309,12 +346,12 @@ spec:
         - { name: git-revision, value: $(params.git-revision) }
         # Looked up live from the TaskRun results (never a $(tasks.*.results.*)
         # reference - see stage-debrief.yaml's header) so a failed preflight or
-        # build-image still gets its span, notifications and pipelinerun.finished.
+        # push-image still gets its span, notifications and pipelinerun.finished.
         - { name: config-json-from-task, value: preflight }
-        - { name: image-ref-from-task, value: build-image }
+        - { name: image-ref-from-task, value: push-image }
         - { name: domain-event-type, value: "dev.cdevents.artifact.published.0.3.0" }
         - { name: domain-subject-type, value: "artifact" }
-        # ${IMAGE_REF} is substituted by stage-debrief from build-image's looked-up
+        # ${IMAGE_REF} is substituted by stage-debrief from push-image's looked-up
         # result. config-json rides along so a flow chaining straight off build (e.g.
         # build -> release) inherits cicd.yaml's validated content - real bug, found
         # live 2026-08-12, see docs/admin/chaining.md.

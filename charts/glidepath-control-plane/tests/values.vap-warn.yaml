@@ -1,0 +1,5 @@
+# The upgrade window: every cicd-run-* binding in [Warn, Audit] (docs/admin/security.md, "Upgrade note"). Rendered by hack/ci/vap-compile.
+cicdRunAdmission:
+  shapeActions: [Warn, Audit]
+  sourceIsolationActions: [Warn, Audit]
+  noTaskRunsActions: [Warn, Audit]

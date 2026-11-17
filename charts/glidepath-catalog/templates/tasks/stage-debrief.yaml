@@ -246,6 +246,19 @@ spec:
           'walk(if type == "string" then gsub("\\$\\{IMAGE_REF\\}"; $img) else . end)' \
           <<<"${CONTENT_TEMPLATE}" 2>/dev/null || echo "${CONTENT_TEMPLATE}")"
 
+        # Where this stage's commit came from, for the next stage's ref-protection guard (verify-ref-protection): the ref and
+        # sha Pipelines-as-Code recorded on THIS run when it started from a git event (only a push has an origin worth
+        # checking), else the origin the Trigger stamped on this chained run. Read from the run itself, never from a
+        # parameter or a file; the admission policy refuses glidepath.io/ annotations on a run a .tekton file creates.
+        RUN_JSON="$(kubectl get pipelinerun -n "${APP_NAMESPACE}" "${PIPELINE_RUN_NAME}" -o json 2>/dev/null || echo '{}')"
+        ORIGIN="$(jq -c '(.metadata.annotations // {}) as $a
+          | if ($a["pipelinesascode.tekton.dev/event-type"] // "") != "" then
+              (if $a["pipelinesascode.tekton.dev/event-type"] == "push"
+                then {"origin-ref": ($a["pipelinesascode.tekton.dev/source-branch"] // ""), "origin-sha": ($a["pipelinesascode.tekton.dev/sha"] // "")}
+                else {"origin-ref": "", "origin-sha": ""} end)
+            else {"origin-ref": ($a["glidepath.io/origin-ref"] // ""), "origin-sha": ($a["glidepath.io/origin-sha"] // "")} end' <<<"${RUN_JSON}" 2>/dev/null || echo '{"origin-ref":"","origin-sha":""}')"
+        CONTENT="$(jq -c --argjson o "${ORIGIN}" '. + $o' <<<"${CONTENT}" 2>/dev/null || echo "${CONTENT}")"
+
         echo "domain event content: ${CONTENT}"
         printf '%s' "${IMAGE_REF}" > "$(step.results.image-ref.path)"
         printf '%s' "${CONFIG_JSON}" | base64 -w0 > "$(step.results.config-json-b64.path)"

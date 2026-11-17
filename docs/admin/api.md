@@ -74,6 +74,14 @@ until `apiImage` is set; `api-ci.yaml` builds a multi-arch image on every merge 
 touches the API or the contract and sets `apiImage` to its `sha-` tag, the same loop the broker
 images use. The contract is baked into the image, so `GET /v1/contract` always matches the code.
 
+**A red `api-ci` run on a push to main means no image.** The `image` job needs the `test` job, so when tests
+fail on main no image is built, `apiImage` is not bumped, and the lab keeps running the previous
+glidepath-api image with nothing else signalling it. The failed run's job summary says so. To see which image is
+live: `kubectl -n platform-system get deploy glidepath-api -o jsonpath='{.spec.template.spec.containers[0].image}'`
+(the `sha-` tag is the commit it was built from); compare it with `apiImage` in
+`charts/glidepath-control-plane/values.yaml` on main. Fix the failure on main (or re-run the workflow if the
+test was a flake) to get the image built.
+
 Tekton Results is read through `tekton-results-relay`, the hop Tower used itself until phase 6 (2026-10-30). The
 relay holds the Results read grant; the API decides who may ask before it asks.
 
@@ -151,7 +159,7 @@ the prod cluster arrive as `hangar:<cluster>:<serviceaccount>`).
 
 **What you may read** is a SubjectAccessReview in the app's `-cicd` namespace, on a group nothing
 serves: `glidepath.hangar.io`, resources `runs`, `runs/logs`, `releases`, `evidence`, `tests`, `environments`,
-`events` and `cicd` (verb `validate`). RBAC
+`events`, `cicd` (verb `validate`) and `refprotection` (see [Ref protection](#ref-protection)). RBAC
 only needs the strings, so access is ordinary RBAC:
 
 - `api.readers` binds the chart's `glidepath-api-reader` ClusterRole cluster-wide (users, groups,
@@ -268,7 +276,7 @@ Glidepath's shape. The admission policy `glidepath-api-pipelinerun-shape` (`towe
 2026-10-30; gitops `30-policy/kyverno-policies/tower-identity-writes.yaml`, rendered by Apron) holds
 `system:serviceaccount:platform-system:glidepath-api` to it: an app's or InfraService's `-cicd` namespace
 (`^(app|infra)-[a-z0-9-]+-cicd$`), a cluster-resolver `pipelineRef` into `platform-catalog`, SA `pipeline-runner`, no
-inline spec, no `taskRunSpecs`, a hostAliases-only podTemplate, `emptyDir` or `volumeClaimTemplate` workspaces, no
+inline spec, no `taskRunSpecs` (a rerun of a build run carries the four `source-runner` entries, see [security.md](security.md#upgrade-note) item 5), a hostAliases-only podTemplate, `emptyDir` or `volumeClaimTemplate` workspaces, no
 PaC annotations, and an update may only set `spec.status` to `Cancelled`, `CancelledRunFinally` or
 `StoppedRunFinally`. It also matches Tower's writer identity (`tower-actor`), only to refuse any PipelineRun write
 from it: Tower writes PipelineRuns only through this API. A write the cluster refuses, there or in RBAC, is
@@ -372,6 +380,164 @@ starts with `rollback-of` the current release's id, `rollback-reason`, and `conf
 Tower held its request up to 90 s for the run's PR; the API answers as soon as the run exists, and the PR
 appears where Tower's release tracker already follows the run (`GET /release-run` accepts these names).
 
+### Reissue a release PR
+
+`POST /v1/apps/{app}/releases/{chainId}/reissue` with an `Idempotency-Key` and **no body** (one is ignored). A release PR
+that was closed without merging is replaced by a fresh one: the app's own `promote-release` template starts the `release`
+Pipeline for the closed release's own image and commit, and its `open-release-pr` opens a **new** pull request from the
+**current** default branch of the gitops repo (and a new release record). The closed PR is never reopened or pushed to:
+the review-evidence code treats a release PR as a baseline only when it has exactly one commit and was never reopened or
+force-pushed ([refprotection](security.md#ref-protection)), and a new PR is how that stays true. A human merges the new PR,
+as for every release.
+
+Same tier (T2), same verb (`promote` on `environments`, so the `glidepath-api-releaser` role), same caller rules (a delegate
+names the person: `GP-AUTH-004`), same audit line and same run shape as promote. Nothing in the request chooses an image,
+a commit, an environment, a cluster or a chain: they are the closed release's, read from its release record
+(`release-tracking-<chainId>`), and the PR's state is read from the git host through the broker's read-only token.
+
+**Refused with `GP-API-422` and a reason, in this order:**
+
+1. the record is not in state `proposed` or `closed` (a release that merged, ran, was superseded or was rolled back is not
+   reissuable; see [the states](release-state.md#reissue));
+2. no release PR of this app's gitops repo is recorded, or that PR is still **open**, or it was **merged**;
+3. the record is a rollback (start it again from the Deployments tab), has no image (written before ADR-0021 phase 4), or its
+   image, commit or source repository are malformed or not this app's (the image's repository is not `<app>`, its sha is not the
+   recorded commit, the commit is not a full sha, `gitUrl` is another repository), or the PR was not opened from
+   `release-<env>-<sha8>`;
+3b. the record already has `reissuedBy` (the first reissue's run may be pruned; the record is what says it happened);
+4. the environment is no longer a Flight environment in the app's `cicd.yaml` order;
+4b. the **source environment** (the one before it in the release order, read as promote reads it) no longer carries this image
+   (staging rolled back since: the reason names the environment and what it carries now), or the record's image **repository**
+   (registry and path, exactly) is not the one that environment's release file names. The first environment has no source
+   environment: the anchor is its own gitops release file (`<cluster>/<env>/release.yaml` on the default branch, which only a reviewed
+   merge changes), never other release records; no file yet, or one naming another repository, is a refusal;
+5. a **newer release** of the app to this environment and cluster was opened since, or one was **merged** after this one
+   was opened (a reissue never replays an old release over a newer one);
+6. **another release PR for the environment is open** (checked per environment name: the git host does not say which cluster a
+   PR is for, so this is stricter, never looser);
+7. the commit does not resolve in the app repository;
+8. the release was already reissued: the run is named from the closed release's chain id
+   (`promote-<env>-<sha8>-<6 hex of sha256(app/reissue/env/cluster/chain)>`), so a release is reissued **at most once**; a
+   second call with another key is refused and names the first run (re-run it if it failed). The same key replays (`200`,
+   `"replayed": true`).
+
+**Known limits.** The source-environment check uses the environment before this one in the release order, so a release that was one
+of several environments a single pipeline released to can be refused falsely (it fails closed; promote again). A window of tens of
+seconds remains between the PR-time guard and the PR's creation.
+
+**Re-checked at PR time.** Checks 5 and 6 are made when the call arrives, and the run opens its PR minutes later. When the run
+carries `reissue-of`, `open-release-pr` repeats them from the cluster and the git host before it creates anything: the reissued
+release must still be the newest for the app, environment and cluster, and no other release PR for the environment may be open;
+if not, the run fails and changes nothing. A reissue also never closes a release newer than the one it reissues
+(`close_stale_proposals` skips it), and marking the old record `closed`/`reissuedBy` is a JSON patch with a `resourceVersion`
+precondition, re-read on conflict, so a record the relay has moved to `merged` is never overwritten.
+
+`404` for a release record that does not exist for the app (another app's is not found through this one); `400` for a
+malformed chain id or `Idempotency-Key`. `?dryRun=true` does every check and a server-side dry run of the create.
+
+```json
+{"mode": "pipeline", "pipelineRun": "promote-prod-abc1234d-bd320d", "reissues": "11111111-2222-4333-8444-555555555555",
+ "closedPrUrl": "https://github.com/jfillman/gitops-shop/pull/7", "env": "prod", "cluster": "hangar-prod",
+ "image": "ghcr.io/jfillman/shop:1.2.3-abc1234", "linked": true}
+```
+
+**A new chain, linked to the old.** The reissue is a new release: a new chain id (the `release` Pipeline's preflight mints it),
+a new record and a new PR. The run carries `glidepath.io/reissue-of: <closed chain id>`, stamped by the API from the record it
+read and never from a parameter (admission refuses every `glidepath.io/` annotation on a run a `.tekton` file creates);
+`open-release-pr` writes it on the new record as `reissueOf` and marks the closed one `reissuedBy` (ending it `closed` if it was
+still `proposed`). `GET /v1/apps/{app}/releases/{chainId}` returns both as `reissue: {of, by}`. A cluster whose admission policy
+for glidepath-api's runs does not yet list `glidepath.io/reissue-of` is not refused: the run starts without it and the answer says
+`"linked": false`.
+
+**What works for which release.** A Tower promotion has a `promote-release` template and its record carries `image`,
+`gitRevision`, `gitUrl`, `env` and `cluster`. A release that was **a step of a build flow** (Backstage) writes the same record
+keys (`image` is the `IMAGE_REF` the step released, `gitRevision` the flow's commit), and the template's parameters (env, cluster,
+git-url, git-revision, image-ref, initiator) express all of it, so it is reissued the same way, as a promotion-shaped run (its own
+flow, `hangar.io/flow: promote`). What differs from the original step: the reissue starts its own flow, so `flowStartTime` (the
+lead-time anchor) is the reissue's, and the build's `configJson` is read again from `cicd.yaml` at the commit. An app with no
+`promote-release` template (not a Kubernetes target) is refused with the template's name, like promote.
+
+`GET /v1/apps/{app}/releases/reissuable` (T0, `list` on `releases`) lists the candidates: for each environment and cluster, the
+**newest** record, when it is `proposed` or `closed` and its PR is closed unmerged, with `eligible` and, when not, the `reason`.
+
+### Promotion lineage
+
+A promotion is its own flow: it keeps its own chain id and slug, and its release record is `release-tracking-<its chain>`
+(one record per chain, one environment, one PR). What it needs is the link back to the flow that **built** the image.
+glidepath-api resolves that **server-side** when it starts a promote or rollback run, and never from the caller (a body
+field naming an origin is ignored):
+
+- **Source.** The build's own run: the `build` PipelineRun on the cluster (Tekton deletes a finished run about an hour
+  after it ends) or its copy in Tekton Results (the 30-day archive). That run names the image repository it pushed
+  (`IMAGE_URL`), the digest (`IMAGE_DIGEST`), the commit it built (`CHAINS-GIT_COMMIT`) and, through its `preflight`
+  task, the chain id, slug and trace the flow minted.
+- **Binding.** The lookup is for the **image repository and the commit being released**, both of which the API itself
+  resolved (from the source environment's release file, or the rollback target's record). A build of another
+  repository (a pull request's `-pr` image) or another commit is never a candidate. The caller supplies neither a chain
+  id nor a build.
+- **Digest.** When the source environment's release file pins a digest (`release.image.digest`, written when
+  `promotion.pinDigest` is on), only the build that pushed **that** digest is the origin; a build of the same commit
+  that pushed other bytes is not, and no match is "origin unknown". The digest comes from the file, never the body. A
+  rollback has no pinned digest to read (the release record keeps the image tag only) and resolves without one.
+- **No pinned digest.** Two builds that pushed the SAME digest (a rerun): the earliest finished one, the build that
+  produced the content. Two builds with DIFFERENT digests: nothing is resolved, because the tag could be either. A
+  source that cannot be read (Results down) also resolves nothing, with the error; a failed read is never answered as
+  "no build".
+- **Limits.** The whole lookup runs under a deadline (`LINEAGE_TIMEOUT_SECONDS`, default 5): a Results service that does
+  not answer in time resolves nothing (`origin unknown: lineage lookup timed out`) and the promotion starts. At most 20
+  archived builds of a commit are read (more is a failed read, never a truncation: an unread build could have pushed a
+  different digest). The archive is searched through the namespace's **500 most recently finished runs** (every Pipeline,
+  newest first, within 30 days): in a busy namespace that finishes more runs than that between the build and the promotion,
+  the build is not in the list and the origin is unknown. The build is found on the cluster first, so this only matters for
+  builds older than about an hour.
+- **Unresolved is not refused.** Lineage is information, not a gate. With no origin the promotion starts as before and
+  the answer says `"originUnknown": "origin unknown: <why>"`; the run carries no origin annotations and the record no
+  origin fields. A build older than the archive (30 days) and the first promotion of an image built elsewhere are the
+  common cases.
+
+The answer of promote and rollback:
+
+```json
+{"mode": "pipeline", "pipelineRun": "promote-staging-e65cefae-7ef9ab",
+ "origin": {"chainId": "94e8228a-5cdc-4350-914a-d73802e5b296", "chainSlug": "ornate-ram",
+            "traceId": "98f0963d6bc08cb69e6051852fc528de", "run": "ci-0-build-nm682"}}
+```
+
+The run carries it as annotations the API sets (`glidepath.io/origin-chain-id`, `origin-chain-slug`, `origin-trace-id`,
+and for the trace join `origin-traceparent` and `origin-finished-at`). Every value is held to one table of shapes
+(`lineage.Shapes`: a UUID, two lowercase words, 32 hex, a W3C traceparent ending `-01`, an RFC 3339 UTC time) that is
+identical to the cluster policy's, so a value the API stamps is never one admission refuses; an origin outside the table
+is not stamped and the answer says `origin unknown`. Admission refuses every
+`glidepath.io/` annotation on a run a `.tekton` file creates (`cicd-run-shape`), so a repository cannot claim another
+flow's lineage; the catalog's trusted tasks read them from the run itself, never from a parameter.
+
+- **Release record** (`release-tracking-<chain>`): `originChainId`, `originChainSlug`, `originTraceId`, written by
+  `open-release-pr`. `GET /v1/apps/{app}/releases/{chainId}` and the list return them as `origin`
+  (`{chainId, chainSlug, traceId}`, absent when there is none; `data` carries the raw keys).
+- **Release run view** (`GET /v1/apps/{app}/releases/runs/{name}`): `origin` from the run's annotations, so it shows
+  before the record exists. `chainId` stays the promotion's own.
+- **Releases that came from a build**: `GET /v1/apps/{app}/releases?fromChain=<build chain id>` lists the releases
+  whose `originChainId` is that chain (a malformed id is `400`; none is an empty list). Bounded by the app's release
+  records, which one label-selected list reads.
+- **Rollback** gets the same lineage: the origin is the build of the image being rolled back to (the target's own image
+  and commit). A rerun keeps `rerun-of` and is unchanged.
+- **The trace** is joined by `stage-preflight`; see [tracing.md](tracing.md#promotions-join-the-builds-trace).
+
+**What the cluster policy checks.** The value-shape rule in the apron policy (`glidepath-api-pipelinerun-shape`) is
+create-only, like the allowlist beside it (`isCreate`): glidepath-api never changes a run's annotations afterwards, and the
+policy refuses it if it tried. glidepath-api retries a refused run without the lineage **only** when the refusal is the
+annotation allowlist or the lineage shape rule (Forbidden or Invalid, naming "may carry only the annotations" or
+"promotion-lineage"); any other refusal or error is reported as it is, and the run it resubmits is the same run less the
+lineage annotations.
+
+**Order of upgrades.** Each side tolerates the other being old. A new API against an old catalog stamps annotations
+nothing reads: the promotion runs, with its own trace and no origin on its record (the API's answer and the run view
+still show it). An old API against a new catalog stamps none: the record fields are empty and the trace is its own. A
+cluster whose admission policy for glidepath-api's runs lists the annotations a run may carry (the platform's
+`glidepath-api-pipelinerun-shape`, kept in the cluster repository) and does not know the lineage keys yet refuses the
+run; the API then starts it again **without** the lineage and answers `origin unknown: the cluster's admission policy
+for glidepath-api runs does not yet allow the lineage annotations`. Add the six keys to that policy to turn lineage on.
+
 ### Following a release run
 
 `GET /v1/apps/{app}/releases/runs/{name}` (API 0.8.0, tier T0, `get` on `releases`) is the read that follows the run a
@@ -384,6 +550,15 @@ promote or rollback just started (its `pipelineRun`), from the moment of the cli
            {"name": "open-release-pr", "taskRun": "...-open-release-pr", "status": "running", "startTime": "..."}],
  "chainId": "7200a685-...", "prUrl": "", "changeRequest": "", "phase": "running", "record": null}
 ```
+
+**`status` is one of `pending` (no status yet), `queued`, `running`, `succeeded`, `failed`, `cancelled`.** `queued` is a run
+waiting for a concurrency slot: with the per-repository limit (Pipelines-as-Code `concurrency_limit`), runs beyond it are created
+with `spec.status: PipelineRunPending` (condition `Unknown`, reason `PipelineRunPending`) and start when a slot frees. The API reads
+that from the run's own spec and condition, not from the `pipelinesascode.tekton.dev/state` label or annotation (which can outlive
+the wait). It was reported as `running` before; the value is new, so a client with a closed list should treat an unknown status as
+"not finished". `phase` is `queued` while a record does not exist yet. The record's state machine is unchanged. Cancel
+(`POST .../pipelineruns/{name}/cancel`) patches `spec.status` on a queued run exactly as on a running one; that Tekton then
+cancels a pending run without starting it is Tekton's documented behaviour and has not been exercised here.
 
 `tasks` is every task of the Pipeline in its own order (`status.pipelineSpec`), then its finally tasks, so one not
 started yet is `pending` where it will run; `params` are the run's string params (`image-ref`, `git-url`,
@@ -431,7 +606,7 @@ never takes an owner from the request.
 
 ### Who may promote
 
-`promote` and `rollback` on `environments.glidepath.hangar.io` in the app's namespace, held by the chart's
+`promote` and `rollback` (and reissue, which is a promote) on `environments.glidepath.hangar.io` in the app's namespace, held by the chart's
 `glidepath-api-releaser` ClusterRole and bound cluster-wide by `api.releasers` (empty by default), or app by app with
 a RoleBinding. It holds no read and no re-run: an operator is not a releaser, and a releaser that should read the
 plans needs `glidepath-api-reader`. As for every write, a delegate must name the person (`GP-AUTH-004`) and the API
@@ -497,6 +672,70 @@ sidecar doesn't answer, the call is `GP-API-502`.
 
 Refusals are `GP-API-400`: neither or both of `patch` and `content`, a patch that isn't an object, a `baseRef` that
 isn't a ref of the repo, or a base file a patch can't be applied to (not a YAML mapping).
+
+## Ref protection
+
+`GET /v1/apps/{app}/ref-protection?repo=<owner>/<name>&ref=<full ref>&sha=<commit>` (tier T0; API 0.13.0 changed what it answers) says whether
+**every commit being released was reviewed**: it arrived on the protected branch through a merged pull request that someone other than its author approved.
+It is the platform's second layer behind the admission policy's name check (security.md, [Ref protection](security.md#ref-protection), which has the rules and
+the reason for each): the privileged Pipelines call it as their first task, with the repository, ref and sha Pipelines-as-Code recorded on the run, and refuse
+the run unless the verdict is `protected`. It needs `get` on `refprotection.glidepath.hangar.io` in the app's namespace: `glidepath-app` grants it to that app's
+`pipeline-runner`, nothing else. `repo` must be one of the app's own repositories under the platform's owner (a source repo, its gitops repo, or where its
+`cicd.yaml` lives).
+
+```json
+{"verdict": "unreviewed", "repo": "jfillman/shop", "ref": "refs/heads/main", "sha": "7f3c…", "kind": "branch", "mainLike": true, "branch": "main",
+ "reasons": ["review evidence is incomplete: 1 of 3 commits have no approved pull request (main, range 91ab…..7f3c…)"],
+ "missing": ["4d5e6f7: no pull request: pushed to main directly (a direct push, a force push or an administrator's bypass)"],
+ "evidence": {
+   "branch": "main", "mode": "range", "from": "91ab…", "fromRelease": "gitops-shop#412", "to": "7f3c…",
+   "commits": [{"sha": "4d5e…", "reviewed": false, "reason": "no pull request: pushed to main directly (…)"},
+               {"sha": "7f3c…", "pullRequest": 12, "reviewed": true}],
+   "pullRequests": [{"number": 12, "url": "https://github.com/jfillman/shop/pull/12", "opener": "alice", "merger": "alice", "mergedAt": "2026-11-10T10:00:00Z",
+                     "mergeCommit": "7f3c…", "head": "c0ffee…", "commits": ["c0ffee…"], "authors": ["alice"], "approvers": ["bob"], "reviewed": true}],
+   "openers": ["alice"], "mergers": ["alice"], "approvers": ["bob"],
+   "unreviewed": [{"sha": "4d5e…", "reason": "no pull request: pushed to main directly (…)"}],
+   "accepted": [], "calls": 9},
+ "configuration": {"state": "unprotected", "reasons": ["branch main is not protected as required: missing …"], "bypass": []}}
+```
+
+`verdict` is one of `protected` (every commit of the range has review evidence), `unreviewed` (some commit does not: `missing` lists up to 20 lines, one per
+commit, and `evidence.unreviewed` all of them) or `unverifiable` (GitHub did not show enough: a read that failed, a range of more than 250 commits, a last
+release that cannot start the range, a ref that is not a protected branch). Only `protected` is a yes. `unprotected` and `unavailable` are gone.
+A broker or host that does not answer at all (transport, a rate limit past the bounded retries) is 502, never a verdict, and the caller refuses on it too.
+Otherwise the answer is 200, carries `reasons` a person can act on, and is never cached: every call reads GitHub again with the broker's per-request read-only
+token ([below](#the-github-read-token); contents, pull requests and metadata). Each list is paged and bounded, and one check makes at most 400 evidence reads.
+
+**The range.** `evidence.mode` is `range` (the commits after `evidence.from`, the newest release the app's **gitops repository** corroborates, up to `to`) or `first`
+(`to` alone: the gitops history shows no release of the app, or `to` is at or before a release). A release is a merged pull request in the gitops repository that
+one of `api.pipelineLogins` opened, with `X-App-Repo`/`X-App-Commit` trailers and a manifest whose image tag ends in that commit; it must be an ancestor of `to`
+per GitHub and its own commit must have review evidence. Release records (`release-tracking-*` ConfigMaps) are **not** read: the pipeline's account can write and
+delete them. A gitops history that shows an earlier release but yields no baseline is `unverifiable`, never `first` (security.md, "The range", says what stays open).
+An approval counts only if GitHub says its author may push to the repository (GraphQL `authorCanPushToRepository`, recorded as `approverCanPush`); a merge commit that is not the pull request's head must be GitHub's (web-flow, verified), and a rebase-merged pull request's landed commits must have the reviewed head's content, file by file (security.md; 3 more reads per rebase-merged pull request).
+
+**What the Clearance gate's proposer can read.** The same endpoint, called for a release's source commit (`repo` the source repository, `ref` the protected
+branch, `sha` the released commit): `evidence.commits` (each commit and the merged `pullRequest` that brought it into the branch), `evidence.pullRequests` (opener,
+merger, `approvers`, the pull request's `commits` and the GitHub accounts that `authors` them) and the distinct, sorted `evidence.openers`, `mergers` and `approvers`.
+These are GitHub-authenticated accounts, resolved by one implementation (`glidepath/api/internal/refprotection`), so the shell resolution in the proposer
+(glidepath#247's `release-source.sh`) can be replaced by this call. It answers `unreviewed` (with the same evidence) for a range that has commits without a pull
+request: the proposer reads `evidence` whatever the verdict.
+
+`configuration` is what the host's rulesets and branch protection say (`state`: `protected`, `unprotected`, `unavailable`, `unverifiable`; `bypass`, `notes`,
+`protectedBy`), **informational**: it never decides the verdict, and a read that failed is reported there. A ruleset's bypass list is shown only to a token that
+may administer the repository, so with the read-only token it usually says "not shown".
+
+Reruns, promotes and rollbacks started through this API carry a stamped origin (`glidepath.io/origin-ref`, `origin-sha`) that this endpoint verifies for
+their guard: a rerun copies the original run's, promote and rollback stamp the release's commit and the first protected branch (security.md, Ref protection).
+
+`mainLike` says whether the ref is a protected branch name or matches `TAG_REF_PATTERN` (the chart's `cicdRunAdmission.tagRefPattern`): a build of any other ref
+(a side branch) writes no main image, so the build's task passes it; a privileged Pipeline ignores it. A branch ref that is not one of `PROTECTED_BRANCHES` (the
+chart's `cicdRunAdmission.protectedBranches`) is `unverifiable` with no GitHub read; a tag's range is read against the first protected branch that holds its commit.
+`PIPELINE_LOGINS` (the chart's `api.pipelineLogins`) names pipeline accounts whose approval never counts, besides every account GitHub types Bot or names `[bot]`.
+
+GitHub endpoints used, all with the one token of the request: `GET /repos/{o}/{r}/compare/{base}...{head}`, `commits?sha=`, `commits/{sha}`, `commits/{sha}/pulls`, `pulls/{n}`, `pulls/{n}/commits`, and in the gitops repository `pulls`, `pulls/{n}/files`, `issues/{n}/timeline` and `contents/{path}?ref=` (**Contents** and **Pull requests: read**), plus one read-only GraphQL query, `POST /graphql` (`/api/graphql` on GitHub Enterprise Server), for each pull request's reviews (`state`, `author`, `authorCanPushToRepository`, `commit{oid}`), and, for the informational configuration, `rules/branches/{branch}`, `rulesets`,
+`rulesets/{id}` and `branches/{branch}/protection` (**Metadata: read**; classic protection needs Administration: read, so it is reported as not shown).
+The count per check is in security.md ("Calls per check"). `ref` may not contain empty, `.` or `..` segments or encoded characters (400); the all-zero sha and a sha
+that is not a commit (an annotated tag object) are refused (400 / `unverifiable`).
 
 ## Live and archived reads
 

@@ -1,0 +1,356 @@
+{{- if .Values.cicdRunAdmission.enabled }}
+{{- $c := .Values.cicdRunAdmission }}
+{{- /* A raw CEL string: a backslash in the pattern is a regex escape, not a CEL one (an `\.` in an ordinary string does not compile). It cannot hold a quote. */}}
+{{- if contains "'" $c.tagRefPattern }}{{ fail "cicdRunAdmission.tagRefPattern may not contain a single quote" }}{{ end }}
+{{- $params := dict }}{{- $pushOnly := list }}{{- $anyBranch := list }}
+{{- range $name, $cfg := $c.pipelines }}
+{{- $_ := set $params $name $cfg.params }}
+{{- if $cfg.pushOnly }}{{ $pushOnly = append $pushOnly $name }}{{ end }}
+{{- if $cfg.anyBranch }}{{ $anyBranch = append $anyBranch $name }}{{ end }}
+{{- end }}
+# What a repository's own .tekton/ file may make Pipelines-as-Code run (2026-11-14).
+#
+# A pull request can change .tekton/*.yaml in its own repository, and Pipelines-as-Code creates the PipelineRun from what it
+# finds there as its own controller identity, so no RBAC on the app's ServiceAccounts applies to it. Without a rule here a pull
+# request could name any ServiceAccount of the namespace, any catalog Pipeline with any parameter (the release and deploy ones
+# write release records), or embed its own pipelineSpec (any image, any projected-token audience, any Secret of the namespace)
+# and so reach everything the -cicd namespace holds. RBAC cannot express "this run may only be one of these Pipelines with these
+# values", so this policy does, for runs created by the PaC controller only (matchConditions). Everything else that creates runs
+# in these namespaces (Triggers as pipeline-trigger, glidepath-api, the cloud-deployer policies) has its own control.
+#
+#   cicd-run-shape             Deny by default (shapeActions: [Warn, Audit] for an upgrade window). apiVersion v1 only; a cluster-resolver pipelineRef to one of the Pipelines in
+#                              values cicdRunAdmission.pipelines (and no other); only the parameter names that Pipeline takes,
+#                              each matching its pattern, each appearing once; repo, revision, pull request and namespace
+#                              parameters equal what PaC itself recorded on the run, not what the file says; Pipelines that write
+#                              release state or deploy only from a push to a protected branch or a tag; run-wide account
+#                              pipeline-runner; per-task accounts only source-runner, image-pusher or glidepath-cloud-deployer, one entry per
+#                              task; podTemplate hostAliases only; workspaces emptyDir or volumeClaimTemplate only.
+#   cicd-run-source-isolation  a run of a Pipeline that runs the repository's code (values sourceTasks) must run those tasks as
+#                              source-runner, and its tasks that hold the registry push credential (values pusherTasks:
+#                              push-image) as image-pusher. Separate so it can be rolled out in audit first.
+#   cicd-run-no-taskruns       PaC never creates a TaskRun; one from its identity is refused.
+#
+# A push event spells its source ref two ways (Pipelines-as-Code v0.52.0, pkg/provider/github/parse_payload.go): a real push records
+# the full ref (refs/heads/main, refs/tags/v1.2.3, :698-700), a re-run of that push's check from the git host (check_run /
+# check_suite "rerequested", :752-808 and :815-851) records event-type push with the check suite's head_branch, the bare
+# name (main, :765, :824, :846-848). Both are admitted for a protected branch; the bare form is never a tag (a tag has no
+# head_branch, PaC refuses that re-run, :804 and :843) and a bare name must equal a protectedBranches entry exactly, so a push
+# to any other branch is still refused. Pipelines-as-Code overwrites these annotations on the run (pkg/kubeinteraction/labels.go:112-114),
+# so a .tekton file cannot set them.
+#
+# This is the first of two layers on a ref. It decides on the ref's NAME (a configured protected branch, or a tag of the release
+# shape) and on what Pipelines-as-Code recorded; it cannot see whether the git host protects that ref. The second layer is
+# the catalog's verify-ref-protection task, the first task of every privileged Pipeline and of the build, which asks
+# glidepath-api (GET /v1/apps/{app}/ref-protection) and refuses the run unless the host requires review for it
+# (docs/admin/security.md, "Ref protection"; the catalog's refProtection.mode).
+#
+# Every expression is has()-guarded and every matchCondition cannot raise on a missing field, so a CEL error cannot refuse a
+# request cluster-wide (failurePolicy Fail would turn one into an outage).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: cicd-run-shape
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["tekton.dev"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pipelineruns"]
+  matchConditions:
+    - name: created-by-pipelines-as-code-in-a-cicd-namespace
+      expression: >-
+        has(request.userInfo.username) && request.userInfo.username == {{ $c.pacControllerUser | quote }} &&
+        has(request.namespace) && request.namespace.matches('^(app|infra)-[a-z0-9-]+-cicd$')
+  variables:
+    - name: ref
+      expression: "has(object.spec.pipelineRef) ? object.spec.pipelineRef : {}"
+    - name: refParams
+      expression: "has(variables.ref.params) ? variables.ref.params : []"
+    - name: pipelineName
+      expression: >-
+        variables.refParams.exists(p, has(p.name) && p.name == 'name' && has(p.value) && type(p.value) == string) ?
+        variables.refParams.filter(p, has(p.name) && p.name == 'name' && has(p.value) && type(p.value) == string)[0].value : ''
+    # The Pipelines a file may start, as three maps/lists of ONE shape each (the API server type-checks a map literal: every value must have
+    # the same type, so {"params": [...], "anyBranch": true} next to {"params": [...]} does not compile): Pipeline -> its parameter names, and
+    # the names of the Pipelines that are push-only and that are not held to the protected branches.
+    - name: catalog
+      expression: {{ $params | toJson | squote }}
+    - name: pushOnly
+      expression: {{ $pushOnly | toJson | squote }}
+    - name: anyBranch
+      expression: {{ $anyBranch | toJson | squote }}
+    - name: patterns
+      expression: {{ $c.paramPatterns | toJson | squote }}
+    - name: ps
+      expression: "has(object.spec.params) ? object.spec.params : []"
+    - name: specs
+      expression: "has(object.spec.taskRunSpecs) ? object.spec.taskRunSpecs : []"
+    - name: anns
+      expression: "has(object.metadata.annotations) ? object.metadata.annotations : {}"
+    - name: lbls
+      expression: "has(object.metadata.labels) ? object.metadata.labels : {}"
+    - name: appName
+      expression: >-
+        variables.ps.exists(p, has(p.name) && p.name == 'app-name' && has(p.value) && type(p.value) == string) ?
+        variables.ps.filter(p, has(p.name) && p.name == 'app-name' && has(p.value) && type(p.value) == string)[0].value : ''
+    - name: org
+      expression: "'pipelinesascode.tekton.dev/url-org' in variables.lbls ? variables.lbls['pipelinesascode.tekton.dev/url-org'] : ''"
+    - name: isPush
+      expression: "'pipelinesascode.tekton.dev/event-type' in variables.anns && variables.anns['pipelinesascode.tekton.dev/event-type'] == 'push'"
+    - name: srcRef
+      expression: "'pipelinesascode.tekton.dev/source-branch' in variables.anns ? variables.anns['pipelinesascode.tekton.dev/source-branch'] : ''"
+    - name: sourceTasks
+      expression: {{ $c.sourceTasks | toJson | squote }}
+    - name: cloudTasks
+      expression: {{ $c.cloudDeployerTasks | toJson | squote }}
+    - name: pusherTasks
+      expression: {{ $c.pusherTasks | toJson | squote }}
+  validations:
+    - expression: "has(request.resource) && has(request.resource.version) && request.resource.version == 'v1'"
+      message: "Only tekton.dev/v1 PipelineRuns are accepted from a .tekton file (v1beta1 has different fields for the same settings)."
+    - expression: "!has(object.spec.pipelineSpec)"
+      message: "A run created from a .tekton file may not carry an inline pipelineSpec: it must reference one of the catalog's Pipelines."
+    - expression: >-
+        has(object.spec.pipelineRef) && has(variables.ref.resolver) && variables.ref.resolver == 'cluster' &&
+        size(variables.refParams) == 3 &&
+        variables.refParams.exists(p, has(p.name) && p.name == 'kind' && has(p.value) && p.value == 'pipeline') &&
+        variables.refParams.exists(p, has(p.name) && p.name == 'namespace' && has(p.value) && p.value == {{ $c.catalogNamespace | quote }}) &&
+        variables.pipelineName in variables.catalog
+      message: "pipelineRef must be the cluster resolver for one of the Pipelines a .tekton file may start (cicdRunAdmission.pipelines), in the catalog namespace."
+    - expression: >-
+        variables.pipelineName in variables.catalog &&
+        variables.ps.all(p, has(p.name) && has(p.value) && type(p.value) == string && p.name in variables.catalog[variables.pipelineName] &&
+          p.name in variables.patterns && p.value.matches(variables.patterns[p.name])) &&
+        variables.ps.all(p, variables.ps.filter(q, has(q.name) && q.name == p.name).size() == 1)
+      message: "A .tekton file may pass only the parameters that Pipeline takes from one (cicdRunAdmission.pipelines), once each, with a value of the expected shape."
+    - expression: >-
+        variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || !(p.name in ['repo-url', 'git-url']) ||
+          ('pipelinesascode.tekton.dev/repo-url' in variables.anns && p.value == variables.anns['pipelinesascode.tekton.dev/repo-url'])) &&
+        variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || !(p.name in ['revision', 'git-revision']) ||
+          ('pipelinesascode.tekton.dev/sha' in variables.anns && p.value == variables.anns['pipelinesascode.tekton.dev/sha'])) &&
+        variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || p.name != 'pr-number' ||
+          ('pipelinesascode.tekton.dev/pull-request' in variables.lbls && p.value == variables.lbls['pipelinesascode.tekton.dev/pull-request'])) &&
+        variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || p.name != 'app-namespace' || p.value == request.namespace) &&
+        variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || p.name != 'app-name' || request.namespace in ['app-' + p.value + '-cicd', 'infra-' + p.value + '-cicd']) &&
+        variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || p.name != 'app-type' || request.namespace.startsWith(p.value + '-'))
+      message: "The repository, revision, pull request and application parameters must be the ones Pipelines-as-Code recorded for this event and this namespace."
+    - expression: >-
+        !(variables.pipelineName in variables.pushOnly) ||
+        ('pipelinesascode.tekton.dev/event-type' in variables.anns && variables.anns['pipelinesascode.tekton.dev/event-type'] == 'push')
+      message: "This Pipeline (deploy, test, release, gitops-image-bump) is started only by a push event, not by a pull request."
+    - expression: >-
+        variables.pipelineName in variables.anyBranch ||
+        (variables.isPush ?
+          (variables.srcRef in [{{ range $i, $b := $c.protectedBranches }}{{ if $i }}, {{ end }}{{ printf "refs/heads/%s" $b | quote | replace "\"" "'" }}{{ end }}] ||
+           variables.srcRef in {{ $c.protectedBranches | toJson }} ||
+           variables.srcRef.matches(r'{{ $c.tagRefPattern }}')) :
+          ('pipelinesascode.tekton.dev/branch' in variables.anns && variables.anns['pipelinesascode.tekton.dev/branch'] in {{ $c.protectedBranches | toJson }}))
+      message: "This Pipeline starts only from a push to a protected branch (cicdRunAdmission.protectedBranches) or to a tag matching cicdRunAdmission.tagRefPattern (decided on the full ref), or, for a check, from a pull request into a protected branch."
+    - expression: "!variables.anns.exists(k, k.startsWith('glidepath.io/'))"
+      message: "A run created from a .tekton file may carry no glidepath.io/ annotation: glidepath.io/origin-ref and origin-sha are set by the platform's own Triggers on a chained run, and verify-ref-protection trusts them; glidepath.io/origin-chain-id, origin-chain-slug, origin-trace-id, origin-traceparent and origin-finished-at (promotion lineage) are set by glidepath-api alone, and the release record and the trace join trust them."
+    - expression: >-
+        variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || p.name != 'image-repo' ||
+          (variables.appName != '' &&
+            ({{ if $c.imageRepoPrefixes }}{{ $c.imageRepoPrefixes | toJson }}.exists(x, p.value == x + variables.appName || p.value == x + variables.appName + '-pr'){{ else }}variables.org != '' &&
+              p.value.matches('^[a-z0-9.-]+(:[0-9]+)?/' + variables.org + '/' + variables.appName + '(-pr)?$'){{ end }})))
+      message: "image-repo must be this application's own image repository (<registry>/<owner>/<app-name>, or -pr): a build may not push anywhere else."
+    - expression: >-
+        variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || p.name != 'gitops-repo-url' ||
+          (variables.org != '' && variables.appName != '' && p.value == 'https://github.com/' + variables.org + '/gitops-' + variables.appName)) &&
+        variables.ps.all(p, !has(p.name) || !has(p.value) || type(p.value) != string || p.name != 'github-owner' ||
+          (variables.org != '' && p.value == variables.org))
+      message: "onboarding-resync may only target this application's own gitops repository (https://github.com/<owner>/gitops-<app-name>) under the repository's own owner."
+    - expression: >-
+        has(object.spec.taskRunTemplate) && has(object.spec.taskRunTemplate.serviceAccountName) &&
+        object.spec.taskRunTemplate.serviceAccountName == 'pipeline-runner'
+      message: "taskRunTemplate.serviceAccountName must be pipeline-runner."
+    - expression: >-
+        variables.specs.all(s, s.all(k, k in ['pipelineTaskName', 'serviceAccountName']) &&
+          has(s.serviceAccountName) && has(s.pipelineTaskName) && type(s.pipelineTaskName) == string &&
+          variables.specs.filter(t, has(t.pipelineTaskName) && t.pipelineTaskName == s.pipelineTaskName).size() == 1)
+      message: "taskRunSpecs entries may name only a task and a serviceAccountName, once per task, with no other override."
+    - expression: >-
+        variables.specs.all(s, !has(s.serviceAccountName) || !has(s.pipelineTaskName) || type(s.pipelineTaskName) != string ||
+          (s.serviceAccountName == 'source-runner' && variables.pipelineName in variables.sourceTasks &&
+            s.pipelineTaskName in variables.sourceTasks[variables.pipelineName]) ||
+          (s.serviceAccountName == 'glidepath-cloud-deployer' && variables.pipelineName in variables.cloudTasks &&
+            s.pipelineTaskName in variables.cloudTasks[variables.pipelineName]) ||
+          (s.serviceAccountName == 'image-pusher' && variables.pipelineName in variables.pusherTasks &&
+            s.pipelineTaskName in variables.pusherTasks[variables.pipelineName]))
+      message: "A task may run as source-runner only where cicdRunAdmission.sourceTasks lists it, as image-pusher only where cicdRunAdmission.pusherTasks lists it, and as glidepath-cloud-deployer only where cicdRunAdmission.cloudDeployerTasks lists it (for this Pipeline); any other task runs as pipeline-runner."
+    - expression: >-
+        variables.pipelineName != 'build' || variables.isPush ||
+        variables.ps.exists(p, has(p.name) && p.name == 'pr-tag-only' && has(p.value) && type(p.value) == string && p.value == 'true')
+      message: "A build that is not started by a push (a pull request, a re-run from a comment) must pass pr-tag-only=true: that parameter decides which cache the build may write, and a pull request may write none (docs/admin/security.md, 'Image build and push')."
+    - expression: >-
+        !variables.ps.exists(p, has(p.name) && p.name == 'pr-tag-only' && has(p.value) && type(p.value) == string && p.value == 'true') ||
+        variables.ps.exists(p, has(p.name) && p.name == 'image-repo' && has(p.value) && type(p.value) == string && variables.appName != '' && p.value.endsWith('/' + variables.appName + '-pr'))
+      message: "pr-tag-only=true marks a pull request's build, which may push only to the application's own -pr image repository (<registry>/<owner>/<app-name>-pr)."
+    - expression: >-
+        !has(object.spec.taskRunTemplate) || !has(object.spec.taskRunTemplate.podTemplate) ||
+        object.spec.taskRunTemplate.podTemplate.all(k, k == 'hostAliases')
+      message: "taskRunTemplate.podTemplate may only set hostAliases."
+    - expression: >-
+        !has(object.spec.workspaces) || object.spec.workspaces.all(w, w.all(k, k in ['name', 'subPath', 'emptyDir', 'volumeClaimTemplate']))
+      message: "Workspaces may only be emptyDir or volumeClaimTemplate."
+    - expression: >-
+        !has(object.spec.workspaces) || object.spec.workspaces.all(w, !has(w.volumeClaimTemplate) ||
+          (w.volumeClaimTemplate.all(k, k in ['spec', 'metadata', 'status']) && has(w.volumeClaimTemplate.spec) &&
+           (!has(w.volumeClaimTemplate.metadata) || (w.volumeClaimTemplate.metadata.all(k, k == 'creationTimestamp') &&
+             (!has(w.volumeClaimTemplate.metadata.creationTimestamp) || w.volumeClaimTemplate.metadata.creationTimestamp == null))) &&
+           (!has(w.volumeClaimTemplate.status) || size(w.volumeClaimTemplate.status) == 0) &&
+           w.volumeClaimTemplate.spec.all(k, k in ['accessModes', 'resources', 'storageClassName']) &&
+           has(w.volumeClaimTemplate.spec.accessModes) && w.volumeClaimTemplate.spec.accessModes == ['ReadWriteOnce'] &&
+           has(w.volumeClaimTemplate.spec.resources) && w.volumeClaimTemplate.spec.resources.all(k, k == 'requests') &&
+           has(w.volumeClaimTemplate.spec.resources.requests) && w.volumeClaimTemplate.spec.resources.requests.all(k, k == 'storage') &&
+           has(w.volumeClaimTemplate.spec.resources.requests.storage) && type(w.volumeClaimTemplate.spec.resources.requests.storage) == string &&
+           w.volumeClaimTemplate.spec.resources.requests.storage.matches('^(1|2|5|10|20)Gi$') &&
+           (!has(w.volumeClaimTemplate.spec.storageClassName) || w.volumeClaimTemplate.spec.storageClassName in {{ $c.workspaceStorageClassNames | default list | toJson }})))
+      message: "A workspace's volumeClaimTemplate may carry only spec.accessModes [ReadWriteOnce], spec.resources.requests.storage of 1, 2, 5, 10 or 20Gi and, if set, a storageClassName from cicdRunAdmission.workspaceStorageClassNames: no dataSource or dataSourceRef (a clone of another volume), volumeName, selector or volumeMode; metadata only as a typed client writes it (absent, empty or creationTimestamp: null, no name, labels or annotations) and status only empty."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: cicd-run-shape
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+  {{- if not (has "Deny" $c.shapeActions) }}
+  annotations:
+    glidepath.io/enforcement: "NOT ENFORCING: shapeActions has no Deny. This is the upgrade state; set it to [Deny] (docs/admin/security.md, upgrade note)."
+  {{- end }}
+spec:
+  policyName: cicd-run-shape
+  validationActions: {{ $c.shapeActions | toJson }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: cicd-run-source-isolation
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["tekton.dev"]
+        apiVersions: ["*"]
+        operations: ["CREATE"]
+        resources: ["pipelineruns"]
+  matchConditions:
+    - name: a-pac-run-of-a-pipeline-that-runs-repository-code
+      expression: >-
+        has(request.userInfo.username) && request.userInfo.username == {{ $c.pacControllerUser | quote }} &&
+        has(request.namespace) && request.namespace.matches('^(app|infra)-[a-z0-9-]+-cicd$') &&
+        has(object.spec.pipelineRef) && has(object.spec.pipelineRef.params) &&
+        object.spec.pipelineRef.params.exists(p, has(p.name) && p.name == 'name' && has(p.value) && type(p.value) == string && p.value in {{ $c.sourceTasks | keys | sortAlpha | toJson }})
+  variables:
+    - name: sourceTasks
+      expression: {{ $c.sourceTasks | toJson | squote }}
+    - name: pusherTasks
+      expression: {{ $c.pusherTasks | toJson | squote }}
+    - name: pipelineName
+      expression: "object.spec.pipelineRef.params.filter(p, has(p.name) && p.name == 'name')[0].value"
+    - name: specs
+      expression: "has(object.spec.taskRunSpecs) ? object.spec.taskRunSpecs : []"
+  validations:
+    - expression: >-
+        variables.sourceTasks[variables.pipelineName].all(t,
+          variables.specs.exists(s, has(s.pipelineTaskName) && s.pipelineTaskName == t &&
+            has(s.serviceAccountName) && s.serviceAccountName == 'source-runner'))
+      message: "This Pipeline runs the repository's own code: its tasks named in cicdRunAdmission.sourceTasks ({{ range $p, $ts := $c.sourceTasks }}{{ $p }}: {{ join ", " $ts }}; {{ end }}) must run as source-runner (taskRunSpecs). Resync the repository's .tekton files (onboarding-resync) to regenerate it."
+    - expression: >-
+        !(variables.pipelineName in variables.pusherTasks) ||
+        variables.pusherTasks[variables.pipelineName].all(t,
+          variables.specs.exists(s, has(s.pipelineTaskName) && s.pipelineTaskName == t &&
+            has(s.serviceAccountName) && s.serviceAccountName == 'image-pusher'))
+      message: "This Pipeline pushes the image it built: its tasks named in cicdRunAdmission.pusherTasks ({{ range $p, $ts := $c.pusherTasks }}{{ $p }}: {{ join ", " $ts }}; {{ end }}) must run as image-pusher (taskRunSpecs), the only account that holds the registry push credential's pod. Resync the repository's .tekton files (onboarding-resync) to regenerate it."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: cicd-run-source-isolation
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+  {{- if not (has "Deny" $c.sourceIsolationActions) }}
+  annotations:
+    glidepath.io/enforcement: "NOT ENFORCING: sourceIsolationActions has no Deny. This is the upgrade state; set it to [Deny] (docs/admin/security.md, upgrade note)."
+  {{- end }}
+spec:
+  policyName: cicd-run-source-isolation
+  validationActions: {{ $c.sourceIsolationActions | toJson }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: cicd-run-no-taskruns
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["tekton.dev"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["taskruns"]
+  matchConditions:
+    - name: created-by-pipelines-as-code
+      expression: >-
+        has(request.userInfo.username) && request.userInfo.username == {{ $c.pacControllerUser | quote }}
+  validations:
+    - expression: "false"
+      message: "Pipelines-as-Code starts PipelineRuns, never a TaskRun: a TaskRun has no catalog Pipeline to hold it to."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: cicd-run-no-taskruns
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+  {{- if not (has "Deny" $c.noTaskRunsActions) }}
+  annotations:
+    glidepath.io/enforcement: "NOT ENFORCING: noTaskRunsActions has no Deny. This is the upgrade state; set it to [Deny] (docs/admin/security.md, upgrade note)."
+  {{- end }}
+spec:
+  policyName: cicd-run-no-taskruns
+  validationActions: {{ $c.noTaskRunsActions | toJson }}
+{{- $notEnforcing := list }}
+{{- if not (has "Deny" $c.shapeActions) }}{{ $notEnforcing = append $notEnforcing (dict "alert" "CicdRunShapeNotEnforcing" "binding" "cicd-run-shape" "value" "shapeActions" "what" "A .tekton file that no longer fits the catalog's shape (a Pipeline, parameters, accounts, workspaces) is let through") }}{{ end }}
+{{- if not (has "Deny" $c.sourceIsolationActions) }}{{ $notEnforcing = append $notEnforcing (dict "alert" "CicdRunSourceIsolationNotEnforcing" "binding" "cicd-run-source-isolation" "value" "sourceIsolationActions" "what" "A build or test run of a repository whose .tekton file was not regenerated still runs the repository's code as pipeline-runner") }}{{ end }}
+{{- if not (has "Deny" $c.noTaskRunsActions) }}{{ $notEnforcing = append $notEnforcing (dict "alert" "CicdRunNoTaskRunsNotEnforcing" "binding" "cicd-run-no-taskruns" "value" "noTaskRunsActions" "what" "Pipelines-as-Code may create a TaskRun, which no catalog Pipeline holds to anything") }}{{ end }}
+{{- if and $notEnforcing (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+---
+# Fires while a cicd-run-* binding is not in Deny: the upgrade state must not be left on.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cicd-run-admission-not-enforcing
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+spec:
+  groups:
+    - name: cicd-run-admission
+      rules:
+        {{- range $notEnforcing }}
+        - alert: {{ .alert }}
+          expr: vector(1)
+          for: 3d
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ .binding }} has not been in Deny for 3 days"
+            description: {{ printf "%s. Finish the onboarding-resync and set cicdRunAdmission.%s to [Deny]." .what .value | quote }}
+        {{- end }}
+{{- end }}
+{{- end }}

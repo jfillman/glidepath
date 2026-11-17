@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Glidepath API
-  version: 0.11.0
+  version: 0.13.0
   description: |
     Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
     contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec are reads (tier T0); phase 3
@@ -18,6 +18,14 @@ info:
     0.8.0 adds GET /v1/apps/{app}/releases/runs/{name} (a release run followed from the moment promote or rollback names
     it: status, tasks, chain id, PR and change request, the release record) and GET /v1/apps/{app}/live/stream (the app's
     live runs as server-sent events: a snapshot, then each change).
+    0.12.0 adds GET /v1/apps/{app}/ref-protection: whether the git host protects a pushed ref (rulesets or branch
+    protection requiring review, tag rulesets) so a commit could only have arrived through review; the privileged
+    Pipelines' first task asks it and refuses the run unless the verdict is protected.
+    0.13.0 changes what that answer rests on: `protected` now means every commit being released arrived on the protected
+    branch through a merged pull request that someone other than its author approved on its final head (review evidence),
+    not that rulesets say so. The answer carries the evidence (commits, pull requests, openers, mergers, approvers); the
+    ruleset and branch protection reads are an informational `configuration`; `unprotected` and `unavailable` are gone,
+    `unreviewed` is new, and `bypass`, `notes` and `protectedBy` moved into `configuration`.
 
     Every /v1 call needs a bearer token the cluster's TokenReview accepts, in `Authorization`, or in
     `X-Glidepath-Authorization` when the call comes through the API server's service proxy (which
@@ -370,10 +378,13 @@ paths:
     get:
       operationId: listReleases
       summary: Every release record of an app, all environments
-      description: Needs `list` on `releases.glidepath.hangar.io`. The keys of `data`, and the release states, are in docs/admin/release-state.md and the contract's states.release.
+      description: >-
+        Needs `list` on `releases.glidepath.hangar.io`. The keys of `data`, and the release states, are in docs/admin/release-state.md and the contract's states.release.
+        `fromChain` limits the list to the releases that came from one build flow (promotion lineage, docs/admin/api.md#promotion-lineage).
       x-glidepath-tier: T0
       parameters:
         - { $ref: "#/components/parameters/App" }
+        - { name: fromChain, in: query, required: false, description: "Only the releases whose originChainId is this chain id (a promotion or rollback of the image that flow built); a malformed id is 400, none matching an empty list", schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,200}$" } }
         - { $ref: "#/components/parameters/OnBehalfOf" }
       responses:
         "200":
@@ -394,7 +405,7 @@ paths:
         Needs `get` on `releases.glidepath.hangar.io` in the app's namespace. The run as the cluster holds it (status,
         every task of the Pipeline in order, pending ones included, and its params), the chain id its preflight task minted, the PR and change request once
         open-release-pr has them, and the release record that chain id names. `phase` is the record's state once there
-        is one (proposed, merged, progressing, healthy, ...), else the run's (running, failed, cancelled, or finished:
+        is one (proposed, merged, progressing, healthy, ...), else the run's (queued, running, failed, cancelled, or finished:
         it succeeded without a record). 404 once Tekton has deleted the run (about an hour after it finished): the
         record stays, GET /v1/apps/{app}/releases. 400 for a PipelineRun that is not a release run.
       x-glidepath-tier: T0
@@ -405,6 +416,25 @@ paths:
       responses:
         "200": { description: The release run, content: { application/json: { schema: { $ref: "#/components/schemas/ReleaseRun" } } } }
         "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/releases/reissuable:
+    get:
+      operationId: listReissuableReleases
+      summary: The releases whose PR was closed without merging and which a reissue could replace
+      description: >-
+        Needs `list` on `releases.glidepath.hangar.io`. For each environment and cluster, the NEWEST release record; when it
+        is `proposed` or `closed`, its pull request is read from the git host, and the release is listed when that PR is closed
+        and not merged. `eligible` says whether POST /v1/apps/{app}/releases/{chainId}/reissue would be accepted now; when not,
+        `reason` says why. A release whose PR is open or merged is not listed.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The candidates, content: { application/json: { schema: { type: object, required: [releases], properties: { releases: { type: array, items: { $ref: "#/components/schemas/Reissuable" } } } } } } }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -424,6 +454,40 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/releases/{chainId}/reissue:
+    post:
+      operationId: reissueRelease
+      summary: Replace a release PR that was closed without merging with a fresh one (the release Pipeline; a human merges)
+      description: >-
+        Needs `promote` on `environments.glidepath.hangar.io` in the app's namespace, like promote. No body: the image, the
+        commit, the environment and the cluster are the closed release's own, read from its release record; the PR's state is
+        read from the git host. Refused (422, with the reason) unless the record exists for the app and is `proposed` or
+        `closed` (never merged, ran, superseded or rolled back); its PR is closed and not merged; it is a promotion (a rollback is
+        started again, not reissued); it was not already reissued (`reissuedBy`); the record's image and commit are well formed and belong to the app,
+        and the image's repository (exactly) and tag are what the source environment's release file carries (the first environment: a repository a release that ran used); the environment is still
+        a Flight environment of the app; no other release of the app to that environment and cluster was opened after it or merged
+        since; and no other release PR for the environment is open. Starts the app's `promote-release` run (same service account,
+        labels and origin stamps as promote), whose open-release-pr opens a NEW PR from the current default branch of the gitops repo
+        and a NEW release record (`reissueOf` names this one; this one ends `closed` with `reissuedBy`). open-release-pr repeats the newer-release and open-PR checks at PR time and fails without changing anything if they no longer hold. The closed PR is never
+        reopened or pushed to. The run is named from the closed release's chain id, so a release is reissued at most once; the same
+        Idempotency-Key replays. A delegate must send X-Glidepath-On-Behalf-Of.
+      x-glidepath-tier: T2
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { name: chainId, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,200}$" } }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+        - { $ref: "#/components/parameters/DryRun" }
+        - { $ref: "#/components/parameters/DryRunHeader" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "201": { description: The release run started, content: { application/json: { schema: { $ref: "#/components/schemas/ReissueResult" } } } }
+        "200": { description: A replay or a dry run, content: { application/json: { schema: { $ref: "#/components/schemas/ReissueResult" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
   /v1/apps/{app}/evidence:
     get:
@@ -713,6 +777,45 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/ref-protection:
+    get:
+      operationId: getRefProtection
+      summary: Whether every commit being released was reviewed, with the evidence (writes nothing)
+      description: >-
+        Needs `get` on `refprotection.glidepath.hangar.io` in the app's namespace (a privileged Pipeline's
+        pipeline-runner has it). `repo` is `<owner>/<name>` and must be one of the app's own repositories; `ref` is a full
+        ref (`refs/heads/<branch>` or `refs/tags/<tag>`), `sha` the full commit; the caller sends the ones Pipelines-as-Code
+        recorded on the run. The verdict is `protected` when every commit in the range (the commits after the newest release
+        that the app's gitops repository corroborates, up to `sha`; no release in its history is a first release: `sha` alone) belongs to a pull request merged into the protected
+        branch of this repository, and that pull request has an approving review, not dismissed, on its final head, from an
+        account that may push to the repository (GitHub's authorCanPushToRepository) that is not a bot, not its opener and not the author or committer of any of its
+        commits, and a merge commit that is not its head must be GitHub's (committer web-flow, verified). A commit with no
+        such pull request (a direct push, a force push, an administrator's bypass) makes it `unreviewed`; the commits are
+        in `missing` and `evidence.unreviewed`. `unverifiable`: GitHub did not show enough (a failed read, a range longer
+        than 250 commits, a last release that cannot be used as the start of the range, a ref that is not a protected
+        branch). Only `protected` is a yes. A host or broker that fails to answer at all (transport, rate limit past the
+        bounded retries) is 502, never a verdict. `evidence` is what the Clearance gate's proposer reads: the commits with
+        their pull requests, the distinct openers, mergers and approvers. `configuration` is what the host's rulesets and
+        branch protection say; it is informational and never decides. The answer is 200 whatever the verdict and is never
+        cached; every call reads the host again with a read-only token (contents, pull requests, metadata) minted for that
+        call.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { name: repo, in: query, required: true, schema: { type: string }, description: "<owner>/<name>, one of the app's repositories" }
+        - { name: ref, in: query, required: true, schema: { type: string }, description: "A full ref: refs/heads/<branch> or refs/tags/<tag>" }
+        - { name: sha, in: query, required: true, schema: { type: string, pattern: "^[0-9a-f]{40}$" }, description: The commit Pipelines-as-Code recorded for the event }
+        - { name: env, in: query, required: false, schema: { type: string }, description: "The environment the run is releasing to: the baseline must be a release of it. Omitted: no single target, the strictest reading" }
+        - { name: cluster, in: query, required: false, schema: { type: string }, description: "The cluster of that environment" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The verdict and its evidence, content: { application/json: { schema: { $ref: "#/components/schemas/RefProtectionVerdict" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/events:
     get:
       operationId: streamEvents
@@ -1088,6 +1191,17 @@ components:
         replayed: { type: boolean, description: Present (true) when an earlier call with this Idempotency-Key started the run }
         dryRun: { type: boolean }
         object: { type: object, description: "Dry run only: the PipelineRun the API creates (or found, on a replay)" }
+        origin: { $ref: "#/components/schemas/ReleaseOrigin" }
+        originUnknown: { type: string, description: "\"origin unknown: <why>\" when the build of the image could not be resolved (promotion lineage); the promotion started all the same" }
+    ReleaseOrigin:
+      type: object
+      required: [chainId]
+      description: The flow that built the image a release carries (promotion lineage). The release keeps its own chain id.
+      properties:
+        chainId: { type: string }
+        chainSlug: { type: string }
+        traceId: { type: string }
+        run: { type: string, description: "The build's PipelineRun (gone from the cluster about an hour after it ends; the archive keeps it 30 days). Only in a promote or rollback answer." }
     RollbackRequest:
       type: object
       required: [cluster, targetReleaseId, reason]
@@ -1107,6 +1221,8 @@ components:
         replayed: { type: boolean }
         dryRun: { type: boolean }
         object: { type: object }
+        origin: { $ref: "#/components/schemas/ReleaseOrigin" }
+        originUnknown: { type: string, description: "\"origin unknown: <why>\"; the rollback started all the same" }
     CicdValidationRequest:
       type: object
       description: Exactly one of patch and content.
@@ -1140,6 +1256,96 @@ components:
         pointer: { type: string, description: "The field, or the Flight environment or release step as a whole, that needs a person to merge" }
         change: { type: string, enum: [added, removed, changed] }
         message: { type: string }
+    RefProtectionVerdict:
+      type: object
+      required: [verdict, repo, ref, sha, kind, mainLike, reasons]
+      properties:
+        verdict: { type: string, enum: [protected, unreviewed, unverifiable] }
+        repo: { type: string }
+        ref: { type: string }
+        sha: { type: string }
+        kind: { type: string, enum: [branch, tag] }
+        mainLike: { type: boolean, description: "The ref is a configured protected branch or matches the release tag pattern; a build of any other ref writes no main image" }
+        branch: { type: string, description: "The protected branch the evidence was read against (a tag's: the first protected branch holding its commit)" }
+        reasons: { type: array, items: { type: string }, description: "Why, in words a person can act on; for protected, the summary the release record carries (it starts with 'review evidence:')" }
+        missing: { type: array, items: { type: string }, description: "One line per commit without evidence, at most 20 (the rest in evidence.unreviewed)" }
+        evidence: { $ref: "#/components/schemas/ReviewEvidence" }
+        configuration:
+          type: object
+          description: "What the host's rulesets and branch protection say. Informational, so it never decides the verdict, and a read that failed is reported here, not as a failure."
+          required: [state, reasons]
+          properties:
+            state: { type: string, enum: [protected, unprotected, unavailable, unverifiable] }
+            reasons: { type: array, items: { type: string } }
+            missing: { type: array, items: { type: string } }
+            notes: { type: array, items: { type: string } }
+            protectedBy: { type: array, items: { type: string } }
+            bypass:
+              type: array
+              description: Every actor the rulesets or protection let past the rules, as far as the read-only token is shown them
+              items:
+                type: object
+                required: [source, actorType, moot]
+                properties:
+                  source: { type: string }
+                  actorType: { type: string }
+                  actorId: { type: integer, format: int64 }
+                  mode: { type: string }
+                  moot: { type: boolean }
+                  note: { type: string }
+    ReviewEvidence:
+      type: object
+      description: What a verdict rests on. Everything is a GitHub-authenticated fact (pull request opener and merger, linked commit accounts, review reviewer, state and commit id).
+      required: [branch, mode, to, commits, pullRequests, openers, mergers, approvers, accepted, calls]
+      properties:
+        branch: { type: string }
+        mode: { type: string, enum: [range, first], description: "range: the commits after the newest release the gitops history corroborates; first: the commit alone (the history shows no earlier release, or the commit is at or before one)" }
+        from: { type: string, description: "The release's commit (exclusive), mode range. A merged release pull request in the gitops repository names it; GitHub confirms it an ancestor of `to`; it has review evidence itself. Release records (ConfigMaps) are not read" }
+        fromRelease: { type: string, description: The gitops pull request the start of the range came from }
+        to: { type: string, description: The commit being released (inclusive) }
+        commits:
+          type: array
+          description: Every commit of the range, oldest first
+          items:
+            type: object
+            required: [sha, reviewed]
+            properties:
+              sha: { type: string }
+              pullRequest: { type: integer, description: The merged pull request that brought it into the protected branch }
+              reviewed: { type: boolean }
+              reason: { type: string, description: Why a commit has no evidence }
+        pullRequests:
+          type: array
+          items:
+            type: object
+            required: [number, url, opener, merger, mergedAt, mergeCommit, head, commits, authors, approvers, reviewed]
+            properties:
+              number: { type: integer }
+              url: { type: string }
+              opener: { type: string }
+              merger: { type: string }
+              mergedAt: { type: string }
+              mergeCommit: { type: string }
+              head: { type: string, description: "The final head; an approval counts only on it" }
+              commits: { type: array, items: { type: string } }
+              authors: { type: array, items: { type: string }, description: GitHub accounts that authored or committed its commits }
+              unlinked: { type: integer, description: Commits whose author or committer GitHub could not link to an account (then the merger may not approve either) }
+              approvers: { type: array, items: { type: string }, description: Accounts whose approval counts (they may push to the repository) }
+              approverCanPush: { type: object, additionalProperties: { type: boolean }, description: "GitHub's authorCanPushToRepository for each approver; only an approval from an account that may push counts" }
+              reviewed: { type: boolean }
+              missing: { type: string }
+        openers: { type: array, items: { type: string }, description: Distinct, sorted }
+        mergers: { type: array, items: { type: string } }
+        approvers: { type: array, items: { type: string } }
+        unreviewed:
+          type: array
+          items: { type: object, required: [sha, reason], properties: { sha: { type: string }, reason: { type: string } } }
+        accepted:
+          type: array
+          description: "Reserved for an owner-declared baseline (commits accepted without review, and by whom). Always empty in this version"
+          items: { type: object, required: [sha, acceptedBy, reason], properties: { sha: { type: string }, acceptedBy: { type: string }, reason: { type: string }, at: { type: string } } }
+        notes: { type: array, items: { type: string } }
+        calls: { type: integer, description: GitHub reads the evidence took (at most 400) }
     CicdValidationResult:
       type: object
       required: [valid, problems, changes, needsPerson, summary, base, resulting, contractVersion]
@@ -1213,7 +1419,7 @@ components:
         env: { type: string }
         cluster: { type: string }
         initiator: { type: string }
-        status: { type: string, enum: [pending, running, succeeded, failed, cancelled] }
+        status: { type: string, enum: [pending, queued, running, succeeded, failed, cancelled], description: "queued: Pipelines-as-Code created the run beyond the repository's concurrency limit (spec.status PipelineRunPending); it has not started. Additive: a client that does not know it should treat it as not yet running. pending: no status yet." }
         reason: { type: string }
         message: { type: string }
         startTime: { type: string }
@@ -1234,7 +1440,8 @@ components:
         chainId: { type: string }
         prUrl: { type: string }
         changeRequest: { type: string }
-        phase: { type: string, description: "The record's state once there is one, else the run's (running, failed, cancelled, finished)" }
+        origin: { $ref: "#/components/schemas/ReleaseOrigin" }
+        phase: { type: string, description: "The record's state once there is one, else the run's (queued, running, failed, cancelled, finished)" }
         record: { nullable: true, allOf: [{ $ref: "#/components/schemas/Release" }] }
     LiveRuns:
       type: object
@@ -1255,6 +1462,15 @@ components:
       properties:
         name: { type: string, description: "release-tracking-<chain-id>" }
         data: { type: object, additionalProperties: { type: string } }
+        origin:
+          allOf: [{ $ref: "#/components/schemas/ReleaseOrigin" }]
+          description: "The flow that built this release's image, from `originChainId`, `originChainSlug` and `originTraceId` in `data`; absent when the release is a flow's own step or its origin was not resolved."
+        reissue:
+          type: object
+          description: "Present on a release that replaced a closed one (`of`: the chain id it reissued, from `reissueOf`) and on the closed one (`by`: the chain that replaced it, from `reissuedBy`)."
+          properties:
+            of: { type: string }
+            by: { type: string }
         clearance:
           type: object
           required: [id]
@@ -1266,6 +1482,37 @@ components:
           properties:
             id: { type: string, description: "The Clearance change id" }
             tree: { type: string, description: "The manifest-tree digest the change was registered for (sha256:<hex>)" }
+    Reissuable:
+      type: object
+      required: [chainId, env, cluster, prUrl, state, eligible]
+      properties:
+        chainId: { type: string, description: "The closed release's chain id: the {chainId} of the reissue call" }
+        releaseId: { type: string }
+        env: { type: string }
+        cluster: { type: string }
+        image: { type: string }
+        prUrl: { type: string, description: The closed pull request }
+        state: { type: string, enum: [proposed, closed] }
+        eligible: { type: boolean, description: Whether a reissue would be accepted now }
+        reason: { type: string, description: Why not, when eligible is false }
+        hint: { type: string }
+    ReissueResult:
+      type: object
+      required: [mode, pipelineRun, reissues, env, cluster, image, linked]
+      properties:
+        mode: { type: string, enum: [pipeline] }
+        pipelineRun: { type: string, description: "promote-<env>-<sha8>-<6 hex>; GET /v1/apps/{app}/releases/runs/{name} follows it" }
+        reissues: { type: string, description: The closed release's chain id }
+        closedPrUrl: { type: string }
+        env: { type: string }
+        cluster: { type: string }
+        image: { type: string }
+        linked: { type: boolean, description: "The run carries glidepath.io/reissue-of, so the new record names the one it replaces. False only while the cluster's admission policy for glidepath-api's runs does not allow the annotation yet." }
+        replayed: { type: boolean }
+        dryRun: { type: boolean }
+        object: { type: object }
+        origin: { $ref: "#/components/schemas/ReleaseOrigin" }
+        originUnknown: { type: string }
     FleetRelease:
       type: object
       required: [name, namespace, labels, data]

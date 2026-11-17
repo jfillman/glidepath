@@ -231,7 +231,7 @@ spec:
             exit 1
           fi
           rekor_uuid="$(cat "${rekor_uuid_file}")"
-          rekor_entry="$(curl -fsSL --max-time 10 "http://rekor-server.rekor-system.svc/api/v1/log/entries/${rekor_uuid}" | jq ".[\"${rekor_uuid}\"]")"
+          rekor_entry="$(curl -fsSL --max-time 10 "http://rekor-server.rekor-system.svc/api/v1/log/entries/${rekor_uuid}" | jq --arg u "${rekor_uuid}" '.[$u]')"
           rekor_body_b64="$(jq -r '.body' <<<"${rekor_entry}")"
           # -j (not -r): the checkpoint string already ends in its own real newline, and
           # Rekor's "signed note" format is newline-exact - -r would add a second one and

@@ -33,7 +33,9 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
      environment's target cluster's **admission policy bundle** from the broker's `/policy-bundle` (the
      [policy-validation](policy-validation.md) source; an unreadable bundle is an `error` verdict below, not a failed
      check).
-  2. `render` (the validator image): `helm template` of base and head per protected environment **exactly as Argo CD
+  2. `render` (**the `render-manifests` task, as `source-runner`: no token, no Secret**; the gate publishes the checkouts and the plan to
+     the run's volume first and reads the result back read-only as data, then verifies it: [security.md](security.md#rendering-is-not-done-where-the-credentials-are)):
+     `helm template` of base and head per protected environment **exactly as Argo CD
      renders it** (and so as Clearance's Argo CD plugin does): release name `<app>-<env>` (the Application's), the
      environment's namespace, the value files and the injected values the Flight ApplicationSet layers, including
      the **destination cluster's** `observability` block (that cluster's own `cluster-defaults.yaml`, which its
@@ -46,7 +48,8 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
      Clearance's token carries them with `changed: false`), each added, removed or changed object with the JSON
      pointers of the fields that changed and its new images, every object's digest and the **tree digest** (what a
      grant binds to). A Clearance that predates `unchanged` refuses it: the task then registers the changed objects
-     only and says so. Nothing is sent to Clearance but this description: no manifest content. Then
+     only and says so. Nothing is sent to Clearance but this description: no manifest content. The gate's `ingest` step computes
+     the digests from the bytes it read and verified (the same function as before the render moved: the digests are unchanged). Then
      the Kyverno CLI's inputs for the head's tree (stand-in CRDs, Namespace labels, the normalized bundle).
   3. `admission` (toolbox): the **offline admission verdict** per protected environment, `kyverno apply` of the
      cluster's bundle to the rendered head: the policy-validation gate's own evaluation (the two tasks share
@@ -241,10 +244,11 @@ the check can use before merge, and has no case yet.
 
 **A release that cannot be rendered is never green, advisory or not.** The advisory copy ignores its task's failure
 (`onError: continue`), so a change that is holding or denied stays green by design. A gate that could not render the
-release has seen nothing, so the advisory Pipeline runs a second task, `render-check` (the same Task with
-`render-only: "true"`: fetch and render, no register), with no `onError`: when an environment's `helm template`
-fails, that task fails and so does the check. When every environment renders it stops there. The required copy has no
-second task; its single task already fails on a render failure.
+release has seen nothing. The Pipeline is `fetch`, `render`, then `register` (three tasks on one volume; `fetch` and `render`
+have no `onError` in either copy, so a release that cannot be fetched or rendered is red). The advisory copy adds `render-check`
+(the gate Task with `render-only: "true"`: `ingest` only, no register) with no `onError`, after `register-advisory`: when the render's
+output is refused (a changed file, a tag, an alias bomb, an environment that did not render) that task fails and so does the check.
+When every environment is read it stops there. The required copy has no second task; its `register` task already fails on a refusal.
 
 ## Files
 

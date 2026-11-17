@@ -1,0 +1,69 @@
+{
+  "app": "x",
+  "cluster": "hangar-prod",
+  "env": "prod",
+  "namespace": "app-x-cicd",
+  "objects": {
+    "apiextensions.k8s.io/v1/CustomResourceDefinition//gadgets.example.io": {
+      "digest": "43a8212301c54693326c34acc8848d877cfb460b2f6a7b0cc0509020d5b50ad2",
+      "op": "unchanged"
+    },
+    "apps/v1/Deployment/app-x-prod/x": {
+      "digest": "2beee05e7ae112d466f819df3f62bb7b7305baaacc9f051554c806cf20a7a94d",
+      "op": "changed"
+    },
+    "batch/v1/Job/app-x-prod/x-migrate": {
+      "digest": "f1559734bd5b1b20d56cb615b6179acd28aedff6cbe2b4b62ef3287e53503bd9",
+      "op": "unchanged"
+    },
+    "example.io/v1/Widget/app-x-prod/w1": {
+      "digest": "2e6d0cc7dd3fff49c65fb0ef94467d92882a6900e7227724f9788bf941d20585",
+      "op": "unchanged"
+    },
+    "rbac.authorization.k8s.io/v1/ClusterRole//x-reader": {
+      "digest": "cd22f3e3a6bc2ecc2fcec6887d9cb01b6c86efab7564a9197c2fe4fec8a0c431",
+      "op": "unchanged"
+    },
+    "v1/ConfigMap//no-namespace": {
+      "digest": "463f46ae9b80df112906af71270f26bcbdca7b0d509550af5b6e19743744733a",
+      "op": "unchanged"
+    },
+    "v1/ConfigMap/app-x-prod/anchors": {
+      "digest": "fa159ab7719fd5679e7245b837f5f3fd28c9a0c954b41f71e8ec8e948fa55b82",
+      "op": "unchanged"
+    },
+    "v1/ConfigMap/app-x-prod/crlf": {
+      "digest": "8e786eea8f4669cb494568c12a85ff421e049e102b8fe8db162adba3541ef2fd",
+      "op": "unchanged"
+    },
+    "v1/ConfigMap/app-x-prod/scalars": {
+      "digest": "db35d0f876a0a03c6a6022ea65a07de72b9149c02bd039e963e078ea7fdc3b81",
+      "op": "unchanged"
+    },
+    "v1/ConfigMap/app-x-prod/x-config": {
+      "digest": "6b72e2bbf23b279e4b9cb36a7ded1dfe718a1f987f159ec3c51b68b8bf473213",
+      "op": "unchanged"
+    },
+    "v1/ConfigMap/app-x-prod/x-prod-sub": {
+      "digest": "659bf3f74d1f6b8a1febea026788cb53c8a457945f3e84eb1b107078b0140ba9",
+      "op": "unchanged"
+    },
+    "v1/List//a-list": {
+      "digest": "a1ae1f3bcbece30af195bad675933c76d10352b033c64e76014f98a8dc0b364d",
+      "op": "unchanged"
+    },
+    "v1/Namespace//app-x-prod": {
+      "digest": "dcad794f564edff8dae8c31fe46482d7c657f8b82ef840bccee13c59fbf6f5eb",
+      "op": "unchanged"
+    },
+    "v1/Pod/app-x-prod/x-test": {
+      "digest": "ae3a109fa9a2f2688cba56c9f215f363a443e4509d9ec189738739b95ed514ba",
+      "op": "unchanged"
+    },
+    "v1/Service/app-x-prod/x": {
+      "digest": "1796c0a035bf865ef2f401769ca90db15a6b16224d099e30a3591ef5ad7cabcd",
+      "op": "unchanged"
+    }
+  },
+  "treeDigest": "0e2a148e75233e6dfe00d2092aa5f8cef191ac8fcc5d556d96556313c649a2cc"
+}

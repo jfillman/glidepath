@@ -1,4 +1,10 @@
 {{- if .Values.platformIdentity.registerPipelinesAsCode }}
+{{- /*
+pipelinesAsCode.concurrencyLimit (and the per-repo appRepoConcurrencyLimit / gitopsRepoConcurrencyLimit) sets
+spec.concurrency_limit: Pipelines-as-Code then creates every run of that repository pending and starts them as others
+finish, so a release pull request's ten gate runs no longer start in the same second (docs/admin/pipeline-performance.md,
+"Queueing gate runs"). Unset renders neither the field nor anything else: today's behaviour. extraGitopsRepos are not limited.
+*/}}
 {{- $appNamespace := include "glidepath-app.namespace" . }}
 # Registers this Application's repos with Pipelines-as-Code via the Repository CRD.
 # The CR itself is inert (just a name->URL registration) until the platform's GitHub App
@@ -29,6 +35,9 @@ metadata:
     argocd.argoproj.io/sync-wave: "-1"
 spec:
   url: {{ .Values.platformIdentity.appRepoUrl }}
+  {{- with include "glidepath-app.pacConcurrencyLimit" (dict "root" . "repo" "app") }}
+  concurrency_limit: {{ . }}
+  {{- end }}
 {{- if and .Values.platformIdentity.gitopsRepoUrl (ne (include "glidepath-app.checksOnly" .) "true") }}
 ---
 # gitops-<app-name>'s own Repository CR, matched via the "gitops-" naming convention
@@ -47,6 +56,9 @@ metadata:
     argocd.argoproj.io/sync-wave: "-1"
 spec:
   url: {{ .Values.platformIdentity.gitopsRepoUrl }}
+  {{- with include "glidepath-app.pacConcurrencyLimit" (dict "root" . "repo" "gitops") }}
+  concurrency_limit: {{ . }}
+  {{- end }}
 {{- end }}
 {{- range .Values.platformIdentity.extraGitopsRepos }}
 ---

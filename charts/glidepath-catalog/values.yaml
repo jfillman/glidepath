@@ -49,11 +49,29 @@ rbac:
 # 2026-10-26: bumped for the Kyverno CLI 1.19.0 (the policy-validation release check, ADR-0028).
 # 2026-10-31: bumped for checks-only repositories (build optional; pipelines/test/deploy/api/ephemeralEnvironments need it).
 toolboxImage: ghcr.io/jfillman/glidepath-toolbox:2026-10-31-checks-only
+# Image build and push are two tasks (docs/admin/security.md, "Image build and push"). build-image runs the repository's
+# Containerfile RUN lines as source-runner, with no push credential; push-image, a separate pod, holds the push credential
+# (the registry-credentials Secret) and copies only a layout it has validated.
+#
+# buildPullCredential: the READ-ONLY registry credential the build pod may mount so BuildKit can pull base images and import the
+# main build cache when those are private (or when anonymous pulls are rate limited). A kubernetes.io/dockerconfigjson Secret
+# named secretName, in each -cicd namespace, whose token can read packages and nothing else. The platform operator supplies it
+# (glidepath-control-plane buildPullCredential.remoteKey renders the ClusterExternalSecret that copies it). The volume is
+# optional: without the Secret the build pulls anonymously, so a private base image or a private cache package fails the pull
+# (the cache then reads as cold; a private base fails the build). It can never be the push credential: the chart refuses that name.
+buildPullCredential:
+  secretName: build-pull-credentials
+# imagePush: what push-image accepts (oci-layout.sh). Total bytes of distinct blobs in the layout it validates and then pushes:
+# the image, and separately the cache a main build exports. The workspace volume (build.sourceVolume) must hold the source, the
+# image layout and the cache layout together.
+imagePush:
+  maxImageBytes: 8589934592
+  maxCacheBytes: 8589934592
 # The image the cicd-validate check (tasks/cicd-validate.yaml, docs/admin/contract.md) runs `glidepath validate`
 # with: tools/validate.Containerfile, carrying the validator, the schema and the contract of one commit of this repo.
 # Public, like the toolbox. validate-image-ci publishes it on every change to those files and sets this line to the
 # new immutable sha- tag (the api-ci loop), so it is not hand-edited.
-cicdValidatorImage: ghcr.io/jfillman/glidepath-validate:sha-9cecd73
+cicdValidatorImage: ghcr.io/jfillman/glidepath-validate:sha-e983044
 # The shared Trivy server image-scan.yaml scans against (glidepath-control-plane's trivyServer). Empty, or a
 # server that does not answer /healthz, means each scan downloads the DB itself (the pre-2026-10-09 behaviour).
 trivyServerUrl: http://trivy-server.platform-system.svc.cluster.local:4954
@@ -67,6 +85,27 @@ defaultChart:
   repoURL: ""
   path: charts/airframe-application
   targetRevision: ""
+
+# The git host the catalog's tasks talk to (clone, fetch, push). The installation token is sent only to it, in an HTTP header, never in a URL.
+# There is no platform-wide git host setting beyond this: the broker, the GitHub API calls and the owner/repository parsing in the tasks are
+# GitHub's, so this value names the host the git protocol runs against, github.com unless it is a GitHub Enterprise Server host.
+gitHost: github.com
+
+# Where a chart a repository names (cicd.yaml deploy.chart.repoURL) may be fetched from, by the gates that fetch it with credentials in the
+# pod. https git hosts and OCI registries; the default chart's own host is always allowed. Anything else fails the check before any fetch.
+chartSources:
+  gitHosts: [github.com]
+  ociHosts: [ghcr.io]
+
+# render-manifests (tasks/render-manifests.yaml): the token-less render of a chart the repository chooses, for policy-validation-check
+# and clearance-gate-check. Per render: cpuSeconds (a CPU-time limit, so a template that never ends is killed), maxFileMiB (the size of
+# the rendered output, one file per environment and tree); maxEnvironments: the most environments one run renders. A render that
+# reaches a limit fails the environment (its log says which). The gates read the output with their own bounds
+# (files/lib/rendered-ingest.py: documents, depth, nodes after alias expansion).
+renderManifests:
+  cpuSeconds: 120
+  maxFileMiB: 32
+  maxEnvironments: 50
 
 # The image the values-validation gate (tasks/validate-values.yaml) runs against a gitops PR's values files.
 # It must provide `validate-values [--app NAME] FILE...` on its PATH, exit 0 = valid. Empty (the default) means
@@ -288,6 +327,27 @@ itsm:
 pipelinesAsCode:
   applicationName: Glidepath
   legacyApplicationNames: ["Pipelines as Code CI"]
+
+# Verified ref protection (pipeline trust T3, docs/admin/security.md "Ref protection"). The first task of every privileged
+# Pipeline (release, deploy, test, gitops-image-bump) and of a main/tag build (verify-ref-protection) asks glidepath-api
+# whether the git host protects the ref Pipelines-as-Code recorded on the run, so that the commit could only have
+# arrived through review, and refuses the run unless it does. The admission policy decides on the ref's NAME; this is the
+# second layer, on what the host enforces.
+#   required (default): the run is refused unless the verdict is "protected".
+#   off: nothing is asked. A host plan without rulesets (the lab's GitHub Free) sets this in its own cluster values, on
+#        purpose. The task then records "ref protection: Off here" in its result and in the release record, so the gap is
+#        in the evidence. There is no plan or hostname detection: only this setting decides.
+refProtection:
+  mode: required
+  # glidepath-api, where the verdict is read (GET /v1/apps/{app}/ref-protection).
+  apiUrl: http://glidepath-api.platform-system.svc.cluster.local:8080
+
+# Promotion lineage (docs/admin/tracing.md, "Promotions join the build's trace"): a promotion or rollback that glidepath-api
+# resolved a build for joins that build's trace when the build finished within this window (<n>s|m|h|d), and starts its own
+# trace otherwise. Keep it under the trace backend's retention: the lab's Tempo keeps blocks 24h, so a joined trace is
+# complete only while its OLDEST span is younger than that; half of it leaves room to open the promotion afterwards.
+promotionLineage:
+  traceJoinWindow: 12h
 
 # Each entry: name (= the PipelineRun generateName prefix, so the check is "<pipelinesAsCode.applicationName> / <name>-"),
 # description, status (real | stub), class (content | process | integrity | approval), optional targets, and

@@ -31,6 +31,7 @@ One ConfigMap per release, `release-tracking-<chain-id>`, in the Application's o
 | `rollbackOf`, `rollbackReason` | `open-release-pr` | A rollback only: the release-id it replaces, and why. |
 | `appNamespace`, `appName`, `env`, `cluster` | `open-release-pr` | What was released and where. |
 | `gitUrl`, `gitRevision`, `flowStartTime`, `configJson` | `open-release-pr` | The context the outcome events and the lead-time anchor need. |
+| `postPrError`, `changeLinkedAt` | `open-release-pr` | `postPrError`: only when something after the PR opened failed (below): what, and why; cleared when a re-run completes the job. `changeLinkedAt`: when the change tool took the PR link; a re-run links again until it is set. No reader looks at either. |
 | `state`, `stateAt` | `open-release-pr` (`proposed`), `mark-release-merged` (`merged`, `closed`), the relay (everything after) | Where the release is, and since when. |
 | `mergedAt` | `mark-release-merged` | When the PR merged, recorded whatever state the release is in (Argo CD and the Rollout can start faster than the Task does, so the record may already be `progressing`: seen live). The stall alert's clock for a merged release, and the merge-to-deploy latency. |
 | `lastFactAt`, `lastFactPhase` | relay | The last fact that arrived for this release. The stall alert's clock for a progressing release. |
@@ -43,6 +44,8 @@ One ConfigMap per release, `release-tracking-<chain-id>`, in the Application's o
 | `rolledBackBy` | relay | The rollback release that replaced this one. |
 | `changeRequestId`, `changeRequestNumber`, `changeRequestUrl` | `open-release-pr` | The release's change request in the change tool ([change-management.md](change-management.md)); empty without a provider. |
 | `changeRequestState`, `changeRequestApproval`, `rolledBackByChange` | `itsm-gate`, `itsm-change` | The change as last seen by the gate, then `implementing`, `implementing-failed`, `closed-successful` or `closed-unsuccessful` (with the rollback's emergency change). |
+| `originChainId`, `originChainSlug`, `originTraceId` | `open-release-pr` | Promotion lineage ([api.md](api.md#promotion-lineage)): the flow that built the image a promotion or rollback releases, read from the annotations glidepath-api stamped on the run (never a parameter), shape-checked, empty when there is none. The release keeps its own chain id. `GET /v1/apps/{app}/releases/{chainId}` returns them as `origin: {chainId, chainSlug, traceId}`; `GET /v1/apps/{app}/releases?fromChain=<chain>` lists what came from a build. |
+| `reissueOf`, `reissuedBy` | `open-release-pr` | [Reissue](#reissue): `reissueOf` on the new release names the chain id of the closed one it replaces (read from the run's `glidepath.io/reissue-of` annotation, which glidepath-api stamps, never a parameter); `reissuedBy` on the closed one names the new chain. `GET /v1/apps/{app}/releases/{chainId}` returns them as `reissue: {of, by}`. |
 | `clearanceId`, `clearanceTree` | `clearance-gate` (G-ARGO-6) | The Clearance change the release's PR was registered as, and the manifest-tree digest it was registered for. Written right after `POST /v1/clearances` answers; absent for a release to an unprotected environment. `GET /v1/apps/{app}/releases/{chainId}` returns them as `clearance: {id, tree}`, and `release-log-emit` copies them into the release log as `clearance_id` and `clearance_tree`. |
 | label `hangar.io/stall-alerted` | sweeper | The state a `ReleaseStalled` Event was already raised for. |
 
@@ -149,7 +152,7 @@ Tenant Applications retry (limit 5, backoff up to 10 minutes), about 15 minutes 
 
 ## Stalls and retention
 
-`release-record-sweeper` (control plane, every 10 minutes):
+`release-record-sweeper` (control plane, every 10 minutes at minute 2, `cronSchedules.releaseRecordSweeper`):
 
 - raises a `ReleaseStalled` Event on a record that is `merged` with no fact for 45 minutes
   (the sync never started, or facts are not arriving), or `progressing` with no fact for 45
@@ -160,6 +163,30 @@ Tenant Applications retry (limit 5, backoff up to 10 minutes), about 15 minutes 
   `healthy` (the rollback-eligibility window, below).
 
 The knobs are env vars on the CronJob (`RELEASE_STALL_MINUTES`, `RECORD_TTL_DAYS`, `KEEP_HEALTHY`).
+
+## Reissue
+
+A release PR can be closed without merging (the gitops repo's checks could never start on it, or it was opened against stale
+files). Closing makes no push, so the record stays `proposed` until a later release PR for the same app, environment and cluster
+opens and `open-release-pr` closes it. `POST /v1/apps/{app}/releases/{chainId}/reissue` ([api.md](api.md#reissue-a-release-pr))
+starts a **new release** of the closed one's own image and commit: a new chain id, a new record, a new PR cut from the current
+default branch of the gitops repo. It does not keep the chain id: a record is one chain, one environment and one PR, and every
+reader of `prUrl`, `prCreatedAt` and `state` (the rollback plan's "newest ran release", the sweeper's clocks, the stall alert,
+`close_stale_proposals`, the fleet views, Tower's Ops Wall) would otherwise have to cope with a record whose PR changed under it.
+With a new chain no existing reader changes, and each record stays a true account of one PR.
+
+| Record | State from reissue | Fields |
+|---|---|---|
+| the closed release | `proposed` becomes `closed` (by the reissued run's `open-release-pr`, as `close_stale_proposals` already does for any closed PR); a `closed` one stays | `reissuedBy` = the new chain id |
+| the new release | `proposed`, then the normal machine | `reissueOf` = the closed chain id; everything else as any promotion's |
+
+Why `closed` and not `superseded`: `superseded` is the relay's word for a release that ran healthy and was replaced
+(rollback eligibility reads it). The closed release never ran; its PR was closed, which is what `closed` says.
+
+**States a reissue is accepted from:** `proposed` (the usual one) and `closed`, and only while the record is the newest for its
+app, environment and cluster. **Refused from:** `merged`, `progressing`, `healthy`, `sync-failed`, `aborted`, `degraded` (the
+release happened or is happening), `superseded`, `rolled-back` (it ran and was replaced). There are no `pending` or `blocked`
+record states: a release whose gates cannot start is a `proposed` record with a PR checks never ran on.
 
 ## Rollback (ADR-0021 phase 4)
 
@@ -227,6 +254,44 @@ Moving the events onto the spec's vocabulary
 ([ADR-0022](adr/0022-cdevents-conformance-and-vocabulary.md)). Recording on the release that a
 Tower *Promote full* skipped analysis (Backstage audits and announces it; the fact carries no
 such field yet).
+
+## The record survives the calls after the PR
+
+`open-release-pr` writes the record **immediately after the PR is created, before any other network call** (the change tool's
+link, the PR's change line, closing stale proposals, linking a reissue). 2026-11-16, backstage 1.0.2 to prod: the PR, its change
+request and its branch existed, the change tool's link call failed during an overload, the step died, and a release reached prod
+with no record (no Tower row, no release log entry, no lineage, no lead time, nothing for the relay to mark merged or healthy).
+
+Why after, not before: a record written before the PR would name a PR that may never exist. Readers match a record to a PR by its
+`prUrl` (every gate, `mark-release-merged`, `itsm-change`), list `proposed` records as awaiting approval (the Ops Wall), and a
+reissue refuses a record with no PR; an orphan `proposed` record with no PR would sit in those lists until retention. The
+state vocabulary is unchanged: no new state, and the one new key, `postPrError`, is ignored by every reader.
+
+| After the PR exists | If it fails |
+|---|---|
+| The record write | Retried; if it never succeeds the step fails naming the PR, and a re-run finds the PR and writes it. |
+| The change tool's PR link (a work note) | Retried with backoff (5 attempts, 2/4/8/16 s; a definite 4xx other than 408/429 is not retried). Still failing: the record stays, `postPrError` says so, the log says so, **the step succeeds**. The link is not required: the itsm gate decides on the change's approval and finds its id on the record and in the PR body's marker, never from the note. What is lost is the work note on the change (a webhook adapter that keeps the PR URL from `link` would not have it); a re-run retries the link. |
+| Closing stale proposals, linking a reissue | Best-effort, as before. |
+
+A **PR call whose answer was lost** is checked against the git host before it is called a failure: the PR is adopted when it exists.
+
+**Re-running** the release (a Tekton retry, a glidepath-api rerun, the same chain) finds the open PR from the release branch and
+finishes the job: no second PR, no second change request (the change id is read from the PR body's marker), the record written
+when missing (state `proposed`, with the PR's own `created_at`) or completed with a merge patch when present (a record the relay has
+moved on keeps its `state`, `stateAt` and `mergedAt`), the missed link retried, and a `postPrError` from an earlier run cleared when
+it succeeds. A change created for a PR that never had one is the only call a re-run sends once and never retries (its answer
+may have been lost); with a change tool configured and no change at all the step still fails, after the record is written.
+
+**The chain id of a re-run.** The relay joins on the chain id in the PR's commit (`releaseTracking.releaseId` in the release file on the PR's head). A Tekton retry of the same run keeps it, but glidepath-api's rerun copies the run's params and a run that started its chain (empty `chain-id` param) mints a new one in `stage-preflight`, so a re-run can carry a different id. The reuse path therefore reads the chain id from the PR's commit and completes the record under it (logging both ids). That file is writable by anyone who can push to the branch, so the id is accepted only as `<lowercase uuid>:<cluster>/<env>` for this release's cluster and environment, and, when a record of that chain exists, only if its app, environment and cluster labels are this run's; anything else fails the run (nothing adopted, no fallback), as does a release file GitHub could not be asked for (re-run later). Only a readable file with no `releaseId` falls back to the run's own id. The record-held change id is read only after these checks, so it is this run's. Fields that come from the new run (`flowStartTime`, the origin annotations) are the new run's: a completed record's lead-time anchor is the re-run's start. A merge patch never writes an empty value, so a run that could not read its annotations cannot blank what the record holds.
+
+**Where a failure is seen.** The step logs it (with the tool's text), writes `postPrError` as `[<reason classes>] <text>` (at most 600 characters), and posts one PR comment: a fixed sentence and a reason class (connection refused, connection reset, timeout, HTTP <code>), never the tool's URL or response body. The comment is posted once per set of classes: a re-run that fails the same way stays silent. If both the PR call and the branch lookup fail, the step says it could not confirm whether the PR was opened (check the branch, re-run) and exits 1.
+
+Test: `charts/glidepath-catalog/tests/release_record_survives_test.py` runs the whole rendered step against fakes with a failure
+injected at each call after the PR.
+
+## A release PR that is already merged
+
+The branch's PRs are looked up in every state. If the branch's newest merged PR **is this release** (its base is the default branch; its release file is for this `<cluster>/<env>` and carries this run's image tag; and the environment's release file on the default branch still carries that tag), a re-run is refused: it exits non-zero, naming the PR, having opened nothing, pushed nothing and created no change request. A second PR and a second change for an image that is already released are what it must not make. The refusal does not write the missing record: that is not done by a re-run (see the draft follow-up that repairs it, if merged). A merged PR that fails any of those checks (another cluster with the same environment name, another image, another base, an environment that has moved on, as when a revision is promoted again after a rollback) is not this release and the normal path runs. A PR closed unmerged is never reopened; the normal path opens a new one under the reissue rules. A release file GitHub cannot be asked for fails the run (re-run later).
 
 ## A PR closed without merging
 

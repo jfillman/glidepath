@@ -100,7 +100,7 @@ spec:
         # PR that needs a person (Clearance's agent-scope check, neutral "needs a person: ...") is no bypass when one did.
         person=true
         if [[ "$(jq -r '.merged_by.type // "unknown"' <<<"${pr_json}")" != "User" || "${merged_by}" == *"[bot]" ]] \
-           || tr ',' '\n' <<<"${AGENT_LOGINS}" | grep -qixF "${merged_by}"; then person=false; fi
+           || [[ ",${AGENT_LOGINS,,}," == *",${merged_by,,},"* ]]; then person=false; fi
         pr_title="$(jq -r '.title' <<<"${pr_json}")"
         pr_url="$(jq -r '.html_url' <<<"${pr_json}")"
 

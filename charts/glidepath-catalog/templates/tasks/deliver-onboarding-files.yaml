@@ -108,6 +108,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
 
@@ -127,7 +128,8 @@ spec:
 
         token="$(github_app_installation_token "${owner}" "${repo}")"
         workdir="$(mktemp -d)"
-        clone_url="https://x-access-token:${token}@github.com/${owner}/${repo}.git"
+        git_auth "${token}"
+        clone_url="https://${GIT_HOST}/${owner}/${repo}.git"
         # --depth 1 --single-branch (2026-10-09, report item 7): this Task only writes on top of
         # the default branch's tip and pushes, so history is never read. GitHub accepts a push
         # from a shallow clone (it already has the boundary commit).
@@ -421,7 +423,7 @@ spec:
         # With Clearance's GitHub App reporting the agent checks (CLEARANCE_CHECKS, C-7) the file is not delivered, and
         # one this Task delivered earlier (the BOILERPLATE marker; a tenant's own file has none) is removed.
         if [[ "${CLEARANCE_CHECKS}" == "true" ]]; then
-          if [[ -f .tekton/pull-request-agent-gates.yaml ]] && head -1 .tekton/pull-request-agent-gates.yaml | grep -q '^# BOILERPLATE'; then
+          if [[ -f .tekton/pull-request-agent-gates.yaml ]] && IFS= read -r first_line < .tekton/pull-request-agent-gates.yaml && [[ "${first_line}" == "# BOILERPLATE"* ]]; then
             rm -f .tekton/pull-request-agent-gates.yaml
             echo "app repo: removed .tekton/pull-request-agent-gates.yaml - Clearance's App reports agent-identity and agent-scope"
           fi
@@ -436,7 +438,7 @@ spec:
         fi
         # The agent-definitions and preflight checks and the agent release (docs/admin/agent-definitions.md), the same way: every repo
         # gets them, and each runs only when agents/ changes. Absent from an older app chart's ConfigMap, so only when there.
-        # push-propose-merge-check.yaml (docs/admin/contract.md, "propose") runs on every push to main and is quiet unless a
+        # push-propose-merge-check.yaml (docs/admin/contract.md, "propose") runs on every push to main except one of only machine-written release files, and is quiet unless a
         # PR marked for a person to merge was merged by a bot or an agents' login.
         for f in pull-request-agent-definitions.yaml pull-request-agent-preflight.yaml push-agent-release.yaml push-propose-merge-check.yaml; do
           if [[ -f "/opt/platform/onboarding-templates/app-repo/${f}" ]]; then
@@ -494,6 +496,35 @@ spec:
               serviceAccountName: glidepath-cloud-deployer
             - pipelineTaskName: deploy-aws-ecs
               serviceAccountName: glidepath-cloud-deployer"
+          fi
+          # The build stage runs the repository's own code: build.sh, test.sh, the dependency installs and
+          # `python -m build` / `go build` they trigger. Those five tasks (build-image: its Containerfile RUN lines are the repository's code) run as source-runner (no RBAC, no token;
+          # glidepath-app identity/pipeline-runner.yaml). push-image, which holds the registry push credential and runs nothing from the
+          # repository, runs as image-pusher (also no RBAC, no token). Build is always a flow's first step (nothing chains into it), so
+          # this git-triggered run is the only place a build run is created from a template. The list is repeated in
+          # the glidepath-control-plane admission policy cicd-run-source-isolation, which refuses a build run without it.
+          if [[ "${root_stage}" == "build" ]]; then
+            task_run_specs_block="
+          taskRunSpecs:
+            - pipelineTaskName: build-source
+              serviceAccountName: source-runner
+            - pipelineTaskName: unit-test
+              serviceAccountName: source-runner
+            - pipelineTaskName: build-image
+              serviceAccountName: source-runner
+            - pipelineTaskName: build-python-wheel-artifact
+              serviceAccountName: source-runner
+            - pipelineTaskName: build-go-binary-artifact
+              serviceAccountName: source-runner
+            - pipelineTaskName: push-image
+              serviceAccountName: image-pusher"
+          fi
+          # A test-rooted flow: run-integration-script runs the repository's ./integration-test.sh (see run-integration-script.yaml).
+          if [[ "${root_stage}" == "test" ]]; then
+            task_run_specs_block="
+          taskRunSpecs:
+            - pipelineTaskName: run-integration-script
+              serviceAccountName: source-runner"
           fi
           # Run-wide taskRunTemplate.podTemplate (2026-10-08), not a per-task
           # taskRunSpecs entry naming `notify-backstage`: Tekton validates taskRunSpecs
@@ -885,7 +916,10 @@ spec:
           done < <(jq -r --arg t "${DEPLOY_TARGET}" '.[] | select((.targets // null) == null or (.targets | index($t) != null)) | .name' <<<"${RELEASE_GUARDRAILS_JSON}")
         fi
 
-        if git status --porcelain | grep -q .; then
+        # Captured, then tested (see the gitops step: `git status | grep -q .` under pipefail reads a SIGPIPE as "nothing changed").
+        porcelain="$(git status --porcelain)"
+        if [[ -n "${porcelain}" ]]; then
+          echo "app repo: $(grep -c . <<<"${porcelain}" || true) file(s) changed - opening the resync PR"
           git config user.name "glidepath onboarding automation"
           git config user.email "onboarding@glidepath.invalid"
           # Static, not timestamped: unlike bump-manifest-pr.yaml/open-release-pr.yaml
@@ -950,7 +984,7 @@ spec:
             echo "app repo: opened onboarding-resync PR"
           fi
         else
-          echo "app repo: .tekton/ already up to date, nothing to deliver"
+          echo "app repo: nothing to deliver - the generated files match the repository (git status reports no change)"
         fi
 
     - name: deliver-gitops-repo-files
@@ -979,6 +1013,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
 
         if [[ -z "${GITOPS_REPO_URL}" ]]; then
           echo "gitops repo: no gitops-repo-url param given (release stage not declared), skipping"
@@ -1002,7 +1037,8 @@ spec:
 
         token="$(github_app_installation_token "${owner}" "${repo}")"
         workdir="$(mktemp -d)"
-        clone_url="https://x-access-token:${token}@github.com/${owner}/${repo}.git"
+        git_auth "${token}"
+        clone_url="https://${GIT_HOST}/${owner}/${repo}.git"
         # --depth 1 --single-branch (2026-10-09, report item 7): this Task only writes on top of
         # the default branch's tip and pushes, so history is never read. GitHub accepts a push
         # from a shallow clone (it already has the boundary commit).
@@ -1020,7 +1056,8 @@ spec:
           [[ -f "${existing}" ]] || continue
           base="$(basename "${existing}")"
           [[ -f "/opt/platform/onboarding-templates/gitops-repo/${base}" ]] && continue
-          if head -1 "${existing}" | grep -qE '^# (STUB|BOILERPLATE)\b|^# The real `[a-z-]+` gate'; then
+          IFS= read -r first_line < "${existing}" || true
+          if [[ "${first_line:-}" =~ ^#\ (STUB|BOILERPLATE)([^A-Za-z0-9_]|$) || "${first_line:-}" =~ ^#\ The\ real\ \`[a-z-]+\`\ gate ]]; then
             rm -f "${existing}"
             echo "gitops repo: removed .tekton/${base} - its platform template no longer exists (gate retired)"
           fi
@@ -1031,11 +1068,12 @@ spec:
         skip_agent_gates=false
         if [[ "${CLEARANCE_CHECKS}" == "true" ]]; then
           skip_agent_gates=true
-          if [[ -f .tekton/pull-request-agent-gates.yaml ]] && head -1 .tekton/pull-request-agent-gates.yaml | grep -qE '^# (STUB|BOILERPLATE)\b'; then
+          if [[ -f .tekton/pull-request-agent-gates.yaml ]] && IFS= read -r first_line < .tekton/pull-request-agent-gates.yaml && [[ "${first_line}" =~ ^#\ (STUB|BOILERPLATE)([^A-Za-z0-9_]|$) ]]; then
             rm -f .tekton/pull-request-agent-gates.yaml
             echo "gitops repo: removed .tekton/pull-request-agent-gates.yaml - Clearance's App reports agent-identity and agent-scope"
           fi
         fi
+        templates_compared=0
         for f in /opt/platform/onboarding-templates/gitops-repo/*.yaml; do
           base="$(basename "${f}")"
           [[ "${skip_agent_gates}" == "true" && "${base}" == "pull-request-agent-gates.yaml" ]] && continue
@@ -1043,9 +1081,21 @@ spec:
             -e "s|<APP_NAMESPACE>|${APP_NAMESPACE}|g" \
             -e "s|<APP_NAME>|${APP_NAME}|g" \
             "${f}" > ".tekton/${base}"
+          templates_compared=$(( templates_compared + 1 ))
         done
 
-        if git status --porcelain | grep -q .; then
+        # "Nothing to deliver" is a fact read from the tree, never what is left when a test fails (2026-11-15: this was
+        # `git status --porcelain | grep -q .`, which under pipefail answers "no" whenever git is still writing after grep quit -
+        # SIGPIPE, status 141 - so a repository eleven files behind logged "already up to date" and no PR was opened). The
+        # status is captured first: a git that fails stops the step (set -e) instead of reading as an unchanged tree.
+        porcelain="$(git status --porcelain)"
+        if [[ -n "${porcelain}" ]]; then
+          # A porcelain entry with a D is a retired gate's file the loop above removed; every other entry is a template this run wrote.
+          n_differ=0; n_removed=0
+          while IFS= read -r entry; do
+            if [[ "${entry:0:2}" == *D* ]]; then n_removed=$(( n_removed + 1 )); else n_differ=$(( n_differ + 1 )); fi
+          done <<<"${porcelain}"
+          echo "gitops repo: ${n_differ} of ${templates_compared} template files differ from .tekton/, ${n_removed} retired gate file(s) removed ($(awk '{print $NF}' <<<"${porcelain}" | tr '\n' ' ')) - opening the resync PR"
           git config user.name "glidepath onboarding automation"
           git config user.email "onboarding@glidepath.invalid"
           # Static, not timestamped - same reasoning as deliver-app-repo-files' own
@@ -1083,5 +1133,5 @@ spec:
             echo "gitops repo: opened onboarding-resync PR"
           fi
         else
-          echo "gitops repo: .tekton/ already up to date, nothing to deliver"
+          echo "gitops repo: nothing to deliver - ${templates_compared} template files compared, 0 differ from .tekton/"
         fi

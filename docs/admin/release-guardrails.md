@@ -97,6 +97,10 @@ with catalog `promotion.enabled`, `image-promotion` is a required entry of the e
 
 ## Timeouts: always split `tasks`/`finally`, never a single `pipeline` budget alone
 
+With `pipelinesAsCode.concurrencyLimit` set, gate runs wait in a queue as pending PipelineRuns and Tekton starts every
+timeout when the run starts, so time spent queued does not use these budgets
+([pipeline-performance.md](pipeline-performance.md#queueing-gate-runs)).
+
 **Found live 2026-08-23**: every onboarding template originally set only
 `timeouts.pipeline` (e.g. `10m`) - a single shared budget for the real check tasks *and*
 the `finally: comment-pr` step that reports the outcome. A check that ran merely slow

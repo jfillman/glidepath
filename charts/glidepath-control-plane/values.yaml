@@ -25,6 +25,118 @@ testkubeNamespace: testkube
 # gitops-cluster-dev/50-platform-cicd/tekton-operator/) - the sole install path now.
 tektonChainsNamespace: tekton-pipelines
 
+# Admission for the PipelineRuns Pipelines-as-Code creates in a tenant's -cicd namespace from the
+# repository's own .tekton/ files (templates/admission/cicd-run-shape.yaml; docs/admin/security.md, "Pipeline
+# identities"). Those files are source: a pull request can change them, so the cluster, not the file, decides what
+# a run may be. Off only for a cluster that does not use Pipelines-as-Code.
+cicdRunAdmission:
+  enabled: true
+  # The username PaC's controller creates PipelineRuns as. Only runs created by this user are checked; Triggers, glidepath-api
+  # and the platform's own jobs have their own RBAC and policies.
+  pacControllerUser: system:serviceaccount:tekton-pipelines:pipelines-as-code-controller
+  # The one namespace a run's pipelineRef may resolve from.
+  catalogNamespace: platform-catalog
+  # What a refused run of cicd-run-source-isolation does (a Pipeline that runs the repository's code must give those tasks
+  # to source-runner). [Deny] on a fresh install. While upgrading, use [Warn, Audit] until every app's .tekton has been
+  # resynced (docs/admin/security.md, upgrade note), then [Deny]. Anything but Deny is NOT enforcing: the chart annotates the
+  # binding and, where prometheus-operator is installed, renders an alert that fires until it is Deny again.
+  sourceIsolationActions: [Deny]
+  # What a refused run of cicd-run-shape (the shape a .tekton file may take: Pipelines, parameters, accounts, workspaces) and of cicd-run-no-taskruns does.
+  # [Deny] on a fresh install. While upgrading a cluster whose app repositories have not resynced their .tekton files, use [Warn, Audit] and then [Deny];
+  # anything but Deny is NOT enforcing (binding annotation, and an alert where prometheus-operator is installed). Only platform values set these.
+  shapeActions: [Deny]
+  noTaskRunsActions: [Deny]
+  # The storage classes a .tekton file's workspace volumeClaimTemplate may name (it may also leave it unset, which is what the onboarding
+  # templates do). Everything else about the template is fixed: ReadWriteOnce, 1 to 20Gi, no dataSource, volumeName or selector.
+  workspaceStorageClassNames: []
+  # A Pipeline that writes release state, or deploys, is started only by a push to one of these branches (or a tag), never from a
+  # pull request or a side branch, whatever the .tekton file says. The checks run on a pull request into one of these.
+  protectedBranches: [main]
+  # A tag a push may start those Pipelines from, as the full ref. A branch named like a tag (refs/heads/refs/tags/x) does not match:
+  # the decision is made on the full ref Pipelines-as-Code records as source-branch. A name is all this can check; whether
+  # the ref is PROTECTED on the git host (who may push the tag, review on the branch) is not something an admission policy
+  # can see. That is the second layer: the catalog's verify-ref-protection task (refProtection.mode, default required)
+  # asks glidepath-api, which is given these two values (PROTECTED_BRANCHES, TAG_REF_PATTERN). docs/admin/security.md,
+  # "Ref protection", says what that leaves open when it is off.
+  tagRefPattern: '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
+  # The prefixes an app's image repository may start with (registry host and namespace, ending in /). The repository must be
+  # <prefix><app-name> or <prefix><app-name>-pr. Empty: <host>/<the repository's owner>/<app-name>[-pr], any host. Set it to the
+  # catalog's registries.ground host and namespace where the namespace is not the repository owner.
+  imageRepoPrefixes: []
+  # Which tasks of which Pipeline may run as glidepath-cloud-deployer (the web-identity AWS deploy tasks). The chart test compares it
+  # with the catalog and the generator. source-runner is allowed on exactly sourceTasks.
+  cloudDeployerTasks:
+    deploy: [deploy-aws-lambda, deploy-aws-ecs]
+  # Tasks of each Pipeline that run the repository's own code (the ones whose steps run $(params.agent-image) or the
+  # repository's scripts, and build-image, whose Containerfile RUN lines are the repository's code) or render a chart it chooses
+  # (render-manifests). A run of the Pipeline must give them to source-runner. The chart test derives this from the catalog.
+  # The three gate Pipelines that render a chart the repository chooses name `render` (render-manifests, which holds no credential): a run
+  # of either must give it to source-runner, so a .tekton file cannot put the render in a pod that holds the gate's tokens.
+  sourceTasks:
+    build: [build-source, unit-test, build-image, build-python-wheel-artifact, build-go-binary-artifact]
+    test: [run-integration-script]
+    policy-validation-check: [render]
+    clearance-gate-check: [render]
+    values-check: [render]
+  # Tasks of each Pipeline that hold the registry push credential and run nothing from the repository (push-image validates the
+  # OCI layout build-image wrote, then pushes it). A run of the Pipeline must give them to image-pusher, an account with no
+  # Role and no token, and no other task may run as it. The chart test derives this from the catalog.
+  pusherTasks:
+    build: [push-image]
+  # Every Pipeline a .tekton file may start, and what it may pass. Anything else (release-outcome-notify, promote,
+  # governance-check, ...) is started by the platform, never by a file in a repository. params: the only parameter names the
+  # Pipeline accepts from a .tekton file (what the onboarding templates and generated flow files pass; the chart test compares
+  # them). pushOnly: only a push event. anyBranch: not held to protectedBranches (the PR build). Values are checked by
+  # paramPatterns and, for repo-url/git-url, revision/git-revision, pr-number, app-namespace and app-name, against what
+  # Pipelines-as-Code itself recorded on the run (its annotations and labels) and the run's namespace.
+  pipelines:
+    # Checks (onboarding-templates/*): a pull request into a protected branch, or a push to one.
+    agent-definitions-check: { params: [repo-url, revision, pr-number] }
+    agent-gates-check: { params: [repo-url, revision, pr-number] }
+    agent-preflight-check: { params: [repo-url, revision, pr-number] }
+    agent-release: { params: [repo-url, revision, before, app-name] }
+    api-compat-check: { params: [repo-url, revision, pr-number] }
+    bypass-merge-check: { params: [repo-url, revision] }
+    cicd-validate-check: { params: [repo-url, revision, pr-number] }
+    clearance-gate-check: { params: [repo-url, revision, app-name, pr-number] }
+    image-scan-check: { params: [repo-url, revision, pr-number] }
+    itsm-check: { params: [repo-url, revision, pr-number] }
+    onboarding-resync: { pushOnly: true, params: [git-url, app-namespace, app-name, app-type, github-owner, gitops-repo-url] }
+    policy-validation-check: { params: [repo-url, revision, app-name, pr-number] }
+    propose-merge-check: { params: [repo-url, revision] }
+    provenance-check: { params: [repo-url, revision, pr-number, app-namespace, app-name] }
+    qa-check: { params: [repo-url, revision, pr-number] }
+    sast-check: { params: [repo-url, revision, pr-number] }
+    sbom-check: { params: [repo-url, revision, pr-number] }
+    values-check: { params: [repo-url, revision, app-name, pr-number] }
+    # A flow's first stage (the generated .tekton/flow-*.yaml). Build is the only stage a pull request may start.
+    build: { anyBranch: true, params: &flowParams [git-url, git-revision, git-tag, image-repo, pr-tag-only, app-namespace, app-name, app-type, is-flow-terminal, env, test-name, cluster, name, pin-file] }
+    test: { pushOnly: true, params: *flowParams }
+    deploy: { pushOnly: true, params: *flowParams }
+    release: { pushOnly: true, params: *flowParams }
+    gitops-image-bump: { pushOnly: true, params: *flowParams }
+  paramPatterns:
+    repo-url: '^https://[a-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+    git-url: '^https://[a-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+    gitops-repo-url: '^https://[a-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+    revision: '^[0-9a-f]{40}$'
+    git-revision: '^[0-9a-f]{40}$'
+    before: '^[0-9a-f]{40}$'
+    pr-number: '^[0-9]{1,9}$'
+    git-tag: '^refs/tags/[A-Za-z0-9._/-]{1,200}$'
+    image-repo: '^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9._/-]{1,200}$'
+    pr-tag-only: '^(true|false)$'
+    is-flow-terminal: '^(true|false)$'
+    app-type: '^(app|infra)$'
+    app-name: '^[a-z0-9][a-z0-9-]{0,62}$'
+    app-namespace: '^(app|infra)-[a-z0-9-]{1,62}-cicd$'
+    github-owner: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
+    env: '^[a-z0-9][a-z0-9-]{0,62}$'
+    test-name: '^[a-z0-9][a-z0-9-]{0,62}$'
+    cluster: '^[a-z0-9][a-z0-9-]{0,62}$'
+    name: '^[a-z0-9][a-z0-9-]{0,62}$'
+    pin-file: '^glidepath/releases/[a-z0-9-]{1,62}\.yaml$'
+
 # See templates/broker/interceptor.yaml's own header comment on its Namespace resource
 # for the full reasoning. Defaults false: every cluster installs via an ArgoCD
 # Application with CreateNamespace=true (see docs/admin/installation.md), which owns
@@ -57,12 +169,12 @@ tektonResultsRelayImage: ghcr.io/jfillman/glidepath-tekton-results-relay:latest
 
 # templates/api/glidepath-api.yaml (docs/admin/api.md). Empty renders nothing; api-ci.yaml sets it
 # to an immutable sha- tag on main after pushing a multi-arch image.
-apiImage: ghcr.io/jfillman/glidepath-api:sha-9cecd73
+apiImage: ghcr.io/jfillman/glidepath-api:sha-e983044
 # The glidepath-validate image (tools/validate.Containerfile), run beside the API as `glidepath validate --serve
 # 127.0.0.1:8081` for POST /v1/apps/{app}/cicd/validations (docs/admin/api.md#validate-a-cicdyaml-change): the same
 # validator the catalog's cicd-validate check runs, so the API has no second copy of the rules. validate-image-ci sets
 # this line and the catalog's to the same sha- tag; not hand-edited.
-cicdValidatorImage: ghcr.io/jfillman/glidepath-validate:sha-9cecd73
+cicdValidatorImage: ghcr.io/jfillman/glidepath-validate:sha-e983044
 api:
   replicas: 2
   # Usernames (as TokenReview reports them) that may send X-Glidepath-On-Behalf-Of: Tower's
@@ -90,6 +202,12 @@ api:
     serviceAccounts: [] # [{name, namespace}]
   # The broker glidepath-api asks for per-request GitHub read tokens (githubRead below). Empty: the in-cluster Service.
   brokerUrl: ""
+  # GitHub logins of the pipeline's own accounts (its GitHub App's REST login, name[bot]). Two uses (GET /v1/apps/{app}/ref-protection):
+  # their approval of a pull request never counts as review evidence, and a release pull request in an app's gitops repository counts
+  # as a release (the start of a range) only if one of them opened it: set it to the account that opens release pull requests
+  # before refProtection.mode is required, or checks are unverifiable where the gitops history shows releases. Empty is fine
+  # while the mode is off.
+  pipelineLogins: []
   # The Flight promoter repository (<owner>/<repo>) whose promote.yaml on main signs promotion attestations: the
   # only identity a promotion attestation in /evidence verifies with (public Sigstore). Empty: promoter.dispatchRepo;
   # both empty: promotion attestations show, never verified.
@@ -207,6 +325,17 @@ defaultChart: {}
 # Forwarded to every app's glidepath-app; empty forwards nothing.
 observability: {}
 
+# Pipelines-as-Code's per-repository queue for every app's Repository CRs (the app repo and gitops-<app>): the `concurrency_limit`
+# of each, a whole number of at least 1. Pipelines-as-Code creates the runs of a limited repository pending and starts them as
+# others finish; a pending run's timeout clock has not started. A release pull request starts ten gate runs in one second, and on a
+# small cluster that stalled task resolution and etcd until gates timed out (docs/admin/pipeline-performance.md, "Queueing gate
+# runs"). null (the default) forwards nothing: no limit. appRepoConcurrencyLimit / gitopsRepoConcurrencyLimit override
+# concurrencyLimit for one kind of repository. Apron sets concurrencyLimit from cluster.yaml glidepath.gateConcurrency.
+pipelinesAsCode:
+  concurrencyLimit: null
+  appRepoConcurrencyLimit: null
+  gitopsRepoConcurrencyLimit: null
+
 # See templates/argocd/tenant-onboarding-applicationset.yaml's own header comment for
 # the real name collision this guards against and why it's a value, not an in-place
 # rename.
@@ -319,6 +448,16 @@ chains:
 # name/kind stay values (not hardcoded in every downstream chart) so a future backend
 # swap is still a one-file change here, same reasoning as before, just already landed
 # on Infisical instead of still deferring to it.
+# The READ-ONLY registry credential the image build pod may mount (glidepath-catalog buildPullCredential): to pull private base
+# images and import the main build cache. remoteKey is the key in the platform secret store of a kubernetes.io/dockerconfigjson
+# value whose token can read packages and nothing else (never the push credential's key, registry-credentials-dockerconfigjson:
+# the build pod runs the repository's code and can read this). Empty (default): nothing is rendered, the build pulls anonymously,
+# and a private base image or a private cache package fails its pull. The platform operator creates the secret-store entry; this
+# chart only copies it into every namespace the platform manages, as a Secret named secretName (the catalog's value, default
+# build-pull-credentials).
+buildPullCredential:
+  remoteKey: ""
+  secretName: build-pull-credentials
 secretStore:
   # Name of the ClusterSecretStore object rendered by
   # templates/secretstore/cluster-secret-store.yaml - every downstream ExternalSecret
@@ -470,3 +609,16 @@ promoter:
   privateKeyKey: flight-promoter-private-key
   # A read:packages dockerconfigjson for the Flight registry.
   flightReadKey: flight-registry-read-dockerconfigjson
+
+# Schedules of the platform-system CronJobs. Each has its own minute-of-hour slot (period kept, offset set) so no two fire
+# together, and none of them sits on :00/:30, where every other timer on a cluster fires. Slots, by minute of the hour:
+# stalledPipelineDetector 1,6,11..56; releaseRecordSweeper 2,12..52; prNamespaceTtlSweep 8,38; pipelinerunPruner 13.
+# The other schedules on a cluster are at the offsets agentrun-reaper 7,17..57 and clearance-targets 3,18,33,48 (Apron),
+# and the per-app pr-token-refresher (glidepath-app: a minute from prTokenRefresher.minuteSlots, 4/5/9/14/15/19 plus 20 and
+# 40, picked by the app name: minutes that are 0 or 4 mod 5, which none of the schedules above use, and never :00/:30).
+# charts/glidepath-control-plane/tests/cronjob_schedule_test.py fails if two of the CronJobs here share a minute.
+cronSchedules:
+  stalledPipelineDetector: "1-59/5 * * * *"
+  releaseRecordSweeper: "2-59/10 * * * *"
+  prNamespaceTtlSweep: "8-59/30 * * * *"
+  pipelinerunPruner: "13 * * * *"

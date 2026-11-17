@@ -71,13 +71,15 @@ for candidate in /opt/homebrew/opt/openssl/bin/openssl /opt/homebrew/opt/openssl
   fi
 done
 require "${OPENSSL}"
-if "${OPENSSL}" version | grep -q LibreSSL; then
+openssl_version="$("${OPENSSL}" version)"
+if [[ "${openssl_version}" == *LibreSSL* ]]; then
   echo "error: only LibreSSL found (no real OpenSSL) - LibreSSL rejects '-newkey ed25519'." >&2
   echo "Install OpenSSL 3.x, e.g. 'brew install openssl'." >&2
   exit 1
 fi
 
-if ! kubectl config get-contexts -o name | grep -qx "${CONTEXT}"; then
+contexts="$(kubectl config get-contexts -o name)"
+if ! grep -qxF "${CONTEXT}" <<<"${contexts}"; then
   echo "error: context '${CONTEXT}' not found in your kubeconfig." >&2
   exit 1
 fi

@@ -146,10 +146,23 @@ spec:
         only valid when every task referencing it also declares it optional, a real,
         admission-time-checked Tekton constraint (docs/admin/chaining.md).
   tasks:
+    # Pipeline trust T3: nothing runs before this. It reads the ref and commit Pipelines-as-Code recorded on this run (no
+    # parameter) and refuses the run unless the git host protects that ref (glidepath-api); see tasks/verify-ref-protection.yaml.
+    # No `when`, no retries, not in finally: every other task runs after it.
+    - name: verify-ref-protection
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: verify-ref-protection }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: pipeline-kind, value: privileged }
     # Everything that precedes the stage's real work, in one pod: flow/stage trace ids,
     # pipelinerun.started, the clone (when the workspace is bound) and cicd.yaml
     # validation. Replaced five single-purpose Tasks on 2026-10-09 - see stage-preflight.yaml.
     - name: preflight
+      runAfter: [verify-ref-protection]
       taskRef:
         resolver: cluster
         params:
@@ -170,8 +183,13 @@ spec:
         - { name: app-namespace, value: $(params.app-namespace) }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
         - { name: config-json, value: $(params.config-json) }
+        # Promotion lineage: a promotion or rollback glidepath-api started carries its build's trace context in its own
+        # annotations; preflight joins that trace when the build finished within this window (docs/admin/tracing.md).
+        - { name: origin-trace-window, value: {{ .Values.promotionLineage.traceJoinWindow | quote }} }
+        - { name: is-flow-terminal, value: $(params.is-flow-terminal) }
 
     - name: resolve-image-ref
+      runAfter: [verify-ref-protection]
       taskRef:
         resolver: cluster
         params:
@@ -231,6 +249,8 @@ spec:
         - { name: release-kind, value: $(params.release-kind) }
         - { name: rollback-of, value: $(params.rollback-of) }
         - { name: rollback-reason, value: $(params.rollback-reason) }
+        # Pipeline trust T3: the ref-protection verdict (or "Off here") goes into the release record.
+        - { name: ref-protection, value: $(tasks.verify-ref-protection.results.ref-protection-summary) }
 
     # Hands off to the DORA exporter (glidepath/dora-exporter) - only runs if
     # open-release-pr actually succeeded (standard Tekton DAG failure propagation, no
@@ -282,7 +302,8 @@ spec:
       params:
         - { name: stage-name, value: release }
         - { name: status, value: $(tasks.status) }
-        - { name: is-flow-terminal, value: $(params.is-flow-terminal) }
+        # preflight's result, not the param: a promotion that joined its build's trace must not close that flow's root span again.
+        - { name: is-flow-terminal, value: $(tasks.preflight.results.flow-terminal) }
         - { name: flow-name, value: "$(params.app-namespace)/$(params.app-name)" }
         - { name: flow-traceparent, value: $(tasks.preflight.results.traceparent) }
         - { name: chain-id, value: $(tasks.preflight.results.chain-id) }

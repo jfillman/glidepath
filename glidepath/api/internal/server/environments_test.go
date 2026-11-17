@@ -35,15 +35,16 @@ const (
 // only, and the GitHub routes check the request carries that repo's token.
 type ghStub struct {
 	mu     sync.Mutex
-	files  map[string]string // owner/repo/path -> content
-	prs    map[string]string // owner/repo head -> html_url
-	mints  []string          // repos a token was minted for
+	files  map[string]string         // owner/repo/path -> content
+	prs    map[string]string         // owner/repo head -> html_url
+	pulls  map[string]map[string]any // owner/repo#number -> the pull request (reissue reads one)
+	mints  []string                  // repos a token was minted for
 	calls  []string
 	server *httptest.Server
 }
 
 func newGH(t *testing.T) *ghStub {
-	g := &ghStub{files: map[string]string{}, prs: map[string]string{}}
+	g := &ghStub{files: map[string]string{}, prs: map[string]string{}, pulls: map[string]map[string]any{}}
 	g.server = httptest.NewServer(http.HandlerFunc(g.serve))
 	t.Cleanup(g.server.Close)
 	return g
@@ -101,6 +102,24 @@ func (g *ghStub) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusUnprocessableEntity)
 	case "pulls":
+		if len(parts) == 4 { // one pull request by number
+			if pr, ok := g.pulls[owner+"/"+repo+"#"+parts[3]]; ok {
+				json.NewEncoder(w).Encode(pr)
+				return
+			}
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("head") == "" && r.URL.Query().Get("state") == "open" { // every open PR of the repo (reissue)
+			open := []map[string]any{}
+			for k, pr := range g.pulls {
+				if strings.HasPrefix(k, owner+"/"+repo+"#") && pr["state"] == "open" {
+					open = append(open, pr)
+				}
+			}
+			json.NewEncoder(w).Encode(open)
+			return
+		}
 		if u, ok := g.prs[owner+"/"+repo+" "+r.URL.Query().Get("head")]; ok && r.URL.Query().Get("state") == "open" {
 			json.NewEncoder(w).Encode([]map[string]string{{"html_url": u}})
 			return
@@ -195,6 +214,7 @@ func withEnvs(t *testing.T, allow map[string]bool) (*Server, *fakeStore, *ghStub
 	)
 	s.Envs = &environments.Client{
 		Owner:     "jfillman",
+		OriginRef: "refs/heads/main",
 		GitHub:    func(app string) environments.GitHub { return broker.Session(app) },
 		Templates: fakeTemplates{},
 		Runs:      store,
@@ -283,6 +303,11 @@ func TestPromoteFromGround(t *testing.T) {
 		if strings.HasPrefix(k, "pipelinesascode.tekton.dev/") {
 			t.Fatal("glidepath-api-pipelinerun-shape refuses PaC annotations")
 		}
+	}
+	// The release run's guard verifies this origin: the protected branch the platform is configured with, and the commit the
+	// source release file names (never the client's).
+	if ann[pipelineruns.AnnotationOriginRef] != "refs/heads/main" || ann[pipelineruns.AnnotationOriginSha] != devSHA {
+		t.Fatalf("a promote run carries the origin the guard verifies: %v", ann)
 	}
 
 	// The same key again: one run, answered as a replay.
@@ -452,6 +477,12 @@ func TestRollbackPlanAndRollback(t *testing.T) {
 			t.Errorf("param %s = %v, want %s", p, param(run, p), v)
 		}
 	}
+	// A rollback goes to an older reviewed commit: its sha is the target's, the ref the configured protected branch, and the
+	// guard accepts it by design when that commit is on the protected branch.
+	rann := run["metadata"].(map[string]any)["annotations"].(map[string]any)
+	if rann[pipelineruns.AnnotationOriginRef] != "refs/heads/main" || rann[pipelineruns.AnnotationOriginSha] != "1111111aaaa" {
+		t.Fatalf("a rollback run carries its target's origin: %v", rann)
+	}
 	if st, out, _ := postJSON(t, s, path, hdr("rel", "k1"), `{"cluster":"hangar-prod","targetReleaseId":"rel-1","reason":"error budget"}`); st != 200 || out["replayed"] != true || out["pipelineRun"] != name {
 		t.Fatalf("replay: %d %v", st, out)
 	}
@@ -538,5 +569,26 @@ func TestEnvironmentAuthorization(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), `"caller":"tower","onBehalfOf":"user:default/jfillman"`) {
 		t.Fatalf("audit names both: %s", logs)
+	}
+}
+
+// The origin is never the caller's: a body that names one is ignored, and with no configured protected branch nothing is stamped
+// (the run's guard then refuses it as having no origin).
+func TestPromoteOriginIsNotTheCallers(t *testing.T) {
+	s, store, _, _ := withEnvs(t, releaser)
+	st, out, body := postJSON(t, s, "/v1/apps/shop/environments/staging/promote", hdr("rel", "k9"),
+		`{"cluster":"hangar-prod","sourceEnv":"dev","sourceCluster":"hangar-dev","originRef":"refs/heads/evil","originSha":"`+strings.Repeat("9", 40)+`","annotations":{"glidepath.io/origin-ref":"refs/heads/evil"}}`)
+	if st != 201 {
+		t.Fatalf("%d %s", st, body)
+	}
+	ann := store.objs[out["pipelineRun"].(string)]["metadata"].(map[string]any)["annotations"].(map[string]any)
+	if ann[pipelineruns.AnnotationOriginRef] != "refs/heads/main" || ann[pipelineruns.AnnotationOriginSha] != devSHA {
+		t.Fatalf("%v", ann)
+	}
+	s.Envs.OriginRef = ""
+	_, out, _ = postJSON(t, s, "/v1/apps/shop/environments/staging/promote", hdr("rel", "k10"), `{"cluster":"hangar-prod","sourceEnv":"dev","sourceCluster":"hangar-dev"}`)
+	ann = store.objs[out["pipelineRun"].(string)]["metadata"].(map[string]any)["annotations"].(map[string]any)
+	if _, has := ann[pipelineruns.AnnotationOriginRef]; has {
+		t.Fatalf("no configured protected branch, no stamp: %v", ann)
 	}
 }

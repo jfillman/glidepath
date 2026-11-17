@@ -103,13 +103,39 @@ spec:
         outcome() { printf '%s' "$1" > "$(results.outcome.path)"; echo "outcome=$1"; exit 0; }
 
         FILE="$(workspaces.source.path)/${SPEC_PATH}"
+        # SPEC_PATH comes from the repository's cicd.yaml, and this pod holds a ServiceAccount token and signs the file's content
+        # onto the image: a spec that is (or sits behind) a symlink to the token, or climbs out with `..`, must not be read.
+        # Read only a regular file reached through no symlink, inside the checkout.
+        WS_REAL="$(cd -P -- "$(workspaces.source.path)" 2>/dev/null && pwd -P)"
+        FILE_DIR_REAL="$(cd -P -- "$(dirname -- "${FILE}")" 2>/dev/null && pwd -P)"
+        if [[ -e "${FILE}" || -L "${FILE}" ]]; then
+          if [[ -L "${FILE}" || "/${SPEC_PATH}/" == *"/../"* || -z "${WS_REAL}" || -z "${FILE_DIR_REAL}" ||
+                "${FILE_DIR_REAL}/$(basename -- "${FILE}")" != "${WS_REAL}/${SPEC_PATH#./}" ]]; then
+            echo "attest-api-spec: ${SPEC_PATH} is a symlink, behind one, or outside the checkout - not read" >&2
+            outcome invalid
+          fi
+        fi
         if [[ ! -f "${FILE}" ]]; then
           echo "attest-api-spec: no ${SPEC_PATH} in the checkout - this app publishes no API (cicd.yaml api.spec; optional)"
           outcome none
         fi
 
+        # Open the file ONCE, check what was opened (not the path checked above: it could be swapped for a symlink in between), and
+        # work from a copy: nothing below opens the path again.
+        exec 3< "${FILE}" || outcome invalid
+        if [[ -d /proc/self/fd ]]; then
+          OPENED="$(readlink -f /proc/self/fd/3 2>/dev/null)"
+          if [[ "${OPENED}" != "${WS_REAL}"/* ]]; then
+            exec 3<&-
+            echo "attest-api-spec: ${SPEC_PATH} resolved outside the checkout when opened - not read" >&2
+            outcome invalid
+          fi
+        fi
+        cat <&3 > /tmp/spec.raw
+        exec 3<&-
+
         # YAML and JSON both parse with yq; -o=json normalizes either to the JSON the predicate needs.
-        if ! yq -o=json '.' "${FILE}" > /tmp/spec.json 2>/tmp/yq.err || ! jq -e 'type == "object"' /tmp/spec.json >/dev/null 2>&1; then
+        if ! yq -o=json '.' /tmp/spec.raw > /tmp/spec.json 2>/tmp/yq.err || ! jq -e 'type == "object"' /tmp/spec.json >/dev/null 2>&1; then
           echo "attest-api-spec: ${SPEC_PATH} is not a YAML/JSON document: $(head -c 300 /tmp/yq.err)" >&2
           outcome invalid
         fi
@@ -122,7 +148,7 @@ spec:
         jq -n \
           --arg apiType "${API_TYPE}" \
           --arg path "${SPEC_PATH}" \
-          --arg sha256 "$(sha256sum "${FILE}" | cut -d' ' -f1)" \
+          --arg sha256 "$(sha256sum /tmp/spec.raw | cut -d' ' -f1)" \
           --arg specVersion "${SPEC_VERSION}" \
           --slurpfile spec /tmp/spec.json \
           '{apiType: $apiType, path: $path, sha256: $sha256, specVersion: $specVersion,

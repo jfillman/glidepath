@@ -226,6 +226,24 @@ chart; a different source names its chart by path (git) or chart (registry), not
 {{- end -}}
 
 {{/*
+glidepath-app.pacConcurrencyLimit - the Pipelines-as-Code `spec.concurrency_limit` for one Repository CR, or "" for none (unlimited, the
+default: the CR then renders exactly as it did before the value existed). Called with (dict "root" $ "repo" "app"|"gitops"):
+pipelinesAsCode.<repo>ConcurrencyLimit wins over pipelinesAsCode.concurrencyLimit. A limit is a whole number of at least 1; anything
+else fails the render (the CRD's minimum is 1, and Pipelines-as-Code reads 0 as "no limit", which is what leaving it unset says).
+*/}}
+{{- define "glidepath-app.pacConcurrencyLimit" -}}
+{{- $pac := .root.Values.pipelinesAsCode | default dict -}}
+{{- $own := index $pac (printf "%sRepoConcurrencyLimit" .repo) -}}
+{{- $v := ternary $own (index $pac "concurrencyLimit") (not (kindIs "invalid" $own)) -}}
+{{- if not (kindIs "invalid" $v) -}}
+{{- if not (and (or (kindIs "float64" $v) (kindIs "int64" $v) (kindIs "int" $v)) (ge (int64 $v) 1) (eq (float64 $v) (float64 (int64 $v)))) -}}
+{{- fail (printf "pipelinesAsCode concurrency limit for the %s repository is %v: a whole number of at least 1, or unset for no limit" .repo $v) -}}
+{{- end -}}
+{{- int64 $v -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 glidepath-app.checksOnly - "true" when cicd.yaml declares no build: a checks-only repository (configuration only).
 It builds, deploys and releases nothing, so it has no flows, environments, build cache or Argo CD Applications; it
 keeps its registration (namespace, Pipelines-as-Code Repository, pipeline-runner) and the PR checks every repository

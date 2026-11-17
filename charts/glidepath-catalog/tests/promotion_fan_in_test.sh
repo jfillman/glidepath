@@ -51,11 +51,23 @@ while (( $# )); do
 done
 case "$method $url" in
   "POST http://el-cdevents-broker"*) printf '%s\n' "$data" >> "$FX/events"; exit 0 ;;
-  "GET "*/pulls/53/files*) cat "$FX/files.json" ;;
+  "GET "*/pulls/53/files*) [[ ! -f "$FX/files-fail" ]] || exit 22; cat "$FX/files.json" ;;
   "GET "*/pulls/53) cat "$FX/pr.json" ;;
   "GET "*/check-runs*)
     # a check that lands later: the first read is checks.json, every read after it later.json
-    if [[ -f "$FX/later.json" && -f "$FX/served" ]]; then cat "$FX/later.json"; else touch "$FX/served"; cat "$FX/checks.json"; fi ;;
+    src="$FX/checks.json"
+    if [[ -f "$FX/later.json" && -f "$FX/served" ]]; then src="$FX/later.json"; else touch "$FX/served"; fi
+    echo "$url" >> "$FX/check-urls"
+    # GitHub's default listing (filter=latest) holds only the newest run per check name; filter=all holds every run.
+    # checks.json is the full history, so a read that does not ask for filter=all gets the reduced listing.
+    case "$url" in
+      *filter=all*) [[ ! -f "$FX/fail-all" ]] || exit 22
+        page="${url##*page=}"; [[ "$url" == *page=* ]] || page=1
+        jq --argjson p "$page" '.check_runs |= .[(($p - 1) * 100):($p * 100)]' "$src" ;;
+      *) jq '.check_runs |= (group_by(.name) | map(sort_by(.started_at) | last))' "$src" ;;
+    esac ;;
+  "GET "*/issues/53/comments*) cat "$FX/comments.json" 2>/dev/null || echo '[]' ;;
+  "POST "*/issues/53/comments|"PATCH "*/issues/comments/*) printf '%s\n' "$data" >> "$FX/posted" ;;
   *) echo "unexpected $method $url" >&2; exit 22 ;;
 esac
 EOF
@@ -111,6 +123,14 @@ expect "last: event id is 20 hex" "$(jq -r .context.id "$FX/events" | grep -cE '
 expect "last: ledger patch" "$(cat "$FX/patches")" '{"metadata":{"resourceVersion":"41"},"data":{"gate.111111111111.sbom":"success"}}'
 id_first="$(jq -r .context.id "$FX/events")"
 
+# the PR's file list cannot be read (API failure): never "nothing to promote" (that says the PR has no release file), no event, and a
+# visible warning with the way to ask again. The step does not fail the gate (its contract), so it is not an exit 1.
+scenario files-api-down; touch "$FX/files-fail"; run
+expect "files-api-down: exit 0 (never fails the gate)" "$(cat "$FX/rc")" 0
+expect "files-api-down: no event" "$(events)" 0
+expect "files-api-down: not reported as nothing to promote" "$(grep -c 'nothing to promote' "$FX/out")" 0
+expect "files-api-down: says the read failed" "$(grep -c 'could not read .*files.*no promotion asked' "$FX/out")" 1
+
 # another gate still running and no ledger entry for it: waits for it.
 scenario peer-running
 jq '.check_runs |= map(if .name == "Pipelines as Code CI / values-" then .status = "in_progress" | .conclusion = null else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
@@ -156,6 +176,60 @@ jq '.check_runs += [{name: "Pipelines as Code CI / image-promotion-", status: "c
 run
 expect "retry: one event" "$(events)" 1
 [[ "$(jq -r .context.id "$FX/events")" != "${id_first}" ]] && echo "ok   retry: a new attempt id" || { echo "FAIL retry: same id as the first attempt"; fail=1; }
+
+# ---- the attempt id (gitops-backstage#303, 2026-11-14): every image-promotion check run on the commit counts, not only the
+# newest per name, so each new attempt after a failed one gets a new id.
+failed_run() { # <n> <fx>: n earlier failed image-promotion check runs
+  jq --argjson n "$1" '.check_runs += [range($n) | {name: "Pipelines as Code CI / image-promotion-", status: "completed", conclusion: "failure",
+      started_at: ("2026-10-28T10:0" + (. + 5 | tostring) + ":00Z")}]' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+}
+ids=""
+for n in 0 1 2 3; do
+  scenario "attempt$n"; failed_run "$n"; run
+  expect "attempt$n: one event" "$(events)" 1
+  ids="${ids}$(jq -r .context.id "$FX/events")"$'\n'
+done
+expect "0,1,2,3 prior attempts: four distinct ids" "$(printf '%s' "${ids}" | sort -u | grep -c .)" 4
+# the same state read by two gates finishing at the same moment: the same id (one run).
+scenario concurrent-a; failed_run 2; run; a="$(jq -r .context.id "$FX/events")"
+scenario concurrent-b; failed_run 2; run; b="$(jq -r .context.id "$FX/events")"
+expect "two concurrent gates, 2 prior attempts: same id" "$a" "$b"
+expect "attempts counted over filter=all" "$(grep -c 'filter=all' "$FX/check-urls")" 1
+# more than one page of check runs (100 per page): all pages are read.
+scenario paged; failed_run 2
+jq '.check_runs = ([range(120) | {name: "Other / noise", status: "completed", conclusion: "success", started_at: "2026-10-28T09:00:00Z"}] + .check_runs)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+run
+expect "paged: same id as 2 prior attempts" "$(jq -r .context.id "$FX/events")" "$a"
+expect "paged: two pages read" "$(grep -c 'filter=all' "$FX/check-urls")" 2
+# a listing that cannot be read: nothing asked (never a guessed id).
+scenario count-fails; failed_run 1; touch "$FX/fail-all"; run
+expect "count-fails: no event" "$(events)" 0
+expect "count-fails: exit 0" "$(cat "$FX/rc")" 0
+# a finished promote run whose id the count did not move past (its check run is not named like a gate, or the listing lags): the
+# check run's external_id is the promote TaskRun's name (promote-<id>-promote), so the next attempt skips that id.
+finished_run() { # <attempt>: a completed check run left by the promote run of this attempt's id
+  local idk
+  idk="$(printf '%s' "jfillman/gitops-gate-api#53@${SHA}#$1" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-20)"
+  jq --arg e "promote-${idk}-promote" '.check_runs += [{name: "Other / left-over", status: "completed", conclusion: "failure", external_id: $e, completed_at: "2026-10-28T10:06:00Z", started_at: "2026-10-28T10:05:00Z"}]' \
+    "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+  echo "${idk}"
+}
+scenario id-finished; id0="$(finished_run 0)"
+run
+expect "id finished: one event" "$(events)" 1
+[[ "$(jq -r .context.id "$FX/events")" != "${id0}" ]] && echo "ok   id finished: not the finished run's id" || { echo "FAIL id finished: reused ${id0}"; fail=1; }
+# a promote run with this id that has not finished (in progress): the same id (the Trigger's refusal is the right outcome).
+scenario still-running
+id0="$(printf '%s' "jfillman/gitops-gate-api#53@${SHA}#0" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-20)"
+jq --arg e "promote-${id0}-promote" '.check_runs += [{name: "Other / left-over", status: "in_progress", conclusion: null, external_id: $e, started_at: "2026-10-28T10:05:00Z"}]' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+run
+expect "still running: same id" "$(jq -r .context.id "$FX/events")" "${id0}"
+# ten finished runs: no event, and the PR says so.
+scenario exhausted
+for k in 0 1 2 3 4 5 6 7 8 9; do finished_run "$k" >/dev/null; done
+run
+expect "exhausted: no event" "$(events)" 0
+expect "exhausted: the PR is told" "$(grep -c 'was not started again' "$FX/posted")" 1
 
 # the record changed underneath: the patch is retried with the new resourceVersion read again.
 scenario conflict; touch "$FX/conflict-once"; run

@@ -108,6 +108,14 @@ deploy:
   # airframe-application chart) is the only supported value today, and the default.
   strategy: rollout
 
+# The pr-token-refresher CronJob runs every 20 minutes, at a minute picked from minuteSlots by the app name (adler32 mod
+# the list length) so the apps on a cluster do not all fire together. The slots are the minutes (0-19) whose every firing
+# (m, m+20, m+40) is clear of :00/:30 and of the platform CronJobs (glidepath-control-plane cronSchedules, Apron's
+# agentrun-reaper and clearance-targets); cronjob_schedule_test.py checks that. minuteOffset (0-19) overrides the pick.
+prTokenRefresher:
+  minuteSlots: [4, 5, 9, 14, 15, 19]
+  minuteOffset: null
+
 ephemeralEnvironments:
   branch:
     # Renders a per-branch ephemeral environment (not just per-PR) for this
@@ -321,6 +329,17 @@ platformCicdRepoUrl: ""
 # updated there when it changes; a stale IP points pods at the wrong address, an empty one only skips the alias.
 backstageHostAliasIP: ""
 backstageHostAliasHostname: ""
+
+# Pipelines-as-Code's per-repository queue (docs/admin/pipeline-performance.md, "Queueing gate runs"): the `concurrency_limit` of
+# this app's Repository CRs (the app repo and gitops-<app>), a whole number of at least 1. Pipelines-as-Code then creates the
+# runs of a repository pending and starts at most this many at a time, so a release pull request's ten gates do not all start
+# in the same second. unset (the default) = no limit and the CRs render as they always did. The control plane forwards the
+# cluster's setting here (its pipelinesAsCode values; apron's glidepath.gateConcurrency), and a forwarded value wins over one in cicd.yaml.
+# appRepoConcurrencyLimit / gitopsRepoConcurrencyLimit override concurrencyLimit for one repository. extraGitopsRepos are never limited.
+pipelinesAsCode:
+  concurrencyLimit: null
+  appRepoConcurrencyLimit: null
+  gitopsRepoConcurrencyLimit: null
 
 # Placeholder only - a real install MUST override every field here via
 # `-f platform-identity.yaml`. Left empty rather than a fake example so an accidental

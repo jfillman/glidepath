@@ -51,7 +51,8 @@ from 5 to 239 s on repos of a few files, following node CPU load.
 |---|---|---|
 | TektonConfig `options.configMaps.config-defaults` (cluster repo) | 25m CPU, 32Mi | Every container that sets none, including Tekton's init containers |
 | `build-source` `run-build-script`, `run-tests` `unit-test`, `build-artifact` `build` | 250m, 256Mi | The app's own build and test work |
-| `build-image` `build-and-push` | 500m, 512Mi | Image build; both platforms in parallel in one step |
+| `build-image` `build` | 500m, 512Mi | Image build to an OCI layout; both platforms in parallel in one step |
+| `push-image` `push` | 100m, 128Mi | Validates the layout and copies it to the registry (hashing and upload, no build) |
 | `sast-scan` `scan` | 200m, 256Mi | Semgrep |
 | `image-scan` `scan` | 100m, 256Mi | Trivy client (the server does the DB work) |
 | `generate-sbom` `generate-and-attest` | 100m, 128Mi | Trivy SBOM + cosign |
@@ -65,7 +66,11 @@ TaskRun timeout. Raise a step's request only together with the node's headroom.
 
 ## Release gates
 
-A gitops release PR runs eight gate PipelineRuns.
+A gitops release PR runs ten gate PipelineRuns on the lab: nine that match every release branch (`api-compat`,
+`clearance-gate`, `image-scan`, `itsm`, `policy-validation`, `provenance`, `qa`, `sast`, `sbom`) and `values`, which runs when
+the PR changes a values or release file. Two more gitops templates are not on that path: `merged` runs on the merge
+(a push), and `agent-gates` runs on every PR to main but is delivered only where Clearance's GitHub App does not report the
+agent checks, so a cluster that delivers it starts eleven. Counted from `charts/glidepath-app/files/onboarding-templates/gitops-repo/`.
 
 - **The image gates do not clone.** `sast`, `image-scan`, `sbom` and the image half of `provenance` share the
   `resolve-promoted-image` StepAction: the PR's base, the files changed between that base and the head commit,
@@ -81,6 +86,63 @@ A gitops release PR runs eight gate PipelineRuns.
   ([registries.md](registries.md#the-fan-in-phase-3)).
 
 Details are in [release-guardrails.md](release-guardrails.md).
+
+## Queueing gate runs
+
+A release pull request in an app's gitops repository starts ten gate PipelineRuns in the same second
+(`clearance-gate`, `policy-validation`, `values`, `itsm`, `image-scan`, `provenance`, `qa`, `sast`, `sbom`,
+`api-compat`). On the single-node lab that burst (2026-11-15/16, three times) made task resolution take five minutes,
+filled etcd's log with slow-apply warnings, and let several gates reach their PipelineRun timeouts before doing any work.
+The same PR retested one gate at a time passed.
+
+`pipelinesAsCode.concurrencyLimit` sets `spec.concurrency_limit` on the app's two Pipelines-as-Code `Repository` CRs (the
+app repo and `gitops-<app>`, both in `app-<app>-cicd`). Unset (the default) renders no field, so a cluster behaves as
+before. `pipelinesAsCode.appRepoConcurrencyLimit` and `gitopsRepoConcurrencyLimit` override it for one repository;
+`extraGitopsRepos` are never limited. A limit is a whole number of at least 1, anything else fails the render.
+The control plane's `pipelinesAsCode` values forward the cluster's setting to every app (a forwarded value wins over
+one in an app's `cicd.yaml`); Apron sets it from `cluster.yaml` `glidepath.gateConcurrency`.
+
+How it behaves (Pipelines-as-Code v0.52.0, Tekton Pipelines v1.15.0):
+
+- **The limit is per Repository CR**, across all events, not per pull request. The app repo and the gitops repo each
+  have their own queue.
+- **A queued run is a pending PipelineRun.** With a limit set, PaC creates every run of the repository with
+  `spec.status: PipelineRunPending` and the label and annotation `pipelinesascode.tekton.dev/state: queued`. When a slot
+  frees, its watcher clears `spec.status` and sets the state to `started`. PaC starts the runs of one event in
+  alphabetical order of run name; the names begin with the gate's name, so `api-compat`, `clearance-gate`, `image-scan`
+  start first at a limit of 3. Order does not matter to the promotion fan-in, which every gate's `finally` feeds.
+- **The timeout clock starts when the run starts.** Tekton sets `status.startTime` on the first reconcile after the run
+  is no longer pending, and every timeout (`tasks`, `finally`, `pipeline`) counts from it. Time in the queue does not
+  count, so no gate timeout changes. At a limit of 3, ten gates run in four waves of 3, 3, 3 and 1 (eleven would also be four); wall
+  time is roughly four times the slowest gate in a wave (an estimate, not measured), and each gate still has its own full budget.
+- **The GitHub check reads `queued`** (title "Queued"/"Pending") until the run starts, then "CI has Started".
+- **`/retest <gate>-` creates new runs through the same path**, so they queue behind what is running. `/cancel`
+  patches `spec.status: CancelledRunFinally`, which Tekton accepts on a pending run, so a queued run can be cancelled and
+  its slot goes to the next. PaC's cancel-in-progress is not supported with a concurrency limit and stays off here.
+- **A rerun through glidepath-api bypasses the queue (known limit).** The API's rerun drops `spec.status` and the
+  Pipelines-as-Code annotations and labels, and the watcher only manages runs that carry the state label. A rerun
+  starts at once and is not counted against the limit. Do not rerun ten gates through the API at once; use `/retest`.
+- **Tower shows a queued run as running.** Tekton gives a pending run the condition `Succeeded=Unknown`, reason
+  `PipelineRunPending`, which glidepath-api's run model reports as status `running` with that reason. There is no
+  `queued` status yet.
+- **Admission.** `cicd-run-shape` does not look at `spec.status` or the state label, so the pending create, the patches
+  and the watcher's start are all admitted (tested in `cicd_run_admission_test.py`).
+- **The stalled-pipeline detector does not look at queued runs.** See
+  [stalled-pipeline-detector.md](stalled-pipeline-detector.md#what-this-is-not).
+
+### If a repository's queue stalls
+
+The queue lives in the PaC watcher's memory and is rebuilt from the `state` labels when it starts. A leaked slot (the
+watcher believes a run is still running when it is not) stops the repository's later runs from starting: queued runs stay
+`PipelineRunPending` with nothing running. Recovery is to restart the watcher:
+
+```
+kubectl -n tekton-pipelines rollout restart deployment/pipelines-as-code-watcher
+```
+
+The watcher has one replica on the lab, so queued runs wait for it to come back (seconds), then the queue is rebuilt from
+the labels. Nothing is lost. To look before restarting, set `PAC_ENABLE_QUEUE_DEBUG=true` on the watcher and read
+`/debug/queue` (unauthenticated: turn it off afterwards; see the Pipelines-as-Code concurrency docs).
 
 ## Other changes
 
@@ -109,7 +171,9 @@ Details are in [release-guardrails.md](release-guardrails.md).
   ([ADR-0024](adr/0024-cluster-taxonomy-zone-roles-tier.md)).
 - **The dev cluster's control plane is under pressure.** `kube-scheduler` and `kube-controller-manager`
   restart on lease timeouts with node memory around 86%. That sets the floor under every number here.
-- **No PaC `concurrency_limit`.** A burst of pushes starts every build at once.
+- **Queueing is off until the cluster sets it.** A burst of pushes starts every build at once, and a release PR starts ten
+  gates at once. See [Queueing gate runs](#queueing-gate-runs) for the setting. On a small node (the lab's is one node,
+  11 CPUs) set it: `glidepath.gateConcurrency: 3` in Apron's `cluster.yaml` (the dev profile sets it).
 
 ## Measuring it again
 

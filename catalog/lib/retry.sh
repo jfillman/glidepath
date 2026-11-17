@@ -22,13 +22,17 @@ with_retry() {
   local max_attempts="$1"; shift
   [[ "${1:-}" == "--" ]] && shift
 
+  # What a failure line names: a label the caller supplies (WITH_RETRY_LABEL) or the command word, NEVER its arguments. Arguments carry URLs
+  # and revisions, and a log excerpt is posted into pull requests (docs/admin/security.md); a credential is never in an argument either, but
+  # this does not depend on that.
+  local label="${WITH_RETRY_LABEL:-${1##*/}}"
   local attempt=1 delay=2
   until "$@"; do
     if (( attempt >= max_attempts )); then
-      echo "with_retry: '$*' failed after ${attempt} attempts, giving up" >&2
+      echo "with_retry: '${label}' failed after ${attempt} attempts, giving up" >&2
       return 1
     fi
-    echo "with_retry: '$*' failed (attempt ${attempt}/${max_attempts}), retrying in ${delay}s..." >&2
+    echo "with_retry: '${label}' failed (attempt ${attempt}/${max_attempts}), retrying in ${delay}s..." >&2
     sleep "${delay}"
     delay=$(( delay * 2 ))
     (( attempt++ ))

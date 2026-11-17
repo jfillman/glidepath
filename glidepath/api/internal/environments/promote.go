@@ -32,10 +32,14 @@ type PromoteResult struct {
 	Replayed    bool           `json:"replayed,omitempty"`
 	DryRun      bool           `json:"dryRun,omitempty"`
 	Object      map[string]any `json:"object,omitempty"`
+	// Origin is the flow that built the promoted image; OriginUnknown says why it could not be resolved ("origin unknown:
+	// ..."). The promotion is the same either way (docs/admin/api.md#promotion-lineage).
+	Origin        *Origin `json:"origin,omitempty"`
+	OriginUnknown string  `json:"originUnknown,omitempty"`
 }
 
 // source is Tower's ResolvedSource.
-type source struct{ imageRepo, imageTag, gitRevision, gitURL string }
+type source struct{ imageRepo, imageTag, gitRevision, gitURL, digest string }
 
 // Validate is Tower's /promote route check: the target cluster, and exactly one of the two source pairs.
 func (r PromoteRequest) Validate() error {
@@ -115,11 +119,12 @@ func (c *Client) Promote(ctx context.Context, app *apps.App, targetEnv string, r
 	}
 
 	s, err := c.startRun(ctx, app, releaseRun{env: targetEnv, cluster: req.Cluster, gitURL: src.gitURL, gitRevision: src.gitRevision,
-		imageRef: src.imageRepo + ":" + src.imageTag, initiator: initiator}, keyHash, dryRun)
+		imageRef: src.imageRepo + ":" + src.imageTag, initiator: initiator, digest: src.digest}, keyHash, dryRun)
 	if err != nil {
 		return nil, err
 	}
-	return &PromoteResult{Mode: "pipeline", PipelineRun: s.Name, Replayed: s.Replayed, DryRun: dryRun, Object: s.Object}, nil
+	return &PromoteResult{Mode: "pipeline", PipelineRun: s.Name, Replayed: s.Replayed, DryRun: dryRun, Object: s.Object,
+		Origin: s.Origin, OriginUnknown: unknownText(s.OriginUnknown)}, nil
 }
 
 // resolveSource is Tower's: what to promote comes from the file the source environment's tier commits to, never from
@@ -136,11 +141,11 @@ func (c *Client) resolveSource(ctx context.Context, gh GitHub, repos Repos, req 
 		if err != nil {
 			return nil, err
 		}
-		return &source{req.SourceImageRepo, req.SourceImageTag, rev, gitURL}, nil
+		return &source{req.SourceImageRepo, req.SourceImageTag, rev, gitURL, ""}, nil
 	}
 
 	if tier == "lower" {
-		repo, tag, path, err := readGroundImage(ctx, gh, c.Owner, repos.Source, req.SourceEnv)
+		repo, tag, digest, path, err := readGroundImage(ctx, gh, c.Owner, repos.Source, req.SourceEnv)
 		if err != nil {
 			return nil, err
 		}
@@ -155,13 +160,13 @@ func (c *Client) resolveSource(ctx context.Context, gh GitHub, repos Repos, req 
 		if err != nil {
 			return nil, err
 		}
-		return &source{repo, tag, rev, gitURL}, nil
+		return &source{repo, tag, rev, gitURL, digest}, nil
 	}
 
 	// A Flight source: release.image in <cluster>/<env>/release.yaml (the release-file split), falling back to
 	// values.yaml and the deprecated rollout.image. The commit is releaseTracking.gitRevision when a file still has
 	// one, else the image tag's own sha.
-	var imageRepo, imageTag, recorded string
+	var imageRepo, imageTag, recorded, digest string
 	path := req.SourceCluster + "/" + req.SourceEnv + "/release.yaml"
 	for _, candidate := range []string{req.SourceCluster + "/" + req.SourceEnv + "/release.yaml", req.SourceCluster + "/" + req.SourceEnv + "/values.yaml"} {
 		content, err := gh.Contents(ctx, c.Owner, repos.Gitops, candidate)
@@ -173,6 +178,7 @@ func (c *Client) resolveSource(ctx context.Context, gh GitHub, repos Repos, req 
 			return nil, err
 		}
 		imageRepo, imageTag = promotableRepo(doc), orElse(doc, "tag")
+		digest, _ = scalar(getIn(doc, "release", "image", "digest"))
 		recorded, _ = scalar(getIn(doc, "releaseTracking", "gitRevision"))
 		path = candidate
 		if imageRepo != "" && imageTag != "" {
@@ -192,7 +198,7 @@ func (c *Client) resolveSource(ctx context.Context, gh GitHub, repos Repos, req 
 			return nil, err
 		}
 	}
-	return &source{imageRepo, imageTag, rev, gitURL}, nil
+	return &source{imageRepo, imageTag, rev, gitURL, digest}, nil
 }
 
 // promotableRepo is the repository a Flight source is promoted from: release.image.source, the Ground repository the
@@ -216,7 +222,7 @@ func orElse(doc *yaml.Node, k string) string {
 
 // readGroundImage is Tower's: a Ground environment's deployed image, the machine-owned release file first
 // (glidepath/envs/<env>.release.yaml), then the env file's release.image, then its deprecated rollout.image.
-func readGroundImage(ctx context.Context, gh GitHub, owner, repo, env string) (imageRepo, imageTag, path string, err error) {
+func readGroundImage(ctx context.Context, gh GitHub, owner, repo, env string) (imageRepo, imageTag, digest, path string, err error) {
 	candidates := []struct {
 		path string
 		keys [][]string
@@ -231,15 +237,16 @@ func readGroundImage(ctx context.Context, gh GitHub, owner, repo, env string) (i
 		}
 		doc, perr := parse(content, c.path)
 		if perr != nil {
-			return "", "", "", perr
+			return "", "", "", "", perr
 		}
 		for _, k := range c.keys {
 			r, _ := scalar(getIn(doc, append(k, "repository")...))
 			t, _ := scalar(getIn(doc, append(k, "tag")...))
 			if r != "" && t != "" {
-				return r, t, c.path, nil
+				d, _ := scalar(getIn(doc, append(k, "digest")...))
+				return r, t, d, c.path, nil
 			}
 		}
 	}
-	return "", "", candidates[0].path, nil
+	return "", "", "", candidates[0].path, nil
 }

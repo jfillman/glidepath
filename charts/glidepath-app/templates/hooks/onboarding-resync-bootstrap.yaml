@@ -45,9 +45,8 @@
 # the first real one - see the existence check below - so it doesn't fight PaC's own
 # self-heal once `.tekton/onboarding-resync.yaml` is actually there.
 #
-# Reuses the pipeline-runner ServiceAccount rather than minting a dedicated one: it
-# already carries exactly the RBAC this Job needs (create on tekton.dev/pipelineruns,
-# identity/pipeline-runner.yaml) and nothing more.
+# Runs as pipeline-trigger (identity/pipeline-runner.yaml), the one identity that may create
+# PipelineRuns; the run it creates still executes as pipeline-runner.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -63,7 +62,10 @@ spec:
   backoffLimit: 2
   template:
     spec:
-      serviceAccountName: pipeline-runner
+      serviceAccountName: pipeline-trigger
+      # The account does not mount its token by default (identity/pipeline-runner.yaml); this Job is the one pod that
+      # uses it, to create the bootstrap PipelineRun.
+      automountServiceAccountToken: true
       restartPolicy: Never
       securityContext:
         runAsNonRoot: true
@@ -121,11 +123,17 @@ spec:
 
               # Same owner/repo derivation deliver-onboarding-files.yaml itself uses -
               # repo name isn't assumed to equal app-name.
-              repo="$(echo "${APP_REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+              # the whole repository name: a dot is part of it (acme.web), only a trailing .git is not
+              repo="$(sed -E 's#^https?://github\.com/[^/]+/([A-Za-z0-9._-]+)/?$#\1#' <<<"${APP_REPO_URL}")"; repo="${repo%.git}"
+              [[ "${repo}" =~ ^[A-Za-z0-9._-]{1,100}$ && "${repo}" != . && "${repo}" != .. ]] || { echo "error: ${APP_REPO_URL} is not a github.com repository URL with a plain repository name" >&2; exit 1; }
 
               token="$(github_app_installation_token "${GITHUB_OWNER}" "${repo}")"
               workdir="$(mktemp -d)"
-              clone_url="https://x-access-token:${token}@github.com/${GITHUB_OWNER}/${repo}.git"
+              # the token goes in an HTTP header in the environment, scoped to the git host, never in a URL or an argument
+              export GIT_CONFIG_COUNT=3 GIT_TERMINAL_PROMPT=0
+              export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "${token}" | base64 | tr -d '\n')"
+              export GIT_CONFIG_KEY_1="http.followRedirects" GIT_CONFIG_VALUE_1="false" GIT_CONFIG_KEY_2="credential.helper" GIT_CONFIG_VALUE_2=""
+              clone_url="https://github.com/${GITHUB_OWNER}/${repo}.git"
 
               if git clone --quiet --depth 1 "${clone_url}" "${workdir}/repo" 2>/dev/null \
                   && [[ -f "${workdir}/repo/.tekton/onboarding-resync.yaml" ]]; then

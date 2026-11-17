@@ -3,7 +3,7 @@
 # Builds and publishes one additional non-container artifact (a Python wheel or a Go
 # binary) declared in cicd.yaml's build.artifacts, as a real pullable OCI artifact
 # (oras push) at <image-repo>:<version>-<artifact-type> - same registry/credentials the
-# container image uses (registry-credentials Secret, same mount pattern as build-image's
+# container image uses (registry-credentials Secret, same mount pattern as push-image's
 # crane step), no separate publish target. See docs/user/cicd-yaml-reference.md.
 #
 # build.yaml carries TWO Pipeline task entries against this one Task name
@@ -11,8 +11,8 @@
 # artifact-type param and its own when: gate (validate-config's artifacts-python-wheel/
 # artifacts-go-binary results) - not a single task entry branching on a runtime-computed
 # type, since Tekton's when: only gates a whole PipelineTask and a Pipeline author needs
-# one entry per independent gate anyway. Both runAfter build-image - not because either
-# needs the built image itself, but because both need build-image's already-resolved
+# one entry per independent gate anyway. Both runAfter push-image - not because either
+# needs the built image itself, but because both need push-image's already-resolved
 # `version` result, so this artifact's tag always agrees exactly with the image tag
 # instead of re-deriving VERSION a second time and risking drift.
 #
@@ -128,6 +128,22 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        # ARTIFACT_FILE is whatever the build step wrote to its result, and the build step runs the repository's code.
+        # Push only a regular file that lies, with no symlink on the way and no `..`, inside <workspace>/.hangar-artifact-out:
+        # otherwise a build could name the registry credential mounted here and publish it.
+        OUT_DIR="$(workspaces.source.path)/.hangar-artifact-out"
+        refuse() { echo "error: refusing to publish '${ARTIFACT_FILE}': $1" >&2; exit 1; }
+        [[ -n "${ARTIFACT_FILE}" && "${ARTIFACT_FILE}" == "${OUT_DIR}"/* ]] || refuse "it is not under ${OUT_DIR}"
+        [[ "/${ARTIFACT_FILE}/" != *"/../"* && "/${ARTIFACT_FILE}/" != *"/./"* ]] || refuse "it contains . or .."
+        [[ ! -L "${OUT_DIR}" ]] || refuse "the output directory is a symlink"
+        REAL_OUT="$(cd -P -- "${OUT_DIR}" 2>/dev/null && pwd -P)" || refuse "no output directory"
+        REAL_DIR="$(cd -P -- "$(dirname -- "${ARTIFACT_FILE}")" 2>/dev/null && pwd -P)" || refuse "no such directory"
+        REAL_FILE="${REAL_DIR}/$(basename -- "${ARTIFACT_FILE}")"
+        # the same path relative to the output directory, once with every symlink resolved and once as written: equal only
+        # when no symlink is on the way
+        [[ "${REAL_FILE}" == "${REAL_OUT}"/* && "${REAL_FILE#"${REAL_OUT}"/}" == "${ARTIFACT_FILE#"${OUT_DIR}"/}" ]] || refuse "a symlink is on the way, or it is outside ${OUT_DIR}"
+        [[ -f "${REAL_FILE}" && ! -L "${REAL_FILE}" ]] || refuse "not a regular file"
+        ARTIFACT_FILE="${REAL_FILE}"
         ARTIFACT_REF="${IMAGE_REPO}:${VERSION}-${ARTIFACT_TYPE}"
         oras push "${ARTIFACT_REF}" \
           "${ARTIFACT_FILE}:application/octet-stream" \

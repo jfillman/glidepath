@@ -75,7 +75,8 @@ metadata:
     hangar.io/subcomponent: "broker"
   namespace: platform-system
 spec:
-  schedule: "*/30 * * * *"
+  schedule: {{ .Values.cronSchedules.prNamespaceTtlSweep | quote }}
+  startingDeadlineSeconds: 300
   concurrencyPolicy: Forbid
   jobTemplate:
     spec:

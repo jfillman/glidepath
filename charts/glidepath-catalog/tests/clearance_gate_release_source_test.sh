@@ -295,32 +295,31 @@ out="$(resolve)"; expect "the single commit cannot be read: unresolved, says so"
 
 # 13b. An unresolved early return (two records) omits the promoter: the report must still say "not recorded", not null.
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only templates/tasks/clearance-gate.yaml \
-  | yq '.spec.steps[3].script' | grep -c '(.promoter // "") != ""' | { read n; expect "the report treats a missing promoter as not recorded" "$n" 1; }
+  | yq '.spec.steps[].script' | grep -c '(.promoter // "") != ""' | { read n; expect "the report treats a missing promoter as not recorded" "$n" 1; }
 
 # 14. A Bot account authored the PR, the pipelineLogins setting is empty and no record names it: still a person's PR, with a warning.
 scenario warn; jq '.items[0].data.prUrl = "https://github.com/o/gitops-shop/pull/99"' "$FIX/records.json" > "$FIX/r" && mv "$FIX/r" "$FIX/records.json"
 out="$(PIPELINE_LOGINS="" PRAUTHORTYPE=Bot resolve)"; expect "empty pipelineLogins and a Bot author: a warning is printed" "$(q '[.applicable, (.warning | test("pipelineLogins"))] | join(",")')" "false,true"
 out="$(PIPELINE_LOGINS="" PRAUTHORTYPE=User resolve)"; expect "no warning for a person" "$(q '.warning // "none"')" none
 
-# 10. The render step's mapping into the change request (the real step, a stand-in helm, the parity fixture).
-fx="$(pwd)/charts/glidepath-catalog/tests/fixtures/clearance-parity"
-cat > "$d/bin/helm" <<'EOF'
-#!/usr/bin/env bash
-cat "${FIXTURE}/head.yaml"
-EOF
-chmod +x "$d/bin/helm"
-yq '.spec.steps[1].script' "$d/task.yaml" | sed -e "s#/opt/airframe/charts/airframe-application#/chart#g" > "$d/render.sh"
-change_for() { # <name> <source.json content or ""> [provenance verdict json]: runs the render step, prints change.json
-  local w="$d/render-$1"; mkdir -p "$w/repo" "$w/base" "$w/observability" "$w/policies"
-  cp -R "$fx/hangar-prod" "$w/repo/"; cp -R "$fx/hangar-prod" "$w/base/"
-  : > "$w/policies/unreadable"; : > "$w/observability/hangar-prod.yaml"
+# 10. The mapping into the change request: the real publish -> render-manifests -> ingest chain (tests/lib/gate_chain.sh, real helm, the
+# policy-validation fixture's stand-in chart), with the fetch step's /work laid out the way it leaves it, source.json included.
+fx="$(pwd)/charts/glidepath-catalog/tests/fixtures/policy-validation"
+helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only templates/tasks/render-manifests.yaml > "$d/rtask.yaml" \
+  || { echo "FAIL: render (render-manifests)"; exit 1; }
+source charts/glidepath-catalog/tests/lib/gate_chain.sh
+change_for() { # <name> <source.json content or ""> [provenance verdict json]: runs the chain, prints the change's mapped fields
+  local w="$d/chain-$1" P="$d/chain-$1/pub"; mkdir -p "$P/repo/hangar-prod/prod" "$P/base/hangar-prod/prod" "$P/policies" "$P/observability"
+  cp "$fx/gitops/hangar-prod/prod/release.yaml" "$P/repo/hangar-prod/prod/"; cp "$fx/gitops/hangar-prod/prod/release.yaml" "$P/base/hangar-prod/prod/"
+  printf 'serviceType: ClusterIP\n' > "$P/repo/hangar-prod/prod/values.yaml"; printf 'replicas: 1\n' > "$P/base/hangar-prod/prod/values.yaml"
+  : > "$P/policies/unreadable"; : > "$P/observability/hangar-prod.yaml"
   jq -n --argjson prov "${3:-null}" '{owner: "o", repo: "gitops-shop", pr: 7, head: ("a" * 40), base: ("b" * 40), author: "cicd-pac[bot]",
-    files: [{filename: "hangar-prod/prod/release.yaml", status: "modified", additions: 1, deletions: 1}], looksAgent: false,
-    provenance: $prov, checkRuns: [], policyCommit: ""}' > "$w/meta.json"
-  [[ -n "$2" ]] && printf '%s' "$2" > "$w/source.json"
-  echo "hangar-prod|prod|default|true" > "$w/plan.txt"
-  sed "s#/work#$w#g" "$d/render.sh" > "$w/step.sh"
-  ( cd "$w" && FIXTURE="$fx" PATH="$d/bin:$PATH" APP_NAME=shop NAMESPACE=app-shop-cicd bash "$w/step.sh" ) > "$w/log" 2>&1 || { echo "-- render log:"; cat "$w/log"; }
+    files: [{filename: "hangar-prod/prod/values.yaml", status: "modified", additions: 1, deletions: 1}], looksAgent: false,
+    provenance: $prov, checkRuns: [], policyCommit: ""}' > "$P/meta.json"
+  [[ -n "$2" ]] && printf '%s' "$2" > "$P/source.json"
+  echo "hangar-prod|prod|default|true" > "$P/plan.txt"
+  gate_chain "$d/task.yaml" "$d/rtask.yaml" clearance-gate "$w" shop
+  [[ "$(cat "$w/ingest.rc")" == 0 ]] || { echo "-- chain log:"; cat "$w/chain.log"; }
   jq -c '[.proposer, .proposerKind, (.agent // "none"), .checks.provenance, (.checks.sourceAuthors // "-"), (.checks.sourceMergers // "-"), ((.checks.sourceUnresolved // "-") | .[0:20])] | join("|")' "$w/eval/hangar-prod__prod/change.json" | tr -d '"'
 }
 good="$(scenario map-good; resolve)"

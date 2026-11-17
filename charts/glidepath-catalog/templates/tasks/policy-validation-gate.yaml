@@ -12,11 +12,15 @@
 #                                or a cluster's base.yaml = every environment on it), each environment's chart
 #                                (validate-values.yaml's resolution: an own chart is fetched, the default is the one
 #                                baked into the validator image), and each target cluster's policy bundle
-#   render    (validator image)  `helm template` per environment with the same value files and injected values the
-#                                Flight ApplicationSet layers (base < values < release); then, for the Kyverno CLI:
-#                                stand-in CRDs for the custom kinds rendered (plurals from Airframe's XRDs, else the
-#                                API server's own guess), the rendered Namespaces' labels (namespaceSelector), and the
-#                                policy bundle normalized (below)
+#   publish   (toolbox)          the fetch phase's last step: the checkouts, charts and plan onto the run's workspace for the render
+#                                task (inputs/), the rest for this gate's own later reading (trusted/, with a marker naming this run)
+#   (the render-manifests task, between the two phases of this Task, as `source-runner`: no token, no Secret, no projected token.
+#   `helm template` per environment with the same value files and injected values the Flight ApplicationSet layers (base < values <
+#   release). docs/admin/security.md, "Rendering is not done where the credentials are")
+#   ingest    (validator image)  the decide phase's first step: reads what the render wrote as DATA (bounded YAML parse, no tags, every
+#                                file digest recomputed, no symlink followed); then, for the Kyverno CLI: stand-in CRDs for the custom
+#                                kinds rendered (plurals from Airframe's XRDs, else the API server's own guess), the rendered
+#                                Namespaces' labels (namespaceSelector), and the policy bundle normalized (below)
 #   evaluate  (toolbox)          `kyverno apply` per environment, every result classified, the report written
 #
 # Which policies count: Kyverno ValidatingPolicy / NamespacedValidatingPolicy, ClusterPolicy / Policy, and native
@@ -70,6 +74,9 @@ spec:
       type: string
       default: {{ .Values.valuesValidatorImage | default (printf "%s:%s" (required "valuesValidatorRepository (or valuesValidatorImage) must be set" .Values.valuesValidatorRepository) (required "defaultChart.targetRevision must be set" .Values.defaultChart.targetRevision)) | quote }}
       description: The values gate's validator image (helm, python3 + pyyaml, the default chart under /opt/airframe/charts and Airframe's XRDs under /opt/airframe/xrds).
+    - name: phase
+      type: string
+      description: "fetch | decide. The Pipeline runs this Task twice around the render-manifests task: `fetch` (fetch + publish; nothing else does anything) and `decide` (ingest, evaluate; fetch does nothing). The decide phase reads the rendered output read-only."
   results:
     - name: outcome
       description: pass | warn | fail | skipped
@@ -92,6 +99,26 @@ spec:
               expirationSeconds: 600
     - name: work
       emptyDir: {}
+  # The run's workspace, in three bindings (the Pipeline's subPaths): `publish` (the whole volume, the fetch phase only), then in the
+  # decide phase `trusted` (what fetch published for this gate) and `rendered` (what render-manifests wrote), both read-only.
+  workspaces:
+    - name: publish
+      optional: true
+      mountPath: /publish
+    - name: trusted
+      optional: true
+      readOnly: true
+      mountPath: /trusted
+    - name: rendered
+      optional: true
+      readOnly: true
+      mountPath: /rendered
+  stepTemplate:
+    env:
+      - name: PHASE
+        value: $(params.phase)
+      - name: PIPELINE_RUN
+        value: $(params.pipeline-run-name)
   steps:
     - name: fetch
       image: {{ .Values.toolboxImage }}
@@ -120,9 +147,12 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
+        [[ "${PHASE}" == fetch ]] || exit 0
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
         {{- include "glidepath-catalog.policyEvalLib" . | nindent 8 }}
+        {{- include "glidepath-catalog.inputGuards" . | nindent 8 }}
 
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
@@ -135,10 +165,12 @@ spec:
         fetch_repo() { # <repo-url> <revision> <dir>
           local url="$1" rev="$2" dir="$3" o r t clone_url
           clone_url="${url%.git}.git"
+          git_auth_clear  # no earlier token rides along; a token is set below only for the repository it was minted for
           o="$(echo "${url}" | sed -nE 's#https?://github\.com/([^/]+)/.*#\1#p')"
-          r="$(echo "${url}" | sed -nE 's#https?://github\.com/[^/]+/([^/.]+).*#\1#p')"
+          r="$(echo "${url}" | sed -nE 's#https?://github\.com/[^/]+/([^/]+).*#\1#p')"; r="${r%.git}"  # the whole repository name (it may contain a dot), not the part before the first one
           if [[ -n "${o}" ]] && t="$(github_app_installation_token "${o}" "${r}" 2>/dev/null)"; then
-            clone_url="https://x-access-token:${t}@github.com/${o}/${r}.git"
+            git_auth "${t}"
+            clone_url="https://${GIT_HOST}/${o}/${r}.git"
           fi
           mkdir -p "${dir}"
           git -C "${dir}" init --quiet
@@ -149,7 +181,8 @@ spec:
 
         mkdir -p /work/repo && cd /work/repo
         git init --quiet
-        with_retry 3 -- git fetch --quiet --depth 1 "https://x-access-token:${token}@github.com/${owner}/${repo}.git" "${REVISION}"
+        git_auth "${token}"
+        with_retry 3 -- git fetch --quiet --depth 1 "https://${GIT_HOST}/${owner}/${repo}.git" "${REVISION}"
         git checkout --quiet FETCH_HEAD
         rm -f .git/config
 
@@ -170,16 +203,27 @@ spec:
         # The environments this PR changes: <cluster>/<env>/{values,release}.yaml, and every environment under a
         # changed <cluster>/base.yaml (it is layered under each of them).
         : > /work/envs.txt
+        bad_env=0
         while IFS= read -r f; do
           if [[ "${f}" =~ ^([^/]+)/([^/]+)/(values|release)\.yaml$ ]]; then
-            echo "${BASH_REMATCH[1]}|${BASH_REMATCH[2]}" >> /work/envs.txt
+            rc=0; entry="$(env_entry "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")" || rc=$?
+            if (( rc == 0 )); then echo "${entry}" >> /work/envs.txt; elif (( rc != 3 )); then bad_env=1; fi
           elif [[ "${f}" =~ ^([^/]+)/base\.yaml$ ]]; then
-            for d in "${BASH_REMATCH[1]}"/*/; do
-              [[ -f "${d}values.yaml" || -f "${d}release.yaml" ]] && echo "${BASH_REMATCH[1]}|$(basename "${d}")" >> /work/envs.txt
-            done
+            cl="${BASH_REMATCH[1]}"  # before valid_name: its own regex match replaces BASH_REMATCH
+            if valid_name "${cl}"; then
+              for d in "${cl}"/*/; do
+                if [[ -f "${d}values.yaml" || -f "${d}release.yaml" ]]; then
+                  rc=0; entry="$(env_entry "${cl}" "$(basename "${d}")")" || rc=$?
+                  if (( rc == 0 )); then echo "${entry}" >> /work/envs.txt; else bad_env=1; fi
+                fi
+              done
+            fi
           fi
         done <<<"${changed}"
         sort -u -o /work/envs.txt /work/envs.txt
+        # names from paths in the repository: plain names only, before any use (a directory name is any string without a slash)
+        (( bad_env == 0 )) || { echo "FAIL: a changed file is under an environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1; }
+        valid_env_plan /work/envs.txt || { echo "FAIL: a changed file is under a cluster or environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1; }
         echo "environments this PR changes: $(wc -l < /work/envs.txt | tr -d ' ')"
         cat /work/envs.txt
 
@@ -200,6 +244,9 @@ spec:
           : > /work/envs.txt
         fi
 
+        # fail closed on a chart spec the resolver below cannot read: it would fall back to the default chart
+        if [[ -n "${cicd}" ]]; then echo "${cicd}" | yq -o json '.' 2>/dev/null | chart_specs_ok || { echo "FAIL: cicd.yaml's deploy.chart or an environment's chart is not a mapping; the gate will not guess which chart is rendered"; exit 1; }; fi
+
         # Each environment's chart, glidepath-app.resolveChart's rules (the same jq as validate-values.yaml): the
         # environment's chart over deploy.chart over the catalog default. "default" = the chart baked into the
         # validator image at the default chart's pinned revision.
@@ -209,7 +256,7 @@ spec:
         while IFS='|' read -r cluster env; do
           [[ -n "${cluster}" ]] || continue
           chart_dir=default
-          resolved="$(echo "${cicd}" | yq -o json "{\"app\": (.deploy.chart // {}), \"env\": ((.deploy.environments // [])[] | select(.name == \"${env}\") | .chart // {})}" 2>/dev/null \
+          resolved="$(echo "${cicd}" | ENV_NAME="${env}" yq -o json '{"app": (.deploy.chart // {}), "env": ((.deploy.environments // [])[] | select(.name == strenv(ENV_NAME)) | .chart // {})}' 2>/dev/null \
             | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" '
                 def over($b; $o): if ($o.repoURL // "") != "" then $o
                   else $b + ($o | with_entries(select(.value != null and .value != "")))
@@ -219,6 +266,9 @@ spec:
                '.repoURL != $r or (.chart // "") != "" or .path != $p')" == "true" ]]; then
             n=$((n + 1))
             repo_url="$(echo "${resolved}" | jq -r .repoURL)"; rev="$(echo "${resolved}" | jq -r '.targetRevision // "main"')"
+            # the fetch below carries credentials: only from the hosts the platform names, with plain revision, path and chart names
+            valid_chart_source "${repo_url}" "${rev}" "$(echo "${resolved}" | jq -r '.path // "."')" "$(echo "${resolved}" | jq -r '.chart // ""')" \
+              || { echo "FAIL: the environment's chart source is not an allowed one (https git host or OCI registry from chartSources, plain revision and path)"; exit 1; }
             if [[ "${repo_url}" == oci://* ]]; then
               with_retry 3 -- oras pull "${repo_url#oci://}/$(echo "${resolved}" | jq -r .chart):${rev}" -o "/work/charts/${n}-oci" >/dev/null
               mv "$(ls /work/charts/${n}-oci/*.tgz | head -1)" "/work/charts/${n}.tgz"
@@ -239,7 +289,14 @@ spec:
           policy_bundle_fetch "${cluster}" "${owner}" || exit 1
         done
         chmod -R a+rwX /work/repo /work/charts /work/policies /work/plan.txt 2>/dev/null || true
-    - name: render
+    - name: publish
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      script: |
+        {{- include "glidepath-catalog.gatePublish" . | nindent 8 }}
+    - name: ingest
       image: $(params.validator-image)
       imagePullPolicy: IfNotPresent
       # Not readOnly and no workingDir: see validate-values.yaml's validate step.
@@ -250,40 +307,24 @@ spec:
           value: $(params.app-name)
         - name: NAMESPACE
           value: $(context.taskRun.namespace)
+        - name: GATE
+          value: policy-validation
+        {{- include "glidepath-catalog.ingestLimits" . | nindent 8 }}
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
+        # The fetch phase ends at publish.
+        [[ "${PHASE}" == decide ]] || exit 0
+        # Data the render task wrote can only be read where this run's own fetch published: a volume without the marker is refused.
+        [[ -f /trusted/PUBLISHED && "$(cat /trusted/PUBLISHED)" == "${PIPELINE_RUN}" ]] || { echo "FAIL: the fetch phase's data for this run is not on the workspace"; exit 1; }
+        cp -a /trusted/. /work/
         [[ -s /work/plan.txt ]] || exit 0
-        cd /work/repo
-        # <type>-<app>-cicd runs this; the environment's namespace is <type>-<app>-<env> (app, or infra for an
-        # InfraService: the Flight ApplicationSet's destination).
-        type="${NAMESPACE%%-*}"
         rc=0
         mkdir -p /work/eval
-        while IFS='|' read -r cluster env chart; do
-          # serviceNamespacePattern: the platform's namespace convention, as the Flight tenant-onboarding ApplicationSet
-          # passes it, so airframe-application's env[].fromService renders here as it will there. The same pattern as
-          # glidepath-app's envNamespacePattern helper (envs_model_test.py checks the two agree). Only for the cluster's
-          # default chart (the validator image's, at defaultChart): an app's own chart may predate the key, and this
-          # gate's own-chart contract (chart-contract.md) does not include it.
-          ns_pattern=""
-          [[ "${chart}" == default ]] && chart=/opt/airframe/charts/airframe-application && ns_pattern='{type}-{app}-{env}'
-          out="/work/eval/${cluster}__${env}"
-          mkdir -p "${out}"
-          # The values the Flight ApplicationSet injects (valuesObject), then the value files it layers.
-          printf 'appName: %s\ncluster: %s\nenvName: %s\nnamespace:\n  labels:\n    hangar.io/managed-secrets: "true"\n' \
-            "${APP_NAME}" "${cluster}" "${env}" > "${out}/injected.yaml"
-          [[ -n "${ns_pattern}" ]] && printf 'serviceNamespacePattern: "%s"\n' "${ns_pattern}" >> "${out}/injected.yaml"
-          vf=()
-          for v in "${cluster}/base.yaml" "${cluster}/${env}/values.yaml" "${cluster}/${env}/release.yaml"; do
-            [[ -f "${v}" ]] && vf+=(-f "${v}")
-          done
-          if ! helm template "${APP_NAME}" "${chart}" --namespace "${type}-${APP_NAME}-${env}" "${vf[@]}" -f "${out}/injected.yaml" > "${out}/resources.yaml" 2> "${out}/render.err"; then
-            echo "FAIL ${cluster}/${env}: helm template failed"; cat "${out}/render.err"; echo render-failed > "${out}/status"; rc=1
-            continue
-          fi
-          echo "${cluster}/${env}: rendered $(grep -c '^kind:' "${out}/resources.yaml") objects with ${chart}"
-        done < /work/plan.txt
+        # What the render task wrote, as data: verified, bounded, and written to /work/eval from the bytes read.
+        python3 - <<'PY' || rc=1
+        {{- include "glidepath-catalog.renderedIngest" . | nindent 8 }}
+        PY
 
         # Kyverno CLI inputs: stand-in CRDs, Namespace labels, and each cluster's normalized policy bundle.
         python3 - <<'PY' || rc=1
@@ -307,6 +348,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
+        [[ "${PHASE}" == decide ]] || exit 0
         {{- include "glidepath-catalog.policyEvalLib" . | nindent 8 }}
         report=/work/report.md
         write_results() { # <outcome> <summary>
@@ -325,7 +367,9 @@ spec:
           out="/work/eval/${cluster}__${env}"
           envs=$((envs + 1))
           if [[ -f "${out}/status" ]]; then
-            echo "{\"env\":\"${cluster}/${env}\",\"level\":\"broken\",\"message\":\"the manifest did not render (helm template failed)\"}" >> /work/findings.jsonl
+            # the name is from a path in the repository: shown only in a plain form, and built with jq, not by hand
+            jq -nc --arg e "$(printf '%s/%s' "${cluster}" "${env}" | tr -c 'A-Za-z0-9._/-' '?' | cut -c1-80)" \
+              '{env: $e, level: "broken", message: "the manifest did not render (the render task'"'"'s log says why)"}' >> /work/findings.jsonl
             rc=1; continue
           fi
           policy_eval_env "${cluster}" "${env}" /work/findings.jsonl

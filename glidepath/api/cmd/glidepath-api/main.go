@@ -28,6 +28,12 @@
 //	TESTKUBE_URL        Testkube's agent API (default http://testkube-api-server.testkube.svc.cluster.local:8088)
 //	DELEGATES           comma-separated usernames that may send X-Glidepath-On-Behalf-Of
 //	GITHUB_OWNER        the GitHub owner of the apps' repos, for promote and rollback (the chart's githubOwner)
+//	PROTECTED_BRANCHES  comma-separated branches a release must come from, for GET /v1/apps/{app}/ref-protection
+//	                    (the chart's cicdRunAdmission.protectedBranches; default main)
+//	PIPELINE_LOGINS     comma-separated GitHub logins of the pipeline's own accounts (the chart's api.pipelineLogins): the accounts
+//	                    that open release pull requests in the gitops repositories (they establish where a range starts), and
+//	                    whose approval never counts (bots, typed Bot or named [bot], never count either)
+//	TAG_REF_PATTERN     the release tags' full-ref pattern (the chart's cicdRunAdmission.tagRefPattern; unset: every tag)
 //	BROKER_URL          the token broker, for per-request GitHub read tokens (default http://cdevents-broker-auth.platform-system.svc.cluster.local:8080)
 //	BROKER_TOKEN_PATH   this pod's projected ServiceAccount token for the broker, audience github-read-token
 //	                    (default /var/run/secrets/glidepath/broker/token)
@@ -57,6 +63,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -70,10 +77,12 @@ import (
 	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
 	"github.com/glidepath/api/internal/github"
+	"github.com/glidepath/api/internal/lineage"
 	"github.com/glidepath/api/internal/live"
 	"github.com/glidepath/api/internal/metrics"
 	"github.com/glidepath/api/internal/pipelineruns"
 	"github.com/glidepath/api/internal/previews"
+	"github.com/glidepath/api/internal/refprotection"
 	"github.com/glidepath/api/internal/releases"
 	"github.com/glidepath/api/internal/results"
 	"github.com/glidepath/api/internal/server"
@@ -90,6 +99,25 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// originRef is the full ref a promote or rollback run claims as its origin: the first protected branch. The run's guard
+// verifies the claim against the git host.
+func originRef(branches []string) string {
+	if len(branches) == 0 {
+		return ""
+	}
+	return "refs/heads/" + branches[0]
+}
+
+func splitList(v string) []string {
+	var out []string
+	for _, x := range strings.Split(v, ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 func envInt(k string, def int) int {
@@ -172,7 +200,19 @@ func main() {
 		TokenPath: env("BROKER_TOKEN_PATH", "/var/run/secrets/glidepath/broker/token"),
 		HTTP:      tracing.Client(&http.Client{Timeout: 30 * time.Second}),
 	}
+	var tagPattern *regexp.Regexp
+	if p := os.Getenv("TAG_REF_PATTERN"); p != "" {
+		if tagPattern, err = regexp.Compile(p); err != nil {
+			log.Fatalf("glidepath-api: TAG_REF_PATTERN: %v", err)
+		}
+	}
 	logger := server.NewLogger()
+	if len(splitList(env("PIPELINE_LOGINS", ""))) == 0 {
+		// Review evidence starts a range at the newest release the gitops history corroborates, and only a pull request opened by
+		// one of these accounts is a release. Empty is fine while the catalog's refProtection.mode is off; under required every
+		// check where a gitops repository shows releases is unverifiable.
+		logger.Warn("PIPELINE_LOGINS is empty (the chart's api.pipelineLogins): with refProtection.mode required, every ref-protection check for an app whose gitops history shows a release is unverifiable. Set it to the login of the GitHub App that opens release pull requests")
+	}
 	// People's ID tokens from people-dex, for calls over the Gateway route (auth/oidc.go). Off without OIDC_ISSUER.
 	var people *auth.OIDC
 	if iss := os.Getenv("OIDC_ISSUER"); iss != "" {
@@ -207,13 +247,14 @@ func main() {
 		}
 	}
 	liveRuns := &live.Client{Store: live.NewKubeStore(dyn, cs)}
+	runArchive := &results.Client{
+		Base: env("RESULTS_URL", "http://tekton-results-relay.platform-system.svc.cluster.local:8080"),
+		HTTP: tracing.Client(&http.Client{Timeout: 30 * time.Second}),
+	}
 	s := &server.Server{
-		Auth: &auth.Auth{Reviewer: auth.NewKubeReviewer(cs), Delegates: delegates, OIDC: people},
-		Apps: &apps.Resolver{CS: cs, TTL: 5 * time.Minute},
-		Results: &results.Client{
-			Base: env("RESULTS_URL", "http://tekton-results-relay.platform-system.svc.cluster.local:8080"),
-			HTTP: tracing.Client(&http.Client{Timeout: 30 * time.Second}),
-		},
+		Auth:     &auth.Auth{Reviewer: auth.NewKubeReviewer(cs), Delegates: delegates, OIDC: people},
+		Apps:     &apps.Resolver{CS: cs, TTL: 5 * time.Minute},
+		Results:  runArchive,
 		Releases: releases.Reader{CS: cs},
 		// Evidence reads each app's registry-credentials Secret per request (never cached), the Fulcio
 		// root ConfigMap and Rekor (cached 10 minutes, as Tower does). Promotion attestations verify
@@ -249,13 +290,18 @@ func main() {
 		// Promote and rollback read GitHub with a token the broker mints per request and per repo (read only, that
 		// one repo), and start the app's release Pipeline from its own TriggerTemplate.
 		Envs: &environments.Client{
-			Owner: githubOwner,
+			Owner:     githubOwner,
+			OriginRef: originRef(splitList(env("PROTECTED_BRANCHES", "main"))),
 			GitHub: func(app string) environments.GitHub {
 				return broker.Session(app)
 			},
 			Templates: environments.NewKubeTemplates(dyn),
 			Runs:      pipelineruns.NewKubeStore(dyn),
 			Records:   releases.Reader{CS: cs},
+			// The build a promoted image came from: the build run on the cluster, else its copy in Tekton Results
+			// (docs/admin/api.md#promotion-lineage). Information only: a release is never refused for lacking it.
+			LineageTimeout: time.Duration(envInt("LINEAGE_TIMEOUT_SECONDS", 5)) * time.Second,
+			Lineage:        &lineage.Resolver{Sources: []lineage.Source{lineage.ClusterSource{Live: liveRuns}, lineage.ArchiveSource{Results: runArchive}}},
 		},
 		// A cicd.yaml change, validated by the glidepath-validate sidecar (`glidepath validate --serve`, the chart's
 		// cicdValidatorImage) on the pod's loopback: one copy of the rules, the one the PR check runs.
@@ -268,6 +314,18 @@ func main() {
 				URL:  env("VALIDATOR_URL", "http://127.0.0.1:8081"),
 				HTTP: tracing.Client(&http.Client{Timeout: 20 * time.Second}),
 			},
+		},
+		// Whether every commit being released was reviewed (review evidence: its merged pull request and an approval from
+		// someone else on the final head): read per request with the broker's read-only token (contents, pull requests,
+		// metadata), never cached. The last release (the start of the range) is read from the app's gitops repository history.
+		RefProtection: &refprotection.Client{
+			Owner: githubOwner,
+			Checker: &refprotection.Checker{
+				ProtectedBranches: splitList(env("PROTECTED_BRANCHES", "main")),
+				TagRefPattern:     tagPattern,
+				BotLogins:         splitList(env("PIPELINE_LOGINS", "")),
+			},
+			GitHub: func(app string) refprotection.Reader { return broker.Session(app) },
 		},
 		Events: store,
 		Tap: &events.Tap{

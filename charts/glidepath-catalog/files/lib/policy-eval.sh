@@ -56,19 +56,24 @@ policy_eval_env() {
     echo '{"results":[]}' > "${out}/report.json"  # every policy skipped: no report at all
   fi
   if ! jq -e '.' "${out}/report.json" >/dev/null 2>&1; then
-    echo "FAIL ${cluster}/${env}: kyverno could not evaluate the policies (exit ${krc})"; tail -20 "${out}/kyverno.err"
-    echo "{\"env\":\"${cluster}/${env}\",\"level\":\"broken\",\"message\":\"kyverno could not evaluate (exit ${krc}): $(tail -1 "${out}/kyverno.err" | tr -d '"\\')\"}" >> "${findings}"
+    # kyverno's own text can quote the rendered objects (data a pull request author chose): a few bounded, printable lines.
+    echo "FAIL ${cluster}/${env}: kyverno could not evaluate the policies (exit ${krc})"; tail -n 5 "${out}/kyverno.err" | cut -c1-300 | tr -c '[:print:]\n' '?'
+    jq -nc --arg e "${cluster}/${env}" --arg m "kyverno could not evaluate (exit ${krc}): $(tail -n 1 "${out}/kyverno.err" | cut -c1-200)" \
+      '{env: $e, level: "broken", message: ($m | gsub("[[:cntrl:]]"; " ") | gsub("[`<>|@\\[\\]\\\\]"; "_"))}' >> "${findings}"
     return 1
   fi
   # Every non-passing result, with the policy's source and mode. fail under a deny policy = deny; any other
   # fail, warn or error = warn (an error is a rule offline evaluation could not decide).
+  # resource and message come from the rendered objects (a policy message may quote one): attacker-chosen data that ends up in a PR
+  # comment, so only a bounded form with no control character, markup, mention, link or table character is kept.
   jq -c --arg e "${cluster}/${env}" --slurpfile idx "/work/policies/${cluster}.index.json" '
+    def clean($n): tostring | gsub("[[:cntrl:]]"; " ") | gsub("\\s+"; " ") | gsub("[`<>|@\\[\\]\\\\]"; "_") | .[0:$n];
     .results[]? | select(.result == "fail" or .result == "warn" or .result == "error")
     | ($idx[0][.policy] // {source: .policy, mode: "warn"}) as $p
     | {env: $e, policy: $p.source, rule: (.rule // ""), result,
        level: (if .result == "fail" and $p.mode == "deny" then "deny" else "warn" end),
-       resource: ((.resources // [])[0] | "\(.kind // "?")/\(.name // "?")"),
-       message: ((.message // "") | gsub("\\s+"; " "))}' "${out}/report.json" >> "${findings}"
+       resource: ((.resources // [])[0] | "\(.kind // "?")/\(.name // "?")" | clean(200)),
+       message: ((.message // "") | clean(300))}' "${out}/report.json" >> "${findings}"
   echo "${cluster}/${env}: $(jq -c '.summary // {}' "${out}/report.json")"
 }
 

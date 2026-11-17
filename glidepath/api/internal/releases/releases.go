@@ -30,6 +30,25 @@ type Record struct {
 	// clearanceId and clearanceTree into the record, so Tower and the release packet join a release to its
 	// clearance by id and never by guessing. Absent until the gate has registered the release's PR.
 	Clearance *ClearanceRef `json:"clearance,omitempty"`
+	// Origin is the build flow of the image this release carries, when it is a promotion or rollback whose origin was
+	// resolved (docs/admin/api.md#promotion-lineage): the promotion keeps its own chain id, and this is the link back.
+	Origin *OriginRef `json:"origin,omitempty"`
+	// Reissue links a release whose PR was closed unmerged to the release that replaced it (docs/admin/release-state.md#reissue):
+	// `of` is set on the new release (the chain it reissues), `by` on the old one (the chain that replaced it).
+	Reissue *ReissueRef `json:"reissue,omitempty"`
+}
+
+// ReissueRef is reissueOf and reissuedBy of the record: chain ids.
+type ReissueRef struct {
+	Of string `json:"of,omitempty"`
+	By string `json:"by,omitempty"`
+}
+
+// OriginRef is the flow that built a release's image: originChainId, originChainSlug and originTraceId of the record.
+type OriginRef struct {
+	ChainID   string `json:"chainId"`
+	ChainSlug string `json:"chainSlug,omitempty"`
+	TraceID   string `json:"traceId,omitempty"`
 }
 
 // ClearanceRef is the join key to Clearance: the change's id (GET /v1/clearances/{id}) and the manifest-tree digest
@@ -45,6 +64,12 @@ func newRecord(name string, d map[string]string) Record {
 	r := Record{Name: name, Data: d}
 	if id := d["clearanceId"]; id != "" {
 		r.Clearance = &ClearanceRef{ID: id, Tree: d["clearanceTree"]}
+	}
+	if id := d["originChainId"]; id != "" {
+		r.Origin = &OriginRef{ChainID: id, ChainSlug: d["originChainSlug"], TraceID: d["originTraceId"]}
+	}
+	if d["reissueOf"] != "" || d["reissuedBy"] != "" {
+		r.Reissue = &ReissueRef{Of: d["reissueOf"], By: d["reissuedBy"]}
 	}
 	return r
 }
@@ -68,6 +93,16 @@ func data(d map[string]string) map[string]string {
 
 // List returns every release record of the app, all environments.
 func (r Reader) List(ctx context.Context, namespace, app string) ([]Record, error) {
+	return r.ListFrom(ctx, namespace, app, "")
+}
+
+// ListFrom is List limited to the releases that came from one build flow (originChainId = fromChain), when fromChain is
+// not "": the promotions and rollbacks of the image that chain built. Bounded by the app's release records, which one
+// label-selected list returns; the filter is on the record's own field.
+func (r Reader) ListFrom(ctx context.Context, namespace, app, fromChain string) ([]Record, error) {
+	if fromChain != "" && !chainID.MatchString(fromChain) {
+		return nil, Invalid{fmt.Sprintf("invalid chain id '%s'", fromChain)}
+	}
 	list, err := r.CS.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "hangar.io/subcomponent=release-tracking,hangar.io/app=" + app,
 	})
@@ -76,6 +111,9 @@ func (r Reader) List(ctx context.Context, namespace, app string) ([]Record, erro
 	}
 	out := []Record{}
 	for _, cm := range list.Items {
+		if fromChain != "" && cm.Data["originChainId"] != fromChain {
+			continue
+		}
 		out = append(out, newRecord(cm.Name, cm.Data))
 	}
 	return out, nil

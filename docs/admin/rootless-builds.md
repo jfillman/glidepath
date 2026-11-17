@@ -12,7 +12,7 @@
 | Pod Security `baseline` or `privileged` on the app's `-cicd` namespace (Glidepath sets and enforces `baseline`) | rootlesskit creates a user namespace; `restricted` (`allowPrivilegeEscalation: false`, RuntimeDefault seccomp) blocks that |
 | kubelet `seccompDefault: false`, or a Localhost seccomp profile on the step | RuntimeDefault seccomp blocks the user-namespace setup |
 | binfmt_misc handlers on the build node for every foreign platform | RUN steps in a target-platform stage run emulated; kiac-dev registers them with `00-bootstrap/binfmt/` (gitops-cluster-dev) |
-| A `registry-credentials` dockerconfigjson Secret in the namespace | Push credentials, mounted at `/home/user/.docker` |
+| Optionally, a read-only `build-pull-credentials` dockerconfigjson Secret in the namespace | Pulling private base images and importing a private cache; mounted at `/home/user/.docker`. The push credential is **not** in this pod: `push-image`, a separate pod, pushes ([security.md](security.md#image-build-and-push)) |
 
 The step runs as UID 1000, adds no capabilities, mounts nothing from the host and sets no
 seccomp or AppArmor profile. That is the shape that passes `baseline`: setting either profile
@@ -37,6 +37,10 @@ other stage's RUN steps go through QEMU. Emulation is slow and crashes the Go co
 Each app gets a second GHCR package, `<image-repo>-buildcache`, holding one OCI cache
 manifest (`latest`, `mode=max`). The first build logs `failed to configure registry cache
 importer ... not found` and carries on. Deleting the package only costs one cold build.
+
+The build pod only imports it. A main build exports its cache to the workspace and `push-image` publishes it; a pull request's
+build imports the main cache and exports none (so it cannot write a cache a main build imports). See
+[security.md](security.md#image-build-and-push).
 
 ## Checking a cluster
 

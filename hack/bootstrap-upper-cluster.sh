@@ -41,7 +41,8 @@ require kubectl
 require helm
 
 log "0/3 - target the existing ${CONTEXT} cluster (not creating one)"
-if ! kubectl config get-contexts -o name | grep -qx "${CONTEXT}"; then
+contexts="$(kubectl config get-contexts -o name)"
+if ! grep -qxF "${CONTEXT}" <<<"${contexts}"; then
   echo "error: context '${CONTEXT}' not found in your kubeconfig. This script assumes" >&2
   echo "the upper-env cluster already exists - it does not create one. If it's a stopped" >&2
   echo "podman-backed kind cluster, 'podman start <name>-control-plane' first." >&2
@@ -49,7 +50,8 @@ if ! kubectl config get-contexts -o name | grep -qx "${CONTEXT}"; then
 fi
 
 log "CNI check (informational)"
-if ! kubectl --context "${CONTEXT}" get pods -n kube-system -l k8s-app=calico-node --no-headers 2>/dev/null | grep -q .; then
+calico_pods="$(kubectl --context "${CONTEXT}" get pods -n kube-system -l k8s-app=calico-node --no-headers 2>/dev/null || true)"
+if [[ -z "${calico_pods}" ]]; then
   warn "${CONTEXT} runs kindnet, not Calico - NetworkPolicy is a silent no-op here."
   warn "See docs/admin/multi-cluster.md."
 fi

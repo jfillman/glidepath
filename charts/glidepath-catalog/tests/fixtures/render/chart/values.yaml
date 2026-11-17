@@ -1,0 +1,8 @@
+appName: x
+cluster: c
+envName: e
+namespace: {labels: {}}
+serviceNamespacePattern: ""
+replicas: 1
+image: {repository: registry.example/acme/app, tag: "1.0.0"}
+release: {}

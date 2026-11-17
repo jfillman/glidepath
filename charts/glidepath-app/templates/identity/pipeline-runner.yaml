@@ -22,9 +22,13 @@ metadata:
     hangar.io/subcomponent: "identity"
   namespace: {{ $appNamespace }}
 rules:
+  # Read only. stage-debrief and comment-pr-check-result read this run's own PipelineRun/TaskRun
+  # results. It cannot create a run: a pod running as this account could otherwise submit a TaskRun
+  # (or a PipelineRun) of its own shape - any image, any projected-token audience (the Clearance one
+  # included), any Secret of this namespace mounted. Creating runs is pipeline-trigger's, below.
   - apiGroups: ["tekton.dev"]
     resources: ["pipelineruns", "taskruns"]
-    verbs: ["get", "list", "watch", "create"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods", "pods/log", "events", "persistentvolumeclaims"]
     verbs: ["get", "list", "watch"]
@@ -36,8 +40,11 @@ rules:
   # this pipeline with - not a general secrets-read grant.
   - apiGroups: [""]
     resources: ["secrets"]
-    resourceNames: ["app-secrets"]
+    resourceNames: ["app-secrets", "dex-check-ride-credentials"]
     verbs: ["get"]
+  # dex-check-ride-credentials is published into this namespace by Airframe's Dex component (spec.checkRide)
+  # for the check ride, and forwarded to Testkube beside app-secrets by the same step. It holds an OAuth client
+  # id and secret for this app's own Dex client; nothing else in this namespace reads it.
   # release-tracking ConfigMaps (open-release-pr.yaml writes release-tracking-<chain-id>
   # holding pr-url/pr-created-at, since those can't be committed to git before the PR
   # exists - see that Task's own header; release-outcome-notify.yaml's
@@ -48,11 +55,22 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "create", "patch", "delete"]
+  # Ref protection (pipeline trust T3): the first task of every privileged Pipeline asks glidepath-api whether the git host
+  # protects the ref that started the run (GET /v1/apps/{app}/ref-protection). The API authorizes it with a
+  # SubjectAccessReview on this virtual resource, which nothing in the cluster serves: this grant is only the string.
+  # It reads a verdict; it changes nothing.
+  - apiGroups: ["glidepath.hangar.io"]
+    resources: ["refprotection"]
+    verbs: ["get"]
   # Deliberately no apps/deployments rule (that's deploy-rbac.yaml, a peer namespace),
-  # no impersonate, no wildcards, no cluster-scoped rules - this plus the configmaps
+  # no impersonate, no wildcards, no cluster-scoped rules, no run creation - this plus the configmaps
   # grant above is the entire blast radius of a compromised pipeline-runner identity
   # (plus the narrowly-scoped cross-namespace Testkube grants in
   # templates/testkube/rbac-and-secret.yaml).
+  #
+  # Trust model (docs/admin/security.md, "Pipeline identities"): pipeline-runner runs the CATALOG's
+  # tasks, whose code the platform ships. It never runs the app repository's code: build-source,
+  # unit-test and the artifact builds run as source-runner, which has no credentials at all.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -68,13 +86,91 @@ subjects:
     name: pipeline-runner
     namespace: {{ $appNamespace }}
 ---
-# Lets the shared broker (platform-system/cdevents-broker) create the next-stage
-# PipelineRun as this Application's pipeline-runner SA only, in this namespace only -
-# not a cluster-wide impersonate grant.
+# The identity that CREATES PipelineRuns in this namespace: the Triggers that chain the next stage
+# (impersonated by the shared broker, below) and the one-time onboarding bootstrap Job. No task runs
+# as it, so no source code and no catalog task ever holds a token that can create a run. The run
+# it creates executes as pipeline-runner (taskRunTemplate.serviceAccountName), not as this account.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pipeline-trigger
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+automountServiceAccountToken: false
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: allow-broker-impersonate-pipeline-runner
+  name: pipeline-trigger
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+rules:
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pipeline-trigger
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: pipeline-trigger }
+subjects:
+  - kind: ServiceAccount
+    name: pipeline-trigger
+    namespace: {{ $appNamespace }}
+---
+# Runs the app repository's own code: the build stage's build-source, unit-test and artifact builds
+# (build.sh, test.sh, dependency installs, `python -m build`, `go build`). It has NO Role and NO
+# RoleBinding, and its token is not mounted: code from a pull request that runs there cannot read or
+# write the Kubernetes API, cannot touch the release records (release-tracking-*), and has no
+# projected token for any audience. Nothing must ever bind this account to a Role; the chart test
+# (tests/pipeline_least_privilege_test.py) fails if anything does. It carries the registry pull
+# secret only so its pod can pull the same toolbox image the other tasks pull.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: source-runner
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+automountServiceAccountToken: false
+imagePullSecrets:
+  - name: registry-credentials
+---
+# Runs push-image, the one task that holds the registry push credential for the image. It runs nothing from the repository: it
+# validates the OCI layout build-image wrote (as source-runner) and copies it to the application's repository with oras. Like
+# source-runner it has NO Role and NO RoleBinding and no mounted token: the push needs the registry credential (a Secret volume
+# of the task) and nothing from the Kubernetes API. It is a separate account so that the admission policy can say which task may
+# have it (cicdRunAdmission.pusherTasks) and so that no code that runs as pipeline-runner or source-runner gets the push
+# credential's pod by naming it. Nothing must ever bind this account to a Role; the chart test fails if anything does.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: image-pusher
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+automountServiceAccountToken: false
+imagePullSecrets:
+  - name: registry-credentials
+---
+# Lets the shared broker (platform-system/cdevents-broker) create the next-stage
+# PipelineRun as this Application's pipeline-trigger SA only, in this namespace only -
+# not a cluster-wide impersonate grant. (The run itself executes as pipeline-runner.)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: allow-broker-impersonate-pipeline-trigger
   labels:
     {{- include "glidepath-app.labels" . | nindent 4 }}
     hangar.io/subcomponent: "identity"
@@ -82,18 +178,18 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["serviceaccounts"]
-    resourceNames: ["pipeline-runner"]
+    resourceNames: ["pipeline-trigger"]
     verbs: ["impersonate"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: allow-broker-impersonate-pipeline-runner
+  name: allow-broker-impersonate-pipeline-trigger
   labels:
     {{- include "glidepath-app.labels" . | nindent 4 }}
     hangar.io/subcomponent: "identity"
   namespace: {{ $appNamespace }}
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: allow-broker-impersonate-pipeline-runner }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: allow-broker-impersonate-pipeline-trigger }
 subjects:
   - kind: ServiceAccount
     name: cdevents-broker

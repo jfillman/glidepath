@@ -48,13 +48,25 @@ type githubReadRequest struct {
 	Owner string `json:"owner"`
 	Repo  string `json:"repo"`
 	App   string `json:"app"`
+	// Purpose is "" or the legacy "ref-protection" that a glidepath-api older than pipeline trust T3b still sends. Both get
+	// the read-only set above and nothing more: there is no elevated purpose (ref protection rests on review evidence,
+	// which contents, pull requests and metadata read cover), and no request field can widen the permissions.
+	Purpose string `json:"purpose,omitempty"`
 }
+
+// purposeLegacyRefProtection was the purpose that once asked for Administration. It is accepted so a glidepath-api that
+// still sends it keeps working through a rolling upgrade, and it is minted exactly like no purpose.
+const purposeLegacyRefProtection = "ref-protection"
 
 // loadGitHubReadCallers reads GITHUB_READ_CALLERS: comma-separated usernames as TokenReview names them
 // (system:serviceaccount:<ns>:<name>). Empty: the endpoint answers 503.
 func loadGitHubReadCallers() map[string]bool {
+	return loadCallerList("GITHUB_READ_CALLERS")
+}
+
+func loadCallerList(env string) map[string]bool {
 	callers := map[string]bool{}
-	for _, c := range strings.Split(os.Getenv("GITHUB_READ_CALLERS"), ",") {
+	for _, c := range strings.Split(os.Getenv(env), ",") {
 		if c = strings.TrimSpace(c); c != "" {
 			callers[c] = true
 		}
@@ -70,6 +82,9 @@ func githubReadCheck(callers map[string]bool, caller string, req githubReadReque
 	}
 	if !callers[caller] {
 		return http.StatusForbidden, fmt.Errorf("%s may not ask for GitHub read tokens", caller)
+	}
+	if req.Purpose != "" && req.Purpose != purposeLegacyRefProtection {
+		return http.StatusBadRequest, fmt.Errorf("purpose must be empty (the only token this endpoint mints is the read-only one)")
 	}
 	if !ownerPattern.MatchString(req.Owner) || !githubReadRepoRE.MatchString(req.Repo) || !githubReadAppRE.MatchString(req.App) {
 		return http.StatusBadRequest, fmt.Errorf("request body must be {\"owner\":..., \"repo\":..., \"app\":...}, each a plain name")
@@ -149,12 +164,14 @@ func handleGitHubReadToken(clientset kubernetes.Interface, dynClient dynamic.Int
 			fail(http.StatusBadGateway, installationLookupMessage("the GitHub App", req, err))
 			return
 		}
-		instToken, expiresAt, err := githubapp.MintRepoReadToken(appJWT, installationID, req.Repo)
+		// Always the read-only set (contents, pull requests, metadata): nothing in the request or the configuration widens it.
+		perms := githubapp.RepoReadPermissions()
+		instToken, expiresAt, err := githubapp.MintScopedToken(appJWT, installationID, req.Repo, perms)
 		if err != nil {
 			fail(http.StatusBadGateway, err.Error())
 			return
 		}
-		log.Printf("github read token: %s for %s/%s (app %s)", caller, req.Owner, req.Repo, req.App)
+		log.Printf("github read token: %s for %s/%s (app %s, purpose %q, permissions %v)", caller, req.Owner, req.Repo, req.App, req.Purpose, perms)
 		_ = json.NewEncoder(w).Encode(githubInstallationTokenResponse{Token: instToken, ExpiresAt: expiresAt})
 	}
 }

@@ -1,0 +1,48 @@
+name: pipeline-identities-ci
+
+# The trust model of a tenant's -cicd namespace (docs/admin/security.md, "Pipeline identities"): the account that runs
+# the repository's own code holds nothing, only the trigger identity creates runs, and the admission policy keeps a
+# pull request's .tekton file inside the catalog. The assertions read three charts, so any of them triggers this.
+
+on:
+  pull_request:
+    paths:
+      - "charts/glidepath-app/**"
+      - "charts/glidepath-catalog/**"
+      - "charts/glidepath-control-plane/**"
+      - ".github/workflows/pipeline-identities-ci.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "charts/glidepath-app/**"
+      - "charts/glidepath-catalog/**"
+      - "charts/glidepath-control-plane/**"
+      - ".github/workflows/pipeline-identities-ci.yaml"
+
+jobs:
+  identities:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      # cel-python evaluates the admission policies' own CEL, so a typo in an expression fails here, not in production.
+      - run: pip install pyyaml cel-python
+      - run: python3 charts/glidepath-app/tests/pipeline_least_privilege_test.py
+      - run: python3 charts/glidepath-app/tests/chain_origin_test.py
+      - run: python3 charts/glidepath-app/tests/pac_concurrency_test.py
+      - run: python3 charts/glidepath-control-plane/tests/cicd_run_admission_test.py
+      # no two platform CronJobs share a minute of the hour; the per-app token refresher's minute derives from the app name
+      - run: python3 charts/glidepath-control-plane/tests/cronjob_schedule_test.py
+      - run: python3 charts/glidepath-catalog/tests/build_artifact_publish_test.py
+      - run: python3 charts/glidepath-catalog/tests/workspace_hardening_test.py
+      - run: python3 charts/glidepath-catalog/tests/chart_safety_test.py
+      - run: python3 charts/glidepath-catalog/tests/testworkflow_policy_test.py
+      - run: python3 charts/glidepath-catalog/tests/image_push_split_test.py
+      # Rendering is not done where the credentials are: the render task holds nothing, the gates read its output as data (real helm).
+      - run: python3 charts/glidepath-catalog/tests/tokenless_render_test.py
+      # no repository string becomes part of a yq/jq program or chooses where a credentialed fetch goes
+      - run: python3 charts/glidepath-catalog/tests/program_text_test.py
+      # no credential in a URL, an argument or a log excerpt that is posted
+      - run: python3 charts/glidepath-catalog/tests/credentials_test.py
+      # a repository name is parsed whole (acme.web), and a fetch's credential header does not stay exported for the rest of the step
+      - run: python3 charts/glidepath-catalog/tests/repo_name_and_git_auth_test.py

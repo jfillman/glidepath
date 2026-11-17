@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# clearance-gate.yaml's render, admission and register steps (C-8: the offline admission verdict sent with the
+# clearance-gate.yaml's ingest (the render itself is render-manifests: the chain publish, render, ingest runs first), admission and register steps (C-8: the offline admission verdict sent with the
 # change) against the policy-validation fixtures (fixtures/policy-validation: a stand-in chart, Airframe XRD plurals
 # and a cluster's 30-policy tree), with the real helm and Kyverno CLI. The fetch step (git, the GitHub API and the
 # broker) is replaced by the /work layout it leaves, and curl by a stand-in Clearance that keeps what it was sent.
 # Needs helm, yq, jq, python3 + pyyaml and kyverno (the toolbox's version) on PATH.
 # Usage: charts/glidepath-catalog/tests/clearance_gate_admission_test.sh
 set -u
-cd "$(dirname "$0")/../../.."
+here="$(cd "$(dirname "$0")" && pwd)"
+cd "$here/../../.."
 command -v kyverno >/dev/null || { echo "FAIL: kyverno not on PATH"; exit 1; }
 fx="$(pwd)/charts/glidepath-catalog/tests/fixtures/policy-validation"
 fail=0
@@ -14,7 +15,11 @@ d="$(mktemp -d)"
 trap '[[ -n "${KEEP:-}" ]] || rm -rf "$d"' EXIT
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
   --show-only templates/tasks/clearance-gate.yaml > "$d/task.yaml" || { echo "FAIL: render"; exit 1; }
+helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
+  --show-only templates/tasks/render-manifests.yaml > "$d/rtask.yaml" || { echo "FAIL: render (render-manifests)"; exit 1; }
 mkdir -p "$d/bin"
+# The publish -> render-manifests -> ingest chain the Pipeline runs before this Task's admission step (tests/lib/gate_chain.sh).
+source "${here}/lib/gate_chain.sh"
 step() { # <index> <work dir>
   yq ".spec.steps[$1].script" "$d/task.yaml" \
     | sed -e "s#/work#$2#g" -e "s#\$(results.outcome.path)#$2/outcome#g" -e "s#\$(results.findings-summary.path)#$2/summary#g" \
@@ -62,34 +67,36 @@ policy_commit=9f2c0000000000000000000000000000000000e1
 run() {
   local s="$1" app="$2"
   export WORK="$d/$s"
-  mkdir -p "$WORK/repo/hangar-prod/prod" "$WORK/base/hangar-prod/prod" "$WORK/policies/hangar-prod"
-  cp "$fx/gitops/hangar-prod/prod/release.yaml" "$WORK/repo/hangar-prod/prod/"
-  cp "$fx/gitops/hangar-prod/prod/release.yaml" "$WORK/base/hangar-prod/prod/"
-  printf '%s\n' "$3" > "$WORK/repo/hangar-prod/prod/values.yaml"
-  printf 'replicas: 1\n' > "$WORK/base/hangar-prod/prod/values.yaml"
-  : > "$WORK/policies/unreadable"
+  local P="$WORK/pub"
+  mkdir -p "$P/repo/hangar-prod/prod" "$P/base/hangar-prod/prod" "$P/policies/hangar-prod" "$P/observability"
+  : > "$P/observability/hangar-prod.yaml"
+  cp "$fx/gitops/hangar-prod/prod/release.yaml" "$P/repo/hangar-prod/prod/"
+  cp "$fx/gitops/hangar-prod/prod/release.yaml" "$P/base/hangar-prod/prod/"
+  printf '%s\n' "$3" > "$P/repo/hangar-prod/prod/values.yaml"
+  printf 'replicas: 1\n' > "$P/base/hangar-prod/prod/values.yaml"
+  : > "$P/policies/unreadable"
   if [[ "${4:-}" == unreadable ]]; then
-    echo hangar-prod > "$WORK/policies/unreadable"; rm -rf "$WORK/policies/hangar-prod"
+    echo hangar-prod > "$P/policies/unreadable"; rm -rf "$P/policies/hangar-prod"
   else
-    cp -R "$fx/policies/30-policy/." "$WORK/policies/hangar-prod/"
+    cp -R "$fx/policies/30-policy/." "$P/policies/hangar-prod/"
     echo "{\"repoURL\":\"https://github.com/acme/gitops-hangar-prod.git\",\"path\":\"30-policy\",\"revision\":\"main\",\"commit\":\"${commit}\",\"files\":3}" \
-      > "$WORK/policies/hangar-prod.source.json"
+      > "$P/policies/hangar-prod.source.json"
   fi
-  echo '{"ttlDays": 3}' > "$WORK/clearance.json"
+  echo '{"ttlDays": 3}' > "$P/clearance.json"
   jq -n --arg pc "${policy_commit}" '{owner: "acme", repo: "gitops-x", pr: 7, head: ("a" * 40), base: ("b" * 40), author: "dana",
     files: [{filename: "hangar-prod/prod/values.yaml", status: "modified", additions: 2, deletions: 1}], looksAgent: false,
-    provenance: null, checkRuns: [], policyCommit: $pc}' > "$WORK/meta.json"
-  echo "hangar-prod|prod|default|true" > "$WORK/plan.txt"
+    provenance: null, checkRuns: [], policyCommit: $pc}' > "$P/meta.json"
+  echo "hangar-prod|prod|default|true" > "$P/plan.txt"
+  gate_chain "$d/task.yaml" "$d/rtask.yaml" clearance-gate "$WORK" "$app"
+  cp "$WORK/chain.log" "$WORK/render.log"; cp "$WORK/ingest.rc" "$WORK/render.rc"
   echo token > "$WORK/token"
-  step 1 "$WORK"; step 2 "$WORK"; step 3 "$WORK"
-  ( cd "$WORK" && PATH="$d/bin:$PATH" APP_NAME="$app" NAMESPACE="app-${app}-cicd" bash "$WORK/step1.sh" ) > "$WORK/render.log" 2>&1
-  echo $? > "$WORK/render.rc"
-  ( cd "$WORK" && PATH="$d/bin:$PATH" bash "$WORK/step2.sh" ) > "$WORK/admission.log" 2>&1
+  step 3 "$WORK"; step 4 "$WORK"
+  ( cd "$WORK" && PATH="$d/bin:$PATH" bash "$WORK/step3.sh" ) > "$WORK/admission.log" 2>&1
   echo $? > "$WORK/admission.rc"
   ( cd "$WORK" && PATH="$d/bin:$PATH" APP_NAME="$app" NAMESPACE="app-${app}-cicd" CLEARANCE_URL=http://clearance CLEARANCE_ANSWER="${CLEARANCE_ANSWER:-ok}" \
-      TOWER_URL="" PIPELINE_RUN="" bash "$WORK/step3.sh" ) > "$WORK/register.log" 2>&1
+      TOWER_URL="" PIPELINE_RUN="" bash "$WORK/step4.sh" ) > "$WORK/register.log" 2>&1
   echo $? > "$WORK/register.rc"
-  [[ "$(cat "$WORK/render.rc")" == 0 ]] || { echo "-- ${s}: render step log:"; cat "$WORK/render.log"; }
+  [[ "$(cat "$WORK/render.rc")" == 0 ]] || { echo "-- ${s}: render and ingest log:"; cat "$WORK/render.log"; }
 }
 posted() { jq -r "$2" "$d/$1/posted-${3:-1}.json"; }
 

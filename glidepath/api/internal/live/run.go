@@ -43,10 +43,21 @@ type ReleaseRun struct {
 	Tasks          []RunTask `json:"tasks"` // every task of the Pipeline in its order, then its finally tasks
 	// Params: the run's string params (env, cluster, image-ref, git-url, git-revision, initiator, ...): what Tower's
 	// promotion notification reads. Pipeline params carry no secret.
-	Params map[string]string `json:"params"`
-	ChainID        string    `json:"chainId,omitempty"`
-	PRURL          string    `json:"prUrl,omitempty"`
-	ChangeRequest  string    `json:"changeRequest,omitempty"`
+	Params        map[string]string `json:"params"`
+	ChainID       string            `json:"chainId,omitempty"`
+	PRURL         string            `json:"prUrl,omitempty"`
+	ChangeRequest string            `json:"changeRequest,omitempty"`
+	// Origin is the build flow of the image this run releases, as glidepath-api stamped it on the run when it resolved
+	// it (annotations glidepath.io/origin-chain-id, -chain-slug, -trace-id); absent for a flow's own release step and
+	// for a promotion whose origin could not be resolved. This run keeps its own ChainID.
+	Origin *RunOrigin `json:"origin,omitempty"`
+}
+
+// RunOrigin is a release run's origin.
+type RunOrigin struct {
+	ChainID   string `json:"chainId"`
+	ChainSlug string `json:"chainSlug,omitempty"`
+	TraceID   string `json:"traceId,omitempty"`
 }
 
 func str(m map[string]any, k string) string {
@@ -59,7 +70,10 @@ func mapOf(v any) map[string]any {
 	return m
 }
 
-// statusOf reads Tekton's Succeeded condition: Unknown is running, True succeeded, False failed or cancelled.
+// statusOf reads Tekton's Succeeded condition: Unknown is running, True succeeded, False failed or cancelled. A run waiting
+// for a concurrency slot is `queued`, not running: Pipelines-as-Code creates runs beyond a repository's limit with
+// spec.status PipelineRunPending (condition Unknown, reason PipelineRunPending). That is read from the object's own
+// spec and condition, never from the PaC label or annotation, which can outlive the wait.
 func statusOf(o Obj) (status, reason, message string) {
 	st := mapOf(o["status"])
 	conds, _ := st["conditions"].([]any)
@@ -78,7 +92,13 @@ func statusOf(o Obj) (status, reason, message string) {
 			}
 			return "failed", reason, message
 		}
+		if reason == "PipelineRunPending" || str(mapOf(o["spec"]), "status") == "PipelineRunPending" {
+			return "queued", reason, message
+		}
 		return "running", reason, message
+	}
+	if str(mapOf(o["spec"]), "status") == "PipelineRunPending" {
+		return "queued", "PipelineRunPending", ""
 	}
 	return "pending", "", ""
 }
@@ -126,7 +146,11 @@ func (c *Client) ReleaseRun(ctx context.Context, namespace, name string) (*Relea
 		return nil, Invalid{fmt.Sprintf("PipelineRun '%s' is not a release run", name)}
 	}
 	p := params(pr)
-	out := &ReleaseRun{Name: name, Kind: "release", Env: p["env"], Cluster: p["cluster"], Initiator: p["initiator"], Tasks: []RunTask{}, Params: p}
+	var origin *RunOrigin
+	if ann := mapOf(meta["annotations"]); str(ann, "glidepath.io/origin-chain-id") != "" {
+		origin = &RunOrigin{ChainID: str(ann, "glidepath.io/origin-chain-id"), ChainSlug: str(ann, "glidepath.io/origin-chain-slug"), TraceID: str(ann, "glidepath.io/origin-trace-id")}
+	}
+	out := &ReleaseRun{Origin: origin, Name: name, Kind: "release", Env: p["env"], Cluster: p["cluster"], Initiator: p["initiator"], Tasks: []RunTask{}, Params: p}
 	if p["release-kind"] != "" {
 		out.Kind = p["release-kind"]
 	}

@@ -125,9 +125,12 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         source "${PLATFORM_LIB}/github-app.sh"
+        {{- include "glidepath-catalog.redactSecrets" . | nindent 8 }}
 
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
-        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        # the whole repository name: a dot is part of it (acme.web), only a trailing .git is not
+        repo="$(sed -E 's#^https?://github\.com/[^/]+/([A-Za-z0-9._-]+)/?$#\1#' <<<"${REPO_URL}")"; repo="${repo%.git}"
+        [[ "${repo}" =~ ^[A-Za-z0-9._-]{1,100}$ && "${repo}" != . && "${repo}" != .. ]] || { echo "error: ${REPO_URL} is not a github.com repository URL with a plain repository name" >&2; exit 1; }
         token="$(github_app_installation_token "${owner}" "${repo}")"
 
         # PaC's {{ "{{" }} body.pull_request.number {{ "}}" }} template var only resolves for a genuine
@@ -182,7 +185,7 @@ spec:
             pod_name="$(kubectl get taskrun "${advisory_failed}" -n "${NAMESPACE}" -o jsonpath='{.status.podName}' 2>/dev/null || true)"
             excerpt="(no log excerpt available)"
             if [[ -n "${pod_name}" ]]; then
-              excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=20 2>/dev/null | tail -c 1200 || true)"
+              excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=20 2>/dev/null | redact_secrets | tail -c 1200 || true)"
             fi
             if [[ "${ADVISORY_REASON}" == "not-required" ]]; then
               body="$(printf '### ⚠️ `%s` found a problem, advisory until the gate is required\n\nThis check would fail once the `%s` gate is required on this cluster (`required: true` on its `releaseGuardrails` entry in the Glidepath catalog, docs/admin/release-guardrails.md). It did not block because the gate runs report-only here. The finding is recorded here and on the check run.\n\n**What it found:**\n```\n%s\n```' \
@@ -224,7 +227,7 @@ spec:
           if [[ -n "${failed_taskrun}" ]]; then
             pod_name="$(kubectl get taskrun "${failed_taskrun}" -n "${NAMESPACE}" -o jsonpath='{.status.podName}' 2>/dev/null || true)"
             if [[ -n "${pod_name}" ]]; then
-              log_excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=20 2>/dev/null | tail -c 1200 || true)"
+              log_excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=20 2>/dev/null | redact_secrets | tail -c 1200 || true)"
             fi
           fi
           [[ -z "${log_excerpt}" ]] && log_excerpt="(no log excerpt available)"
@@ -419,8 +422,11 @@ spec:
         # A newer commit's gates decide; this run verified an older one.
         [[ -z "${REVISION}" || "${REVISION}" == "${head_sha}" ]] || { echo "${GATE_NAME} ran on ${REVISION:0:7}, the PR is at ${head_sha:0:7}"; exit 0; }
         # Only a Flight environment's release file is promoted (a cloud pin PR keeps its own copy at deploy).
-        gh_ "https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/files?per_page=100" \
-          | jq -e '[.[].filename | select(test("^[^/]+/[^/]+/release\\.yaml$"))] | length > 0' >/dev/null \
+        # The file list is fetched on its own. This step runs without -e and never fails the gate, so a failed read is handled here: no
+        # promotion is asked and the log says the read failed (it must not read as "no release file"); `/retest <gate>-` asks again.
+        pr_files="$(gh_ "https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/files?per_page=100")" \
+          || { echo "warn: could not read #${pr_number}'s files from GitHub: no promotion asked (\`/retest ${GATE_NAME}-\` asks again)" >&2; exit 0; }
+        jq -e '[.[].filename | select(test("^[^/]+/[^/]+/release\\.yaml$"))] | length > 0' >/dev/null <<<"${pr_files}" \
           || { echo "#${pr_number} changes no <cluster>/<env>/release.yaml: nothing to promote"; exit 0; }
 
         # The gate ledger: this gate's verdict for this commit in the release record, written with the record's
@@ -450,7 +456,7 @@ spec:
         [[ "${verdict}" == success ]] || gate_advisory_for_app "${app}" "${GATE_NAME}" \
           || { echo "${GATE_NAME} is not green: no promotion"; exit 0; }
 
-        checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")" || exit 0
+        checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100&filter=latest")" || exit 0
         # A gate's check is "<PaC application name> / <gate>-", under the current name or an earlier one (catalog
         # pipelinesAsCode).
         pac_apps={{ include "glidepath-catalog.pacAppNames" . | squote }}
@@ -471,7 +477,7 @@ spec:
               case "${c}" in
                 missing|queued|in_progress)
                   sleep 5
-                  checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100")" || break
+                  checks="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100&filter=latest")" || break
                   c="$(newest "${gate}")" ;;
                 *) break ;;
               esac
@@ -486,10 +492,43 @@ spec:
         esac
 
         # One event id per commit and attempt: two gates that both see the set complete send the same id, and the
-        # Trigger names the PipelineRun after it, so only one runs; after a refused or failed promotion the next
-        # attempt (a new image-promotion check run) gets a new id.
-        attempts="$(jq -r --argjson apps "${pac_apps}" --argjson ext "${ext_checks}" --arg g image-promotion '[.check_runs[] | select({{ include "glidepath-catalog.checkMatchJq" . }}) | {{ include "glidepath-catalog.neutralOkJq" . }}] | length' <<<"${checks}")"
-        id="$(printf '%s' "${owner}/${repo}#${pr_number}@${head_sha}#${attempts}" | sha256sum | cut -c1-20)"
+        # Trigger names the PipelineRun after it, so only one runs; after a completed (failed or refused) promotion the
+        # next attempt gets a new id. The attempts are counted over EVERY image-promotion check run on the commit
+        # (filter=all): the default listing (filter=latest) holds only the newest run per check name, so a count taken
+        # from it never passed 1 and every later attempt reused the second id, whose PipelineRun already existed
+        # (gitops-backstage#303, 2026-11-14). Each promote run sets its check run's external_id to its TaskRun's name
+        # (promote-<id>-promote), so an id whose run already finished (a count that did not move) is skipped too. The runs
+        # themselves live in the catalog namespace, which a gate has no grant to read; a promotion that refused before
+        # it could open a check run leaves neither (docs/admin/registries.md).
+        all_runs="[]"
+        for page in $(seq 1 10); do
+          chunk="$(gh_ "https://api.github.com/repos/${owner}/${repo}/commits/${head_sha}/check-runs?per_page=100&filter=all&page=${page}")" \
+            || { echo "warn: could not count the earlier promotion attempts on ${head_sha:0:7}: no promotion asked" >&2; exit 0; }
+          all_runs="$(jq -c --argjson more "$(jq -c '.check_runs' <<<"${chunk}")" '. + $more' <<<"${all_runs}")"
+          [[ "$(jq -r '.check_runs | length' <<<"${chunk}")" -ge 100 ]] || break
+        done
+        attempts="$(jq -r --argjson apps "${pac_apps}" --argjson ext "${ext_checks}" --arg g image-promotion '[.[] | select({{ include "glidepath-catalog.checkMatchJq" . }}) | {{ include "glidepath-catalog.neutralOkJq" . }}] | length' <<<"${all_runs}")"
+        prior=""
+        for _ in $(seq 1 10); do
+          id="$(printf '%s' "${owner}/${repo}#${pr_number}@${head_sha}#${attempts}" | sha256sum | cut -c1-20)"
+          prior="$(jq -r --arg x "promote-${id}" '[.[] | select(((.external_id // "") | startswith($x + "-")) and .status == "completed")] | .[0].completed_at // empty' <<<"${all_runs}")"
+          [[ -n "${prior}" ]] || break
+          echo "promote-${id} already ran and finished at ${prior}: moving to the next attempt"
+          attempts=$(( attempts + 1 ))
+        done
+        if [[ -n "${prior}" ]]; then
+          # Ten finished promotions on one commit: say so on the PR instead of leaving the Trigger to refuse the name.
+          marker="<!-- glidepath:promotion-retry-exhausted -->"
+          note="$(printf '%s\n### ❌ `image-promotion` was not started again\n\nTen promotion runs have already finished on `%s`, so no new one is started. Push a new commit to the release branch (a new commit is a new set of attempts), or ask the platform team to look at the earlier `promote-*` runs in `%s`.' "${marker}" "${head_sha:0:7}" "${NAMESPACE}")"
+          cid="$(gh_ "https://api.github.com/repos/${owner}/${repo}/issues/${pr_number}/comments?per_page=100" | jq -r --arg m "${marker}" '[.[] | select(.body | startswith($m))][0].id // empty')"
+          if [[ -n "${cid}" ]]; then
+            gh_ -X PATCH "https://api.github.com/repos/${owner}/${repo}/issues/comments/${cid}" -d "$(jq -n --arg b "${note}" '{body: $b}')" >/dev/null || true
+          else
+            gh_ -X POST "https://api.github.com/repos/${owner}/${repo}/issues/${pr_number}/comments" -d "$(jq -n --arg b "${note}" '{body: $b}')" >/dev/null || true
+          fi
+          echo "promotion not asked: ten finished attempts on ${head_sha:0:7}"
+          exit 0
+        fi
         event="$(jq -nc --arg id "${id}" --arg ns "${NAMESPACE}" --arg pr "${PIPELINE_RUN_NAME}" --arg app "${app}" \
           --arg url "https://github.com/${owner}/${repo}" --arg n "${pr_number}" --arg sha "${head_sha}" --arg g "${GATE_NAME}" \
           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
