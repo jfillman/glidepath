@@ -1,5 +1,5 @@
 # release-source.sh: the source of a pipeline release PR, for the clearance-gate Task (docs/admin/clearance-gate.md,
-# "Who proposed a release"). glidepath-catalog.releaseSourceLib splices it into the fetch step.
+# "Who proposed a release"). glidepath-catalog.releaseSourceLib hands it to the fetch step as the RELEASE_SOURCE_LIB env var, which the step evals.
 #
 # A release PR in the gitops repo is written by the pipeline's GitHub App, so its author and commit say nothing about the
 # change being released. The change was written in the app repo. This resolves who wrote it and what Clearance's

@@ -111,7 +111,7 @@ A release PR is written by the pipeline's GitHub App, so its author (`<app>[bot]
 about the change it releases. Registered naively, the proposer was the bot (kind `person`, provenance `not-agent`),
 which also let the real author clear their own tier-2 change, because the rule is "one owner, not the proposer". The
 gate now registers **the source change's** author and provenance instead
-(`charts/glidepath-catalog/files/lib/release-source.sh`, run in the `fetch` step; tested by
+(`charts/glidepath-catalog/files/lib/release-source.sh`, run in the `fetch` step, which gets it from the chart in its `RELEASE_SOURCE_LIB` environment variable and evals it, never from the repository; it stays out of the step script because Tekton passes all of a Task's scripts to the pod as one argument capped at 131072 bytes, and `tests/task_script_size_test.py` fails CI when any Task's encoded scripts pass 120000; tested by
 `tests/clearance_gate_release_source_test.sh`).
 
 > **Caveat: the release record is not yet authenticated.** The record is a ConfigMap in the app's `-cicd` namespace, and

@@ -180,6 +180,12 @@ spec:
           value: {{ .Values.defaultChart.path | quote }}
         - name: NAMESPACE
           value: $(context.taskRun.namespace)
+        # files/lib/release-source.sh rides in the step's environment, not its script: Tekton hands every step script of a Task to
+        # the place-scripts init container as ONE base64 argument, and Linux caps one argument at 131072 bytes. Inlined here it took
+        # the Task's encoded scripts to 136944 bytes and every pod failed with "argument list too long". The value comes from the
+        # chart (the platform), never from the repository under test.
+        - name: RELEASE_SOURCE_LIB
+          value: {{ include "glidepath-catalog.releaseSourceLib" . | toJson }}
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -188,7 +194,7 @@ spec:
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
         {{- include "glidepath-catalog.policyEvalLib" . | nindent 8 }}
-        {{- include "glidepath-catalog.releaseSourceLib" . | nindent 8 }}
+        eval "${RELEASE_SOURCE_LIB}"
         {{- include "glidepath-catalog.inputGuards" . | nindent 8 }}
         : > /work/plan.txt
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"

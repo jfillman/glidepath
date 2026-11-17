@@ -295,6 +295,11 @@ jobs:
       - name: helm lint
         run: helm lint charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml
 
+      # No Task's step scripts may pass 120000 base64 bytes: Tekton hands them to the pod as one argument, capped at 131072
+      # (glidepath#247 inlined a library and every clearance-gate pod failed with "argument list too long").
+      - run: pip install pyyaml
+      - run: python3 charts/glidepath-catalog/tests/task_script_size_test.py
+
       - name: helm template (full render)
         run: |
           helm template glidepath-catalog charts/glidepath-catalog \
