@@ -1,6 +1,6 @@
 # BOILERPLATE - the propose-class merge audit (glidepath docs/admin/contract.md, "propose"): after a push to main that a PR
 # merged, a PR an agent marked for a person to merge (Hangar-Merge: person) that a bot or an agents' login merged is
-# reported to Slack, as detect-bypass-merge does for gitops repos. Quiet for a person's merge and for every other push.
+# reported to Slack, as detect-bypass-merge does for gitops repos. Quiet for a person's merge and for every other push. It does not start for a push of only machine-written release files.
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
@@ -10,7 +10,11 @@ metadata:
   annotations:
     pipelinesascode.tekton.dev/on-event: "[push]"
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
-    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.ref) && body.ref == "refs/heads/main"'
+    # Skipped ONLY for a push whose every changed file, in every commit of the push, is a release file the pipeline itself writes
+    # (glidepath/envs/<env>.release.yaml, deploy-manifests.yaml), that carries no Hangar-Merge trailer and whose tip is not a PR
+    # merge ("Merge pull request" or a squash's "(#N)"). Never a path prefix: glidepath/, cicd.yaml and .tekton/ are audited.
+    # hack/ci/build-exemption-cel checks this line with cel-go.
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.ref) && body.ref == "refs/heads/main" && !(has(body.commits) && body.commits.exists(c, (has(c.added) ? size(c.added) : 0) + (has(c.modified) ? size(c.modified) : 0) + (has(c.removed) ? size(c.removed) : 0) > 0) && body.commits.all(c, ((has(c.added) ? c.added : []) + (has(c.modified) ? c.modified : []) + (has(c.removed) ? c.removed : [])).all(f, f.matches("^glidepath/envs/[^/]+[.]release[.]yaml$"))) && !body.commits.exists(c, has(c.message) && c.message.contains("Hangar-Merge:")) && !(has(body.head_commit) && has(body.head_commit.message) && body.head_commit.message.matches("^Merge pull request |[(]#[0-9]+[)]")))'
     pipelinesascode.tekton.dev/max-keep-runs: "3"
 spec:
   pipelineRef:
