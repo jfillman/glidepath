@@ -33,17 +33,23 @@ _rs_api() { # <token> <url>
   curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
     -H "Authorization: Bearer $1" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$2"
 }
+# A JSON value as a file jq reads (--slurpfile, one element): a value goes to jq or curl through a pipe, never in argv, which
+# Linux caps at 128 KiB per argument.
+_rs_json() { printf '%s' "$1"; }
 _rs_pages() { # <token> <url without paging> <jq filter turning a page into an array> <max pages>: the arrays joined
-  local page=1 out='[]' body part sep='?'
+  # Stops on the RAW page's length (a filter may shrink a full page). Fails (1) on any read or parse error, and (3) when the last
+  # page allowed was still full: the list may continue, so it is not trusted.
+  local page=1 out='[]' body part sep='?' raw
   [[ "$2" == *\?* ]] && sep='&'
   while (( page <= $4 )); do
     body="$(_rs_api "$1" "$2${sep}per_page=100&page=${page}")" || return 1
+    raw="$(jq 'length' <<<"${body}")" || return 1
     part="$(jq -c "$3" <<<"${body}")" || return 1
-    out="$(jq -c --argjson more "${part}" '. + $more' <<<"${out}")"
-    (( $(jq 'length' <<<"${part}") < 100 )) && break
+    out="$(jq -c --slurpfile more <(_rs_json "${part}") '. + $more[0]' <<<"${out}")" || return 1
+    (( raw < 100 )) && { printf '%s' "${out}"; return 0; }
     page=$((page + 1))
   done
-  printf '%s' "${out}"
+  return 3
 }
 
 release_source_resolve() {
@@ -198,14 +204,15 @@ release_source_resolve() {
   #    PR contains (a direct push, a merge commit made outside a PR) is "no PR": it cannot be vouched for.
   #    Each PR's provenance is Clearance's own verdict (POST /v1/provenance, the body agent-gates sends, with every
   #    commit's co-author trailers).
-  local covered='[]' prs='[]' nopr='[]' sha pulls p pn phead popener pmerger pmerged pmsha pcommits pfiles body verdict code out ident agent login
+  local rc covered='[]' prs='[]' nopr='[]' sha pulls p pn phead popener pmerger pmerged pmsha pcommits pfiles body verdict code out ident agent login
   while IFS= read -r sha; do
     [[ -n "${sha}" ]] || continue
     jq -e --arg s "${sha}" 'index($s) != null' <<<"${covered}" >/dev/null && continue
-    pulls="$(_rs_pages "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/commits/${sha}/pulls" '[.[] | select(.merged_at != null) | .number]' 3)" \
-      || { _rs_fail "could not find the pull request of ${sowner}/${srepo}@${sha:0:7}"; return 0; }
-    if (( $(jq 'length' <<<"${pulls}") >= 300 )); then
+    rc=0; pulls="$(_rs_pages "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/commits/${sha}/pulls" '[.[] | select(.merged_at != null) | .number]' 3)" || rc=$?
+    if (( rc == 3 )); then
       _rs_fail "${sowner}/${srepo}@${sha:0:7} is associated with 300 or more pull requests; the list is not read in full, so it is not trusted"; return 0
+    elif (( rc != 0 )); then
+      _rs_fail "could not find the pull request of ${sowner}/${srepo}@${sha:0:7}"; return 0
     fi
     for pn in $(jq -r '.[]' <<<"${pulls}"); do
       jq -e --argjson n "${pn}" 'any(.[]; .number == $n)' <<<"${prs}" >/dev/null && continue
@@ -235,8 +242,9 @@ release_source_resolve() {
       done
       covered="$(jq -c --argjson c "$(jq -c '[.[].sha]' <<<"${pcommits}")" --arg m "${pmsha}" '. + $c + [$m]' <<<"${covered}")"
       body="$(jq -nc --arg repo "${sowner}/${srepo}" --argjson pr "${pn}" --arg head "${phead}" --arg author "${popener}" \
-          --argjson paths "${pfiles}" --argjson commits "${pcommits}" '
-        ([$commits[] | select(.sha == $head)][0].commit.message // "") as $head_msg
+          --slurpfile pathsf <(_rs_json "${pfiles}") --slurpfile commitsf <(_rs_json "${pcommits}") '
+        $pathsf[0] as $paths | $commitsf[0] as $commits
+        | ([$commits[] | select(.sha == $head)][0].commit.message // "") as $head_msg
         | {repo: $repo, pr: $pr, head: $head, author: $author, paths: $paths,
            trailers: ([$head_msg | splits("\n") | capture("^Hangar-(?<k>Task|Session|Run|Agent): *(?<v>[^ ]+) *$")? | {key: (.k | ascii_downcase), value: .v}] | from_entries),
            coauthors: ([$commits[] | .sha as $s | (.commit.message | splits("\n")
@@ -245,7 +253,7 @@ release_source_resolve() {
       if [[ -n "${CLEARANCE_URL:-}" ]]; then
         out="$(curl --silent --show-error --max-time 20 --retry 2 --retry-connrefused -w '\n%{http_code}' \
                  -H "Authorization: Bearer $(cat /var/run/secrets/clearance/clearance-token)" -H "Content-Type: application/json" \
-                 --data "${body}" "${CLEARANCE_URL%/}/v1/provenance" || true)"
+                 --data @- "${CLEARANCE_URL%/}/v1/provenance" < <(_rs_json "${body}") || true)"
         code="${out##*$'\n'}"
         if [[ "${code}" == 200 ]]; then
           verdict="${out%$'\n'*}"
@@ -276,7 +284,8 @@ release_source_resolve() {
   local pl
   pl="$(jq -nc --arg s "${PIPELINE_LOGINS:-}" '$s | ascii_downcase | split(",") | map(select(. != ""))')"
   jq -nc --argjson base "${base_info}" --arg mode "${mode}" --arg repo "${sowner}/${srepo}" --arg prev "${prev}" --arg head "${rrev}" \
-    --argjson commits "${commits}" --argjson prs "${prs}" --argjson nopr "${nopr}" --argjson pl "${pl}" '
+    --slurpfile commitsf <(_rs_json "${commits}") --slurpfile prsf <(_rs_json "${prs}") --slurpfile noprf <(_rs_json "${nopr}") --argjson pl "${pl}" '
+    $commitsf[0] as $commits | $prsf[0] as $prs | $noprf[0] as $nopr |
     def rank: {"unknown": 0, "unattested": 1, "not-agent": 2, "confirmed": 3}[.];
     def tally(f): group_by(f) | map({login: (.[0] | f), prs: length}) | sort_by(.login);
     def isbot($login; $type): ($login | ascii_downcase) as $l | ($l | endswith("[bot]")) or ($type == "Bot") or ($pl | index($l) != null);

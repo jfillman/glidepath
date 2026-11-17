@@ -33,7 +33,7 @@ cat > "$d/bin/curl" <<'STUB'
 url=""; data=""
 while (( $# )); do
   case "$1" in
-    --data) data="$2"; shift ;;
+    --data) data="$2"; [[ "${data}" == "@-" ]] && data="$(cat)"; shift ;;
     http*) url="$1" ;;
   esac
   shift
@@ -294,8 +294,27 @@ scenario curl-fail-commit; jq '.items[0].data.kind = "rollback"' "$FIX/records.j
 out="$(resolve)"; expect "the single commit cannot be read: unresolved, says so" "$(q '[.resolved, (.reason | test("could not read o/shop@"))] | join(",")')" "false,true"
 
 # 13b. An unresolved early return (two records) omits the promoter: the report must still say "not recorded", not null.
-helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only templates/tasks/clearance-gate.yaml \
-  | yq '.spec.steps[].script' | grep -c '(.promoter // "") != ""' | { read n; expect "the report treats a missing promoter as not recorded" "$n" 1; }
+n="$(helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only templates/tasks/clearance-gate.yaml \
+  | yq '.spec.steps[].script' | grep -c '(.promoter // "") != ""')"
+expect "the report treats a missing promoter as not recorded" "$n" 1
+
+# 13c. _rs_pages: pages go through jq by pipe (a page over 128 KiB), stop on the RAW length, and fail closed.
+pages() { # <page-body generator: a function name taking the page number> <filter> <max pages>
+  ( source "$d/lib.sh"; _rs_api() { "$PG" "$(sed -E 's/.*page=([0-9]+).*/\1/' <<<"$2")"; }; PG="$1"; _rs_pages tok "https://x/y" "$2" "$3"; echo "rc=$?" ) 2>&1
+}
+big_page() { jq -nc --arg pad "$(head -c 1600 /dev/zero | tr '\0' a)" '[range(100) | {name: ($pad + (. | tostring))}]'; }
+pg_big() { big_page; }
+out="$(pages pg_big '[.[] | .name]' 1 | tail -c 200)"
+expect "a full page of 160 KB: read through jq without argv; the list may continue, so rc 3" "${out##*rc=}" 3
+pg_small_big() { if [[ "$1" == 1 ]]; then big_page; else echo '[]'; fi; }
+out="$(pages pg_small_big '[.[] | .name]' 3)"
+expect "a page over 128 KiB is joined (all 100 names kept, rc 0)" "$(jq -r 'length' <<<"${out%rc=*}"),${out##*rc=}" "100,0"
+pg_filtered() { if [[ "$1" == 1 ]]; then jq -nc '[range(100) | {merged_at: (if . < 40 then "t" else null end), number: .}]'; else jq -nc '[{merged_at: "t", number: 500}]'; fi; }
+out="$(pages pg_filtered '[.[] | select(.merged_at != null) | .number]' 3)"
+expect "a full raw page filtered to 40 does not stop: page 2 is read" "$(jq -r 'length,.[-1]' <<<"${out%rc=*}" | paste -sd, -),${out##*rc=}" "41,500,0"
+pg_bad() { echo 'not json'; }
+out="$(pages pg_bad '.' 3)"
+expect "an unparseable page fails closed" "${out##*rc=}" 1
 
 # 14. A Bot account authored the PR, the pipelineLogins setting is empty and no record names it: still a person's PR, with a warning.
 scenario warn; jq '.items[0].data.prUrl = "https://github.com/o/gitops-shop/pull/99"' "$FIX/records.json" > "$FIX/r" && mv "$FIX/r" "$FIX/records.json"
