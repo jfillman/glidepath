@@ -84,6 +84,11 @@ which case your cluster is in before treating it as a security reference; see
   before it merges, and a PR by the agents' App also meets the `GP-SCOPE` rules (no human-only field,
   no gate loosened, no Flight environment touched) against the merge base. Clearance decides the same
   rules before the PR exists; the check is what holds whoever opened it. See [contract.md](contract.md).
+- **The proposer of a release is the author of the change, never the release bot**: Clearance's tier-2 rule is "one
+  owner, not the proposer", and a release PR's own author is the pipeline's GitHub App. `clearance-gate` registers the
+  source commits' author and the weakest provenance of the source PRs, resolved from the pipeline's release record (not yet authenticated: see the caveat in clearance-gate.md) and
+  accepted only for a PR whose content is exactly what the record says the pipeline wrote; an unresolvable source is
+  registered `unknown` (Clearance denies it), never `person`. See [clearance-gate.md](clearance-gate.md#who-proposed-a-release).
 - **Governance gates are real, not theater**: `sast` (Semgrep), `imageScan` (Trivy),
   `policyCheck` (gitsign), `sbom` (cosign attestation) all do genuine enforcement
   today, and any gate still awaiting a real backend is structurally marked as a stub -

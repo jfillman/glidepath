@@ -233,6 +233,10 @@ clearanceGate:
   # Where people clear a holding change: Backstage's external URL (the Clearance plugin's Clearances page). Empty
   # leaves the link out of the PR comment. Clearance's URL and audience are agentGates' (the same Clearance).
   towerUrl: ""
+  # The GitHub logins the pipeline opens release PRs as (its GitHub App, e.g. "<slug>[bot]"). A release PR by one of these
+  # that no release record names is registered with proposer kind `unknown`, never as a person's change (docs/admin/
+  # clearance-gate.md, "Who proposed a release"). Empty: every unrecorded PR is a person's. Set it per deployment.
+  pipelineLogins: []
 
 agentGates:
   # Clearance's in-cluster URL, reached by the gate's pod with a projected token for `audience`. Empty: no Clearance

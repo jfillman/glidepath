@@ -442,6 +442,15 @@ flight_prune_main() {
 {{- end -}}
 
 {{- /*
+glidepath-catalog.releaseSourceLib: files/lib/release-source.sh (release_source_resolve), to splice into a step script.
+clearance-gate's fetch step uses it to find who wrote what a release PR releases (docs/admin/clearance-gate.md,
+"Who proposed a release").
+*/ -}}
+{{- define "glidepath-catalog.releaseSourceLib" -}}
+{{ .Files.Get "files/lib/release-source.sh" }}
+{{- end -}}
+
+{{- /*
 glidepath-catalog.policyEvalLib: files/lib/policy-eval.sh (policy_bundle_fetch, policy_eval_env, kyverno_engine,
 policy_bundle_ref), to splice into a step script. glidepath-catalog.policyEvalPrepare: files/lib/policy-eval-prepare.py,
 to splice between `python3 - <<'PY'` and `PY`. The policy-validation-gate and clearance-gate Tasks both use them, so

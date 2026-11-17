@@ -4,6 +4,14 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### clearance-gate: a release is proposed by the author of its source, not by the release bot
+
+- A release PR the pipeline opened is registered with Clearance under the author(s) of the app-repo commits it releases (previous release to this
+  one) and the weakest provenance of their source PRs, not the pipeline's GitHub App (kind `person`, `not-agent`), which also let the author clear their
+  own tier-2 change. Resolved from the release record, accepted only for a PR whose content is what the record says the pipeline wrote; an unresolvable
+  source is registered `unknown` (Clearance denies it). `open-release-pr` keeps `imageDigest` and the promoter (`initiator`) on the record. Every author
+  rides in `checks.sourceAuthors`; the promoter is in the gate's comment. See docs/admin/clearance-gate.md, "Who proposed a release".
+
 ### propose-merge-check no longer runs for the deploy write-back
 
 - The app-repo audit `push-propose-merge-check.yaml` started on every push to main, including the pipeline's own deploy commits ("Deploy <app> to <env>: <image>"), which change only `glidepath/envs/<env>.release.yaml` and are never PR merges: a PipelineRun and pod per deploy per environment. It now does not start when every changed file, in every commit of the push, is such a release file, the push carries no `Hangar-Merge:` trailer and its tip is not a PR merge. `glidepath/`, `cicd.yaml` and `.tekton/` changes still start it. Checked with cel-go (`hack/ci/build-exemption-cel`, 21 payloads; a push of 20 or more commits, GitHub's cap, is never skipped, and the trailer is read from the head commit too). Existing app repos get it with their next onboarding resync PR. docs/admin/contract.md "propose".
