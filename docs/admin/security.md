@@ -287,11 +287,16 @@ protection on private repositories (Pro or Team), or public repositories.
   has nothing to run, so the PR shows no Glidepath check at all and looks clean. The way out is branch protection (or a ruleset) on
   `main` that requires the gate checks by name, pinned to the Pipelines-as-Code GitHub App, so a missing check blocks the merge.
   On a plan without branch protection for private repositories (GitHub answers 403 "Upgrade to GitHub Pro or make this repository
-  public"), the limit is only mitigated: the onboarding resync keeps `.tekton/` on `main`, and someone has to watch for pull
-  requests that carry no Glidepath checks.
+  public"), the limit is only mitigated. The onboarding resync delivers `.tekton/` to `main`, but it does not restore a removed one by
+  itself: it runs only when a push to the app repository's `main` changes `cicd.yaml` (or `.tekton/flow-pr-build.yaml`), so to
+  bring the files back, commit a change to `cicd.yaml` there (a comment-only edit is enough) and merge the resync pull request
+  (see "Triggering a resync" in [onboarding-mechanics.md](onboarding-mechanics.md)). And someone has to watch for pull requests
+  that carry no Glidepath checks.
 - **A broken `.tekton/` file on main fails or blocks every PR in that repository, including the PR that fixes it.** The fix is
   judged by the broken files. The way out is an admin merge of the fix, or setting `gitopsRepoProvenance: source` for that cluster
-  for one sync, so the fix is judged by its own files, then putting it back.
+  for one sync, so the fix is judged by its own files, then putting it back. With the setting switched, the fix PR does not
+  get a fresh check by itself, because its runs already failed against the broken files: comment `/retest` on it after the
+  sync, so the runs are built from its own files. An admin merge needs no retest.
 - **A resync PR's checks run main's old files, not the new ones it delivers, so its green result does not test them.** The way out
   is to try new boilerplate on one scratch repository first, merge a resync when no gate run is in flight, and `/retest` the runs
   that started before it merged.
