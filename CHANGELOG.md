@@ -6,7 +6,7 @@ Notable changes to Glidepath. Newest first.
 
 ### propose-merge-check no longer runs for the deploy write-back
 
-- The app-repo audit `push-propose-merge-check.yaml` started on every push to main, including the pipeline's own deploy commits ("Deploy <app> to <env>: <image>"), which change only `glidepath/envs/<env>.release.yaml` and are never PR merges: a PipelineRun and pod per deploy per environment. It now does not start when every changed file, in every commit of the push, is such a release file, the push carries no `Hangar-Merge:` trailer and its tip is not a PR merge. `glidepath/`, `cicd.yaml` and `.tekton/` changes still start it. Checked with cel-go (`hack/ci/build-exemption-cel`, 17 payloads). Existing app repos get it with their next onboarding resync PR. docs/admin/contract.md "propose".
+- The app-repo audit `push-propose-merge-check.yaml` started on every push to main, including the pipeline's own deploy commits ("Deploy <app> to <env>: <image>"), which change only `glidepath/envs/<env>.release.yaml` and are never PR merges: a PipelineRun and pod per deploy per environment. It now does not start when every changed file, in every commit of the push, is such a release file, the push carries no `Hangar-Merge:` trailer and its tip is not a PR merge. `glidepath/`, `cicd.yaml` and `.tekton/` changes still start it. Checked with cel-go (`hack/ci/build-exemption-cel`, 21 payloads; a push of 20 or more commits, GitHub's cap, is never skipped, and the trailer is read from the head commit too). Existing app repos get it with their next onboarding resync PR. docs/admin/contract.md "propose".
 
 ### Release record: written the moment the PR exists, and it survives what comes after
 

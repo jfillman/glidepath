@@ -11,10 +11,10 @@ metadata:
     pipelinesascode.tekton.dev/on-event: "[push]"
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
     # Skipped ONLY for a push whose every changed file, in every commit of the push, is a release file the pipeline itself writes
-    # (glidepath/envs/<env>.release.yaml, deploy-manifests.yaml), that carries no Hangar-Merge trailer and whose tip is not a PR
+    # (glidepath/envs/<env>.release.yaml, deploy-manifests.yaml), that carries no Hangar-Merge trailer (commits or head commit), is under 20 commits (GitHub's cap) and whose tip is not a PR
     # merge ("Merge pull request" or a squash's "(#N)"). Never a path prefix: glidepath/, cicd.yaml and .tekton/ are audited.
     # hack/ci/build-exemption-cel checks this line with cel-go.
-    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.ref) && body.ref == "refs/heads/main" && !(has(body.commits) && body.commits.exists(c, (has(c.added) ? size(c.added) : 0) + (has(c.modified) ? size(c.modified) : 0) + (has(c.removed) ? size(c.removed) : 0) > 0) && body.commits.all(c, ((has(c.added) ? c.added : []) + (has(c.modified) ? c.modified : []) + (has(c.removed) ? c.removed : [])).all(f, f.matches("^glidepath/envs/[^/]+[.]release[.]yaml$"))) && !body.commits.exists(c, has(c.message) && c.message.contains("Hangar-Merge:")) && !(has(body.head_commit) && has(body.head_commit.message) && body.head_commit.message.matches("^Merge pull request |[(]#[0-9]+[)]")))'
+    pipelinesascode.tekton.dev/on-cel-expression: 'has(body.ref) && body.ref == "refs/heads/main" && !(has(body.commits) && size(body.commits) < 20 && body.commits.exists(c, (has(c.added) ? size(c.added) : 0) + (has(c.modified) ? size(c.modified) : 0) + (has(c.removed) ? size(c.removed) : 0) > 0) && body.commits.all(c, ((has(c.added) ? c.added : []) + (has(c.modified) ? c.modified : []) + (has(c.removed) ? c.removed : [])).all(f, f.matches("^glidepath/envs/[^/]+[.]release[.]yaml$"))) && !body.commits.exists(c, has(c.message) && c.message.contains("Hangar-Merge:")) && !(has(body.head_commit) && has(body.head_commit.message) && body.head_commit.message.contains("Hangar-Merge:")) && !(has(body.head_commit) && has(body.head_commit.message) && body.head_commit.message.matches("^Merge pull request |[(]#[0-9]+[)]")))'
     pipelinesascode.tekton.dev/max-keep-runs: "3"
 spec:
   pipelineRef:

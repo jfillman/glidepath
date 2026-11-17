@@ -147,7 +147,7 @@ protection can require anything). Four layers, none of which is a ruleset:
    `/deploy/environments/*/cluster` and `/production`), so a PR marked for a person always changes `cicd.yaml`, which still starts the audit. Release files are
    no propose path (Clearance denies agents `*.release.yaml` outright). The skip is a CEL filter on the push's changed files, never a path prefix or an author
    name: `glidepath/` in general, `cicd.yaml` and `.tekton/` still start it. It also does not skip a push that carries a `Hangar-Merge:` trailer or whose tip
-   is a PR merge ("Merge pull request" or a squash's "(#N)"). `hack/ci/build-exemption-cel` evaluates it with cel-go against 17 payloads. It reaches an
+   is a PR merge ("Merge pull request" or a squash's "(#N)"). `hack/ci/build-exemption-cel` evaluates it with cel-go against 21 payloads. A push of 20 or more commits (GitHub's cap on the payload's commit list, so the list may be truncated) is never skipped, and the trailer is also read from the push's head commit. It reaches an
    existing app repo with its next onboarding resync PR.
 
 Layers 3 and 4 need the Clearance GitHub App's checks (`agentGates.clearanceChecks: true`). On a cluster in the fallback
