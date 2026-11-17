@@ -442,8 +442,8 @@ flight_prune_main() {
 {{- end -}}
 
 {{- /*
-glidepath-catalog.releaseSourceLib: files/lib/release-source.sh (release_source_resolve), to splice into a step script.
-clearance-gate's fetch step uses it to find who wrote what a release PR releases (docs/admin/clearance-gate.md,
+glidepath-catalog.releaseSourceLib: files/lib/release-source.sh (release_source_resolve), as text for a step's environment
+(not its script: see the RELEASE_SOURCE_LIB comment in tasks/clearance-gate.yaml). clearance-gate's fetch step evals it to find who wrote what a release PR releases (docs/admin/clearance-gate.md,
 "Who proposed a release").
 */ -}}
 {{- define "glidepath-catalog.releaseSourceLib" -}}
