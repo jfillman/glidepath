@@ -36,14 +36,16 @@ _rs_api() { # <token> <url>
 # A JSON value as a file jq reads (--slurpfile, one element): a value goes to jq or curl through a pipe, never in argv, which
 # Linux caps at 128 KiB per argument.
 _rs_json() { printf '%s' "$1"; }
-_rs_pages() { # <token> <url without paging> <jq filter turning a page into an array> <max pages>: the arrays joined
+_rs_pages() { # <token> <url without paging> <jq filter turning a page into an array> <max pages> [<jq selector of the page's raw collection, default .>]: the arrays joined
   # Stops on the RAW page's length (a filter may shrink a full page). Fails (1) on any read or parse error, and (3) when the last
   # page allowed was still full: the list may continue, so it is not trusted.
-  local page=1 out='[]' body part sep='?' raw
+  # The compare endpoint answers an OBJECT whose .commits is the collection: the raw length is that collection's, not the object's
+  # key count (the 5th argument selects it).
+  local page=1 out='[]' body part sep='?' raw sel="${5:-.}"
   [[ "$2" == *\?* ]] && sep='&'
   while (( page <= $4 )); do
     body="$(_rs_api "$1" "$2${sep}per_page=100&page=${page}")" || return 1
-    raw="$(jq 'length' <<<"${body}")" || return 1
+    raw="$(jq "(${sel}) | if type == \"array\" then length else error(\"not a list\") end" <<<"${body}")" || return 1
     part="$(jq -c "$3" <<<"${body}")" || return 1
     out="$(jq -c --slurpfile more <(_rs_json "${part}") '. + $more[0]' <<<"${out}")" || return 1
     (( raw < 100 )) && { printf '%s' "${out}"; return 0; }
@@ -183,8 +185,12 @@ release_source_resolve() {
       identical) mode=single ;;
       behind) mode=rollback ;;
       ahead|diverged)
-        commits="$(_rs_pages "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/compare/${prev}...${rrev}" '.commits' 3)" \
-          || { _rs_fail "could not list the commits of ${prev:0:7}...${rrev:0:7}"; return 0; } ;;
+        commits="$(_rs_pages "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/compare/${prev}...${rrev}" '.commits' 3 '.commits')" \
+          || { _rs_fail "could not list the commits of ${prev:0:7}...${rrev:0:7} (or more than 300)"; return 0; }
+        # total_commits (above, at most 250) is what the range holds: fewer listed than that is not read in full, so not trusted.
+        if (( total > $(jq 'length' <<<"${commits}") )); then
+          _rs_fail "${prev:0:7}...${rrev:0:7} holds ${total} commits and only $(jq 'length' <<<"${commits}") were listed; the range is not read in full, so it is not trusted"; return 0
+        fi ;;
       *) _rs_fail "GitHub compared ${prev:0:7}...${rrev:0:7} as '${status}'"; return 0 ;;
     esac
   fi

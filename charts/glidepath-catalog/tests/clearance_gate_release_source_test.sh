@@ -190,6 +190,8 @@ gh "o/shop/commits/$R" "$(commit "$R" 1 dana)"; cpulls "$R" '[282]'; prpages 282
 out="$(resolve)"; expect "first release to an environment: the released commit alone, resolved through its PR" "$(q '[.resolved, .mode, .commits, .proposer] | join(",")')" "true,first,1,user:dana"
 scenario big; gh "o/shop/compare/$P...$R?per_page=1" '{"status":"ahead","total_commits":300}'
 out="$(resolve)"; expect "more than 250 commits: unresolved" "$(q '[.resolved, (.reason | test("250"))] | join(",")')" "false,true"
+scenario trunc; gh "o/shop/compare/$P...$R?per_page=100&page=1" "$(jq -nc --argjson a "$(commit "$C1" 1 dana)" '{commits: [$a]}')"
+out="$(resolve)"; expect "a compare listing fewer commits than the range's total_commits (4): unresolved" "$(q '[.resolved, (.reason | test("not read in full"))] | join(",")')" "false,true"
 scenario nokube; export RECORDS_FAIL="$FIX/records.json"
 if ( source "$d/lib.sh"; PATH="$d/bin:$PATH" NAMESPACE=n APP_NAME=shop release_source_resolve o gitops-shop 7 '[]' "$FIX/head" "$FIX/base" ) >/dev/null 2>&1; then
   echo "FAIL unreadable records must fail the check"; fail=1; else echo "ok   unreadable release records fail the check (no guess)"; fi
@@ -312,6 +314,11 @@ expect "a page over 128 KiB is joined (all 100 names kept, rc 0)" "$(jq -r 'leng
 pg_filtered() { if [[ "$1" == 1 ]]; then jq -nc '[range(100) | {merged_at: (if . < 40 then "t" else null end), number: .}]'; else jq -nc '[{merged_at: "t", number: 500}]'; fi; }
 out="$(pages pg_filtered '[.[] | select(.merged_at != null) | .number]' 3)"
 expect "a full raw page filtered to 40 does not stop: page 2 is read" "$(jq -r 'length,.[-1]' <<<"${out%rc=*}" | paste -sd, -),${out##*rc=}" "41,500,0"
+# The compare endpoint's page is an OBJECT: 150 commits across two pages are all read (the raw length is .commits', not the key count).
+pg_cmp() { if [[ "$1" == 1 ]]; then jq -nc '{status: "ahead", total_commits: 150, commits: [range(100) | {sha: ("a" + (. | tostring))}]}'; else jq -nc '{status: "ahead", total_commits: 150, commits: [range(50) | {sha: ("b" + (. | tostring))}]}'; fi; }
+pages_cmp() { ( source "$d/lib.sh"; _rs_api() { pg_cmp "$(sed -E 's/.*page=([0-9]+).*/\1/' <<<"$2")"; }; _rs_pages tok "https://x/y" '.commits' 3 '.commits'; echo "rc=$?" ) 2>&1; }
+out="$(pages_cmp)"
+expect "a compare range of 150 commits over two pages: all 150 read" "$(jq -r 'length' <<<"${out%rc=*}"),${out##*rc=}" "150,0"
 pg_bad() { echo 'not json'; }
 out="$(pages pg_bad '.' 3)"
 expect "an unparseable page fails closed" "${out##*rc=}" 1
