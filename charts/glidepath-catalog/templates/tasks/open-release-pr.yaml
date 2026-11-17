@@ -228,13 +228,13 @@ spec:
             wanted="$(sed -nE 's/.*<!-- glidepath:change-request:([^ ]+) -->.*/\1/p' <<<"$1" | head -1)"
           fi
           if [[ -n "${wanted}" ]]; then
-            change_json="$(itsm_get "${wanted}")"
+            change_json="$(itsm_get "${wanted}")" || return 1
             echo "change management: linking existing change $(jq -r .number <<<"${change_json}") (${wanted})"
           else
             if [[ "${RELEASE_KIND}" == "rollback" && -n "${ROLLBACK_OF}" ]]; then
               rollback_of_change="$(kubectl get configmap "release-tracking-${ROLLBACK_OF%%:*}" -n "${NAMESPACE}" -o jsonpath='{.data.changeRequestId}' 2>/dev/null || true)"
             fi
-            change_json="$(itsm_create "${RELEASE_KIND}" "${APP_NAME}" "${ENV}" "${IMAGE_REF}" "${CHAIN_ID}:${CLUSTER}/${ENV}" "" "${rollback_of_change}")"
+            change_json="$(itsm_create "${RELEASE_KIND}" "${APP_NAME}" "${ENV}" "${IMAGE_REF}" "${CHAIN_ID}:${CLUSTER}/${ENV}" "" "${rollback_of_change}")" || return 1
             echo "change management: created ${RELEASE_KIND} change $(jq -r .number <<<"${change_json}")${rollback_of_change:+ (rolls back change ${rollback_of_change})}"
           fi
           change_id="$(jq -r .id <<<"${change_json}")"
@@ -273,53 +273,77 @@ spec:
           echo "warning: could not read this run's annotations; the release record carries no origin (the release itself is unaffected)." >&2
         fi
 
+        # Reissue (docs/admin/release-state.md#reissue): glidepath-api stamps the chain id of the release whose PR was closed
+        # unmerged on a run it starts for POST .../releases/{chainId}/reissue, from that release's own record, never from a
+        # parameter (admission refuses any glidepath.io/ annotation on a run a .tekton file creates). This is a NEW release
+        # with its own chain id and PR; the record says which one it replaces. Information only, shape-checked, empty when none.
+        reissue_of=""
+        if [[ -n "${run_json:-}" ]]; then
+          reissue_of="$(jq -r '.metadata.annotations["glidepath.io/reissue-of"] // empty' <<<"${run_json}")"
+          [[ "${reissue_of}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ && "${reissue_of}" != "${CHAIN_ID}" ]] || reissue_of=""
+          [[ -z "${reissue_of}" ]] || echo "reissue: this release replaces ${reissue_of}, whose PR was closed without merging"
+        fi
+
         # The dev-side release record (ADR-0021): prUrl/prCreatedAt as before, plus
         # everything glidepath-relay's /facts endpoint needs to rebuild this
         # release's CDEvent when the upper cluster reports a Rollout fact for it. One
         # function so the two writers below (a retry that reuses an open PR, and a fresh
         # PR) cannot drift apart. configJson is the cicd.yaml content as resolved here.
         write_release_record() {
-          local pr_url_arg="$1" pr_created_arg="$2"
-          # The reducer (glidepath-relay) owns state from here on, so the initial state is
-          # written only when the record is new: a retry that reuses an open PR must not reset a
-          # record that has already moved on.
-          local initial_state=()
-          if ! kubectl get configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" >/dev/null 2>&1; then
-            initial_state=(--from-literal="state=proposed" --from-literal="stateAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+          local pr_url_arg="$1" pr_created_arg="$2" name="release-tracking-${CHAIN_ID}" err exists=0
+          # Every step returns its own failure: this also runs under retry_late, where errexit is off.
+          # A read that fails for any reason but "not found" is an error, never "the record is new" (which would reset state).
+          if err="$(kubectl get configmap "${name}" -n "${NAMESPACE}" -o name 2>&1)"; then
+            exists=1
+          elif [[ "${err}" != *NotFound* && "${err}" != *"not found"* ]]; then
+            echo "error: could not read ${name}: ${err}" >&2
+            return 1
           fi
-          kubectl create configmap "release-tracking-${CHAIN_ID}" \
-            -n "${NAMESPACE}" \
-            --from-literal="prUrl=${pr_url_arg}" \
-            --from-literal="prCreatedAt=${pr_created_arg}" \
-            --from-literal="releaseId=${CHAIN_ID}:${CLUSTER}/${ENV}" \
-            --from-literal="kind=${RELEASE_KIND}" \
-            --from-literal="image=${IMAGE_REF}" \
-            --from-literal="rollbackOf=${ROLLBACK_OF}" \
-            --from-literal="rollbackReason=${ROLLBACK_REASON}" \
-            --from-literal="refProtection=${REF_PROTECTION}" \
-            --from-literal="originChainId=${origin_chain_id}" \
-            --from-literal="originChainSlug=${origin_chain_slug}" \
-            --from-literal="originTraceId=${origin_trace_id}" \
-            --from-literal="appNamespace=${APP_NAMESPACE}" \
-            --from-literal="appName=${APP_NAME}" \
-            --from-literal="env=${ENV}" \
-            --from-literal="cluster=${CLUSTER}" \
-            --from-literal="gitUrl=${GIT_URL}" \
-            --from-literal="gitRevision=${GIT_REVISION}" \
-            --from-literal="flowStartTime=${FLOW_START_TIME}" \
-            --from-literal="configJson=${CONFIG_JSON}" \
-            --from-literal="changeRequestId=${change_id}" \
-            --from-literal="changeRequestNumber=${change_number}" \
-            --from-literal="changeRequestUrl=${change_url}" \
-            --from-literal="changeRequestState=$(jq -r '.state // ""' <<<"${change_json:-null}")" \
-            ${initial_state[@]+"${initial_state[@]}"} \
-            --dry-run=client -o yaml \
-            | kubectl apply -f -
+          local -a lits=(
+            --from-literal="prUrl=${pr_url_arg}"
+            --from-literal="prCreatedAt=${pr_created_arg}"
+            --from-literal="releaseId=${CHAIN_ID}:${CLUSTER}/${ENV}"
+            --from-literal="kind=${RELEASE_KIND}"
+            --from-literal="image=${IMAGE_REF}"
+            --from-literal="rollbackOf=${ROLLBACK_OF}"
+            --from-literal="rollbackReason=${ROLLBACK_REASON}"
+            --from-literal="refProtection=${REF_PROTECTION}"
+            --from-literal="originChainId=${origin_chain_id}"
+            --from-literal="originChainSlug=${origin_chain_slug}"
+            --from-literal="originTraceId=${origin_trace_id}"
+            --from-literal="reissueOf=${reissue_of}"
+            --from-literal="appNamespace=${APP_NAMESPACE}"
+            --from-literal="appName=${APP_NAME}"
+            --from-literal="env=${ENV}"
+            --from-literal="cluster=${CLUSTER}"
+            --from-literal="gitUrl=${GIT_URL}"
+            --from-literal="gitRevision=${GIT_REVISION}"
+            --from-literal="flowStartTime=${FLOW_START_TIME}"
+            --from-literal="configJson=${CONFIG_JSON}"
+            --from-literal="changeRequestId=${change_id}"
+            --from-literal="changeRequestNumber=${change_number}"
+            --from-literal="changeRequestUrl=${change_url}"
+            --from-literal="changeRequestState=$(jq -r '.state // ""' <<<"${change_json:-null}")"
+          )
+          if (( exists )); then
+            # The reducer (glidepath-relay) owns state from here on: a re-run completes the record with a merge patch that
+            # never names state/stateAt (a re-apply without them would delete keys the first apply set), and never blanks a
+            # change field a better-informed earlier write filled in (the change tool may be down on this run).
+            local patch
+            patch="$(kubectl create configmap "${name}" -n "${NAMESPACE}" "${lits[@]}" --dry-run=client -o json \
+              | jq -c '{data: (.data | with_entries(select(.value != "")))}')" || return 1
+            kubectl patch configmap "${name}" -n "${NAMESPACE}" --type merge -p "${patch}" >/dev/null || return 1
+          else
+            kubectl create configmap "${name}" -n "${NAMESPACE}" "${lits[@]}" \
+              --from-literal="state=proposed" --from-literal="stateAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --dry-run=client -o yaml \
+              | kubectl apply -f - || return 1
+          fi
           # app/env/cluster labels let the reducer list this app's other releases (to mark an
           # older one superseded) without reading every ConfigMap in the namespace.
-          kubectl label configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" \
+          kubectl label configmap "${name}" -n "${NAMESPACE}" \
             "hangar.io/subcomponent=release-tracking" "hangar.io/app=${APP_NAME}" \
-            "hangar.io/env=${ENV}" "hangar.io/cluster=${CLUSTER}" --overwrite
+            "hangar.io/env=${ENV}" "hangar.io/cluster=${CLUSTER}" --overwrite || return 1
         }
 
         # An earlier release of this app to the same environment and cluster whose PR was closed without merging stays
@@ -328,11 +352,18 @@ spec:
         # When a new release PR opens, each such record whose PR GitHub reports closed and unmerged is closed here. A
         # record still open, merged, or unreadable is left alone. Best-effort: it never fails the release.
         close_stale_proposals() {
-          local name url number pr
+          local name url number pr pc rc
           for name in $(kubectl get configmap -n "${NAMESPACE}" \
               -l "hangar.io/subcomponent=release-tracking,hangar.io/app=${APP_NAME},hangar.io/env=${ENV},hangar.io/cluster=${CLUSTER}" \
               -o jsonpath='{range .items[?(@.data.state=="proposed")]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
             [[ "${name}" == "release-tracking-${CHAIN_ID}" ]] && continue
+            # A reissue never closes a release NEWER than the one it reissues (one that opened since is the one to merge).
+            if [[ -n "${reissue_of:-}" ]]; then
+              pc="$(kubectl get configmap "${name}" -n "${NAMESPACE}" -o jsonpath='{.data.prCreatedAt}' 2>/dev/null || true)"
+              rc="$(reissue_old_created)"
+              # only a record strictly older than the reissued one: a newer, equal or undated one is left alone
+              [[ -z "${rc}" || -z "${pc}" || ! "${pc:0:19}" < "${rc:0:19}" ]] && continue
+            fi
             url="$(kubectl get configmap "${name}" -n "${NAMESPACE}" -o jsonpath='{.data.prUrl}' 2>/dev/null)"
             [[ "${url}" =~ ^https://github\.com/${owner}/${gitops_repo}/pull/([0-9]+)$ ]] || continue
             number="${BASH_REMATCH[1]}"
@@ -344,6 +375,260 @@ spec:
               -p "$(jq -n --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{data: {state: "closed", stateAt: $now}}')" >/dev/null \
               && echo "${name}: proposed -> closed (#${number} was closed unmerged)"
           done
+          return 0
+        }
+
+        # The reissued release's own record: it was closed unmerged (close_stale_proposals ends a proposed one when the new PR
+        # opens); this adds who replaced it. Only a record of this app, environment and cluster that is not already linked, and
+        # only when it is still proposed or closed (a record the relay owns is never touched). Best-effort, never fails the release.
+        link_reissued() {
+          [[ -n "${reissue_of}" && -n "${CHAIN_ID}" ]] || return 0
+          local old="release-tracking-${reissue_of}" cm st rv attempt
+          for attempt in 1 2 3; do
+            cm="$(kubectl get configmap "${old}" -n "${NAMESPACE}" -o json 2>/dev/null)" || return 0
+            [[ "$(jq -r '.metadata.labels["hangar.io/app"] + "/" + .metadata.labels["hangar.io/env"] + "/" + .metadata.labels["hangar.io/cluster"]' <<<"${cm}")" == "${APP_NAME}/${ENV}/${CLUSTER}" ]] || return 0
+            [[ -z "$(jq -r '.data.reissuedBy // empty' <<<"${cm}")" ]] || return 0
+            st="$(jq -r '.data.state // "proposed"' <<<"${cm}")"
+            # Never move a record the relay owns (merged, progressing, healthy, ...) to closed, whatever happened since it was read.
+            case "${st}" in proposed|closed) ;; *) return 0 ;; esac
+            rv="$(jq -r '.metadata.resourceVersion' <<<"${cm}")"
+            # A JSON patch with a resourceVersion precondition: if anything wrote the record since it was read, the patch fails
+            # and the record is read again (and judged again), never overwritten.
+            if kubectl patch configmap "${old}" -n "${NAMESPACE}" --type json -p "$(jq -n --arg rv "${rv}" --arg by "${CHAIN_ID}" --arg st "${st}" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                '[{op: "test", path: "/metadata/resourceVersion", value: $rv}, {op: "add", path: "/data/reissuedBy", value: $by}]
+                 + (if $st == "proposed" then [{op: "add", path: "/data/state", value: "closed"}, {op: "add", path: "/data/stateAt", value: $now}] else [] end)')" >/dev/null 2>&1; then
+              echo "${old}: reissued by ${CHAIN_ID} (state closed)"
+              return 0
+            fi
+            echo "${old} changed while it was being linked; reading it again" >&2
+          done
+          return 0
+        }
+
+        # What happens once a release PR exists (docs/admin/release-state.md#the-record-survives-the-calls-after-the-pr).
+        # The PR is the one thing here that cannot be taken back, so the record that names it is written FIRST after it, before
+        # any other network call, and everything later is bounded and cannot take the record away: retried with backoff for a
+        # transient failure (connection refused or reset, timeout, 5xx, 408, 429), and when it still fails the failure is
+        # written ON the record (postPrError, a key no reader looks at) and logged. 2026-11-16: the change tool's link call
+        # failed during an overload, the step died, and backstage 1.0.2 went to prod through a merged PR with no record.
+        # Runs in the current shell (a command's globals survive) and captures stdout in late_out, stderr in late_err.
+        late_attempts="${LATE_ATTEMPTS:-5}"; late_backoff="${LATE_BACKOFF_SECONDS:-2}"
+        late_out=""; late_err=""; post_pr_errors=""; post_pr_public=""; post_pr_classes=""
+        retry_late() { # <label> <command...> -> 0, or 1 once the attempts are spent or the failure cannot be transient
+          local label="$1"; shift
+          local n=1 delay="${late_backoff}" of ef
+          of="$(mktemp)"; ef="$(mktemp)"
+          while :; do
+            if "$@" >"${of}" 2>"${ef}"; then
+              late_out="$(cat "${of}")"; late_err=""; rm -f "${of}" "${ef}"; return 0
+            fi
+            late_out="$(cat "${of}")"; late_err="$(tr '\n' ' ' <"${ef}" | cut -c1-300)"
+            # a definite 4xx (not 408/429) will not change by waiting
+            if [[ "${late_err}" =~ HTTP\ (4[0-9][0-9]) && ! "${BASH_REMATCH[1]}" =~ ^(408|429)$ ]] || (( n >= late_attempts )); then
+              echo "warning: ${label} failed (attempt ${n}/${late_attempts}): ${late_err}" >&2
+              rm -f "${of}" "${ef}"; return 1
+            fi
+            echo "warning: ${label} failed (attempt ${n}/${late_attempts}): ${late_err}; retrying in ${delay}s" >&2
+            sleep "${delay}"; n=$((n + 1)); delay=$((delay * 2))
+          done
+        }
+        # A fixed class for a failure, never text from the tool (its URL or response body): what a person sees on the PR.
+        reason_class() { # <error text>
+          if [[ "$1" =~ HTTP\ ([0-9]{3}) && "${BASH_REMATCH[1]}" != 000 ]]; then echo "HTTP ${BASH_REMATCH[1]}"; return 0; fi
+          case "$1" in
+            *"HTTP 000"*|*refused*|*"Failed to connect"*|*"Couldn't connect"*) echo "connection refused" ;;
+            *reset*) echo "connection reset" ;;
+            *"timed out"*|*imeout*) echo "timeout" ;;
+            *) echo "error" ;;
+          esac
+        }
+        # note_post_pr_error <fixed sentence, no tool data>: remembered (with the reason class of late_err), written on the record
+        # by record_post_pr_errors and, as the sentence plus the class only, on the PR. The log keeps the detail.
+        note_post_pr_error() {
+          local cls
+          cls="$(reason_class "${late_err}")"
+          echo "error: ${1} (${cls}): ${late_err}. The release PR and its record stay; a re-run of this release completes it." >&2
+          post_pr_public="${post_pr_public:+${post_pr_public}; }${1} (${cls})"
+          case ",${post_pr_classes}," in *",${cls},"*) ;; *) post_pr_classes="${post_pr_classes:+${post_pr_classes},}${cls}" ;; esac
+          post_pr_errors="${post_pr_errors:+${post_pr_errors}; }${1} (${cls}): ${late_err:0:200}"
+        }
+        # The failures of this run, or none, on the record, as "[<classes>] <text>". A key readers ignore: never a state.
+        record_post_pr_errors() { # <previous error on the record or "">
+          [[ -n "${CHAIN_ID}" ]] || return 0
+          local value patch
+          if [[ -n "${post_pr_errors}" ]]; then value="[${post_pr_classes}] ${post_pr_errors}"; value="${value:0:600}"; elif [[ -n "$1" ]]; then value=""; else return 0; fi
+          patch="$(jq -cn --arg v "${value}" 'if $v == "" then {data: {postPrError: null}} else {data: {postPrError: $v}} end')"
+          retry_late "writing the failure on the release record" kubectl patch configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" --type merge -p "${patch}" \
+            || echo "error: could not write the failure on release-tracking-${CHAIN_ID} (it is in this log): ${post_pr_errors}" >&2
+          return 0
+        }
+        # This release's branch's PRs, any state: sets existing_pr (the open ones, an array), pr_url (the open one's, or "") and
+        # merged_pr (the newest merged one as an object, or ""). A PR closed unmerged is neither: it is a finished attempt.
+        lookup_open_pr() {
+          local all
+          all="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${owner}/${gitops_repo}/pulls?head=${owner}:${branch}&state=all&per_page=100")" || return 1
+          existing_pr="$(jq -c '[.[] | select(.state == "open")]' <<<"${all}")" || return 1
+          pr_url="$(jq -r '.[0].html_url // empty' <<<"${existing_pr}")"
+          merged_pr="$(jq -c '[.[] | select(.merged_at != null)] | .[0] // empty' <<<"${all}")" || return 1
+        }
+        # The release file (release.yaml, else values.yaml, whichever carries releaseTracking.releaseId) of <ref> in the gitops repo:
+        # sets rf_content ("" when the ref has none). Returns 1 when GitHub could not be read: that is never "no file".
+        fetch_release_file() { # <ref>
+          local ref="$1" f out code body
+          rf_content=""
+          for f in "${CLUSTER}/${ENV}/release.yaml" "${CLUSTER}/${ENV}/values.yaml"; do
+            out="$(curl --silent --max-time 15 --retry 3 --retry-connrefused -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github.raw+json" \
+              -w '\n%{http_code}' "https://api.github.com/repos/${owner}/${gitops_repo}/contents/${f}?ref=${ref}")" || return 1
+            code="${out##*$'\n'}"; body="${out%$'\n'*}"
+            case "${code}" in
+              200) if [[ -n "$(yq '.releaseTracking.releaseId // ""' <<<"${body}" 2>/dev/null)" ]]; then rf_content="${body}"; return 0; fi ;;
+              404) ;;
+              *) return 1 ;;
+            esac
+          done
+          return 0
+        }
+        # The chain id a release PR was opened under is in its own commit (releaseTracking.releaseId in the release file on the PR's
+        # head), and the relay joins on it. A re-run does not always keep it: glidepath-api's rerun copies the run's params, and a
+        # run that started its chain (empty chain-id param) mints a new one in stage-preflight; only a Tekton retry of the same run
+        # keeps it. So a re-run completes the record under the chain the PR names. The branch is writable by anyone who can push to
+        # it, so the id is trusted only when it is exactly this release's shape: <lowercase uuid>:<cluster>/<env>, and when a record
+        # of that chain exists it belongs to this app, environment and cluster. Anything else fails the run (nothing is adopted and
+        # nothing falls back); so does a release file GitHub could not be asked for. Only a readable file with no releaseId falls back
+        # to this run's own id. Runs before anything is read from, or written to, a record: the record-held change id below is this
+        # run's only because of these checks. <head sha>
+        adopt_original_chain() {
+          local sha="$1" rid chain labels err
+          if [[ -z "${sha}" || "${sha}" == null ]]; then echo "error: the open PR names no head commit, so its chain id cannot be read; re-run this release later." >&2; exit 1; fi
+          fetch_release_file "${sha}" || { echo "error: could not read the release file on the PR's head commit from GitHub; re-run this release later." >&2; exit 1; }
+          rid=""
+          [[ -z "${rf_content}" ]] || rid="$(yq '.releaseTracking.releaseId // ""' <<<"${rf_content}" 2>/dev/null)"
+          if [[ -z "${rid}" ]]; then
+            echo "warning: the release file on the PR's head has no releaseId; using this run's chain id (${CHAIN_ID:-none})." >&2
+            return 0
+          fi
+          chain="${rid%%:*}"
+          if [[ "${rid}" != "${chain}:${CLUSTER}/${ENV}" ]]; then
+            echo "error: refused: the PR's commit names release '${rid}', which is not a release to ${CLUSTER}/${ENV}. Nothing was adopted or changed." >&2; exit 1
+          fi
+          if [[ ! "${chain}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "error: refused: the PR's commit names chain '${chain}', which is not a chain id this pipeline mints. Nothing was adopted or changed." >&2; exit 1
+          fi
+          [[ "${chain}" != "${CHAIN_ID}" ]] || return 0
+          if labels="$(kubectl get configmap "release-tracking-${chain}" -n "${NAMESPACE}" -o json 2>&1)"; then
+            if [[ "$(jq -r '(.metadata.labels["hangar.io/app"] // "") + "/" + (.metadata.labels["hangar.io/env"] // "") + "/" + (.metadata.labels["hangar.io/cluster"] // "")' <<<"${labels}")" != "${APP_NAME}/${ENV}/${CLUSTER}" ]]; then
+              echo "error: refused: the PR's commit names chain ${chain}, whose record belongs to another app, environment or cluster. Nothing was adopted or changed." >&2; exit 1
+            fi
+          elif [[ "${labels}" != *NotFound* && "${labels}" != *"not found"* ]]; then
+            echo "error: could not read release-tracking-${chain}: ${labels}" >&2; exit 1
+          fi
+          echo "re-run: this run's chain id is ${CHAIN_ID:-empty}, the PR's commit names ${chain}; the record is completed under ${chain}"
+          CHAIN_ID="${chain}"
+        }
+        # Is the branch's merged PR this run's own release, already done? Only then is a re-run refused (nothing is opened, no change
+        # is created). Its base is the default branch, its release file is for ${CLUSTER}/${ENV} and carries this run's image tag, and
+        # the environment's release file on the default branch still carries that tag: a revision promoted again after a rollback, a
+        # same-named environment of another cluster, and a hand-made branch of the same name are none of them this release.
+        merged_pr_is_this_release() {
+          local sha tag rid
+          tag="${IMAGE_REF##*:}"
+          [[ "$(jq -r '.base.ref // ""' <<<"${merged_pr}")" == main ]] || return 1
+          sha="$(jq -r '.head.sha // ""' <<<"${merged_pr}")"; [[ -n "${sha}" ]] || return 1
+          fetch_release_file "${sha}" || { echo "error: could not read the merged PR's release file from GitHub; re-run this release later." >&2; exit 1; }
+          [[ -n "${rf_content}" ]] || return 1
+          rid="$(yq '.releaseTracking.releaseId // ""' <<<"${rf_content}" 2>/dev/null)"
+          [[ "${rid}" == *":${CLUSTER}/${ENV}" ]] || return 1
+          [[ "$(yq '.release.image.tag // ""' <<<"${rf_content}" 2>/dev/null)" == "${tag}" ]] || return 1
+          fetch_release_file main || { echo "error: could not read the release file on main from GitHub; re-run this release later." >&2; exit 1; }
+          [[ "$(yq '.release.image.tag // ""' <<<"${rf_content}" 2>/dev/null)" == "${tag}" ]] || return 1
+          return 0
+        }
+        emit_results() { # <pr-url> <pr-created-at>
+          echo "$1" | tee "$(results.pr-url.path)"
+          printf '%s' "$2" > "$(results.pr-created-at.path)"
+          echo "pr-created-at=$2"
+          printf '%s' "${change_number}" > "$(results.change-request-number.path)"
+        }
+        # Everything after the PR exists, for a fresh PR and a re-run alike. <pr-url> <pr-created-at> <link the change: 1|0> <previous postPrError>
+        finish_after_pr() {
+          local url="$1" created="$2" link="$3" previous="${4:-}"
+          if [[ -n "${CHAIN_ID}" ]]; then
+            # first, before any other network call: the record naming the PR (state proposed when it is new)
+            if retry_late "writing the release record" write_release_record "${url}" "${created}"; then
+              [[ -z "${late_out}" ]] || echo "${late_out}"
+            else
+              echo "error: ${url} is open but its release record could not be written. Re-run this release: it finds the PR and writes the record." >&2
+              return 1
+            fi
+          else
+            echo "warning: no chain-id for this release - pr-url/pr-created-at won't reach release-outcome-notify.yaml (app onboarded before chain-id existed, or a manual/direct invocation)." >&2
+          fi
+          # The work note on the change ("Release PR: <url>"): the gate decides on the change's approval and finds its id on the
+          # record and in the PR body marker, never from this note, so a change tool that stays down does not stop the release.
+          if [[ -n "${change_id}" && "${link}" == 1 ]]; then
+            if retry_late "linking the PR to change ${change_number:-${change_id}}" itsm_link_pr "${change_id}" "${url}"; then
+              # remembered on the record, so a re-run retries the link until it was taken (best effort)
+              [[ -z "${CHAIN_ID}" ]] || retry_late "noting the link on the record" kubectl patch configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" --type merge \
+                -p "$(jq -cn --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{data: {changeLinkedAt: $now}}')" || true
+            else
+              note_post_pr_error "the change request could not be linked to this PR"
+            fi
+          fi
+          # Where a person will see it: one comment on the PR (best effort), fixed sentences and a reason class only (the tool's own
+          # text may carry its URL or response body), once per distinct set of classes: a re-run that fails the same way is silent.
+          previous_classes=""; [[ "${previous}" != \[* ]] || { previous_classes="${previous#\[}"; previous_classes="${previous_classes%%\]*}"; }
+          if [[ -n "${post_pr_classes}" && "${post_pr_classes}" != "${previous_classes}" ]]; then
+            retry_late "commenting the failure on the PR" curl --fail --silent --show-error --max-time 15 -o /dev/null \
+              -X POST -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${owner}/${gitops_repo}/issues/${url##*/}/comments" \
+              -d "$(jq -n --arg b "Release note: ${post_pr_public}. The release itself is unaffected; re-running this release retries it. <!-- glidepath:post-pr-note -->" '{body: $b}')" || true
+          fi
+          if [[ -n "${CHAIN_ID}" ]]; then
+            close_stale_proposals || true
+            link_reissued || true
+            record_post_pr_errors "${previous}"
+          fi
+          return 0
+        }
+
+        # A reissue's run was started minutes before its PR opens, and the checks glidepath-api made then can be stale now. At PR
+        # time, from the cluster and the git host: the reissued release must still be the newest for this app, environment and
+        # cluster, and no other release PR for the environment may be open. Fails the run, closing nothing, when either is not so.
+        reissue_old_created() {
+          kubectl get configmap "release-tracking-${reissue_of}" -n "${NAMESPACE}" -o jsonpath='{.data.prCreatedAt}' 2>/dev/null || true
+        }
+        reissue_guard() {
+          [[ -n "${reissue_of}" ]] || return 0
+          local created newer open_prs
+          created="$(reissue_old_created)"
+          [[ -n "${created}" ]] || { echo "error: reissue: the release being reissued (${reissue_of}) has no readable record, so it cannot be shown to be the newest." >&2; return 1; }
+          newer="$(kubectl get configmap -n "${NAMESPACE}" -l "hangar.io/subcomponent=release-tracking,hangar.io/app=${APP_NAME},hangar.io/env=${ENV},hangar.io/cluster=${CLUSTER}" -o json \
+            | jq -r --arg old "release-tracking-${reissue_of}" --arg own "release-tracking-${CHAIN_ID}" --arg c "${created:0:19}" \
+              '.items[] | select(.metadata.name != $old and .metadata.name != $own) | select(((.data.prCreatedAt // "")[0:19]) > $c) | (.data.releaseId // .metadata.name)' | head -1)"
+          if [[ -n "${newer}" ]]; then
+            echo "error: reissue refused: a newer release of ${APP_NAME} to ${ENV} on ${CLUSTER} (${newer}) was opened after the one being reissued (${reissue_of}); replaying it over that one is not allowed. Nothing was changed." >&2
+            return 1
+          fi
+          # Every page of the open PRs (100 each): a repository with more open PRs than one page must not fail open. More than 20
+          # pages, or a page that cannot be read, fails closed.
+          local page=1 got=0 hits
+          open_prs=""
+          while :; do
+            hits="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${owner}/${gitops_repo}/pulls?state=open&per_page=100&page=${page}")" || { echo "error: reissue: could not list the open release PRs." >&2; return 1; }
+            got="$(jq 'length' <<<"${hits}")"
+            open_prs="$(jq -r --arg re "^release-(rollback-)?${ENV}-[0-9a-zA-Z]{1,40}\$" '.[] | select(.head.ref | test($re)) | .html_url' <<<"${hits}" | head -1)"
+            [[ -z "${open_prs}" ]] || break
+            (( got >= 100 )) || break
+            (( page < 20 )) || { echo "error: reissue: more than 2000 open PRs; cannot show that no release PR for ${ENV} is open." >&2; return 1; }
+            page=$((page + 1))
+          done
+          if [[ -n "${open_prs}" ]]; then
+            echo "error: reissue refused: a release PR for ${ENV} is open (${open_prs}). Nothing was changed." >&2
+            return 1
+          fi
           return 0
         }
 
@@ -389,10 +674,7 @@ spec:
         # retry)", but nothing enforced that until now (the old timestamped branch name
         # made every retry look like a brand new release). head=owner:branch scopes the
         # search to this repo's own branch, not every fork.
-        existing_pr="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
-          -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
-          "https://api.github.com/repos/${owner}/${gitops_repo}/pulls?head=${owner}:${branch}&state=open")"
-        pr_url="$(jq -r '.[0].html_url // empty' <<<"${existing_pr}")"
+        lookup_open_pr || { echo "error: could not list the open pull requests of ${owner}/${gitops_repo}." >&2; exit 1; }
         if [[ -n "${pr_url}" ]]; then
           echo "release PR for ${branch} is already open (retry) - reusing it instead of opening a duplicate: ${pr_url}"
           # GitHub's own created_at for the existing PR, not a fresh `date -u` - this IS
@@ -400,26 +682,78 @@ spec:
           # anchor, not this attempt's (later) wall-clock time.
           pr_created_at="$(jq -r '.[0].created_at' <<<"${existing_pr}")"
           existing_body="$(jq -r '.[0].body // ""' <<<"${existing_pr}")"
-          ensure_change_request "${existing_body}"
+          adopt_original_chain "$(jq -r '.[0].head.sha // ""' <<<"${existing_pr}")"
+          # Finish what an earlier attempt left (2026-11-16: PR open, change created, no record). The record first, from what
+          # the PR already says (the change id in its body marker), before any call to the change tool; completed below.
+          have_record=0; previous_error=""; linked_at=""
+          if kubectl get configmap "release-tracking-${CHAIN_ID:-none}" -n "${NAMESPACE}" >/dev/null 2>&1; then
+            have_record=1
+            previous_error="$(kubectl get configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" -o jsonpath='{.data.postPrError}' 2>/dev/null || true)"
+            linked_at="$(kubectl get configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" -o jsonpath='{.data.changeLinkedAt}' 2>/dev/null || true)"
+          fi
+          marker_id=""
+          if itsm_enabled; then
+            # The change a previous attempt recorded counts as named even when the PR body never got its marker (the body update
+            # failed): reading it is a get, a create here would open a second change.
+            # (The record is this run's: adopt_original_chain above refused any chain that is not this app/env/cluster's.)
+            if [[ -z "${CHANGE_REQUEST_ID}" && "${existing_body}" != *"glidepath:change-request:"* && "${have_record}" == 1 ]]; then
+              CHANGE_REQUEST_ID="$(kubectl get configmap "release-tracking-${CHAIN_ID}" -n "${NAMESPACE}" -o jsonpath='{.data.changeRequestId}' 2>/dev/null || true)"
+            fi
+            marker_id="${CHANGE_REQUEST_ID}"
+            [[ -n "${marker_id}" ]] || marker_id="$(sed -nE 's/.*<!-- glidepath:change-request:([^ ]+) -->.*/\1/p' <<<"${existing_body}" | head -1)"
+          fi
+          if [[ -n "${CHAIN_ID}" && "${have_record}" == 0 ]]; then
+            change_id="${marker_id}"
+            if ! retry_late "writing the release record" write_release_record "${pr_url}" "${pr_created_at}"; then
+              echo "error: ${pr_url} is open but its release record could not be written." >&2
+              exit 1
+            fi
+            echo "release record release-tracking-${CHAIN_ID} was missing for the open PR ${pr_url}: written"
+            change_id=""
+          fi
+          need_link=0
+          # the link is retried until the record says it was taken (changeLinkedAt), whatever else is or is not on it
+          [[ "${have_record}" == 0 || -n "${previous_error}" || -z "${linked_at}" ]] && need_link=1
+          change_failed=0
+          # Retried only when the change is already named (a read): a create whose answer was lost must not be sent twice.
+          late_attempts_saved="${late_attempts}"; [[ -n "${marker_id}" ]] || late_attempts=1
+          retry_late "reading the change request" ensure_change_request "${existing_body}" && change_read=1 || change_read=0
+          late_attempts="${late_attempts_saved}"
+          [[ -z "${late_out}" ]] || echo "${late_out}"
+          if (( change_read == 0 )); then
+            if [[ -n "${marker_id}" ]]; then
+              # the PR names its change; only its details could not be read now. The id is enough for the gate.
+              change_id="${marker_id}"; need_link=1
+              note_post_pr_error "the change request could not be read from the change tool"
+            else
+              change_failed=1
+              note_post_pr_error "no change request could be created or read for this PR"
+            fi
+          fi
           if [[ -n "${change_id}" && "${existing_body}" != *"glidepath:change-request:${change_id}"* ]]; then
             # The reused PR predates its change (the change tool was unreachable then, or was configured since):
             # name it in the body now, so the gate's fallback and a reader both find it.
-            curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 -o /dev/null \
+            need_link=1
+            retry_late "naming the change on the PR" curl --fail --silent --show-error --max-time 15 -o /dev/null \
               -X PATCH -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${owner}/${gitops_repo}/pulls/$(jq -r '.[0].number' <<<"${existing_pr}")" \
-              -d "$(jq -n --arg body "${existing_body}$(change_line)$(change_marker)" '{body: $body}')"
-            itsm_link_pr "${change_id}" "${pr_url}" >/dev/null
+              -d "$(jq -n --arg body "${existing_body}$(change_line)$(change_marker)" '{body: $body}')" \
+              || note_post_pr_error "the PR body could not be updated with the change request"
           fi
-          if [[ -n "${CHAIN_ID}" ]]; then
-            write_release_record "${pr_url}" "${pr_created_at}"
-          fi
-          echo "${pr_url}" | tee "$(results.pr-url.path)"
-          printf '%s' "${pr_created_at}" > "$(results.pr-created-at.path)"
-          echo "pr-created-at=${pr_created_at}"
-          printf '%s' "${change_number}" > "$(results.change-request-number.path)"
+          finish_after_pr "${pr_url}" "${pr_created_at}" "${need_link}" "${previous_error}" || exit 1
+          emit_results "${pr_url}" "${pr_created_at}"
+          # A release with no change request at all, with a change tool configured, is the thing change management refuses.
+          (( change_failed == 0 )) || exit 1
           exit 0
         fi
+        # The branch's PR is already merged and is this release (2026-11-16: merged by the owner, no record): a second PR and a
+        # second change for an image that is already released are what a re-run must not make, so it stops here, changing nothing.
+        if [[ -n "${merged_pr}" ]] && merged_pr_is_this_release; then
+          echo "error: the release PR for this revision is already merged ($(jq -r '.html_url' <<<"${merged_pr}")); nothing was opened and no change request was created. If its release record is missing, see docs/admin/release-state.md#a-release-pr-that-is-already-merged." >&2
+          exit 1
+        fi
 
+        reissue_guard || exit 1
         ensure_change_request ""
 
         workdir="$(mktemp -d)"
@@ -593,35 +927,40 @@ spec:
           --arg base "main" \
           '{title: $title, body: $body, head: $head, base: $base}')"
 
-        pr_response="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
+        # A POST whose answer was lost (a timeout after GitHub created the PR, a 5xx retried into "already exists") is not a
+        # failed release: ask the git host whether the PR is there before giving up on it.
+        pr_url=""
+        if pr_response="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 15 \
           -X POST -H "Authorization: Bearer ${token}" \
           -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
           "https://api.github.com/repos/${owner}/${gitops_repo}/pulls" \
-          -d "${pr_body}")"
-        pr_url="$(jq -r '.html_url' <<<"${pr_response}")"
+          -d "${pr_body}")"; then
+          # an answer that is not a PR (empty, not JSON, no html_url) is a failed call, not the URL "null"
+          pr_url="$(jq -r '.html_url // empty' <<<"${pr_response}" 2>/dev/null || true)"
+          [[ "${pr_url}" =~ ^https://[^[:space:]]+/pull/[0-9]+$ ]] || pr_url=""
+        fi
+        if [[ -z "${pr_url}" ]]; then
+          echo "warning: the pull request call failed or returned no PR; checking whether the PR exists anyway." >&2
+          if lookup_open_pr; then
+            [[ -n "${pr_url}" ]] || { echo "error: the release PR was not opened: the call failed and GitHub lists no open PR from ${branch}." >&2; exit 1; }
+            echo "the PR exists (${pr_url}); continuing with it"
+          else
+            echo "error: could not confirm whether the release PR was opened (the call and the lookup both failed). Check the pull requests from ${branch} in ${owner}/${gitops_repo}; if one is open, re-run this release and it will be found." >&2
+            exit 1
+          fi
+        fi
         # Matches otel_now's format (catalog/lib/otel.sh) without sourcing that whole lib
         # for one timestamp.
         pr_created_at="$(date -u +"%Y-%m-%dT%H:%M:%S.%NZ")"
-        if [[ -n "${change_id}" ]]; then
-          itsm_link_pr "${change_id}" "${pr_url}" >/dev/null
-        fi
 
         # prUrl/prCreatedAt genuinely can't be known before the PR exists, and writing
         # them via a second git commit would re-trigger every governance gate on this PR
-        # a second time (see this file's own header). A short-lived ConfigMap on THIS
-        # (dev) cluster, keyed by chain-id, hands them to release-outcome-notify.yaml's
-        # resolve-release-tracking Task instead - that Task runs here too, so this never
-        # becomes a cross-cluster call. Self-cleaned on read (see that Task); the
-        # pr-namespace-ttl-sweep CronJob is the backstop for a release whose PR never
-        # merges, so that Task never runs. --dry-run=client|apply, not a raw heredoc -
-        # see the pr_body_text comment above on why a heredoc at column 0 breaks this
-        # Task's own surrounding YAML.
-        if [[ -n "${CHAIN_ID}" ]]; then
-          write_release_record "${pr_url}" "${pr_created_at}"
-          close_stale_proposals || true
-        else
-          echo "warning: no chain-id for this release - pr-url/pr-created-at won't reach release-outcome-notify.yaml (app onboarded before chain-id existed, or a manual/direct invocation)." >&2
-        fi
+        # a second time (see this file's own header). A ConfigMap on THIS (dev) cluster,
+        # keyed by chain-id, hands them to release-outcome-notify.yaml's
+        # resolve-release-tracking Task and to every reader of the release. It is written
+        # HERE, immediately after the PR and before any other network call (finish_after_pr),
+        # then the change is linked, stale proposals closed and a reissue linked.
+        finish_after_pr "${pr_url}" "${pr_created_at}" 1 "" || exit 1
 
         echo "${pr_url}" | tee "$(results.pr-url.path)"
         printf '%s' "${pr_created_at}" > "$(results.pr-created-at.path)"

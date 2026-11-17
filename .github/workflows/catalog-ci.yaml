@@ -62,7 +62,8 @@ jobs:
       - run: go run github.com/neilpa/yajsv@v1.4.1 -s schemas/cicd.schema.json docs/user/examples/*.yaml
 
   # The config-only build exemption every push flow carries, evaluated with cel-go (what Pipelines-as-Code uses)
-  # against 15 push payloads: cicd.yaml/glidepath//.tekton/ changes never build, the first onboarding merge does.
+  # against push payloads: cicd.yaml/glidepath//.tekton/ changes never build, the first onboarding merge does; and the
+  # propose-merge audit trigger skips a push of only glidepath/envs/<env>.release.yaml and starts for every other push.
   build-exemption-cel:
     runs-on: ubuntu-latest
     steps:
@@ -120,6 +121,16 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: pip install pyyaml
       - run: python3 charts/glidepath-catalog/tests/promotion_lineage_test.py
+
+  # Reissue: open-release-pr's reissueOf field and the closed record's reissuedBy link, against a fake kubectl.
+  release-reissue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: pip install pyyaml
+      - run: python3 charts/glidepath-catalog/tests/release_reissue_test.py
+      - run: python3 charts/glidepath-catalog/tests/release_record_survives_test.py
 
   # The promotion fan-in (ADR-0029 phase 3): comment-pr-check-result's promotion-ready step.
   promotion-fan-in:

@@ -139,10 +139,16 @@ protection can require anything). Four layers, none of which is a ruleset:
    (every gitops repo PR close) reads it as success only when `merged_by` is a person (type `User`, not a `[bot]` login, not in
    `agentGates.agentLogins`); otherwise the merge is reported as a break-glass bypass (Slack, the release log's `bypass`).
    **App repos too:** every app repo gets `.tekton/push-propose-merge-check.yaml` (onboarding, like the agent-release file), a push-to-main
-   run of the `propose-merge-check` Pipeline: `resolve-merged-pr`, then `detect-propose-merge`. It reads the merged PR's head commit for the
+   run of the `propose-merge-check` Pipeline (it does not start for a push whose every changed file, in every commit, is a release file the pipeline itself writes, `glidepath/envs/<env>.release.yaml`, the deploy write-back; see below): `resolve-merged-pr`, then `detect-propose-merge`. It reads the merged PR's head commit for the
    `Hangar-Merge: person` trailer (or Clearance's agent-scope check titled "needs a person") and, if the merger is a bot, an agents'
    login, an account that is not a `User`, or unnamed, alerts Slack (always, not silenceable) naming the PR and the merger. A person's merge
    and every unmarked PR are quiet; the run never fails.
+   *Why skipping release-file pushes is safe:* a propose field is a `cicd.yaml` field (`contract/glidepath-contract.json`, `scope.rules`: only
+   `/deploy/environments/*/cluster` and `/production`), so a PR marked for a person always changes `cicd.yaml`, which still starts the audit. Release files are
+   no propose path (Clearance denies agents `*.release.yaml` outright). The skip is a CEL filter on the push's changed files, never a path prefix or an author
+   name: `glidepath/` in general, `cicd.yaml` and `.tekton/` still start it. It also does not skip a push that carries a `Hangar-Merge:` trailer or whose tip
+   is a PR merge ("Merge pull request" or a squash's "(#N)"). `hack/ci/build-exemption-cel` evaluates it with cel-go against 21 payloads. A push of 20 or more commits (GitHub's cap on the payload's commit list, so the list may be truncated) is never skipped, and the trailer is also read from the push's head commit. It reaches an
+   existing app repo with its next onboarding resync PR.
 
 Layers 3 and 4 need the Clearance GitHub App's checks (`agentGates.clearanceChecks: true`). On a cluster in the fallback
 (`agent-gates-`), layers 1 and 2 hold and the merge is not checked afterwards.

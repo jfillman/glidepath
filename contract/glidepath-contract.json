@@ -1507,11 +1507,25 @@
         "summary": "One release run, followed from the moment promote or rollback answers with its name"
       },
       {
+        "operationId": "listReissuableReleases",
+        "method": "GET",
+        "path": "/v1/apps/{app}/releases/reissuable",
+        "tier": "T0",
+        "summary": "The releases whose PR was closed without merging and which a reissue could replace"
+      },
+      {
         "operationId": "getRelease",
         "method": "GET",
         "path": "/v1/apps/{app}/releases/{chainId}",
         "tier": "T0",
         "summary": "The release record of one flow (release-tracking-<chainId>)"
+      },
+      {
+        "operationId": "reissueRelease",
+        "method": "POST",
+        "path": "/v1/apps/{app}/releases/{chainId}/reissue",
+        "tier": "T2",
+        "summary": "Replace a release PR that was closed without merging with a fresh one (the release Pipeline; a human merges)"
       },
       {
         "operationId": "getEvidence",

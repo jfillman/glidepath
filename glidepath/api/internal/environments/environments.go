@@ -111,8 +111,10 @@ type Client struct {
 	Lineage interface {
 		Resolve(ctx context.Context, namespace, imageRef, commit, digest string) lineage.Resolution
 	}
-	Records interface { // release records for one environment and cluster
+	Records interface { // release records for one environment and cluster, and one by chain id (reissue)
 		ListEnv(ctx context.Context, namespace, app, env, cluster string) ([]releases.Record, error)
+		Get(ctx context.Context, namespace, app, chain string) (*releases.Record, error)
+		List(ctx context.Context, namespace, app string) ([]releases.Record, error)
 	}
 }
 
@@ -212,6 +214,8 @@ type releaseRun struct {
 	env, cluster, gitURL, gitRevision, imageRef, initiator string
 	digest                                                 string          // the manifest digest the source environment's release file pins (promotion.pinDigest), or ""
 	rollback                                               *rollbackParams // set for a rollback
+	reissueOf                                              string          // a reissue: the chain id of the release whose closed PR this one replaces
+	nameKey                                                string          // when set, the run's name hash instead of keyHash (a reissue's is the chain's, so one run per closed release)
 }
 
 // rollbackParams: the release-id a rollback replaces, why, and the app-repo revision to read cicd.yaml at.
@@ -226,6 +230,9 @@ type Started struct {
 	// OriginUnknown says why there is no Origin ("" when Lineage is not configured or Origin is set). A release with no
 	// origin is not refused: lineage is information, not a gate.
 	OriginUnknown string
+	// ReissueLinked: a reissue's run carries the reissue-of annotation (false when the cluster's admission policy for these runs
+	// does not yet allow it: the release goes ahead, unlinked).
+	ReissueLinked bool
 }
 
 // Origin is the flow that built the image a release carries (docs/admin/api.md#promotion-lineage).
@@ -283,7 +290,11 @@ func (c *Client) startRun(ctx context.Context, app *apps.App, p releaseRun, keyH
 	if resource == nil || resource["kind"] != "PipelineRun" {
 		return nil, Refused{fmt.Sprintf("%s/%s does not describe a PipelineRun", app.Namespace, tmpl), ""}
 	}
-	name := RunName(kind, p.env, p.gitRevision, keyHash)
+	nameHash := keyHash
+	if p.nameKey != "" {
+		nameHash = p.nameKey
+	}
+	name := RunName(kind, p.env, p.gitRevision, nameHash)
 	params := map[string]string{
 		"pipeline-run-name": name, "env": p.env, "cluster": p.cluster, "git-url": p.gitURL,
 		"git-revision": p.gitRevision, "image-ref": p.imageRef, "initiator": p.initiator,
@@ -328,17 +339,24 @@ func (c *Client) startRun(ctx context.Context, app *apps.App, p releaseRun, keyH
 			unknown = res.Unknown
 		}
 	}
+	if p.reissueOf != "" {
+		// Stamped from the record the API read, never from the request; open-release-pr copies it into the new record.
+		ann[pipelineruns.AnnotationReissueOf] = p.reissueOf
+	}
 	meta["annotations"] = ann
 	run["metadata"] = meta
 
 	err = c.Runs.Create(ctx, app.Namespace, run, dryRun)
-	if origin != nil && lineageRefused(err) {
+	linked := p.reissueOf != ""
+	if (origin != nil || linked) && lineageRefused(err) {
 		// An older admission policy for this API's runs lists the annotations a run may carry and does not know these
 		// yet: the release goes ahead without its lineage, never refused for it. Only that refusal is retried, and the run
 		// resubmitted is the same run less the lineage annotations.
 		for _, k := range lineageKeys {
 			delete(ann, k)
 		}
+		delete(ann, pipelineruns.AnnotationReissueOf)
+		linked = false
 		origin, unknown = nil, "the cluster's admission policy for glidepath-api runs does not yet allow the lineage annotations"
 		err = c.Runs.Create(ctx, app.Namespace, run, dryRun)
 	}
@@ -355,7 +373,7 @@ func (c *Client) startRun(ctx context.Context, app *apps.App, p releaseRun, keyH
 			return nil, pipelineruns.Conflict{What: fmt.Sprintf("PipelineRun %s exists and is not this %s's run for this Idempotency-Key", name, kind)}
 		}
 		// A replay reports what the run it found carries, not what this call would resolve now.
-		s := &Started{Name: name, Replayed: true}
+		s := &Started{Name: name, Replayed: true, ReissueLinked: a[pipelineruns.AnnotationReissueOf] != ""}
 		if a[pipelineruns.AnnotationOriginChainID] != "" {
 			s.Origin = &Origin{ChainID: a[pipelineruns.AnnotationOriginChainID], ChainSlug: a[pipelineruns.AnnotationOriginChainSlug], TraceID: a[pipelineruns.AnnotationOriginTraceID]}
 		}
@@ -370,7 +388,7 @@ func (c *Client) startRun(ctx context.Context, app *apps.App, p releaseRun, keyH
 	if err != nil {
 		return nil, err
 	}
-	s := &Started{Name: name, Origin: originOf(origin), OriginUnknown: unknown}
+	s := &Started{Name: name, Origin: originOf(origin), OriginUnknown: unknown, ReissueLinked: linked}
 	if dryRun {
 		s.Object = run
 	}

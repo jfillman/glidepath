@@ -70,7 +70,10 @@ func mapOf(v any) map[string]any {
 	return m
 }
 
-// statusOf reads Tekton's Succeeded condition: Unknown is running, True succeeded, False failed or cancelled.
+// statusOf reads Tekton's Succeeded condition: Unknown is running, True succeeded, False failed or cancelled. A run waiting
+// for a concurrency slot is `queued`, not running: Pipelines-as-Code creates runs beyond a repository's limit with
+// spec.status PipelineRunPending (condition Unknown, reason PipelineRunPending). That is read from the object's own
+// spec and condition, never from the PaC label or annotation, which can outlive the wait.
 func statusOf(o Obj) (status, reason, message string) {
 	st := mapOf(o["status"])
 	conds, _ := st["conditions"].([]any)
@@ -89,7 +92,13 @@ func statusOf(o Obj) (status, reason, message string) {
 			}
 			return "failed", reason, message
 		}
+		if reason == "PipelineRunPending" || str(mapOf(o["spec"]), "status") == "PipelineRunPending" {
+			return "queued", reason, message
+		}
 		return "running", reason, message
+	}
+	if str(mapOf(o["spec"]), "status") == "PipelineRunPending" {
+		return "queued", "PipelineRunPending", ""
 	}
 	return "pending", "", ""
 }

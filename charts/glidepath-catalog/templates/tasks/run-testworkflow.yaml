@@ -328,13 +328,30 @@ spec:
         fi
         echo -n "${WORKFLOW_SOURCE}" > "$(results.workflow-source.path)"
 
-        echo "materializing this namespace's app-secrets into testkube/${SECRET_NAME}"
-        if kubectl get secret app-secrets >/dev/null 2>&1; then
-          PATCH_DATA="$(kubectl get secret app-secrets -o json | jq -c '{data: .data}')"
-          kubectl -n testkube patch secret "${SECRET_NAME}" --type merge -p "${PATCH_DATA}"
+        # Two sources, merged into the one placeholder: app-secrets (the app's own Infisical keys, synced by
+        # the app-secrets ExternalSecret) and dex-check-ride-credentials (DEX_TOKEN_URL / DEX_CLIENT_ID /
+        # DEX_CLIENT_SECRET, published into this namespace by Airframe's Dex component when the app sets
+        # spec.checkRide.namespace; docs/admin/app-secrets.md). Either may be absent. The Dex Secret is
+        # read last, so its keys win over a same-named key in app-secrets.
+        echo "materializing this namespace's app-secrets and dex-check-ride-credentials into testkube/${SECRET_NAME}"
+        SECRET_JSONS=""
+        for src in app-secrets dex-check-ride-credentials; do
+          if SRC_JSON="$(kubectl get secret "${src}" -o json 2>/dev/null)"; then
+            echo "  found ${src}"
+            SECRET_JSONS="${SECRET_JSONS}${SRC_JSON}"$'\n'
+          fi
+        done
+        # REPLACE the placeholder's data with this run's snapshot, every run: a merge patch only adds keys, so a key
+        # from an earlier run whose cleanup never ran (and whose source Secret has since gone) would survive. A JSON
+        # patch `add /data` replaces the member whether or not it exists (the cleanup below removes it), under the
+        # `patch` verb this step already has on the one Secret (get/update/patch); neither source empties it.
+        if [[ -n "${SECRET_JSONS}" ]]; then
+          MERGED="$(jq -c -s 'map(.data // {}) | add' <<< "${SECRET_JSONS}")"
         else
-          echo "no app-secrets in this namespace - leaving ${SECRET_NAME} empty"
+          echo "no app-secrets or dex-check-ride-credentials in this namespace - emptying ${SECRET_NAME}"
+          MERGED='{}'
         fi
+        kubectl -n testkube patch secret "${SECRET_NAME}" --type json -p "$(jq -c -n --argjson d "${MERGED}" '[{op: "add", path: "/data", value: $d}]')"
 
         # BEGIN testworkflow-policy
         # What a repository's TestWorkflow may be before it is applied into the shared testkube namespace (it runs there as

@@ -127,6 +127,43 @@ Every environment Application (Ground `lower-envs`, Flight `tenant-onboarding`) 
 sync that would delete everything, and a chart render failure stops the sync before any prune. The ApplicationSets
 set `preserveResourcesOnDeletion`, so replacing a generator never deletes a running environment.
 
+### Reissue: a release PR replaced after it was closed unmerged
+
+`POST /v1/apps/{app}/releases/{chainId}/reissue` (glidepath-api, T2) is a write path with the same authority as promote and no
+more: `promote` on `environments` (the `glidepath-api-releaser` role), a delegate naming the person, the app's own
+`promote-release` template, service account `pipeline-runner`, the platform's PR-opening GitHub App, and a human merge.
+
+- **Who:** the same callers as promote. Tower's route is owner-gated (`tower.release.reissue`, owners and admins); the API
+  authorizes the delegate's write again by the person it names.
+- **What it can start:** only a release of the **record's own** image and commit, at its own environment and cluster. The body is
+  ignored, so no caller chooses an image, a commit, an environment or a chain. It starts a promotion, never a rollback, so no
+  gate is made advisory (the content gates run as for any promotion, and a rollback-eligible image gets no relaxation from it).
+- **An image that failed its gates:** the new PR is a new PR with every release gate running from scratch (sast, image-scan,
+  provenance, commit signing, the values and policy gates, Clearance) against the current gitops `main`; nothing is carried over
+  from the closed PR, and a failing gate fails the new PR exactly as it would have the first one. The image must also still exist
+  and verify: `resolve-image-ref` and the provenance gate read it again.
+- **A gate skipped:** none is skipped or relaxed; the release kind is `promote`.
+- **An environment the caller does not own:** the environment is the record's, the app's `releaser` role is per namespace, and the
+  environment must still be a Flight environment of the app's current `cicd.yaml`.
+- **Replaying an old release over a newer one:** refused when any other release of the app to that environment and cluster was
+  opened after this one, or merged after this one was opened, or when any release PR for the environment is open now.
+- **A forged record:** a release record is written by `pipeline-runner`, whose token repository code can reach (see
+  "Pipeline identities"). So nothing in a record is trusted: the image must be `<repo>/<app>:<tag>` whose tag's sha is the
+  recorded 40-character commit, the commit must resolve in the app's repository, the source URL must be the app's repository, the
+  PR must be one of the app's gitops PRs opened from `release-<env>-<sha8>`, and its state is read from the git host. What a forger
+  could still cause is a promotion of a commit and image of the app's own repository: the same thing anyone with the release
+  verb can already start with promote, behind the same gates and a human merge.
+- **Clearance:** the new PR is a new registration and a new hold; the closed PR's change stays as it was (its PR never merged, so
+  its hold never resolved into a release). Nothing is reused from it.
+- **Ref protection:** the run carries the origin stamp (`origin-ref`, `origin-sha`) the API sets for promote, from the record's
+  commit and the configured protected branch, so `verify-ref-protection` checks the same claim against the git host. The new PR
+  is opened from a fresh branch state (one commit, never reopened, never force-pushed from that PR's point of view), so the
+  review-evidence baseline rules hold. The branch name is the same per-commit name as the first attempt's; `open-release-pr`
+  already recreates it from `main` and force-pushes when no PR is open, which only ever touches the closed PR's head.
+- **Once per release:** the run's name derives from the closed release's chain id, so a second reissue (another key) is refused.
+- **Audit:** the API's audit line names the caller, the person, the closed chain, the environment, the run and whether the link
+  was stamped. The new record's `reissueOf` and the closed record's `reissuedBy` are the durable join.
+
 ## Portal actions (Tower): owner-scoped, delegated, audited
 
 Tower (the Backstage portal) can open the same PRs a release does, and run a few Argo CD operations. None of it is a
@@ -535,7 +572,12 @@ What this release does close, and how that was checked:
   parameters that Pipeline takes, with values of the expected shape, and the repository, revision, pull request and namespace
   parameters must equal what Pipelines-as-Code itself recorded for the event. Pipelines that deploy, release or test start only from a
   push to a protected branch or to a tag of the shape `v<major>.<minor>.<patch>`, decided on the full ref Pipelines-as-Code records
-  (`source-branch`), so a branch named `refs/tags/v1.0.0` is not a tag. `image-repo` must be this application's own repository
+  (`source-branch`), so a branch named `refs/tags/v1.0.0` is not a tag. A push records its ref in two spellings, and both are
+  accepted for a protected branch: the full ref (`refs/heads/main`, a real push) and the bare name (`main`), which Pipelines-as-Code
+  v0.52.0 records for a re-run of a push's check from the git host (check_run / check_suite `rerequested`, `event-type: push`). The
+  bare name must equal a `protectedBranches` entry exactly; a bare tag name is never a tag (a tag has no head branch, so such a re-run
+  cannot exist). A run that Pipelines-as-Code starts from a comment (`retest-comment`, `incoming`) is not a push and so does not start a
+  push-only Pipeline. `image-repo` must be this application's own repository
   (`<registry>/<owner>/<app>` or `-pr`), so a build cannot push into another app's repository or cache; `onboarding-resync` may
   target only `gitops-<app>` under the repository's own owner, and only from a push; a task may run as `source-runner` or
   `glidepath-cloud-deployer` only where the Pipeline's task list says so. It cannot name another ServiceAccount, add a pod template, embed a Pipeline, or start a
