@@ -134,12 +134,15 @@ spec:
         [[ "${EXC_MAX_DAYS}" =~ ^[0-9]+$ && "${EXC_MAX_DAYS}" -gt 0 ]] || finish error "exceptions-max-days must be a positive whole number, got '${EXC_MAX_DAYS}'"
 
         owner="$(sed -E 's#https?://github\.com/([^/]+)/.*#\1#' <<<"${EXC_REPO_URL}")"
-        repo="$(sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#' <<<"${EXC_REPO_URL}")"
+        repo="$(sed -E -e 's#https?://github\.com/[^/]+/([^/]+).*#\1#' -e 's#\.git$##' <<<"${EXC_REPO_URL}")"
         token="$(github_app_installation_token "${owner}" "${repo}")" || finish error "could not get a read token for ${owner}/${repo}"
         base="https://api.github.com/repos/${owner}/${repo}"
-        get() {  # <url> <accept> <outfile> - prints the HTTP status
-          curl --silent --show-error --retry 3 --retry-connrefused --max-time 20 -o "$3" -w '%{http_code}' \
-            -H "Authorization: Bearer ${token}" -H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: $2" "$1"
+        get() {  # <url> <accept> <outfile> - prints the HTTP status; a failed transfer (even after a 200) prints 000 and removes the partial file
+          local c
+          c="$(curl --silent --show-error --retry 3 --retry-connrefused --max-time 20 -o "$3" -w '%{http_code}' \
+            -H "Authorization: Bearer ${token}" -H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: $2" "$1")" \
+            || { rm -f "$3"; echo 000; return 0; }
+          echo "${c}"
         }
         code="$(get "${base}" application/vnd.github+json "${X}/repo.json")"
         [[ "${code}" == 200 ]] || finish error "GitHub answered ${code} for ${owner}/${repo}"
@@ -179,6 +182,7 @@ spec:
                          else
                            (try ($e.expired_at[0:10] + "T00:00:00Z" | fromdateiso8601) catch null) as $t
                            | if $t == null then "\($label): expired_at \($e.expired_at) is not a date"
+                             elif $t <= -62135596800 then "\($label): expired_at \($e.expired_at[0:10]) is the zero date, which never expires in Trivy"
                              elif $t > $now + $max * 86400 then "\($label): expired_at \($e.expired_at[0:10]) is more than \($max) days ahead"
                              else empty end
                          end)

@@ -49,6 +49,8 @@ case "\${url}" in
 esac
 [[ -n "\${out}" ]] && printf '%s' "\${body}" > "\${out}"
 printf '%s' "\${code}"
+[[ "\${API_FAIL:-}" == transfer && "\${url}" == *contents* ]] && exit 18   # 200 sent, then the transfer broke
+exit 0
 STUB
 cat > "${tmp}/bin/trivy" <<'STUB'
 #!/usr/bin/env bash
@@ -103,7 +105,7 @@ run() {
   mkdir -p "${w}/exc" "${w}/res"
   : > "${w}/curl.log"; : > "${w}/trivy.log"
   sed "s#/exceptions#${w}/exc#g" "${tmp}/fetch.raw" > "${w}/fetch.sh"
-  sed -e "s#/exceptions#${w}/exc#g" -e "s#/tmp/#${w}/#g" \
+  sed -e "s#/tmp/#${w}/#g" -e "s#/exceptions#${w}/exc#g" \
       -e "s#\$(results.findings-summary.path)#${w}/res/summary#g" -e "s#\$(results.outcome.path)#${w}/res/outcome#g" "${tmp}/scan.raw" > "${w}/scan.sh"
   local envs=(PATH="${tmp}/bin:${PATH}" PLATFORM_LIB="${tmp}/lib" GITHUB_TOKEN_BROKER_URL=x CURL_LOG="${w}/curl.log" TRIVY_LOG="${w}/trivy.log"
               EXC_REPO_URL="${repo}" EXC_MAX_DAYS="${EXC_MAX_DAYS:-90}" MAIN_FILE="${MAIN_FILE:-}" HEAD_FILE="${HEAD_FILE:-}" API_FAIL="${API_FAIL:-}"
@@ -182,6 +184,7 @@ refused noexpiry $'vulnerabilities:\n  - id: CVE-2026-1111\n    statement: no fi
 refused nostatement $'vulnerabilities:\n  - id: CVE-2026-1111\n    expired_at: '"${d60}" "vulnerabilities[0] CVE-2026-1111: statement (the reason) is required"
 refused quoted $'vulnerabilities:\n  - id: CVE-2026-1111\n    statement: x\n    expired_at: "'"${d60}"'"' "must be an unquoted YAML date"
 refused toofar $'vulnerabilities:\n  - id: CVE-2026-1111\n    statement: x\n    expired_at: '"${d120}" "more than 90 days ahead"
+refused zerodate $'vulnerabilities:\n  - id: CVE-2026-1111\n    statement: x\n    expired_at: 0001-01-01' "0001-01-01 is not a date"
 refused onebad $'vulnerabilities:\n  - id: CVE-2026-1111\n    statement: x\n    expired_at: '"${d60}"$'\n  - id: CVE-2026-2222\n    statement: y' "vulnerabilities[1] CVE-2026-2222: expired_at is required"
 refused typo $'vulnerabilites:\n  - id: CVE-2026-1111\n    statement: x\n    expired_at: '"${d60}" "unknown top-level key"
 refused badyaml $'vulnerabilities: [' "not valid YAML"
@@ -231,5 +234,9 @@ has "unused: CVE-2026-9999 matches nothing" "${summary}"; check "reports an unus
 # 9. an unreadable default branch fails closed as an error, not as "no exceptions".
 MAIN_FILE="${tmp}/fx/ok2" API_FAIL=commit run apifail "${REPO}"
 [[ "${status}" == error && "${outcome}" == error && "${rc}" == 1 ]]; check "API failure: outcome error ($status/$outcome/$rc)" $?
+
+# 10. a transfer that fails after a 200 (curl exit != 0) is an error, never a partial file.
+MAIN_FILE="${tmp}/fx/ok2" API_FAIL=transfer run xfer "${REPO}"
+[[ "${status}" == error && "${outcome}" == error && "${rc}" == 1 && ! -e "${dir}/exc/.trivyignore.yaml" ]]; check "transfer failure after 200: error, no file ($status/$outcome/$rc)" $?
 
 [[ ${fail} -eq 0 ]] && echo "ok (${pass} checks)" || exit 1
