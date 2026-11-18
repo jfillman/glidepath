@@ -184,7 +184,7 @@ refused noexpiry $'vulnerabilities:\n  - id: CVE-2026-1111\n    statement: no fi
 refused nostatement $'vulnerabilities:\n  - id: CVE-2026-1111\n    expired_at: '"${d60}" "vulnerabilities[0] CVE-2026-1111: statement (the reason) is required"
 refused quoted $'vulnerabilities:\n  - id: CVE-2026-1111\n    statement: x\n    expired_at: "'"${d60}"'"' "must be an unquoted YAML date"
 refused toofar $'vulnerabilities:\n  - id: CVE-2026-1111\n    statement: x\n    expired_at: '"${d120}" "more than 90 days ahead"
-refused zerodate $'vulnerabilities:\n  - id: CVE-2026-1111\n    statement: x\n    expired_at: 0001-01-01' "0001-01-01 is not a date"
+refused zerodate $'vulnerabilities:\n  - id: CVE-2026-1111\n    statement: x\n    expired_at: 0001-01-01' "vulnerabilities[0] CVE-2026-1111: expired_at 0001-01-01 is " # 'not a date' or 'the zero date': it depends on whether this jq parses year 1
 refused onebad $'vulnerabilities:\n  - id: CVE-2026-1111\n    statement: x\n    expired_at: '"${d60}"$'\n  - id: CVE-2026-2222\n    statement: y' "vulnerabilities[1] CVE-2026-2222: expired_at is required"
 refused typo $'vulnerabilites:\n  - id: CVE-2026-1111\n    statement: x\n    expired_at: '"${d60}" "unknown top-level key"
 refused badyaml $'vulnerabilities: [' "not valid YAML"
