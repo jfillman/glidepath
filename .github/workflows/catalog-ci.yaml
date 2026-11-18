@@ -190,6 +190,15 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: charts/glidepath-catalog/tests/onboarding_resync_decision_test.sh
 
+  # image-scan's accepted findings (docs/admin/image-scan-exceptions.md): the real fetch-exceptions and scan steps against stubbed GitHub and Trivy.
+  image-scan-exceptions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: pip install pyyaml
+      - run: charts/glidepath-catalog/tests/image_scan_exceptions_test.sh
+
   # No unannotated `cmd | grep -q` in a task script, library or operator script: under pipefail an early grep exit reads as "no".
   pipefail-early-exit:
     runs-on: ubuntu-latest
