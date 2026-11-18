@@ -51,12 +51,33 @@ spec:
     - name: git-revision
       type: string
       default: ""
+    - name: exceptions-repo-url
+      type: string
+      default: ""
+      description: >-
+        The gitops repo whose DEFAULT BRANCH may carry a .trivyignore.yaml of accepted findings (the PR-check Pipeline passes its repo-url).
+        Empty means no exceptions: the build-time scan never reads one. See docs/admin/image-scan-exceptions.md.
+    - name: exceptions-max-days
+      type: string
+      default: "90"
+      description: The furthest ahead an exception's expired_at may be, in days. A file with an entry beyond it is refused and the gate fails.
   results:
     - name: outcome
       description: "'passed'/'failed'/'error' - a real result, never 'stub' (this is a real implementation, not governance-gate-stub). 'error' means trivy itself failed (timeout, registry/DB fetch error, ...) rather than finding a HIGH/CRITICAL vulnerability - since 2026-10-09 the scan runs without --exit-code, so any non-zero Trivy exit is an error and the verdict comes from the JSON finding count."
     - name: findings-summary
       description: 'Total finding count plus up to 8 real CVE entries (severity/ID/package), extracted from the JSON scan output for the shift-left Slack notification below - not just Trivy''s own "Total: N" count line, a real gap the user caught live in the first version of this Task.'
   volumes:
+    # Read-only GitHub App token for fetch-exceptions - the identity extract-promoted-image already uses (audience
+    # github-installation-token, single repo, minted by the broker). fetch-exceptions hands the scan step its files here.
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+    - name: exceptions
+      emptyDir: {}
     - name: slack-webhook
       secret:
         secretName: app-secrets
@@ -74,6 +95,110 @@ spec:
           - key: .dockerconfigjson
             path: config.json
   steps:
+    # Accepted findings (docs/admin/image-scan-exceptions.md). Reads .trivyignore.yaml from the gitops repo's DEFAULT BRANCH at
+    # its current commit, never from the PR head: this Task runs on a release PR, and a PR must not be able to accept its own
+    # findings - accepting one is a separate reviewed change to the default branch. Same read-only, single-repo GitHub App token
+    # extract-promoted-image uses. Validates the file (every entry needs a statement and an expired_at, none further ahead than
+    # exceptions-max-days) and writes the verdict for the scan step to /exceptions; it never fails itself, so the scan step can
+    # fail the gate with the reason in findings-summary. No file on the default branch means no exceptions.
+    - name: fetch-exceptions
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
+      computeResources:
+        requests: { cpu: 50m, memory: 64Mi }
+      volumeMounts:
+        - name: github-token-broker-token
+          mountPath: /var/run/secrets/platform
+          readOnly: true
+        - name: exceptions
+          mountPath: /exceptions
+      env:
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: EXC_REPO_URL
+          value: $(params.exceptions-repo-url)
+        - name: EXC_MAX_DAYS
+          value: $(params.exceptions-max-days)
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        source "${PLATFORM_LIB}/github-app.sh"
+        set +e   # github-app.sh sets -e at module level; this step reports through /exceptions/status instead of exiting non-zero
+        X=/exceptions
+        finish() {  # <none|ok|refused|error> <message>
+          printf '%s' "$1" > "${X}/status"; printf '%s' "$2" > "${X}/message"
+          echo "exceptions: $1 - $2"
+          exit 0
+        }
+        [[ -n "${EXC_REPO_URL}" ]] || finish none "no exceptions repo given (a build-time scan reads no exceptions)"
+        [[ "${EXC_MAX_DAYS}" =~ ^[0-9]+$ && "${EXC_MAX_DAYS}" -gt 0 ]] || finish error "exceptions-max-days must be a positive whole number, got '${EXC_MAX_DAYS}'"
+
+        owner="$(sed -E 's#https?://github\.com/([^/]+)/.*#\1#' <<<"${EXC_REPO_URL}")"
+        repo="$(sed -E -e 's#https?://github\.com/[^/]+/([^/]+).*#\1#' -e 's#\.git$##' <<<"${EXC_REPO_URL}")"
+        token="$(github_app_installation_token "${owner}" "${repo}")" || finish error "could not get a read token for ${owner}/${repo}"
+        base="https://api.github.com/repos/${owner}/${repo}"
+        get() {  # <url> <accept> <outfile> - prints the HTTP status; a failed transfer (even after a 200) prints 000 and removes the partial file
+          local c
+          c="$(curl --silent --show-error --retry 3 --retry-connrefused --max-time 20 -o "$3" -w '%{http_code}' \
+            -H "Authorization: Bearer ${token}" -H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: $2" "$1")" \
+            || { rm -f "$3"; echo 000; return 0; }
+          echo "${c}"
+        }
+        code="$(get "${base}" application/vnd.github+json "${X}/repo.json")"
+        [[ "${code}" == 200 ]] || finish error "GitHub answered ${code} for ${owner}/${repo}"
+        branch="$(jq -r '.default_branch // empty' "${X}/repo.json")"
+        [[ -n "${branch}" ]] || finish error "${owner}/${repo} reports no default branch"
+        code="$(get "${base}/commits/${branch}" application/vnd.github+json "${X}/commit.json")"
+        [[ "${code}" == 200 ]] || finish error "GitHub answered ${code} for ${owner}/${repo} branch ${branch}"
+        sha="$(jq -r '.sha // empty' "${X}/commit.json")"
+        [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] || finish error "no commit sha for ${owner}/${repo} branch ${branch}"
+        printf '%s' "${sha}" > "${X}/commit"; printf '%s' "${branch}" > "${X}/branch"
+        where="${owner}/${repo} ${branch} @ ${sha:0:12}"
+
+        # Always the default branch's commit, by sha: never the PR head, whatever the PR contains.
+        code="$(get "${base}/contents/.trivyignore.yaml?ref=${sha}" application/vnd.github.raw+json "${X}/raw.yaml")"
+        if [[ "${code}" == 404 ]]; then finish none "no .trivyignore.yaml on ${where}"; fi
+        [[ "${code}" == 200 ]] || finish error "GitHub answered ${code} for .trivyignore.yaml on ${where}"
+
+        refuse() { finish refused "$1 (.trivyignore.yaml on ${where}) - fix it on ${branch}; every entry needs an id, a statement and an expired_at no more than ${EXC_MAX_DAYS} days ahead"; }
+        yq -o=json '(.[] | select(tag == "!!seq") | .[] | select(tag == "!!map")) |= (.expired_tag = (.expired_at | tag))' "${X}/raw.yaml" > "${X}/raw.json" 2> "${X}/yq.err" \
+          || refuse "not valid YAML: $(head -c 200 "${X}/yq.err" | tr '\n' ' ')"
+        problems="$(jq -r --argjson now "$(date -u +%s)" --argjson max "${EXC_MAX_DAYS}" '
+          def secs: ["vulnerabilities","misconfigurations","secrets","licenses"];
+          def blank: (. == null) or (type != "string") or (gsub("\\s";"") == "");
+          (. // {}) as $f
+          | if ($f | type) != "object" then ["the file must be a YAML map with a vulnerabilities: list"]
+            else
+              [ ($f | keys - secs)[] | "unknown top-level key \"\(.)\" (allowed: \(secs | join(", ")))" ],
+              [ secs[] as $s | ($f[$s] // []) as $list
+                | if ($list | type) != "array" then "\($s): must be a list"
+                  else $list | to_entries[] | .key as $i | .value as $e
+                    | ("\($s)[\($i)]" + (if ($e | type) == "object" and ($e.id | type) == "string" then " " + $e.id else "" end)) as $label
+                    | if ($e | type) != "object" or ($e.id | blank) then "\($label): id is required"
+                      else
+                        (if ($e.statement | blank) then "\($label): statement (the reason) is required" else empty end),
+                        (if $e.expired_at == null then "\($label): expired_at is required"
+                         elif $e.expired_tag != "!!timestamp" then "\($label): expired_at must be an unquoted YAML date such as 2026-12-31 (a quoted string means no expiry to Trivy)"
+                         else
+                           (try ($e.expired_at[0:10] + "T00:00:00Z" | fromdateiso8601) catch null) as $t
+                           | if $t == null then "\($label): expired_at \($e.expired_at) is not a date"
+                             elif $t <= -62135596800 then "\($label): expired_at \($e.expired_at[0:10]) is the zero date, which never expires in Trivy"
+                             elif $t > $now + $max * 86400 then "\($label): expired_at \($e.expired_at[0:10]) is more than \($max) days ahead"
+                             else empty end
+                         end)
+                      end
+                  end ]
+            end
+          | flatten | .[]' "${X}/raw.json")"
+        if [[ -n "${problems}" ]]; then
+          refuse "$(head -5 <<<"${problems}" | paste -sd ';' - | sed 's/;/; /g')$([[ "$(wc -l <<<"${problems}")" -gt 5 ]] && echo "; and $(( $(wc -l <<<"${problems}") - 5 )) more")"
+        fi
+        # What the scan step reports from: the vulnerability entries with their expiry as an epoch (UTC midnight of the date).
+        jq '[(.vulnerabilities // [])[] | {id, statement, expires: .expired_at[0:10], epoch: (.expired_at[0:10] + "T00:00:00Z" | fromdateiso8601)}]' "${X}/raw.json" > "${X}/entries.json"
+        # Trivy gets the file exactly as it is on the default branch.
+        cp "${X}/raw.yaml" "${X}/.trivyignore.yaml"
+        finish ok "$(jq 'length' "${X}/entries.json") entr(ies) from .trivyignore.yaml on ${where}"
+
     # onError: continue - a real bug found live: Tekton's DEFAULT behavior is to skip
     # every subsequent step once one fails ("Skipping step because a previous step
     # failed" in the pod logs), not run them regardless the way this file's own
@@ -94,6 +219,9 @@ spec:
       volumeMounts:
         - name: registry-credentials
           mountPath: /var/run/secrets/registry
+          readOnly: true
+        - name: exceptions
+          mountPath: /exceptions
           readOnly: true
       env:
         - name: IMAGE_REF
@@ -134,6 +262,26 @@ spec:
         # No --exit-code on the scan itself, so a non-zero exit now means only "Trivy failed" (DB, registry, timeout)
         # - the case the old code had to recover by grepping the log for FATAL / "context deadline exceeded".
         TRIVY_SCAN_ARGS=(image --skip-version-check --timeout 10m --severity HIGH,CRITICAL --scanners vuln --format json --output /tmp/scan-results.json)
+        # Accepted findings: fetch-exceptions (above) read .trivyignore.yaml from the gitops repo's default branch and
+        # validated it. A refused file or an unreadable default branch fails the gate here with the reason in the summary.
+        # Trivy drops entries whose expired_at is in the past itself (pkg/result/ignore.go, ParseIgnoreFile -> Prune, v0.73.0),
+        # and --show-suppressed keeps what it dropped in the JSON as ExperimentalModifiedFindings, which the report below lists.
+        EXC_STATUS="$(cat /exceptions/status 2>/dev/null || echo none)"
+        EXC_MESSAGE="$(cat /exceptions/message 2>/dev/null || true)"
+        EXC_WHERE="$(printf '%s %s' "$(cat /exceptions/branch 2>/dev/null)" "$(cut -c1-12 /exceptions/commit 2>/dev/null)")"
+        case "${EXC_STATUS}" in
+          refused|error)
+            if [[ "${EXC_STATUS}" == refused ]]; then
+              echo "image-scan: exceptions file refused - ${EXC_MESSAGE}" | tee "$(results.findings-summary.path)"
+            else
+              echo "image-scan: could not read the exceptions file, so cannot tell what is accepted - ${EXC_MESSAGE}" | tee "$(results.findings-summary.path)"
+            fi
+            echo "image-scan: ${EXC_MESSAGE}" >&2
+            printf '%s' "$([[ "${EXC_STATUS}" == refused ]] && echo failed || echo error)" > "$(results.outcome.path)"
+            echo "outcome=$(cat "$(results.outcome.path)")"
+            exit 1 ;;
+          ok) TRIVY_SCAN_ARGS+=(--ignorefile /exceptions/.trivyignore.yaml --show-suppressed) ;;
+        esac
         run_scan() {
           local mode="$1" rc; shift
           rm -f /tmp/scan-results.json
@@ -187,13 +335,43 @@ spec:
           | map("*" + .Severity + "* " + .VulnerabilityID + " - " + .PkgName + "@" + .InstalledVersion)
           | join("\n")
           ' /tmp/scan-results.json 2>/dev/null || echo "")"
+        # Accepted findings, listed apart from the failing ones and never silently: id, package, statement and expiry of each,
+        # then warnings (expiring within 14 days, expired, matching nothing in this image). Only when a valid file was read.
+        ACCEPTED_TEXT=""; ACCEPTED_COUNT=0
+        if [[ "${EXC_STATUS}" == ok ]]; then
+          ACCEPTED_COUNT="$(jq -r '[.Results[]?.ExperimentalModifiedFindings[]? | select(.Type == "vulnerability" and .Status == "ignored")] | unique_by([.Finding.VulnerabilityID, .Finding.PkgName, .Finding.InstalledVersion]) | length' /tmp/scan-results.json 2>/dev/null || echo 0)"
+          ACCEPTED_TEXT="$(jq -r --argjson ent "$(cat /exceptions/entries.json)" --argjson now "$(date -u +%s)" '
+            def clip(n): gsub("\\s+"; " ") | if length > n then .[0:n] + "..." else . end;
+            [.Results[]?.ExperimentalModifiedFindings[]? | select(.Type == "vulnerability" and .Status == "ignored")
+              | {id: .Finding.VulnerabilityID, pkg: .Finding.PkgName, ver: .Finding.InstalledVersion, sev: .Finding.Severity, statement: .Statement}]
+            | unique_by([.id, .pkg, .ver]) as $acc
+            | ($ent | map(select(.epoch >= $now))) as $live
+            | ($ent | map(select(.epoch < $now))) as $lapsed
+            | ($acc | map(.id)) as $accIds
+            | (($acc[:10] | map("- " + .id + " " + .pkg + "@" + .ver + " (" + .sev + "): " + (.statement | clip(140)) + " - expires "
+                + ((. as $a | $live | map(select(.id == $a.id) | .expires) | sort | .[0]) // "?")))
+              + (if ($acc | length) > 10 then ["- +\(($acc | length) - 10) more accepted, see this Task'"'"'s log"] else [] end)) as $lines
+            | ([$live[] | select(.epoch - $now <= 14 * 86400) | "WARNING " + .id + " expires in " + ((((.epoch - $now) / 86400) | floor) | tostring) + " day(s) (" + .expires + "): re-check it before then"]
+              + [$live[] | select(.id as $i | $accIds | index($i) | not) | "unused: " + .id + " matches nothing in this image (HIGH/CRITICAL); remove it"]
+              + [$lapsed[] | "expired: " + .id + " on " + .expires + " - it no longer accepts anything, any finding counts again"]) as $warn
+            | ($lines + (if ($warn | length) > 0 then ["Warnings:"] + ($warn | map("- " + .)) else [] end)) | join("\n")
+            ' /tmp/scan-results.json 2>/dev/null || echo "(could not list the accepted findings - see this Task's log)")"
+        fi
         {
-          echo "${TOTAL_COUNT} finding(s) (HIGH/CRITICAL, vuln scanner only)"
+          if [[ "${EXC_STATUS}" == ok ]]; then
+            echo "${TOTAL_COUNT} finding(s) (HIGH/CRITICAL, vuln scanner only) after ${ACCEPTED_COUNT} accepted by .trivyignore.yaml"
+          else
+            echo "${TOTAL_COUNT} finding(s) (HIGH/CRITICAL, vuln scanner only)"
+          fi
           if [[ -n "${TOP_FINDINGS}" ]]; then
             echo "${TOP_FINDINGS}"
             [[ "${TOTAL_COUNT}" -gt 8 ]] && echo "_+$((TOTAL_COUNT - 8)) more - see the full report in this Task's own log_"
           fi
-        } | tee "$(results.findings-summary.path)"
+          if [[ "${EXC_STATUS}" == ok ]]; then
+            echo "Accepted, not counted above: .trivyignore.yaml on ${EXC_WHERE} (${ACCEPTED_COUNT} finding(s))"
+            [[ -n "${ACCEPTED_TEXT}" ]] && echo "${ACCEPTED_TEXT}"
+          fi
+        } | head -c 3000 | tee "$(results.findings-summary.path)"
 
         if [[ "${TOTAL_COUNT}" -eq 0 ]]; then
           printf '%s' "passed" > "$(results.outcome.path)"

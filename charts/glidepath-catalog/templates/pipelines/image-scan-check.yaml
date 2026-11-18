@@ -55,6 +55,8 @@ spec:
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
         - { name: image-ref, value: $(tasks.extract-promoted-image.results.image-ref) }
+        # Accepted findings: the repo's DEFAULT BRANCH .trivyignore.yaml, never this PR's copy (docs/admin/image-scan-exceptions.md).
+        - { name: exceptions-repo-url, value: $(params.repo-url) }
 
     {{- end }}
     - name: image-scan-advisory
@@ -72,6 +74,8 @@ spec:
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
         - { name: image-ref, value: $(tasks.extract-promoted-image.results.image-ref) }
+        # Accepted findings: the repo's DEFAULT BRANCH .trivyignore.yaml, never this PR's copy (docs/admin/image-scan-exceptions.md).
+        - { name: exceptions-repo-url, value: $(params.repo-url) }
 
   finally:
     - name: comment-pr

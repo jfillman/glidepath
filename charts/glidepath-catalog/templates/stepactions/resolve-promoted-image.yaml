@@ -71,7 +71,7 @@ spec:
     source "${PLATFORM_LIB}/github-app.sh"
 
     owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
-    repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+    repo="$(echo "${REPO_URL}" | sed -E -e 's#https?://github\.com/[^/]+/([^/]+).*#\1#' -e 's#\.git$##')"
     token="$(github_app_installation_token "${owner}" "${repo}")"
     api() {
       curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
