@@ -39,7 +39,7 @@ pr() { # name repo state(queued|started|none) minutesOld [finished]
 run() { # repos-json-items runs-json-items
   LOG="$(mktemp)"; export LOG
   PATH="${stub}:${PATH}" REPOS="{\"items\":[$1]}" RUNS="{\"items\":[$2]}" STALL_THRESHOLD_MINUTES=10 QUEUE_STALL_MINUTES=10 \
-    bash "$script" >/dev/null 2>&1 || { echo "FAIL: script exited non-zero"; echo 1 >> "${failfile}"; }
+    bash "$script" >/dev/null 2>&1 || { echo "FAIL: script exited non-zero"; [ "${EXPECT_FAIL:-}" = 1 ] || echo 1 >> "${failfile}"; }
   cat "$LOG"; }
 expect() { grep -q -- "$2" <<<"$3" || { echo "FAIL: $1 (wanted '$2', got: ${3:-nothing})"; fail=1; }; }
 refute() { grep -q -- "$2" <<<"$3" && { echo "FAIL: $1 (did not want '$2', got: $3)"; fail=1; }; true; }
@@ -80,9 +80,8 @@ expect "the oldest queued run is the one named" "name: q1" "$out"
 
 # A failed Event create must not leave the run labelled (the next scan would never alert).
 sed -i.bak 's/"create -f") echo/"create -f") [ "${EVENT_FAIL:-}" = 1 ] \&\& exit 1; echo/' "${stub}/kubectl"
-out="$(EVENT_FAIL=1 run "$(repo r1 3)" "$(pr q1 r1 queued 25)")"
+out="$(EVENT_FAIL=1 EXPECT_FAIL=1 run "$(repo r1 3)" "$(pr q1 r1 queued 25)")"
 refute "no label is set when the Event could not be created" "LABEL" "$out"
-: > "${failfile}"  # that case is expected to exit non-zero
 
 # Not applicable: no limit on the Repository, an already-alerted run, a non-queued pending state.
 out="$(run '{"metadata":{"name":"r1","namespace":"app-x-cicd"},"spec":{}}' "$(pr q1 r1 queued 25)")"
