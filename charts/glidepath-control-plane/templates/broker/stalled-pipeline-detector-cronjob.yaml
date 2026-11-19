@@ -40,6 +40,10 @@ rules:
   - apiGroups: ["tekton.dev"]
     resources: ["pipelineruns"]
     verbs: ["get", "list", "patch"]
+  # Read-only: the queue-stall rule reads each Repository's concurrency_limit.
+  - apiGroups: ["pipelinesascode.tekton.dev"]
+    resources: ["repositories"]
+    verbs: ["get", "list"]
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create"]
@@ -94,6 +98,9 @@ spec:
               env:
                 - name: STALL_THRESHOLD_MINUTES
                   value: "10"
+                # A PaC-queued run (pending, state=queued) that waits this long while its Repository has free slots.
+                - name: QUEUE_STALL_MINUTES
+                  value: {{ .Values.stalledPipelineDetector.queueStallMinutes | quote }}
               command: ["/bin/bash", "-c"]
               args:
                 - |
@@ -142,4 +149,54 @@ spec:
                       | kubectl create -f - >/dev/null
 
                     kubectl label pipelinerun "${run_name}" -n "${run_ns}" hangar.io/stall-alerted=true --overwrite
+                  done
+
+                  # ---- Queue stall (docs/admin/stalled-pipeline-detector.md, "Queue stalls") ----
+                  # Pipelines-as-Code holds its concurrency_limit queue in the watcher's memory. A run that
+                  # finished or vanished without the watcher seeing it keeps a slot forever and later runs
+                  # stay pending with nothing running. Detect only, never remediate: a queued run older than
+                  # QUEUE_STALL_MINUTES while its Repository has fewer started, unfinished runs than its limit.
+                  repos_json="$(kubectl get repositories.pipelinesascode.tekton.dev -A -o json 2>/dev/null)" || repos_json='{"items":[]}'
+                  queue_threshold_seconds=$(( QUEUE_STALL_MINUTES * 60 ))
+                  alerted_repos=" "
+
+                  # One line per stalled queued run, oldest first: name ns repo waited-seconds running limit.
+                  kubectl get pipelinerun -A -o json | jq -r --argjson repos "${repos_json}" --argjson threshold "${queue_threshold_seconds}" '
+                    def lbl($k): (.metadata.labels // {})[$k];
+                    def finished: (.status.completionTime != null) or ((.status.conditions // []) | any(.type == "Succeeded" and .status != "Unknown"));
+                    ($repos.items | map({key: (.metadata.namespace + "/" + .metadata.name), value: .spec.concurrency_limit}) | from_entries) as $limits
+                    | .items as $all
+                    | [ $all[]
+                        | select(.spec.status == "PipelineRunPending")
+                        | select(lbl("pipelinesascode.tekton.dev/state") == "queued")
+                        | select(lbl("hangar.io/stall-alerted") != "true")
+                        | select(lbl("pipelinesascode.tekton.dev/repository") != null)
+                        | . as $pr
+                        | ($pr.metadata.namespace + "/" + lbl("pipelinesascode.tekton.dev/repository")) as $key
+                        | select(($limits[$key] // null) != null)
+                        | (now - ($pr.metadata.creationTimestamp | fromdateiso8601) | floor) as $waited
+                        | select($waited >= $threshold)
+                        | ([ $all[]
+                             | select(.metadata.namespace == $pr.metadata.namespace)
+                             | select(lbl("pipelinesascode.tekton.dev/repository") == ($pr | lbl("pipelinesascode.tekton.dev/repository")))
+                             | select(lbl("pipelinesascode.tekton.dev/state") == "started")
+                             | select(.spec.status != "PipelineRunPending")
+                             | select(finished | not) ] | length) as $running
+                        | select($running < $limits[$key])
+                        | {w: $waited, l: [$pr.metadata.name, $pr.metadata.namespace, lbl("pipelinesascode.tekton.dev/repository"), $waited, $running, $limits[$key]]}
+                      ]
+                    | sort_by(-.w)[] | .l | map(tostring) | @tsv
+                  ' | while IFS=$'\t' read -r run_name run_ns repo_name waited running limit; do
+                    # Label every stalled queued run so none re-alerts, but raise one Event per repository.
+                    kubectl label pipelinerun "${run_name}" -n "${run_ns}" hangar.io/stall-alerted=true --overwrite >/dev/null
+                    case "${alerted_repos}" in *" ${run_ns}/${repo_name} "*) continue ;; esac
+                    alerted_repos="${alerted_repos}${run_ns}/${repo_name} "
+
+                    message="Repository ${repo_name}: queued run ${run_name} has waited $(( waited / 60 ))m while ${running} of ${limit} concurrency slots are in use - the Pipelines-as-Code watcher likely holds a leaked slot. Recovery: kubectl -n tekton-pipelines rollout restart deployment/pipelines-as-code-watcher"
+                    echo "[stall-detector] QUEUE STALL DETECTED: ${run_ns}/${run_name} (repository=${repo_name}) queued ${waited}s, running ${running} < limit ${limit} - ${message}"
+
+                    now_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                    printf 'apiVersion: v1\nkind: Event\nmetadata:\n  generateName: queue-stalled-\n  namespace: %s\ninvolvedObject:\n  apiVersion: tekton.dev/v1\n  kind: PipelineRun\n  name: %s\n  namespace: %s\nreason: QueueStalled\nmessage: %s\ntype: Warning\nsource:\n  component: stalled-pipeline-detector\nfirstTimestamp: "%s"\nlastTimestamp: "%s"\ncount: 1\n' \
+                      "${run_ns}" "${run_name}" "${run_ns}" "$(jq -Rn --arg m "${message}" '$m')" "${now_ts}" "${now_ts}" \
+                      | kubectl create -f - >/dev/null
                   done

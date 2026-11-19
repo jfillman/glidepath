@@ -127,22 +127,33 @@ How it behaves (Pipelines-as-Code v0.52.0, Tekton Pipelines v1.15.0):
   `queued` status yet.
 - **Admission.** `cicd-run-shape` does not look at `spec.status` or the state label, so the pending create, the patches
   and the watcher's start are all admitted (tested in `cicd_run_admission_test.py`).
-- **The stalled-pipeline detector does not look at queued runs.** See
-  [stalled-pipeline-detector.md](stalled-pipeline-detector.md#what-this-is-not).
+- **The stalled-pipeline detector watches the queue.** A queued run that waits over 10 minutes while its Repository has
+  free slots raises a `QueueStalled` Event. See [stalled-pipeline-detector.md](stalled-pipeline-detector.md#queue-stalls-leaked-pipelines-as-code-slot).
 
 ### If a repository's queue stalls
 
 The queue lives in the PaC watcher's memory and is rebuilt from the `state` labels when it starts. A leaked slot (the
 watcher believes a run is still running when it is not) stops the repository's later runs from starting: queued runs stay
-`PipelineRunPending` with nothing running. Recovery is to restart the watcher:
+`PipelineRunPending` with nothing running (upstream SRVKP-7608).
+
+The [stalled-pipeline detector](stalled-pipeline-detector.md#queue-stalls-leaked-pipelines-as-code-slot) finds this. Within
+a few minutes of a queued run passing 10 minutes of waiting (`stalledPipelineDetector.queueStallMinutes`) with fewer runs
+started than the Repository's `concurrency_limit`, it logs `QUEUE STALL DETECTED` and creates a `QueueStalled` Warning Event
+on the oldest queued run (`kubectl get events -A --field-selector reason=QueueStalled`). It does not fix anything. Recovery
+is to restart the watcher:
 
 ```
 kubectl -n tekton-pipelines rollout restart deployment/pipelines-as-code-watcher
 ```
 
 The watcher has one replica on the lab, so queued runs wait for it to come back (seconds), then the queue is rebuilt from
-the labels. Nothing is lost. To look before restarting, set `PAC_ENABLE_QUEUE_DEBUG=true` on the watcher and read
-`/debug/queue` (unauthenticated: turn it off afterwards; see the Pipelines-as-Code concurrency docs).
+the labels. Nothing is lost.
+
+Fallback, by hand (detector not deployed, or to confirm): list the repository's runs with
+`kubectl -n app-<app>-cicd get pipelinerun -l pipelinesascode.tekton.dev/repository=<repo> -L pipelinesascode.tekton.dev/state`;
+if fewer runs are `started` and unfinished than the limit while others stay `queued`, the slot leaked. To look at the
+watcher's own view before restarting, set `PAC_ENABLE_QUEUE_DEBUG=true` on it and read `/debug/queue` (unauthenticated:
+turn it off afterwards; see the Pipelines-as-Code concurrency docs).
 
 ## Other changes
 

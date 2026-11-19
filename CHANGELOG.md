@@ -4,6 +4,10 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### stalled-pipeline detector: catch a PaC queue that waits with free slots (R-4)
+
+- Pipelines-as-Code keeps its `concurrency_limit` queue in the watcher's memory; a missed completion leaks a slot and later runs stay `PipelineRunPending` with nothing running (SRVKP-7608). The stalled-pipeline detector now also flags a run that is pending with state `queued`, older than `stalledPipelineDetector.queueStallMinutes` (default 10), while fewer runs of the same Repository (`pipelinesascode.tekton.dev/repository`) are started and unfinished than its `concurrency_limit`. It logs `QUEUE STALL DETECTED` and creates one `QueueStalled` Warning Event per repository, with the repository, queued run, wait and running-against-limit counts and the watcher-restart recovery; it labels the stalled runs `hangar.io/stall-alerted` and changes nothing else. The ClusterRole gains read-only `get`/`list` on `repositories.pipelinesascode.tekton.dev`. docs/admin/stalled-pipeline-detector.md "Queue stalls", pipeline-performance.md. Tests: `charts/glidepath-control-plane/tests/stalled_queue_detector_test.sh`. On merge to `main` hangar-dev renders the CronJob within minutes.
+
 ### clearance-gate: a release is proposed by the author of its source, not by the release bot
 
 - A release PR the pipeline opened is registered with Clearance under the author(s) of the app-repo commits it releases (previous release to this
