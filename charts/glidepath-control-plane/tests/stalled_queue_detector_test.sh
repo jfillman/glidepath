@@ -79,8 +79,9 @@ expect "every stalled queued run is labelled" "LABEL q3" "$out"
 expect "the oldest queued run is the one named" "name: q1" "$out"
 
 # A failed Event create must not leave the run labelled (the next scan would never alert).
-sed -i.bak 's/"create -f") echo/"create -f") [ "${EVENT_FAIL:-}" = 1 ] \&\& exit 1; echo/' "${stub}/kubectl"
+sed -i.bak 's/"create -f") echo/"create -f") [ "${EVENT_FAIL:-}" = 1 ] \&\& { echo "CREATE_ATTEMPT" >> "${LOG}"; exit 1; }; echo/' "${stub}/kubectl"
 out="$(EVENT_FAIL=1 EXPECT_FAIL=1 run "$(repo r1 3)" "$(pr q1 r1 queued 25)")"
+expect "the Event create was attempted (and failed)" "CREATE_ATTEMPT" "$out"
 refute "no label is set when the Event could not be created" "LABEL" "$out"
 
 # Not applicable: no limit on the Repository, an already-alerted run, a non-queued pending state.
