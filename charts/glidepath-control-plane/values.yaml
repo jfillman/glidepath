@@ -626,3 +626,9 @@ cronSchedules:
   releaseRecordSweeper: "2-59/10 * * * *"
   prNamespaceTtlSweep: "8-59/30 * * * *"
   pipelinerunPruner: "13 * * * *"
+
+# The stalled-pipeline detector's queue rule (docs/admin/stalled-pipeline-detector.md, "Queue stalls"): a Pipelines-as-Code
+# queued run (pending, state=queued) that has waited this many minutes while fewer than its Repository's concurrency_limit runs
+# are started and unfinished raises a QueueStalled Event. Detect-only.
+stalledPipelineDetector:
+  queueStallMinutes: 10

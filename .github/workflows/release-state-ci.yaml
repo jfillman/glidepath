@@ -17,6 +17,7 @@ on:
       - "charts/glidepath-catalog/templates/tasks/release-log-emit.yaml"
       - "charts/glidepath-catalog/tests/*.sh"
       - "charts/glidepath-control-plane/templates/broker/release-record-sweeper-cronjob.yaml"
+      - "charts/glidepath-control-plane/templates/broker/stalled-pipeline-detector-cronjob.yaml"
       - "charts/glidepath-control-plane/tests/*.sh"
       - ".github/workflows/release-state-ci.yaml"
   push:
@@ -32,6 +33,7 @@ on:
       - "charts/glidepath-catalog/templates/tasks/release-log-emit.yaml"
       - "charts/glidepath-catalog/tests/*.sh"
       - "charts/glidepath-control-plane/templates/broker/release-record-sweeper-cronjob.yaml"
+      - "charts/glidepath-control-plane/templates/broker/stalled-pipeline-detector-cronjob.yaml"
       - "charts/glidepath-control-plane/tests/*.sh"
       - ".github/workflows/release-state-ci.yaml"
 
@@ -64,6 +66,8 @@ jobs:
         run: charts/glidepath-catalog/tests/resolve_merged_pr_test.sh
       - name: release-record-sweeper
         run: charts/glidepath-control-plane/tests/release_record_sweeper_test.sh
+      - name: stalled-queue-detector
+        run: charts/glidepath-control-plane/tests/stalled_queue_detector_test.sh
       - name: rollback-eligibility
         run: charts/glidepath-catalog/tests/rollback_eligibility_test.sh
       - name: workload-check
