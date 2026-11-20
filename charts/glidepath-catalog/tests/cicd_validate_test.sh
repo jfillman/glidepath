@@ -18,7 +18,7 @@ helm template t charts/glidepath-catalog -f "$V" --show-only templates/pipelines
 image="$(yq '.spec.steps[] | select(.name == "validate") | .image' "$d/task.yaml")"
 want="$(yq '.cicdValidatorImage' charts/glidepath-catalog/values.yaml)"
 [[ "$image" == "$want" && -n "$want" ]] && echo "ok   validate runs cicdValidatorImage ($image)" || { echo "FAIL validate image: '$image' (values: '$want')"; fail=1; }
-[[ "$(yq '.spec.finally[0].params[] | select(.name == "post-comment") | .value' "$d/pipeline.yaml")" == '$(tasks.cicd-validate.results.changed)' ]] \
+[[ "$(yq '.spec.finally[] | select(.name == "comment-pr") | .params[] | select(.name == "post-comment") | .value' "$d/pipeline.yaml")" == '$(tasks.cicd-validate.results.changed)' ]] \
   && echo "ok   the PR comment follows the changed result" || { echo "FAIL post-comment wiring"; fail=1; }
 
 # The step, with /work and the result path pointed at this test's directory.

@@ -8,14 +8,14 @@ cd "$(dirname "$0")/../../.."
 fail=0
 work="$(mktemp -d)"
 
-extract() { # task -> script path with the result paths pointed at files in $work
+extract() { # task [step] -> script path with the result paths pointed at files in $work (step: the step's name, default the first)
   helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only "templates/tasks/$1.yaml" \
-    | python3 -c "import sys,yaml; print(yaml.safe_load(sys.stdin.read())['spec']['steps'][0]['script'])" \
-    | sed -e "s#\$(results\.\([a-z-]*\)\.path)#${work}/result-\1#g" > "${work}/$1.sh"
+    | python3 -c "import sys,yaml; d=yaml.safe_load(sys.stdin.read())['spec']['steps']; print([s for s in d if s['name'] == sys.argv[1]][0]['script'] if sys.argv[1] else d[0]['script'])" "${2:-}" \
+    | sed -e "s#\$(results\.\([a-z-]*\)\.path)#${work}/result-\1#g" > "${work}/${2:-$1}.sh"
 }
-extract record-gate-verdict
+extract record-gate-verdict record
 extract join-release
-[[ -s "${work}/record-gate-verdict.sh" && -s "${work}/join-release.sh" ]] || { echo "FAIL: could not render the Tasks"; exit 1; }
+[[ -s "${work}/record.sh" && -s "${work}/join-release.sh" ]] || { echo "FAIL: could not render the Tasks"; exit 1; }
 
 stubdir="${work}/bin"; mkdir -p "${stubdir}"
 cat > "${stubdir}/kubectl" <<'STUB'
@@ -41,8 +41,10 @@ rec() { # existing ledger data (JSON object) -> RECORDS
 }
 verdict() { # records verdict gate [fail-patches] -> runs the script; prints the patch log; the result is in ${work}/result-ledger
   : > "${PATCHLOG}"; echo 0 > "${COUNTER}"
-  PATH="${stubdir}:${PATH}" PR_URL="${PR}" HEAD_SHA="${SHA}" GATE_NAME="$3" VERDICT="$2" NAMESPACE=app-x-cicd RECORDS="$1" FAIL_PATCHES="${4:-0}" \
-    bash "${work}/record-gate-verdict.sh" >/dev/null 2>&1; rc=$?
+  # the `derive` step's output (gate_ledger_verdict_test.sh checks that step), as the `record` step reads it
+  mkdir -p "${work}/derived"; printf '%s' "${PR}" > "${work}/derived/pr-url"; printf '%s' "${SHA}" > "${work}/derived/head-sha"; printf '%s' "$2" > "${work}/derived/verdict"
+  PATH="${stubdir}:${PATH}" DERIVED="${work}/derived" GATE_NAME="$3" NAMESPACE=app-x-cicd RECORDS="$1" FAIL_PATCHES="${4:-0}" \
+    bash "${work}/record.sh" >/dev/null 2>&1; rc=$?
   cat "${PATCHLOG}"
   # the helper runs inside $(...) in most calls: its failure must travel by exit status, not by a variable set in the subshell
   [[ ${rc} -eq 0 ]] || { echo "FAIL: record-gate-verdict exited ${rc}" >&2; return 1; }

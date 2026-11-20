@@ -256,7 +256,7 @@ What each part does.
 
   | Account | Holds | Will run |
   |---|---|---|
-  | `release-record-writer` | ConfigMaps `get`, `list`, `create`, `patch` in the `-cicd` namespace (no `delete`, no `update`); `get` on PipelineRuns (`open-release-pr` reads its own run's lineage annotations); `get` on the `cluster-registry` ConfigMap of `platform-system` (only for an app with a cluster-mapped environment). No Secret. No `clearance` token. | `open-release-pr`, `mark-release-merged`, `itsm-change`, `itsm-gate`, and `join-release`, a small Task carved out of `clearance-gate` (the `clearanceId` join). The second carve-out, `record-gate-verdict` (the gate-ledger write of `comment-pr-check-result`), is in the catalog but in no Pipeline: see "Task mapping, step 3" below. |
+  | `release-record-writer` | ConfigMaps `get`, `list`, `create`, `patch` in the `-cicd` namespace (no `delete`, no `update`); `get` on PipelineRuns (`open-release-pr` reads its own run's lineage annotations, `record-gate-verdict` its tasks timeout and pull request label); `get`, `list` on TaskRuns (`record-gate-verdict`: which of its run's tasks failed); `get` on the `cluster-registry` ConfigMap of `platform-system` (only for an app with a cluster-mapped environment). No Secret. No `clearance` token. | `open-release-pr`, `mark-release-merged`, `itsm-change`, `itsm-gate`, and `join-release`, a small Task carved out of `clearance-gate` (the `clearanceId` join). The second carve-out, `record-gate-verdict` (the gate-ledger write that `comment-pr-check-result` made), is a finally task of every gate Pipeline: see "Task mapping, step 3" below. |
   | `clearance-gate` | `get` on PipelineRuns; ConfigMaps `get`, `create`, `patch` (gate reports `gate-report-<run>`). No Secret. | The four Tasks that mount the projected token for the `clearance` audience: `clearance-gate`, `agent-gates`, `agent-definitions`, `agent-release`. Clearance trusts the pod's ServiceAccount principal, so this account needs `app-*-cicd/clearance-gate` in Clearance's verifier list before any task runs as it. |
   | `test-runner` | `get` on `app-secrets` and `dex-check-ride-credentials`; the app's own Testkube placeholder Secret and the `testkube-testworkflow-runner` Role (only for an app with a `test` stage); `get`, `list`, `watch` on this namespace's runs, pods, logs and events. No ConfigMap, no `clearance` token. | `run-testworkflow` only. |
 
@@ -293,17 +293,24 @@ What each part does.
   **`join-release` and the ledger.** The Clearance join moved: `clearance-gate` no longer writes the release record. Its decide step
   hands the joins to a `joins` result and the `join-release` finally task of `clearance-gate-check` writes `clearanceId` and
   `clearanceTree` as `release-record-writer`. It is a finally task, not a task after `register`, because a holding or denied change
-  fails `register` and a task after it would be skipped (a held change is the one whose join is most wanted). The ledger write of
-  `comment-pr-check-result` (`gate.<sha12>.<gate>`, with the record's `resourceVersion`) did **not** move: Tekton cannot order two
-  finally tasks nor pass a result from one finally task to another, and `comment-pr-check-result` is a finally task whose
-  verdict and resolved pull request number a following `record-gate-verdict` would need, and whose promotion decision must read the
-  ledger after the write (two gates finishing together depend on it). So `record-gate-verdict` is not in a Pipeline and
-  `comment-pr-check-result` still writes the ledger as `pipeline-runner`; step 6 (removing the record write from `pipeline-runner`)
-  cannot go ahead until that write has a home. Ways to give it one, not built: (a) a finally `record-gate-verdict` that computes the
-  verdict itself from the tasks' `$(tasks.<name>.status)` values, finds the pull request from the run's `pipelinesascode.tekton.dev/pull-request`
-  label (the writer can `get` PipelineRuns) and the commit from `revision`, with the promotion decision waiting a bounded time for its own
-  gate's ledger entry before it reads the others (this restores the write-then-read order a Pipeline cannot express); (b) the
-  glidepath-api record service the plan leaves as a follow-up (owner decision 1), which would take the write and the read.
+  fails `register` and a task after it would be skipped (a held change is the one whose join is most wanted).
+
+  The gate-ledger write (`gate.<sha12>.<gate>`, with the record's `resourceVersion`) moved the same way, but a Pipeline cannot hand it
+  the verdict: Tekton cannot order two finally tasks nor pass a result from one finally task to another, and the verdict and the
+  pull request number used to exist only inside `comment-pr-check-result`. So every gate Pipeline has a finally task
+  `record-gate-verdict`, run as `release-record-writer`, that works out the verdict itself from what a finally task can read:
+  `$(tasks.status)`, the run's TaskRuns (a failed `-advisory` TaskRun alone is not a failed gate, ADR-0021), its PipelineRun's tasks
+  timeout (a green run past it, or within a minute of it, is judged as the promotion step judges it) and the
+  `pipelinesascode.tekton.dev/pull-request` label (else the numeric `pr-number`; neither: nothing is recorded). The decision is the
+  same text as `comment-pr-check-result`'s, and `tests/gate_ledger_verdict_test.sh` holds the two equal. The ledger values stay
+  `success` and `failure`. The promotion decision (the `promotion-ready` step of `comment-pr-check-result`) no longer writes; it
+  waits up to `ledger-wait-seconds` (default 90, polling every 3 s) for **this gate's own** entry for the commit, then reads the others'.
+  That restores the write-then-read order a Pipeline cannot express: of two gates finishing together, at least one sees both
+  entries. Failure modes: the label is missing and `pr-number` is not a number (a `/retest` comment on a PaC that does not set the
+  label): nothing is written, the step waits the full bound, logs `is not in the release record`, goes on with its own verdict and reads
+  the other gates from the ledger and their check runs, so a release can then wait for the next gate or `/retest`; the writer is
+  slower than the bound: the same, and the entry lands late for the next gate to read. A written entry for a PR that is already
+  merged or closed, or for an older commit, is harmless (the key carries the commit, and only an open release PR with a record has one).
 
   RBAC cannot narrow `create` by name nor a ConfigMap write to keys, so until the admission policies of the next steps
   (`release-record-writes`, `gate-report-writes`) exist, a record write is limited by RBAC to `release-record-writer` only in

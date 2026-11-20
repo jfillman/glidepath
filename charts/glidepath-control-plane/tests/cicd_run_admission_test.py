@@ -916,7 +916,7 @@ class CicdRunAdmission(unittest.TestCase):
     # ---- pipeline trust T4, step 2: the three split task accounts (specs/plans/pipeline-trust-t4-split-runner.md) ----
     SPLIT = {"release-record-writer": "recordWriterTasks", "clearance-gate": "clearanceTasks", "test-runner": "testRunnerTasks"}
     # the Tasks (by catalog name) each account is for, in the plan's Target table
-    SPLIT_CATALOG_TASKS = {"release-record-writer": {"open-release-pr", "mark-release-merged", "itsm-change", "itsm-gate", "join-release"},
+    SPLIT_CATALOG_TASKS = {"release-record-writer": {"open-release-pr", "mark-release-merged", "itsm-change", "itsm-gate", "join-release", "record-gate-verdict"},
                            "clearance-gate": {"clearance-gate", "agent-gates", "agent-definitions", "agent-release"},
                            "test-runner": {"run-testworkflow"}}
 

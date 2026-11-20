@@ -215,7 +215,7 @@ cluster-wide:
 | `glidepath-relay` (platform-system) | get, list, update | create Events |
 | `release-record-sweeper` (platform-system) | get, list, patch, delete | create Events |
 | `pipeline-runner` (the Tekton tasks) | get, list, create, patch, delete (list added for `mark-release-merged`) | Still holds all of it until plan step 6; record writers run as `release-record-writer` since step 3. |
-| `release-record-writer` (pipeline trust T4, step 3) | get, list, create, patch | The account the record-writing tasks run as: `open-release-pr`, `mark-release-merged`, `itsm-change` and `itsm-gate`, and `join-release`; see "Split task accounts" in [security.md](security.md#pipeline-identities). No delete. The gate ledger (`gate.<sha12>.<gate>`) is still written by `comment-pr-check-result` as `pipeline-runner`. |
+| `release-record-writer` (pipeline trust T4, step 3) | get, list, create, patch | The account the record-writing tasks run as: `open-release-pr`, `mark-release-merged`, `itsm-change` and `itsm-gate`, and `join-release`; see "Split task accounts" in [security.md](security.md#pipeline-identities). No delete. The gate ledger (`gate.<sha12>.<gate>`) is written by the `record-gate-verdict` finally task of every gate Pipeline, as this account; the `promotion-ready` step of `comment-pr-check-result` waits a bounded time for its own gate's entry. |
 | `clearance-gate` (same) | get, create, patch | The four Clearance-token tasks run as it (step 3); it writes gate reports only, once the admission policy of a later step says so, and no release record (the `clearanceId` join is `join-release`'s). |
 
 The relay's cluster-wide `get` on ConfigMaps from phase 1 (`glidepath-relay-records`)

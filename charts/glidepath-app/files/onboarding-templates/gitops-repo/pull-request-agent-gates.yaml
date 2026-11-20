@@ -32,6 +32,7 @@ spec:
   taskRunSpecs:
     - pipelineTaskName: agent-gates
       serviceAccountName: clearance-gate
+    - { pipelineTaskName: record-gate-verdict, serviceAccountName: release-record-writer }
   taskRunTemplate:
     serviceAccountName: pipeline-runner
   timeouts:

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# comment-pr-check-result.yaml's promotion-ready step (ADR-0029 phase 3), as rendered with promotion on. Runs the step's
+# comment-pr-check-result.yaml's promotion-ready step (ADR-0029 phase 3), as rendered with promotion on. Since pipeline trust T4
+# step 3 it no longer WRITES the gate ledger (the record-gate-verdict finally task does, tests/gate_ledger_verdict_test.sh); it waits
+# a bounded time for this gate's own entry, then reads the others'. Runs the step's
 # bash against a fake curl (GitHub + the broker) and kubectl (the release record) and checks when it asks for a
 # promotion: only when every required gate is green on the PR's head commit, counting this gate's own verdict and the
 # gate ledger (two gates finishing together), never twice for one attempt, never for a stale commit, a red gate, a
@@ -75,7 +77,10 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$work/bin/sleep"
 cat > "$work/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-  "get configmap"*) cat "$FX/records.json" ;;
+  "get configmap"*)
+    # records-late.json is served from the ($FX/late-after)th read on: the writer's entry that lands while the step waits
+    n="$(cat "$FX/cm-reads" 2>/dev/null || echo 0)"; echo $((n + 1)) > "$FX/cm-reads"
+    if [[ -f "$FX/late-after" && $((n + 1)) -ge "$(cat "$FX/late-after")" ]]; then cat "$FX/records-late.json"; else cat "$FX/records.json"; fi ;;
   "get pipelinerun"*) [[ -f "$FX/pipelinerun.json" ]] && cat "$FX/pipelinerun.json" || { echo "not found" >&2; exit 1; } ;;
   "patch configmap"*)
     for a in "$@"; do [[ "$prev" == -p ]] && p="$a"; prev="$a"; done
@@ -100,14 +105,15 @@ scenario() { # <name> [gate]: a promotable release PR whose required gates are g
   jq -n --arg g "$GATE" '{check_runs: [ "sast","image-scan","provenance","sbom","values","itsm","policy-validation","agent-gates","qa"
           | {name: ("Pipelines as Code CI / " + . + "-"), status: (if . == $g then "in_progress" else "completed" end),
              conclusion: (if . == $g then null else "success" end), started_at: "2026-10-28T10:00:00Z"} ]}' > "$FX/checks.json"
-  jq -n --arg u "$URL" '{items: [{metadata: {name: "release-tracking-other", resourceVersion: "7"}, data: {prUrl: "https://github.com/jfillman/gitops-gate-api/pull/1"}},
-          {metadata: {name: "release-tracking-abc", resourceVersion: "41"}, data: {prUrl: $u}}]}' > "$FX/records.json"
+  # this gate's own entry is already in the record: record-gate-verdict has written it (the scenarios of the wait remove it)
+  jq -n --arg u "$URL" --arg k "gate.${SHA:0:12}.$GATE" '{items: [{metadata: {name: "release-tracking-other", resourceVersion: "7"}, data: {prUrl: "https://github.com/jfillman/gitops-gate-api/pull/1"}},
+          {metadata: {name: "release-tracking-abc", resourceVersion: "41"}, data: {prUrl: $u, ($k): "success"}}]}' > "$FX/records.json"
 }
 run() {
   ( cd "$FX" && PATH="$work/bin:$PATH" PLATFORM_LIB="$work/lib" GATE_WORK="$FX/gate" GITHUB_TOKEN_BROKER_URL=x \
       CDEVENTS_BROKER_URL=http://el-cdevents-broker.platform-system.svc.cluster.local:8080 \
       REPO_URL="https://github.com/jfillman/gitops-${APP:-gate-api}" REVISION="${REV-$SHA}" GATE_NAME="$GATE" \
-      PIPELINE_RUN_NAME="$GATE-x1" NAMESPACE="app-${APP:-gate-api}-cicd" bash "$work/${STEP:-step.sh}" ) > "$FX/out" 2>&1
+      LEDGER_WAIT_SECONDS="${LEDGER_WAIT_SECONDS:-90}" PIPELINE_RUN_NAME="$GATE-x1" NAMESPACE="app-${APP:-gate-api}-cicd" bash "$work/${STEP:-step.sh}" ) > "$FX/out" 2>&1
   echo $? > "$FX/rc"
 }
 events() { [[ -f "$FX/events" ]] && wc -l < "$FX/events" | tr -d ' ' || echo 0; }
@@ -120,7 +126,8 @@ expect "last: event type" "$(jq -r .context.type "$FX/events")" dev.hangar.relea
 expect "last: event content" "$(jq -c .subject.content "$FX/events")" \
   "{\"appName\":\"gate-api\",\"repoUrl\":\"https://github.com/jfillman/gitops-gate-api\",\"prNumber\":\"53\",\"headSha\":\"$SHA\",\"lastGate\":\"sbom\"}"
 expect "last: event id is 20 hex" "$(jq -r .context.id "$FX/events" | grep -cE '^[0-9a-f]{20}$')" 1
-expect "last: ledger patch" "$(cat "$FX/patches")" '{"metadata":{"resourceVersion":"41"},"data":{"gate.111111111111.sbom":"success"}}'
+expect "last: the step never writes the ledger" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
+expect "last: own entry found, no wait" "$(cat "$FX/cm-reads")" 1
 id_first="$(jq -r .context.id "$FX/events")"
 
 # the PR's file list cannot be read (API failure): never "nothing to promote" (that says the PR has no release file), no event, and a
@@ -155,7 +162,7 @@ expect "ledger-red: says itsm" "$(grep -c 'itsm (failure)' "$FX/out")" 1
 # this gate red: recorded, nothing asked.
 scenario own-red; echo failure > "$FX/gate/verdict"; run
 expect "own-red: no event" "$(events)" 0
-expect "own-red: verdict recorded" "$(jq -r '.data["gate.111111111111.sbom"]' "$FX/patches")" failure
+expect "own-red: nothing written by this step" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
 
 # an advisory gate (qa) finishing last still asks; a missing required gate does not.
 scenario advisory-last qa; run
@@ -231,20 +238,49 @@ run
 expect "exhausted: no event" "$(events)" 0
 expect "exhausted: the PR is told" "$(grep -c 'was not started again' "$FX/posted")" 1
 
-# the record changed underneath: the patch is retried with the new resourceVersion read again.
-scenario conflict; touch "$FX/conflict-once"; run
-expect "conflict: two patches" "$(wc -l < "$FX/patches" | tr -d ' ')" 2
-expect "conflict: one event" "$(events)" 1
+# the bounded wait for this gate's own entry (the writer, record-gate-verdict, starts with this Task and can be a little late):
+# the entry lands on the 4th read: the step waits for it and asks once; the others are read from the ledger after it.
+scenario late-entry
+jq 'del(.items[1].data["gate.111111111111.sbom"])' "$FX/records.json" > "$FX/x" && mv "$FX/x" "$FX/records.json"
+jq -n --arg u "$URL" '{items: [{metadata: {name: "release-tracking-abc", resourceVersion: "42"}, data: {prUrl: $u, "gate.111111111111.sbom": "success"}}]}' > "$FX/records-late.json"
+echo 4 > "$FX/late-after"; run
+expect "late-entry: one event" "$(events)" 1
+expect "late-entry: waited for the 4th read" "$(cat "$FX/cm-reads")" 4
+expect "late-entry: no warning" "$(grep -c 'is not in the release record' "$FX/out")" 0
+# the entry never lands (the writer is slow past the bound, or it could not tell the pull request): the wait is bounded (90s at 3s
+# a read: 31 reads at most), says so, and the step goes on with its own verdict, so a release is not held for a missing entry.
+scenario no-entry
+jq 'del(.items[1].data["gate.111111111111.sbom"])' "$FX/records.json" > "$FX/x" && mv "$FX/x" "$FX/records.json"
+run
+expect "no-entry: one event" "$(events)" 1
+expect "no-entry: bounded at 31 reads" "$(cat "$FX/cm-reads")" 31
+expect "no-entry: says so" "$(grep -c 'sbom is not in the release record after 90s' "$FX/out")" 1
+expect "no-entry: exit 0" "$(cat "$FX/rc")" 0
+# the bound is the step's own env: 9s is 4 reads, and a non-number falls back to 90.
+scenario short-wait
+jq 'del(.items[1].data["gate.111111111111.sbom"])' "$FX/records.json" > "$FX/x" && mv "$FX/x" "$FX/records.json"
+LEDGER_WAIT_SECONDS=9 run
+expect "short-wait: 4 reads" "$(cat "$FX/cm-reads")" 4
+scenario bad-wait
+jq 'del(.items[1].data["gate.111111111111.sbom"])' "$FX/records.json" > "$FX/x" && mv "$FX/x" "$FX/records.json"
+LEDGER_WAIT_SECONDS=soon run
+expect "bad-wait: falls back to 90s" "$(cat "$FX/cm-reads")" 31
+# another gate's entry is still absent while this gate's is there: that gate is read from its check run (no extra wait).
+scenario peer-no-entry
+jq '.check_runs |= map(if .name == "Pipelines as Code CI / values-" then .status = "in_progress" | .conclusion = null else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+run
+expect "peer-no-entry: no event" "$(events)" 0
+expect "peer-no-entry: one read, no wait for the peer" "$(cat "$FX/cm-reads")" 1
 
 # no release record (a PR made by hand): the check runs alone decide.
 scenario no-record; echo '{"items":[]}' > "$FX/records.json"; run
 expect "no-record: one event" "$(events)" 1
-expect "no-record: no patch" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
+expect "no-record: nothing written" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
 
 # stale commit, merged PR, not a release PR, no release file: nothing recorded, nothing asked.
 scenario stale; REV=2222222222222222222222222222222222222222 run
 expect "stale: no event" "$(events)" 0
-expect "stale: no patch" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
+expect "stale: nothing written" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
 scenario merged; jq '.merged = true | .state = "closed"' "$FX/pr.json" > "$FX/x" && mv "$FX/x" "$FX/pr.json"; run
 expect "merged: no event" "$(events)" 0
 scenario not-release; jq '.head.ref = "fix-values"' "$FX/pr.json" > "$FX/x" && mv "$FX/x" "$FX/pr.json"; run
@@ -268,7 +304,7 @@ expect "app-other: says image-scan" "$(grep -c 'image-scan (failure)' "$FX/out")
 # leave the release unpromoted), and its red verdict is recorded in the ledger as it is.
 scenario app-advisory-last image-scan; echo failure > "$FX/gate/verdict"; APP=backstage run
 expect "app-advisory-last: one event" "$(events)" 1
-expect "app-advisory-last: verdict recorded" "$(jq -r '.data["gate.111111111111.image-scan"]' "$FX/patches")" failure
+expect "app-advisory-last: nothing written by this step" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
 scenario app-other-last image-scan; echo failure > "$FX/gate/verdict"; APP=gate-api run
 expect "app-other-last: no event" "$(events)" 0
 # a red required gate still holds backstage: only the listed gate is advisory.
@@ -290,23 +326,23 @@ started() { # <seconds ago> [timeouts json]: this gate's PipelineRun
 }
 scenario in-time; started 300; run
 expect "in-time: one event" "$(events)" 1
-expect "in-time: success recorded" "$(jq -r '.data["gate.111111111111.sbom"]' "$FX/patches")" success
+expect "in-time: nothing written by this step" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
 scenario timed-out; started 500; run
 expect "timed-out: no event" "$(events)" 0
-expect "timed-out: failure recorded" "$(jq -r '.data["gate.111111111111.sbom"]' "$FX/patches")" failure
+expect "timed-out: nothing written by this step" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
 expect "timed-out: says why" "$(grep -c 'past its tasks timeout' "$FX/out")" 1
 scenario near; started 450; run
 expect "near: no event" "$(events)" 0
-expect "near: no patch" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
+expect "near: nothing written" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
 expect "near: exit 0" "$(cat "$FX/rc")" 0
 # no timeouts.tasks: the pipeline timeout is the deadline (1h0m0s parses).
 scenario pipeline-only; started 500 '{"pipeline":"1h0m0s"}'; run
 expect "pipeline-only: one event" "$(events)" 1
 scenario pipeline-only-late; started 3700 '{"pipeline":"1h0m0s"}'; run
-expect "pipeline-only-late: failure recorded" "$(jq -r '.data["gate.111111111111.sbom"]' "$FX/patches")" failure
+expect "pipeline-only-late: nothing written by this step" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
 # a red verdict is never re-judged: still recorded red, the run is not read.
 scenario late-red; started 500; echo failure > "$FX/gate/verdict"; run
-expect "late-red: failure recorded" "$(jq -r '.data["gate.111111111111.sbom"]' "$FX/patches")" failure
+expect "late-red: nothing written by this step" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
 
 # ---- C-7: Clearance's check runs (exact names, another App) count as required gates, and are waited for briefly.
 cc_checks() { # <identity-status> <scope-status>: every Glidepath gate green but sbom (running), Clearance's as given

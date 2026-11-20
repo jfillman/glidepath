@@ -147,7 +147,8 @@ class Identities(unittest.TestCase):
     CLUSTER_REGISTRY = ("", "configmaps", ("get",), ("cluster-registry",))
     TARGET = {   # OWN = the application's own -cicd namespace
         "release-record-writer": {OWN: {("", "configmaps", ("create", "get", "list", "patch"), ()),
-                                        ("tekton.dev", "pipelineruns", ("get",), ())}},   # get: open-release-pr reads its own run's lineage annotations
+                                        ("tekton.dev", "pipelineruns", ("get",), ()),   # get: open-release-pr reads its own run's lineage annotations
+                                        ("tekton.dev", "taskruns", ("get", "list"), ())}},   # record-gate-verdict: which of its run's tasks failed
         "clearance-gate": {OWN: {("tekton.dev", "pipelineruns", ("get",), ()), ("", "configmaps", ("create", "get", "patch"), ())}},
         "test-runner": {OWN: {("tekton.dev", "pipelineruns", ("get", "list", "watch"), ()),
                              ("tekton.dev", "taskruns", ("get", "list", "watch"), ()),
@@ -444,7 +445,7 @@ class SourceTasks(unittest.TestCase):
 #   (catalog Task name -> the account it runs as); the Pipeline's own task names come from the rendered catalog.
 ACCOUNT_OF_TASK = {
     "open-release-pr": "release-record-writer", "mark-release-merged": "release-record-writer", "itsm-change": "release-record-writer",
-    "itsm-gate": "release-record-writer", "join-release": "release-record-writer",
+    "itsm-gate": "release-record-writer", "join-release": "release-record-writer", "record-gate-verdict": "release-record-writer",
     "clearance-gate": "clearance-gate", "agent-gates": "clearance-gate", "agent-definitions": "clearance-gate", "agent-release": "clearance-gate",
     "run-testworkflow": "test-runner",
 }
