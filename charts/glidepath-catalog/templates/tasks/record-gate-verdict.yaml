@@ -1,0 +1,81 @@
+# catalog/tasks/record-gate-verdict.yaml
+#
+# Pipeline trust T4 (specs/plans/pipeline-trust-t4-split-runner.md), step 2. The ledger write of comment-pr-check-result
+# (its "gate ledger" block), carved out so the ConfigMap write can run as release-record-writer while the rest of that
+# Task stays on pipeline-runner. NOT in any Pipeline yet and comment-pr-check-result is unchanged: step 3 wires it
+# (taskRunSpecs, and the Pipelines' finally lists), step 6 removes pipeline-runner's right to write a record.
+#
+# What it does is exactly what the block does today: finds the release record for this gitops PR (by prUrl), and patches
+# gate.<sha12>.<gate>=<verdict> into it with the record's resourceVersion, so two gates finishing together are serialized
+# (the second one sees both verdicts). Result `ledger`: the JSON object of this commit's gate.<sha12>.* entries from the
+# record after the write - the only part of the record the promotion decision reads - so the result stays far below
+# Tekton's 4 KiB limit for any number of gates this catalog can have (not the whole record, whose data holds the image
+# reference, rollback reason and more). Empty `{}` when there is no record, as the block's `ledger="{}"` was.
+# Always succeeds: a release with no record, or five lost races, is not a failed gate (the caller decides from the check runs).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: record-gate-verdict
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Writes one gate's verdict for one commit into the release record's gate ledger and returns this commit's ledger.
+  params:
+    - name: pr-url
+      type: string
+      description: The gitops pull request's html URL (https://github.com/<owner>/gitops-<app>/pull/<n>); the record is found by it.
+    - name: head-sha
+      type: string
+      description: The pull request's head commit sha (the first 12 characters key the ledger).
+    - name: gate-name
+      type: string
+    - name: verdict
+      type: string
+      description: success or failure.
+  results:
+    - name: ledger
+      description: 'JSON object of the gate.<sha12>.<gate> entries of this commit in the record, e.g. {"gate.0123456789ab.sast":"success"}; {} when no record exists.'
+  steps:
+    - name: record
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: PR_URL
+          value: $(params.pr-url)
+        - name: HEAD_SHA
+          value: $(params.head-sha)
+        - name: GATE_NAME
+          value: $(params.gate-name)
+        - name: VERDICT
+          value: $(params.verdict)
+        - name: NAMESPACE
+          value: $(context.taskRun.namespace)
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        printf '{}' > "$(results.ledger.path)"
+        [[ "${PR_URL}" =~ ^https://github\.com/[A-Za-z0-9-]+/gitops-[a-z0-9-]+/pull/[1-9][0-9]*$ ]] || { echo "not a gitops pull request URL: ${PR_URL}" >&2; exit 0; }
+        [[ "${HEAD_SHA}" =~ ^[0-9a-f]{12,40}$ ]] || { echo "not a commit sha: ${HEAD_SHA}" >&2; exit 0; }
+        [[ "${GATE_NAME}" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "not a gate name: ${GATE_NAME}" >&2; exit 0; }
+        [[ "${VERDICT}" == success || "${VERDICT}" == failure ]] || { echo "verdict must be success or failure, got ${VERDICT}" >&2; exit 0; }
+        key="gate.${HEAD_SHA:0:12}.${GATE_NAME}"
+        prefix="gate.${HEAD_SHA:0:12}."
+        ledger="{}"
+        for attempt in 1 2 3 4 5; do
+          record="$(kubectl get configmap -n "${NAMESPACE}" -l hangar.io/subcomponent=release-tracking -o json 2>/dev/null \
+            | jq -c --arg u "${PR_URL}" '[.items[] | select(.data.prUrl == $u)] | .[0] // empty')"
+          [[ -n "${record}" ]] || { echo "no release record for ${PR_URL}: nothing recorded"; break; }
+          patch="$(jq -nc --arg rv "$(jq -r .metadata.resourceVersion <<<"${record}")" --arg k "${key}" --arg v "${VERDICT}" \
+            '{metadata: {resourceVersion: $rv}, data: {($k): $v}}')"
+          if kubectl patch configmap "$(jq -r .metadata.name <<<"${record}")" -n "${NAMESPACE}" --type merge -p "${patch}" >/dev/null; then
+            ledger="$(jq -c --arg k "${key}" --arg v "${VERDICT}" --arg p "${prefix}" \
+              '(.data + {($k): $v}) | with_entries(select(.key | startswith($p)))' <<<"${record}")"
+            echo "${key}=${VERDICT}"
+            break
+          fi
+          echo "release record changed underneath (attempt ${attempt}); retrying"
+          sleep 1
+        done
+        printf '%s' "${ledger}" > "$(results.ledger.path)"
+        exit 0

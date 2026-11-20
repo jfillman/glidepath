@@ -23,7 +23,8 @@
 #                              each matching its pattern, each appearing once; repo, revision, pull request and namespace
 #                              parameters equal what PaC itself recorded on the run, not what the file says; Pipelines that write
 #                              release state or deploy only from a push to a protected branch or a tag; run-wide account
-#                              pipeline-runner; per-task accounts only source-runner, image-pusher or glidepath-cloud-deployer, one entry per
+#                              pipeline-runner; per-task accounts only source-runner, image-pusher, glidepath-cloud-deployer, release-record-writer,
+#                              clearance-gate or test-runner (each on the tasks its value lists), one entry per
 #                              task; podTemplate hostAliases only; workspaces emptyDir or volumeClaimTemplate only.
 #   cicd-run-source-isolation  a run of a Pipeline that runs the repository's code (values sourceTasks) must run those tasks as
 #                              source-runner, and its tasks that hold the registry push credential (values pusherTasks:
@@ -110,6 +111,12 @@ spec:
       expression: {{ $c.cloudDeployerTasks | toJson | squote }}
     - name: pusherTasks
       expression: {{ $c.pusherTasks | toJson | squote }}
+    - name: recordWriterTasks
+      expression: {{ $c.recordWriterTasks | default dict | toJson | squote }}
+    - name: clearanceTasks
+      expression: {{ $c.clearanceTasks | default dict | toJson | squote }}
+    - name: testRunnerTasks
+      expression: {{ $c.testRunnerTasks | default dict | toJson | squote }}
   validations:
     - expression: "has(request.resource) && has(request.resource.version) && request.resource.version == 'v1'"
       message: "Only tekton.dev/v1 PipelineRuns are accepted from a .tekton file (v1beta1 has different fields for the same settings)."
@@ -181,8 +188,14 @@ spec:
           (s.serviceAccountName == 'glidepath-cloud-deployer' && variables.pipelineName in variables.cloudTasks &&
             s.pipelineTaskName in variables.cloudTasks[variables.pipelineName]) ||
           (s.serviceAccountName == 'image-pusher' && variables.pipelineName in variables.pusherTasks &&
-            s.pipelineTaskName in variables.pusherTasks[variables.pipelineName]))
-      message: "A task may run as source-runner only where cicdRunAdmission.sourceTasks lists it, as image-pusher only where cicdRunAdmission.pusherTasks lists it, and as glidepath-cloud-deployer only where cicdRunAdmission.cloudDeployerTasks lists it (for this Pipeline); any other task runs as pipeline-runner."
+            s.pipelineTaskName in variables.pusherTasks[variables.pipelineName]) ||
+          (s.serviceAccountName == 'release-record-writer' && variables.pipelineName in variables.recordWriterTasks &&
+            s.pipelineTaskName in variables.recordWriterTasks[variables.pipelineName]) ||
+          (s.serviceAccountName == 'clearance-gate' && variables.pipelineName in variables.clearanceTasks &&
+            s.pipelineTaskName in variables.clearanceTasks[variables.pipelineName]) ||
+          (s.serviceAccountName == 'test-runner' && variables.pipelineName in variables.testRunnerTasks &&
+            s.pipelineTaskName in variables.testRunnerTasks[variables.pipelineName]))
+      message: "A task may run as source-runner only where cicdRunAdmission.sourceTasks lists it, as image-pusher only where cicdRunAdmission.pusherTasks lists it, as glidepath-cloud-deployer only where cicdRunAdmission.cloudDeployerTasks lists it, as release-record-writer only where cicdRunAdmission.recordWriterTasks lists it, as clearance-gate only where cicdRunAdmission.clearanceTasks lists it, and as test-runner only where cicdRunAdmission.testRunnerTasks lists it (for this Pipeline); any other task runs as pipeline-runner."
     - expression: >-
         variables.pipelineName != 'build' || variables.isPush ||
         variables.ps.exists(p, has(p.name) && p.name == 'pr-tag-only' && has(p.value) && type(p.value) == string && p.value == 'true')

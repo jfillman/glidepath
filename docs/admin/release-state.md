@@ -215,6 +215,8 @@ cluster-wide:
 | `glidepath-relay` (platform-system) | get, list, update | create Events |
 | `release-record-sweeper` (platform-system) | get, list, patch, delete | create Events |
 | `pipeline-runner` (the Tekton tasks) | get, list, create, patch, delete (list added for `mark-release-merged`) | |
+| `release-record-writer` (pipeline trust T4, no task runs as it yet) | get, list, create, patch | The account the record-writing tasks will move to; see "Split task accounts" in [security.md](security.md#pipeline-identities). No delete. |
+| `clearance-gate` (same, not in use yet) | get, create, patch | Gate reports only, once the admission policy of a later step says so. |
 
 The relay's cluster-wide `get` on ConfigMaps from phase 1 (`glidepath-relay-records`)
 remains until every namespace has the Role, then goes. The two infra apps (`skyport-auth`,

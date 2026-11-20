@@ -201,6 +201,20 @@ def render_catalog():
     return _CATALOG
 
 
+_CATALOG_ITSM = []
+
+
+def render_catalog_itsm():
+    """The catalog with a change-management provider set: the itsm tasks of the Pipelines render only then."""
+    if not _CATALOG_ITSM:
+        r = subprocess.run(["helm", "template", "c", os.path.join(ROOT, "charts", "glidepath-catalog"), "--set", "itsm.provider=webhook", "-f",
+                            os.path.join(ROOT, "charts", "glidepath-catalog", "tests", "values.example.yaml")],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        _CATALOG_ITSM.extend(d for d in yaml.safe_load_all(r.stdout) if d)
+    return _CATALOG_ITSM
+
+
 def repo_code(task):
     """Runs the repository's own code, or renders a chart it chooses (render-manifests: labelled, so a comment that names helm is not one)."""
     return task["metadata"].get("labels", {}).get("glidepath.io/renders-repository-content") == "true" or \
@@ -866,6 +880,58 @@ class CicdRunAdmission(unittest.TestCase):
         # the generator hands exactly those tasks to image-pusher
         _, gen = generator_params()
         self.assertEqual(re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: image-pusher", gen), self.values["pusherTasks"]["build"])
+
+    # ---- pipeline trust T4, step 2: the three split task accounts (specs/plans/pipeline-trust-t4-split-runner.md) ----
+    SPLIT = {"release-record-writer": "recordWriterTasks", "clearance-gate": "clearanceTasks", "test-runner": "testRunnerTasks"}
+    # the Tasks (by catalog name) each account is for, in the plan's Target table
+    SPLIT_CATALOG_TASKS = {"release-record-writer": {"open-release-pr", "mark-release-merged", "itsm-change", "itsm-gate"},
+                           "clearance-gate": {"clearance-gate", "agent-gates", "agent-definitions", "agent-release"},
+                           "test-runner": {"run-testworkflow"}}
+
+    def may_run_as(self, pipeline, task, account):
+        """True when the shape policy has no 'may run as' objection to this per-task account (other messages are not this question)."""
+        specs = [{"pipelineTaskName": task, "serviceAccountName": account}]
+        out = evaluate(self.shape, run(pipeline, metadata=meta("push", "main"), taskRunSpecs=specs, params=list(BUILD_PARAMS) + prm(env="dev")))
+        return not any("may run as" in m for m in out)
+
+    def test_split_accounts_are_allowed_exactly_on_their_listed_tasks(self):
+        for account, value in self.SPLIT.items():
+            listed = self.values[value]
+            self.assertTrue(listed, value)
+            for pipeline, tasks in listed.items():
+                self.assertIn(pipeline, self.values["pipelines"], "%s names %s, which a .tekton file cannot start" % (value, pipeline))
+                for t in tasks:
+                    self.assertTrue(self.may_run_as(pipeline, t, account), (account, pipeline, t))
+                    # ... and no other account of the three takes that task, and a task of the same Pipeline that is not listed is refused
+                    for other in set(self.SPLIT) - {account}:
+                        self.assertFalse(self.may_run_as(pipeline, t, other) and t not in self.values[self.SPLIT[other]].get(pipeline, []),
+                                         (other, pipeline, t))
+                self.assertFalse(self.may_run_as(pipeline, "not-a-listed-task", account), (account, pipeline))
+            # another Pipeline's task name is not allowed here
+            self.assertFalse(self.may_run_as("build", "build-source", account), account)
+
+    def test_split_accounts_are_derived_from_the_catalog(self):
+        docs = render_catalog_itsm()
+        pipelines = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Pipeline"}
+        for account, value in self.SPLIT.items():
+            want = {}
+            for pname in self.values["pipelines"]:
+                for t in pipelines[pname]["spec"].get("tasks", []) + pipelines[pname]["spec"].get("finally", []):
+                    ref = [p["value"] for p in t.get("taskRef", {}).get("params", []) if p["name"] == "name"]
+                    if ref and ref[0] in self.SPLIT_CATALOG_TASKS[account]:
+                        want.setdefault(pname, []).append(t["name"])
+            # the catalog names two of the itsm-check tasks by whether the gate is required (verify-change, or verify-change-advisory)
+            if account == "release-record-writer":
+                want["itsm-check"] = ["verify-change", "verify-change-advisory"]
+            self.assertEqual({k: sorted(v) for k, v in self.values[value].items()}, {k: sorted(v) for k, v in want.items()}, value)
+
+    def test_split_accounts_do_not_change_the_run_wide_account_or_who_else_is_allowed(self):
+        for account in self.SPLIT:
+            self.refused(run(taskRunTemplate={"serviceAccountName": account}), msg="pipeline-runner")
+        # an unlisted account stays refused, and the PR build cannot attach a split account to a source task
+        self.refused(run(taskRunSpecs=[{"pipelineTaskName": "build-source", "serviceAccountName": "release-record-writer"}]), msg="may run as")
+        # defaults must not refuse: every binding is still Deny only through its own value, and no new binding or policy appeared
+        self.assertEqual(sorted(n for n in self.binds if n.startswith("cicd-run-")), ["cicd-run-no-taskruns", "cicd-run-shape", "cicd-run-source-isolation"])
 
     def test_not_this_policys_concern(self):
         hostile = run(pipelineSpec={"tasks": []}, taskRunTemplate={"serviceAccountName": "default"})
