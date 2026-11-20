@@ -312,7 +312,10 @@ What each part does.
   widen what that policy admits (nothing is refused that was admitted before, in any `shapeActions`); the policy that would
   require the mapping is not part of step 3. They name Pipeline task names, so `register`, `register-advisory`, `render-check` and
   `verify-change`, `verify-change-advisory` are all listed. The platform-started Pipelines (`release-outcome-notify`,
-  `release-rollback-notify`) are not PaC-startable and not listed.
+  `release-rollback-notify`) are not PaC-startable (`pipelines` does not list them, and `cicd-run-shape` only matches PaC runs), but
+  their `itsm-close` and `itsm-close-rolled-back` tasks are listed in `recordWriterTasks` all the same: the entries only allow, and
+  the cluster policy that holds a `glidepath-api` rerun derives its writer-task list from it, so a rerun of an outcome or rollback run
+  copying those entries is admitted. A task the Pipeline lacks (no itsm provider) makes an entry inert.
 - **Who may write a release record and a gate report (`release-record-writes`, `gate-report-writes`).** Two more
   ValidatingAdmissionPolicies in `glidepath-control-plane` (`templates/admission/release-record-writes.yaml`) do what RBAC cannot:
   narrow `create` by name and limit a ConfigMap write to keys. They apply to ConfigMaps in an `app-*-cicd` or `infra-*-cicd`
@@ -758,8 +761,8 @@ What is not closed, in the order to do it:
    `cicdRunAdmission.sourceTasks`. A new push or `/retest` is not affected. Since pipeline trust T4 step 3 the same holds for the
    split accounts: a rerun of a `release`, `test`, `bypass-merge-check`, `itsm-check`, `clearance-gate-check`, `agent-*` or
    outcome/rollback run carries entries for `release-record-writer`, `clearance-gate` or `test-runner`, and the policy must allow
-   exactly those (task lists: `cicdRunAdmission.recordWriterTasks`, `clearanceTasks`, `testRunnerTasks`, plus the two platform-started
-   Pipelines' `itsm-close` and `itsm-close-rolled-back`, which are not in those lists) before such a rerun is admitted.
+   exactly those (task lists: `cicdRunAdmission.recordWriterTasks`, which includes the platform-started Pipelines' `itsm-close` and
+   `itsm-close-rolled-back`, `clearanceTasks` and `testRunnerTasks`) before such a rerun is admitted.
 
 ### Ref protection
 
