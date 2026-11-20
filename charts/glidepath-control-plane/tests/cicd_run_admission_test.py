@@ -275,7 +275,8 @@ class CicdRunAdmission(unittest.TestCase):
                 "cicd-run-no-taskruns": ("noTaskRunsActions", "CicdRunNoTaskRunsNotEnforcing")}
 
     def bindings_of(self, docs):
-        return {d["metadata"]["name"]: d for d in docs if d["kind"] == "ValidatingAdmissionPolicyBinding"}
+        # the cicd-run-* family only: release-record-writes and gate-report-writes are Audit by default (tests/record_policies_test.py)
+        return {d["metadata"]["name"]: d for d in docs if d["kind"] == "ValidatingAdmissionPolicyBinding" and d["metadata"]["name"].startswith("cicd-run-")}
 
     def alerts_of(self, docs):
         return [r["alert"] for d in docs if d["kind"] == "PrometheusRule" and d["metadata"]["name"] == "cicd-run-admission-not-enforcing"
