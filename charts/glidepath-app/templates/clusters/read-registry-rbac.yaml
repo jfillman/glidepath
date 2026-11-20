@@ -35,4 +35,20 @@ subjects:
   - kind: ServiceAccount
     name: pipeline-runner
     namespace: {{ $appNamespace }}
+---
+# The same read for release-record-writer (open-release-pr checks the target cluster is registered). A binding of its own, so
+# pipeline-runner's stays as it was until its rights are narrowed (pipeline trust T4, step 6).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: allow-read-cluster-registry-{{ .Values.platformIdentity.appName }}-writer
+  namespace: platform-system
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "clusters"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: allow-read-cluster-registry-{{ .Values.platformIdentity.appName }} }
+subjects:
+  - kind: ServiceAccount
+    name: release-record-writer
+    namespace: {{ $appNamespace }}
 {{- end }}

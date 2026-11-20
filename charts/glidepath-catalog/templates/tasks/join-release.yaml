@@ -1,0 +1,80 @@
+# catalog/tasks/join-release.yaml
+#
+# Pipeline trust T4 (specs/plans/pipeline-trust-t4-split-runner.md), step 2. The release-record join of clearance-gate
+# (its join_release function), carved out so the ConfigMap write can run as release-record-writer while clearance-gate
+# keeps the Clearance token and no record write. NOT in any Pipeline yet and clearance-gate is unchanged: step 3 wires it.
+#
+# G-ARGO-6: writes the Clearance change's id and tree digest (clearanceId, clearanceTree) into the release's own record
+# (release-tracking-<chainId>, found by the PR's URL, cluster and environment), so glidepath-api's
+# GET /v1/apps/{app}/releases/{chainId} and release-log-emit carry the join. clearance-gate registers one change per
+# environment, so the input is a JSON array of joins, one object per environment:
+#   [{"cluster": "...", "env": "...", "id": "...", "tree": "sha256:...", "pr": "123"}, ...]
+# Best effort, as before: a PR with no record (hand-made, swept), an entry with no id or a bad PR number, or a failed
+# patch is a message, never a failed Task.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: join-release
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Writes the Clearance change id and tree digest of each environment into that release's record.
+  params:
+    - name: repo-url
+      type: string
+      description: The gitops repository's URL (https://github.com/<owner>/<repo>); the pull request's URL is built from it and each entry's pr.
+    - name: joins
+      type: string
+      description: 'JSON array of {cluster, env, id, tree, pr}, one per environment clearance-gate registered. "[]" or empty: nothing to write.'
+      default: "[]"
+  results:
+    - name: joined
+      description: Names of the records written, comma separated (empty when none).
+  steps:
+    - name: join
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: JOINS
+          value: $(params.joins)
+        - name: NAMESPACE
+          value: $(context.taskRun.namespace)
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+        printf '' > "$(results.joined.path)"
+        join_release() { # <cluster> <env> <change id> <tree digest> <pr>
+          local cluster="$1" renv="$2" id="$3" tree="$4" prn="$5" slug pr_url name
+          # owner/name, the name may contain dots (acme/gitops-app.v2): strip only a trailing slash and a .git suffix
+          slug="${REPO_URL:-}"; slug="${slug%/}"; slug="${slug%.git}"; slug="${slug#https://github.com/}"; slug="${slug#http://github.com/}"
+          pr_url="https://github.com/${slug}/pull/${prn}"
+          [[ -n "${id}" && "${prn}" =~ ^[1-9][0-9]*$ ]] || return 0
+          name="$(kubectl get configmap -n "${NAMESPACE}" \
+            -l "hangar.io/subcomponent=release-tracking,hangar.io/env=${renv},hangar.io/cluster=${cluster}" -o json 2>/dev/null \
+            | jq -r --arg u "${pr_url}" '[.items[] | select(.data.prUrl == $u)] | .[0].metadata.name // empty')"
+          if [[ -z "${name}" ]]; then
+            echo "no release record for ${pr_url} (${cluster}/${renv}) in ${NAMESPACE}: the join to ${id} is not written"
+            return 0
+          fi
+          if kubectl patch configmap "${name}" -n "${NAMESPACE}" --type merge \
+            -p "$(jq -nc --arg id "${id}" --arg tree "${tree}" '{data: {clearanceId: $id, clearanceTree: $tree}}')" >/dev/null; then
+            echo "${name}: clearanceId=${id}"
+            joined="${joined:+${joined},}${name}"
+          else
+            echo "warning: could not write the clearance join to ${name}" >&2
+          fi
+        }
+        joined=""
+        if jq -e 'type == "array"' >/dev/null 2>&1 <<<"${JOINS:-[]}"; then
+          while IFS= read -r -u 3 row; do
+            join_release "$(jq -r '.cluster // ""' <<<"${row}")" "$(jq -r '.env // ""' <<<"${row}")" "$(jq -r '.id // ""' <<<"${row}")" \
+              "$(jq -r '.tree // ""' <<<"${row}")" "$(jq -r '(.pr // "") | tostring' <<<"${row}")"
+          done 3< <(jq -c '.[] | objects' <<<"${JOINS:-[]}")
+        else
+          echo "joins is not a JSON array: nothing written" >&2
+        fi
+        printf '%s' "${joined}" > "$(results.joined.path)"
+        exit 0

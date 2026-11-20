@@ -225,6 +225,7 @@ An Application's `-cicd` namespace runs four kinds of code, and they do not shar
 | The **image push**: `push-image`, which holds the registry push credential and runs nothing from the repository | `image-pusher` | **No.** Same as `source-runner`: no Role, no token. It is a separate account so the admission policy can say which task may have it. |
 | The **catalog's own tasks** (preflight, gates, release, deploy, notify, ...), whose code the platform ships | `pipeline-runner` | Namespace-scoped, least RBAC (below). Cannot create a run. |
 | The **triggers** that chain the next stage, and the one-time onboarding bootstrap Job | `pipeline-trigger` | `create` on `pipelineruns` in this namespace, nothing else. No task runs as it. |
+| The **release record writes**, the **Clearance-token tasks** and the **Testkube test task**, once split from `pipeline-runner` (pipeline trust T4; accounts exist, no task runs as them yet, see "Split task accounts" below) | `release-record-writer`, `clearance-gate`, `test-runner` | Namespace-scoped, one narrow Role each. None can create a run or a pod, request a token or delete anything. |
 
 Why it matters. A pull request to the app repository can change `build.sh`, `test.sh`, a lockfile or a build backend, and that
 code runs in the pipeline before anything is merged. When it ran as `pipeline-runner`, with the ServiceAccount token mounted, it
@@ -244,6 +245,26 @@ What each part does.
 - **`pipeline-runner`** lost `create` on `pipelineruns` and `taskruns` (it keeps get/list/watch: `stage-debrief` and
   `comment-pr-check-result` read their own run). Its other grants are unchanged in this release: `app-secrets` `get` by name, and
   ConfigMaps get/list/create/patch/delete in its own namespace (see "Known, accepted gaps" below).
+- **Split task accounts (pipeline trust T4, in progress).** `pipeline-runner` still runs every catalog task and still holds the
+  release-record write, the `app-secrets` read and the Testkube grants, so one flawed catalog task reaches all of them. The
+  glidepath-app chart now also renders three accounts that will take those powers apart (`templates/identity/task-accounts.yaml`).
+  Nothing runs as them yet and `pipeline-runner` has lost nothing: this step only adds. Each holds exactly the rights below and the
+  chart test (`charts/glidepath-app/tests/pipeline_least_privilege_test.py`) fails if a chart change binds one more to any of them.
+  None of the three can create a PipelineRun, TaskRun or pod, request a ServiceAccount token, impersonate, delete, or read a Secret
+  beyond what is listed.
+
+  | Account | Holds | Will run |
+  |---|---|---|
+  | `release-record-writer` | ConfigMaps `get`, `list`, `create`, `patch` in the `-cicd` namespace (no `delete`, no `update`); `get` on PipelineRuns (`open-release-pr` reads its own run's lineage annotations); `get` on the `cluster-registry` ConfigMap of `platform-system` (only for an app with a cluster-mapped environment). No Secret. No `clearance` token. | `open-release-pr`, `mark-release-merged`, `itsm-change`, `itsm-gate`, and two small Tasks carved out of tasks that must stay on `pipeline-runner`: `record-gate-verdict` (the gate-ledger write of `comment-pr-check-result`) and `join-release` (the `clearanceId` join of `clearance-gate`). The two Tasks are in the catalog but in no Pipeline yet. |
+  | `clearance-gate` | `get` on PipelineRuns; ConfigMaps `get`, `create`, `patch` (gate reports `gate-report-<run>`). No Secret. | The four Tasks that mount the projected token for the `clearance` audience: `clearance-gate`, `agent-gates`, `agent-definitions`, `agent-release`. Clearance trusts the pod's ServiceAccount principal, so this account needs `app-*-cicd/clearance-gate` in Clearance's verifier list before any task runs as it. |
+  | `test-runner` | `get` on `app-secrets` and `dex-check-ride-credentials`; the app's own Testkube placeholder Secret and the `testkube-testworkflow-runner` Role (only for an app with a `test` stage); `get`, `list`, `watch` on this namespace's runs, pods, logs and events. No ConfigMap, no `clearance` token. | `run-testworkflow` only. |
+
+  RBAC cannot narrow `create` by name nor a ConfigMap write to keys, so until the admission policies of the next steps
+  (`release-record-writes`, `gate-report-writes`) exist, a record write is limited by RBAC to `release-record-writer` only in
+  intent: `pipeline-runner` can still write one. `cicdRunAdmission.recordWriterTasks`, `clearanceTasks` and `testRunnerTasks`
+  list, per Pipeline, the tasks `cicd-run-shape` will let a `.tekton` file give to each account (a `taskRunSpecs` entry). They only
+  widen what that policy admits (nothing is refused that was admitted before, in any `shapeActions`); the policy that would
+  require the mapping is not part of this step.
 - **`pipeline-trigger`** is what Tekton Triggers creates the next PipelineRun as (the broker impersonates it, and only it). The
   run it creates still executes as `pipeline-runner`.
 - **A pull request's `.tekton/` file is source too.** Pipelines-as-Code creates the PipelineRun from the file in the PR as its
@@ -254,7 +275,8 @@ What each part does.
     `cicdRunAdmission.pipelines` (the 18 PR-check and post-merge Pipelines the onboarding templates deliver, and the five flow
     stages), only the parameters each takes, shaped by `paramPatterns` and tied to what Pipelines-as-Code recorded (see below), no
     inline `pipelineSpec`, run-wide account `pipeline-runner`, one `taskRunSpecs` entry per task and only for `source-runner`, `image-pusher`
-    (only `push-image`, `cicdRunAdmission.pusherTasks`) or `glidepath-cloud-deployer` (which has its own policy), a `podTemplate` of
+    (only `push-image`, `cicdRunAdmission.pusherTasks`), `glidepath-cloud-deployer` (which has its own policy) or one of the split
+    accounts on the tasks `cicdRunAdmission.recordWriterTasks`, `clearanceTasks` and `testRunnerTasks` list, a `podTemplate` of
     `hostAliases` only, workspaces `emptyDir` or `volumeClaimTemplate` only; a build that a push did not start (a pull request, a
     comment re-run) must pass `pr-tag-only=true`, and `pr-tag-only=true` needs the `-pr` image repository (this is what keeps a pull
     request from being treated as a main build: see Cache below). Also on UPDATE. `cicd-run-no-taskruns` refuses a TaskRun from the PaC identity.
