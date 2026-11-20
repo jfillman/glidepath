@@ -61,6 +61,15 @@ rm -rf "$d/w/eval"; rm -f "$d/joins"
 PATH="$d/bin:${PATH}" RECORDS= APP_NAME=shop CLEARANCE_URL=http://clearance TOWER_URL= PIPELINE_RUN= REPO_URL=u PR_NUMBER=1 NAMESPACE=n bash "$d/register.sh" >/dev/null 2>&1
 [[ "$(cat "$d/joins" 2>/dev/null)" == '[]' ]] || { echo "FAIL: joins must be [] when nothing was registered: $(cat "$d/joins" 2>/dev/null)"; fail=1; }
 
+# past the 20-join result cap the register step says so, and hands over exactly 20
+rm -rf "$d/w/eval"; rm -f "$d/joins"
+for i in $(seq 1 25); do
+  mkdir -p "$d/w/eval/c-e$i"; echo "{\"cluster\":\"c\",\"env\":\"e$i\",\"pr\":7,\"treeDigest\":\"sha256:feed\"}" > "$d/w/eval/c-e$i/change.json"
+done
+PATH="$d/bin:${PATH}" RECORDS= APP_NAME=shop CLEARANCE_URL=http://clearance TOWER_URL= PIPELINE_RUN= REPO_URL=u PR_NUMBER=1 NAMESPACE=n bash "$d/register.sh" >"$d/out25" 2>&1
+[[ "$(jq 'length' "$d/joins" 2>/dev/null)" == 20 ]] || { echo "FAIL: the joins result must hold 20 entries for 25 environments: $(jq 'length' "$d/joins")"; fail=1; }
+grep -q "only the first 20 joins" "$d/out25" || { echo "FAIL: the dropped joins must be reported"; fail=1; }
+
 # release-log-emit: its real emit step, against stub curl, kubectl and platform libs. The record it sends carries
 # clearance_id and clearance_tree when the release record has them, and neither when it does not.
 step release-log-emit emit > "$d/emit.sh"

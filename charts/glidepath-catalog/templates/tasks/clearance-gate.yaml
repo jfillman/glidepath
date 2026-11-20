@@ -747,6 +747,12 @@ spec:
         printf '%s' "${ids}" > "$(results.change-ids.path)"
         # At most 20 environments (about 150 bytes each), well under Tekton's 4 KiB result limit.
         jq -sc '.[0:20]' /work/joins.jsonl > "$(results.joins.path)" || printf '[]' > "$(results.joins.path)"
+        # The cap is loud, not silent. A result cannot carry more, and a workspace file would let this Clearance-token task write the run's
+        # volume, which the tokenless-render split forbids (tests/tokenless_render_test.py). Past 20, the later environments keep no join.
+        njoins="$(jq -s 'length' /work/joins.jsonl 2>/dev/null || echo 0)"
+        if [[ "${njoins}" -gt 20 ]]; then
+          echo "warning: ${njoins} environments registered; only the first 20 joins (clearanceId, clearanceTree) reach release records, the rest keep no join" >&2
+        fi
         holding="$(jq -s '[.[] | select(.state == "holding")] | length' /work/rows.jsonl)"
         denied="$(jq -s '[.[] | select(.state == "denied")] | length' /work/rows.jsonl)"
         errors="$(jq -s '[.[] | select(.state == "error")] | length' /work/rows.jsonl)"
