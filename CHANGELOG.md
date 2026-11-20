@@ -4,6 +4,10 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### ref guard: an Off-here rerun names its real ref (I-11)
+
+- With `refProtection.mode: off`, a rerun or chained run (no Pipelines-as-Code annotations) recorded "the commits of unknown" in `ref-protection-summary`. It now names the run's `glidepath.io/origin-ref`, or says it is a platform-created run when none is stamped. Cosmetic: the verdict and result are unchanged. Test: `charts/glidepath-catalog/tests/ref_protection_pipelines_test.py`.
+
 ### Pipeline trust T4 step 5: `release-record-writes` and `gate-report-writes` (Audit only)
 
 - Two ValidatingAdmissionPolicies for ConfigMaps in `-cicd` namespaces: `pipeline-runner` and `clearance-gate` may not write a release record (`release-tracking-*` or `hangar.io/subcomponent=release-tracking`); `release-record-writer` may touch only release records and may not change `prUrl`, `releaseId`, `image`, `imageDigest`, `gitRevision` or `kind` once set; `clearance-gate` and `pipeline-runner` may write only `gate-report-<run>` owned by that PipelineRun. `cicdRunAdmission.recordWritesActions` and `gateReportActions` default to `[Audit]`: nothing is refused. docs/admin/security.md, "Pipeline identities". Tests: `charts/glidepath-control-plane/tests/record_policies_test.py`.

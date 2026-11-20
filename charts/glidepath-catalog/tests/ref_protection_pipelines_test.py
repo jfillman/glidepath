@@ -448,6 +448,23 @@ cp "$FX/api-body.json" "$out"; printf '%s' "$(cat "$FX/api-code")"
             self.assertIn("refProtection.mode is off", summ)
             self.assertEqual(calls, "", "off asks the API nothing")
 
+    def test_off_on_a_rerun_names_the_stamped_ref_never_unknown(self):
+        # A push run names its own ref.
+        _, _, summ, _ = self.run_task(mode="off")
+        self.assertIn("the commits of refs/heads/main were reviewed", summ)
+        # A rerun has no Pipelines-as-Code annotations: the stamped origin ref is shown.
+        p, res, summ, _ = self.run_task(mode="off", event="", ref="", anns={"glidepath.io/origin-ref": "refs/heads/main", "glidepath.io/origin-sha": SHA})
+        self.assertEqual((p.returncode, res), (0, "off"), p.stderr)
+        self.assertIn("the commits of refs/heads/main were reviewed", summ)
+        self.assertNotIn("unknown", summ)
+        # Nothing stamped: say it is a platform-created run, still never "unknown".
+        p, _, summ, _ = self.run_task(mode="off", kind="build", event="", ref="", anns={"glidepath.io/origin-event": "pull_request"})
+        self.assertIn("a platform-created run (a rerun or chained stage of a pull_request build, no ref recorded)", summ)
+        self.assertNotIn("unknown", summ)
+        p, _, summ, _ = self.run_task(mode="off", event="", ref="")
+        self.assertIn("a platform-created run (a rerun or chained stage, no ref recorded)", summ)
+        self.assertNotIn("unknown", summ)
+
     def test_unknown_kind_or_mode_refuses(self):
         p, res, _, _ = self.run_task(kind="whatever", api=self.PROTECTED)
         self.assertEqual((p.returncode, res), (1, "refused"))

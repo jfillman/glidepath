@@ -86,7 +86,14 @@ spec:
 
         if [[ "${REF_PROTECTION_MODE}" == off ]]; then
           # Explicit, platform-wide, recorded. No plan or hostname is looked at.
-          result off "ref protection: Off here (refProtection.mode is off in this cluster's catalog values: nothing verified that the commits of ${ref:-unknown} were reviewed)"
+          # A run the platform created (rerun, chained stage) has no Pipelines-as-Code annotations: name the ref it was
+          # stamped with, or say it is a platform-created run, never "unknown".
+          subject="the commits of ${ref:-$(gann origin-ref)}"
+          if [[ -z "${ref}$(gann origin-ref)" ]]; then
+            oevent="$(gann origin-event)"
+            subject="the commits of a platform-created run (a rerun or chained stage${oevent:+ of a ${oevent} build}, no ref recorded)"
+          fi
+          result off "ref protection: Off here (refProtection.mode is off in this cluster's catalog values: nothing verified that ${subject} were reviewed)"
           exit 0
         fi
         [[ "${REF_PROTECTION_MODE}" == required ]] || refuse "refProtection.mode is ${REF_PROTECTION_MODE}, not required or off"
