@@ -2,8 +2,13 @@
 #
 # Pipeline trust T4 (specs/plans/pipeline-trust-t4-split-runner.md), step 2. The ledger write of comment-pr-check-result
 # (its "gate ledger" block), carved out so the ConfigMap write can run as release-record-writer while the rest of that
-# Task stays on pipeline-runner. NOT in any Pipeline yet and comment-pr-check-result is unchanged: step 3 wires it
-# (taskRunSpecs, and the Pipelines' finally lists), step 6 removes pipeline-runner's right to write a record.
+# Task stays on pipeline-runner. NOT in any Pipeline, and comment-pr-check-result is unchanged, after step 3 as well: the plan
+# put it in the Pipelines' finally lists after comment-pr, and Tekton cannot do that. All finally tasks start together; none may
+# have runAfter or read a result of another finally task (pipeline_validation.go, validateFinalTasks; docs/pipelines.md, "Cannot
+# configure the finally task execution order"), and the verdict and the resolved PR number exist only inside comment-pr. A task
+# after comment-pr in the DAG would be skipped whenever the gate failed. The ledger write must also precede the promotion decision
+# that reads it (two gates finishing together). docs/admin/security.md, "Task mapping", has the way out being weighed.
+# Step 6 removes pipeline-runner's right to write a record, so that write needs a home first.
 #
 # What it does is exactly what the block does today: finds the release record for this gitops PR (by prUrl), and patches
 # gate.<sha12>.<gate>=<verdict> into it with the record's resourceVersion, so two gates finishing together are serialized

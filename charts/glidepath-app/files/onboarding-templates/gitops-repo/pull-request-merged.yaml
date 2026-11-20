@@ -27,6 +27,13 @@ spec:
   params:
     - { name: repo-url, value: "{{ repo_url }}" }
     - { name: revision, value: "{{ revision }}" }
+  # Pipeline trust T4 (step 3): the tasks that write the release record run as release-record-writer, everything else as
+  # pipeline-runner. The `# <IF_...>` marker names a task only some catalogs have (itsm-implement: a change-management provider);
+  # the onboarding task keeps or drops the line from what the catalog renders, because Tekton refuses a taskRunSpecs entry that
+  # names a task its Pipeline lacks.
+  taskRunSpecs:
+    - { pipelineTaskName: mark-release-merged, serviceAccountName: release-record-writer }
+    - { pipelineTaskName: itsm-implement, serviceAccountName: release-record-writer } # <IF_ITSM>
   taskRunTemplate:
     serviceAccountName: pipeline-runner
   timeouts:

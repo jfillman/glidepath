@@ -205,7 +205,11 @@ class Structure(unittest.TestCase):
             self.assertEqual(CP["sourceTasks"][pname], ["render"])
         for fname, pname in (("pull-request-policy-validation.yaml", "policy-validation-check"), ("pull-request-clearance-gate.yaml", "clearance-gate-check")):
             run = yaml.safe_load(open(os.path.join(TEMPLATES, fname)))
-            self.assertEqual(run["spec"]["taskRunSpecs"], [{"pipelineTaskName": "render", "serviceAccountName": "source-runner"}], fname)
+            # `render` is the only task given to source-runner; the template's other entries (pipeline trust T4 step 3) are split accounts
+            # for the credentialed tasks, never for the render
+            self.assertEqual([e for e in run["spec"]["taskRunSpecs"] if e["serviceAccountName"] == "source-runner"],
+                             [{"pipelineTaskName": "render", "serviceAccountName": "source-runner"}], fname)
+            self.assertNotIn("render", [e["pipelineTaskName"] for e in run["spec"]["taskRunSpecs"] if e["serviceAccountName"] != "source-runner"], fname)
             self.assertEqual(run["spec"]["taskRunTemplate"]["serviceAccountName"], "pipeline-runner")
             ws = run["spec"]["workspaces"]
             self.assertEqual([w["name"] for w in ws], ["gate"])

@@ -67,15 +67,17 @@ cicdRunAdmission:
   # with the catalog and the generator. source-runner is allowed on exactly sourceTasks.
   cloudDeployerTasks:
     deploy: [deploy-aws-lambda, deploy-aws-ecs]
-  # Pipeline trust T4 (specs/plans/pipeline-trust-t4-split-runner.md, step 2): the tasks of each Pipeline that may run as one of the
+  # Pipeline trust T4 (specs/plans/pipeline-trust-t4-split-runner.md, steps 2 and 3): the tasks of each Pipeline that may run as one of the
   # three split task accounts beside pipeline-runner, in the same shape as cloudDeployerTasks (Pipeline -> the Pipeline's own task names).
-  # These ADD allowed accounts to cicd-run-shape and refuse nothing that was admitted before; no task is mapped to them yet (step 3),
-  # and the policy that would REQUIRE the mapping (step 5, Warn then Audit then Deny) is not part of this change. The chart test
-  # derives each list from the catalog Pipelines in `pipelines` below.
-  #   release-record-writer: the tasks that write the release record (open-release-pr, mark-release-merged, itsm-change, itsm-gate;
-  #                          the carve-outs record-gate-verdict and join-release are not in a Pipeline yet).
+  # These ADD allowed accounts to cicd-run-shape and refuse nothing that was admitted before. Step 3 maps the tasks (the onboarding
+  # templates' and the Trigger templates' taskRunSpecs); the policy that would REQUIRE the mapping (step 5, Warn then Audit then Deny)
+  # is not part of that change. The chart test derives each list from the catalog Pipelines in `pipelines` below.
+  #   release-record-writer: the tasks that write the release record (open-release-pr, mark-release-merged, itsm-change, itsm-gate,
+  #                          and the carve-out join-release, a finally task of clearance-gate-check; the carve-out record-gate-verdict
+  #                          is not in a Pipeline: see docs/admin/security.md, "Pipeline identities", on why the ledger write stays).
   recordWriterTasks:
     bypass-merge-check: [mark-release-merged, itsm-implement]
+    clearance-gate-check: [join-release]
     itsm-check: [verify-change, verify-change-advisory]
     release: [open-release-pr]
   #   clearance-gate: the four Tasks that present the projected token for the `clearance` audience (clearance-gate, agent-gates,
