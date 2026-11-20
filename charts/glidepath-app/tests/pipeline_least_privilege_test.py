@@ -472,12 +472,6 @@ def split_mapping(run_spec):
     return {e["pipelineTaskName"]: e["serviceAccountName"] for e in run_spec.get("taskRunSpecs") or [] if e["serviceAccountName"] in SPLIT_ACCOUNTS}
 
 
-def rerun_copy(run_spec):
-    """What glidepath-api's rerun keeps of a run (docs/admin/security.md, "What is not closed", item 6): the Pipeline, params, workspaces,
-    taskRunSpecs and run-wide account of the original. The T5 rule: the copy carries the per-task accounts unchanged."""
-    return {k: run_spec[k] for k in ("pipelineRef", "params", "workspaces", "taskRunSpecs", "taskRunTemplate") if k in run_spec}
-
-
 class TaskMapping(unittest.TestCase):
     """Every PipelineRun a Trigger template starts maps the catalog's record-writer, Clearance-token and test tasks to their accounts, and only
     those, and names only tasks its Pipeline has (Tekton refuses a taskRunSpecs entry for a task the Pipeline lacks)."""
@@ -525,16 +519,14 @@ class TaskMapping(unittest.TestCase):
         # without a provider the itsm close tasks do not exist, so no entry may name them
         self.assertNotIn("itsm-close", str([spec for _, _, spec in self.runs("no itsm")]))
 
-    def test_a_glidepath_api_rerun_keeps_the_mapping(self):
-        # The T5 rule: a rerun copies the original run's taskRunSpecs (security.md, "What is not closed", item 6), so the per-task accounts
-        # must be in the run itself, not added by anything that runs later. The PaC-started runs (onboarding templates) are checked the
-        # same way in the control plane's cicd_run_admission_test.py, against the admission lists.
+    def test_the_mapping_is_in_the_run_itself(self):
+        # The T5 rule: a glidepath-api rerun copies the original run's taskRunSpecs (security.md, "What is not closed", item 6), so the per-task
+        # accounts must be in the run itself, not added by anything that runs later. That the rerun really copies them is tested where the
+        # rerun is implemented: glidepath/api/internal/pipelineruns (TestRerunKeepsTaskRunSpecs). The PaC-started runs (onboarding templates)
+        # are checked the same way in the control plane's cicd_run_admission_test.py, against the admission lists.
         n = 0
         for variant in self.apps:
             for name, pipeline, spec in self.runs(variant):
-                again = rerun_copy(spec)
-                self.assertEqual(split_mapping(again), split_mapping(spec), name)
-                self.assertEqual(again.get("taskRunSpecs"), spec.get("taskRunSpecs"), name)
                 n += bool(split_mapping(spec))
         self.assertGreaterEqual(n, 8, "too few mapped runs: the comparison would be vacuous")
 
