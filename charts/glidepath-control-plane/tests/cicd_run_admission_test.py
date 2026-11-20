@@ -201,18 +201,19 @@ def render_catalog():
     return _CATALOG
 
 
-_CATALOG_ITSM = []
+_CATALOG_ITSM = {}
 
 
-def render_catalog_itsm():
-    """The catalog with a change-management provider set: the itsm tasks of the Pipelines render only then."""
-    if not _CATALOG_ITSM:
-        r = subprocess.run(["helm", "template", "c", os.path.join(ROOT, "charts", "glidepath-catalog"), "--set", "itsm.provider=webhook", "-f",
+def render_catalog_itsm(*extra):
+    """The catalog with a change-management provider set (the itsm tasks of the Pipelines render only then); `extra` are more helm args."""
+    key = tuple(extra)
+    if key not in _CATALOG_ITSM:
+        r = subprocess.run(["helm", "template", "c", os.path.join(ROOT, "charts", "glidepath-catalog"), "--set", "itsm.provider=webhook", *extra, "-f",
                             os.path.join(ROOT, "charts", "glidepath-catalog", "tests", "values.example.yaml")],
                            capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
-        _CATALOG_ITSM.extend(d for d in yaml.safe_load_all(r.stdout) if d)
-    return _CATALOG_ITSM
+        _CATALOG_ITSM[key] = [d for d in yaml.safe_load_all(r.stdout) if d]
+    return _CATALOG_ITSM[key]
 
 
 def repo_code(task):
@@ -911,18 +912,26 @@ class CicdRunAdmission(unittest.TestCase):
             self.assertFalse(self.may_run_as("build", "build-source", account), account)
 
     def test_split_accounts_are_derived_from_the_catalog(self):
-        docs = render_catalog_itsm()
-        pipelines = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Pipeline"}
+        # Both catalog renderings: the clearance-gate guardrail required (the Pipeline task is `register`) and advisory
+        # (`register-advisory` and `render-check`); the itsm gate likewise (`verify-change` / `verify-change-advisory`).
+        renderings = [render_catalog_itsm(),
+                      render_catalog_itsm("--set", "releaseGuardrailOverrides.clearance-gate.required=true",
+                                          "--set", "releaseGuardrailOverrides.itsm.required=false")]
+        seen = set()
+        for docs in renderings:
+            for d in docs:
+                if d["kind"] == "Pipeline" and d["metadata"]["name"] == "clearance-gate-check":
+                    seen |= {t["name"] for t in d["spec"]["tasks"]}
+        self.assertLessEqual({"register", "register-advisory", "render-check"}, seen, "the two renderings must differ, or the check is vacuous")
         for account, value in self.SPLIT.items():
             want = {}
-            for pname in self.values["pipelines"]:
-                for t in pipelines[pname]["spec"].get("tasks", []) + pipelines[pname]["spec"].get("finally", []):
-                    ref = [p["value"] for p in t.get("taskRef", {}).get("params", []) if p["name"] == "name"]
-                    if ref and ref[0] in self.SPLIT_CATALOG_TASKS[account]:
-                        want.setdefault(pname, []).append(t["name"])
-            # the catalog names two of the itsm-check tasks by whether the gate is required (verify-change, or verify-change-advisory)
-            if account == "release-record-writer":
-                want["itsm-check"] = ["verify-change", "verify-change-advisory"]
+            for docs in renderings:
+                pipelines = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Pipeline"}
+                for pname in self.values["pipelines"]:
+                    for t in pipelines[pname]["spec"].get("tasks", []) + pipelines[pname]["spec"].get("finally", []):
+                        ref = [p["value"] for p in t.get("taskRef", {}).get("params", []) if p["name"] == "name"]
+                        if ref and ref[0] in self.SPLIT_CATALOG_TASKS[account]:
+                            want.setdefault(pname, set()).add(t["name"])
             self.assertEqual({k: sorted(v) for k, v in self.values[value].items()}, {k: sorted(v) for k, v in want.items()}, value)
 
     def test_split_accounts_do_not_change_the_run_wide_account_or_who_else_is_allowed(self):

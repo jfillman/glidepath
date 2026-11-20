@@ -84,7 +84,7 @@ cicdRunAdmission:
     agent-definitions-check: [review]
     agent-gates-check: [agent-gates]
     agent-release: [release]
-    clearance-gate-check: [fetch, register-advisory, render-check]
+    clearance-gate-check: [fetch, register, register-advisory, render-check]   # register when the guardrail is required, register-advisory + render-check when not
   #   test-runner: run-testworkflow (the app-secrets and Testkube grants).
   testRunnerTasks:
     test: [run-testworkflow]

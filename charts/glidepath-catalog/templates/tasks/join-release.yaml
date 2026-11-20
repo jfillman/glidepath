@@ -48,7 +48,8 @@ spec:
         printf '' > "$(results.joined.path)"
         join_release() { # <cluster> <env> <change id> <tree digest> <pr>
           local cluster="$1" renv="$2" id="$3" tree="$4" prn="$5" slug pr_url name
-          slug="$(sed -E 's#^https?://github\.com/([^/]+/[^/.]+)(\.git)?/?$#\1#' <<<"${REPO_URL:-}")"
+          # owner/name, the name may contain dots (acme/gitops-app.v2): strip only a trailing slash and a .git suffix
+          slug="${REPO_URL:-}"; slug="${slug%/}"; slug="${slug%.git}"; slug="${slug#https://github.com/}"; slug="${slug#http://github.com/}"
           pr_url="https://github.com/${slug}/pull/${prn}"
           [[ -n "${id}" && "${prn}" =~ ^[1-9][0-9]*$ ]] || return 0
           name="$(kubectl get configmap -n "${NAMESPACE}" \

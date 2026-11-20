@@ -200,13 +200,11 @@ class Identities(unittest.TestCase):
                 if sa == "release-record-writer" and label != "default fixture":
                     expected["platform-system"] = {self.CLUSTER_REGISTRY}
                 if sa == "test-runner":
-                    # the Testkube grants (templates/testkube/rbac-and-secret.yaml): one Secret of this app, and the shared TestWorkflow role
+                    # the Testkube grants (templates/testkube/rbac-and-secret.yaml), as a FIXED set: the app's own placeholder Secret
+                    # (get, update, patch, by name; never create) and the control-plane chart's shared TestWorkflow role, bound by name
                     self.assertEqual(set(got) - {OWN}, {"testkube"}, "%s: %s" % (label, sa))
-                    expected["testkube"] = got["testkube"]
-                    self.assertIn(("", "secrets", ("get", "patch", "update"), (TESTKUBE_SECRET,)), got["testkube"])
-                    self.assertIn(("(role of another chart)", "testkube-testworkflow-runner", (), ()), got["testkube"])
-                    for ns_extra in got["testkube"]:
-                        self.assertFalse(ns_extra[0] == "" and ns_extra[1] == "secrets" and "create" in ns_extra[2], ns_extra)
+                    expected["testkube"] = {("", "secrets", ("get", "patch", "update"), (TESTKUBE_SECRET,)),
+                                            ("(role of another chart)", "testkube-testworkflow-runner", (), ())}
                 self.assertEqual(got, expected, "%s: %s binds a right other than the plan's Target table" % (label, sa))
 
     def test_split_accounts_can_not_create_runs_pods_or_tokens_or_delete(self):
