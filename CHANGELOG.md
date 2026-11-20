@@ -4,6 +4,10 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### Pipeline trust T4 step 5: `release-record-writes` and `gate-report-writes` (Audit only)
+
+- Two ValidatingAdmissionPolicies for ConfigMaps in `-cicd` namespaces: `pipeline-runner` and `clearance-gate` may not write a release record (`release-tracking-*` or `hangar.io/subcomponent=release-tracking`); `release-record-writer` may touch only release records and may not change `prUrl`, `releaseId`, `image`, `imageDigest`, `gitRevision` or `kind` once set; `clearance-gate` and `pipeline-runner` may write only `gate-report-<run>` owned by that PipelineRun. `cicdRunAdmission.recordWritesActions` and `gateReportActions` default to `[Audit]`: nothing is refused. docs/admin/security.md, "Pipeline identities". Tests: `charts/glidepath-control-plane/tests/record_policies_test.py`.
+
 ### stalled-pipeline detector: catch a PaC queue that waits with free slots (R-4)
 
 - Pipelines-as-Code keeps its `concurrency_limit` queue in the watcher's memory; a missed completion leaks a slot and later runs stay `PipelineRunPending` with nothing running (SRVKP-7608). The stalled-pipeline detector now also flags a run that is pending with state `queued`, older than `stalledPipelineDetector.queueStallMinutes` (default 10), while fewer runs of the same Repository (`pipelinesascode.tekton.dev/repository`) are started and unfinished than its `concurrency_limit`. It logs `QUEUE STALL DETECTED` and creates one `QueueStalled` Warning Event per repository, with the repository, queued run, wait and running-against-limit counts and the watcher-restart recovery; it labels the stalled runs `hangar.io/stall-alerted` and changes nothing else. The ClusterRole gains read-only `get`/`list` on `repositories.pipelinesascode.tekton.dev`. docs/admin/stalled-pipeline-detector.md "Queue stalls", pipeline-performance.md. Tests: `charts/glidepath-control-plane/tests/stalled_queue_detector_test.sh`. On merge to `main` hangar-dev renders the CronJob within minutes.
