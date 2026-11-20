@@ -141,6 +141,10 @@ it asks the broker for a token per PR, `POST /agent-installation-token` (`agentt
 | Key | The App's id and key from the platform's Infisical project (`agentToken.appIdKey`/`privateKeyKey`, default `agent-app-id`/`agent-app-private-key`), ExternalSecret `agent-app` in `platform-system`, mounted only into the broker at `/etc/agent-app` (optional; until it syncs the endpoint answers 503, and the next request after it syncs loads it). |
 | Answer | `200 {"token": "...", "expiresAt": "..."}`, or `{"error": "..."}` with 400, 401, 403, 502 or 503. The log line names the caller, repo, app and permissions, never the token. |
 
+The broker's `/agent-pin` (the agent release's pin PR) binds the caller to a ServiceAccount, not just an app namespace: only the
+names in `agentPin.serviceAccounts` (env `AGENT_PIN_SERVICE_ACCOUNTS`; default `pipeline-runner,clearance-gate`) in an app's
+`-cicd` namespace are served, anyone else is 403. See [agent-definitions.md](agent-definitions.md).
+
 `agentToken.enabled: false` (the chart default) renders neither the Secret nor the env; the endpoint then answers 503.
 
 ### Resilience to transient GitHub errors (2026-09-03)

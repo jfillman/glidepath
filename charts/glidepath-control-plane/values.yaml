@@ -46,6 +46,12 @@ cicdRunAdmission:
   # anything but Deny is NOT enforcing (binding annotation, and an alert where prometheus-operator is installed). Only platform values set these.
   shapeActions: [Deny]
   noTaskRunsActions: [Deny]
+  # Pipeline trust T4 step 5 (templates/admission/release-record-writes.yaml): who may write a release record (release-record-writes) and a gate
+  # report (gate-report-writes) in a -cicd namespace. [Audit] by default: nothing is refused, the API server records each write that would
+  # be. Set [Deny] (hangar-dev first; prod on the owner's OK) once every app has resynced and no active run uses the old pipeline-runner
+  # mapping; [Warn, Audit] also shows the finding to the client. Anything but Deny is NOT enforcing (binding annotation).
+  recordWritesActions: [Audit]
+  gateReportActions: [Audit]
   # The storage classes a .tekton file's workspace volumeClaimTemplate may name (it may also leave it unset, which is what the onboarding
   # templates do). Everything else about the template is fixed: ReadWriteOnce, 1 to 20Gi, no dataSource, volumeName or selector.
   workspaceStorageClassNames: []
@@ -614,6 +620,16 @@ itsm:
 githubRead:
   callers:
     - system:serviceaccount:platform-system:glidepath-api
+
+# The broker's /agent-pin (agentpin.go, the agent release): it serves a caller only if it is one of these ServiceAccount
+# names in an app's own -cicd namespace (TokenReview, audience agent-pin); every other ServiceAccount there, a pod that
+# mounts an agent-pin token included, is 403. Names, not full usernames: the namespace is the app's and is checked
+# separately. W-8 overlap: pipeline-runner (today's agent-release) and clearance-gate (where it moves in W-8 step 3);
+# step 7 of hangar specs/plans/pipeline-trust-t4-split-runner.md drops pipeline-runner. Empty: the endpoint answers 503.
+agentPin:
+  serviceAccounts:
+    - pipeline-runner
+    - clearance-gate
 
 # The broker's /agent-installation-token (agenttoken.go, Autopilot AP-B1, hangar D4): a token for the agents' own GitHub
 # App on one of an app's own repos (the /github-read-token rule), contents and pull_requests write, metadata read; never

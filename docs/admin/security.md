@@ -313,6 +313,27 @@ What each part does.
   require the mapping is not part of step 3. They name Pipeline task names, so `register`, `register-advisory`, `render-check` and
   `verify-change`, `verify-change-advisory` are all listed. The platform-started Pipelines (`release-outcome-notify`,
   `release-rollback-notify`) are not PaC-startable and not listed.
+- **Who may write a release record and a gate report (`release-record-writes`, `gate-report-writes`).** Two more
+  ValidatingAdmissionPolicies in `glidepath-control-plane` (`templates/admission/release-record-writes.yaml`) do what RBAC cannot:
+  narrow `create` by name and limit a ConfigMap write to keys. They apply to ConfigMaps in an `app-*-cicd` or `infra-*-cicd`
+  namespace written by the ServiceAccounts `pipeline-runner`, `clearance-gate` or `release-record-writer` (matched by username,
+  `system:serviceaccount:<ns>:<sa>`); `glidepath-relay`, `release-record-sweeper`, people and every other account are not matched.
+  - `release-record-writes`: `pipeline-runner` and `clearance-gate` may not create, update or delete a ConfigMap named
+    `release-tracking-*` or labelled `hangar.io/subcomponent=release-tracking` (judged on the object before and after the write),
+    nor add or remove that label. `release-record-writer` may touch only a release record: a ConfigMap named `release-tracking-*`
+    (an existing one is also recognised by its label; a new one only by name, so the label cannot be used to adopt another
+    ConfigMap), never a `gate-report-*`. It may not change `prUrl`, `releaseId`, `image`, `imageDigest`, `gitRevision` or `kind`
+    once they hold a value (`object` against `oldObject`; filling one in from empty is allowed, because a re-run of
+    `open-release-pr` completes a record and a merge patch never blanks a field). Removing one is a change.
+  - `gate-report-writes`: `clearance-gate` and `pipeline-runner` may create or update only `gate-report-<run>`, and it must
+    carry an `ownerReference` (`kind: PipelineRun`, `apiVersion: tekton.dev/*`, `name: <run>`). An ownerReference can only name
+    an object of the same namespace. A gate report is a display artifact; the Clearance record stays the authority.
+  - **Both ship in Audit only** (`cicdRunAdmission.recordWritesActions` and `gateReportActions`, default `[Audit]`): nothing is
+    refused, the API server records each write that would be, and the bindings carry `glidepath.io/enforcement: NOT ENFORCING`.
+    Read the audit log for one release of every kind (promote, rollback, bypass-merge, itsm, every gate) before choosing Deny,
+    which is the owner's call (hangar-dev first; prod on the owner's OK) and needs every app resynced and no active run on the old
+    `pipeline-runner` mapping. Every expression is `has()`-guarded and never compares a map to null, so a CEL error cannot become
+    a cluster-wide refusal; both are compiled by `hack/ci/vap-compile` and evaluated by `charts/glidepath-control-plane/tests/record_policies_test.py`.
 - **`pipeline-trigger`** is what Tekton Triggers creates the next PipelineRun as (the broker impersonates it, and only it). The
   run it creates still executes as `pipeline-runner`.
 - **A pull request's `.tekton/` file is source too.** Pipelines-as-Code creates the PipelineRun from the file in the PR as its
