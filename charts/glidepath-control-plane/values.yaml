@@ -354,12 +354,6 @@ defaultChart: {}
 # Forwarded to every app's glidepath-app; empty forwards nothing.
 observability: {}
 
-# Pipeline trust T4 step 3: true where the catalog has a change-management provider (catalog itsm.provider servicenow or webhook).
-# Forwarded to every app's glidepath-app itsm.enabled, which maps the release-outcome and rollback itsm close tasks to
-# release-record-writer. It must say what the catalog renders: true with no provider refuses those notification runs.
-itsm:
-  enabled: false
-
 # Pipelines-as-Code's per-repository queue for every app's Repository CRs (the app repo and gitops-<app>): the `concurrency_limit`
 # of each, a whole number of at least 1. Pipelines-as-Code creates the runs of a limited repository pending and starts them as
 # others finish; a pending run's timeout clock has not started. A release pull request starts ten gate runs in one second, and on a
@@ -607,6 +601,10 @@ policyValidation:
 # cluster-external-secret.yaml). The values live in the platform's Infisical project under itsm-<key>; this chart
 # never holds one. Off until a change tool is configured in the catalog.
 itsm:
+  # Pipeline trust T4 step 3: true where the catalog has a change-management provider (catalog itsm.provider servicenow or webhook).
+  # Forwarded to every app's glidepath-app itsm.enabled, which maps the release-outcome and rollback itsm close tasks to
+  # release-record-writer. It must say what the catalog renders: true with no provider refuses those notification runs.
+  enabled: false
   credentials:
     enabled: false
     secretName: itsm-credentials
