@@ -361,7 +361,7 @@ class CicdRunAdmission(unittest.TestCase):
             self.assertNotEqual(r.returncode, 0, bad)
 
     def test_itsm_enabled_reaches_the_tenant_onboarding_applicationset(self):
-        # Pipeline trust T4 step 3: the platform's itsm.enabled is forwarded to every app's glidepath-app valuesObject, and only when true
+        # Pipeline trust T4 step 3: the platform's itsm.enabled is forwarded to every app's glidepath-app valuesObject, true or false
         def forwarded(*extra):
             extra = extra + ("--set", "tenantsRepoUrl=https://github.com/o/tenants")
             sets = [d for d in render(*extra) if d["kind"] == "ApplicationSet" and d["metadata"]["name"] == "glidepath-tenant-onboarding"]
@@ -369,7 +369,9 @@ class CicdRunAdmission(unittest.TestCase):
             srcs = [s for s in sets[0]["spec"]["template"]["spec"]["sources"] if "valuesObject" in s.get("helm", {})]
             self.assertEqual(len(srcs), 1)
             return srcs[0]["helm"]["valuesObject"]
-        self.assertNotIn("itsm", forwarded())
+        # and always, true or false: a tenant's cicd.yaml must not be able to enable it where the platform has no provider
+        self.assertEqual(forwarded()["itsm"], {"enabled": False})
+        self.assertEqual(forwarded("--set", "itsm.enabled=false")["itsm"], {"enabled": False})
         self.assertEqual(forwarded("--set", "itsm.enabled=true")["itsm"], {"enabled": True})
 
     def test_off_renders_nothing(self):
