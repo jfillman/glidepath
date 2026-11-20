@@ -607,6 +607,16 @@ githubRead:
   callers:
     - system:serviceaccount:platform-system:glidepath-api
 
+# The broker's /agent-pin (agentpin.go, the agent release): it serves a caller only if it is one of these ServiceAccount
+# names in an app's own -cicd namespace (TokenReview, audience agent-pin); every other ServiceAccount there, a pod that
+# mounts an agent-pin token included, is 403. Names, not full usernames: the namespace is the app's and is checked
+# separately. W-8 overlap: pipeline-runner (today's agent-release) and clearance-gate (where it moves in W-8 step 3);
+# step 7 of hangar specs/plans/pipeline-trust-t4-split-runner.md drops pipeline-runner. Empty: the endpoint answers 503.
+agentPin:
+  serviceAccounts:
+    - pipeline-runner
+    - clearance-gate
+
 # The broker's /agent-installation-token (agenttoken.go, Autopilot AP-B1, hangar D4): a token for the agents' own GitHub
 # App on one of an app's own repos (the /github-read-token rule), contents and pull_requests write, metadata read; never
 # workflows. callers are the only identities it serves (Clearance's); the App's id and key come from the platform's

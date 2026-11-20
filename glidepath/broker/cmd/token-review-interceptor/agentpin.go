@@ -7,14 +7,19 @@ package main
 // The broker writes the PR itself and hands nothing back but its number: no app pipeline ever holds a token for the
 // tenants repo (every app's requests live there). What a caller may ask for, all checked here:
 //
-//   - The caller is an app's own -cicd namespace (TokenReview, audience agent-pin), and the source repo is that app's
-//     own, by /github-installation-token's rule (its Repository CR).
+//   - The caller is an app's own -cicd namespace (TokenReview, audience agent-pin) AND one of the allowed ServiceAccounts
+//     there (AGENT_PIN_SERVICE_ACCOUNTS; a namespace match alone is not enough, since any pod in the namespace can mount
+//     an agent-pin audience token). The source repo is that app's own, by /github-installation-token's rule (its
+//     Repository CR).
 //   - The pin lands under the caller's own app only: tenants/<app>/xr-requests/<name>.yaml, the app taken from the
 //     namespace, never from the request.
 //   - name is a DNS label, path agents/<name>.yaml, commit 40 hex, owner a group ref. The file is generated here.
 //   - The token is the platform App's on the tenants repo only, contents and pull_requests write.
 //
 // AGENT_PIN_TENANTS_REPO (<owner>/<repo>) configures it; unset, the endpoint answers 503.
+// AGENT_PIN_SERVICE_ACCOUNTS (comma-separated ServiceAccount names) is who may ask; unset it is the W-8 overlap list
+// pipeline-runner,clearance-gate (agent-release moves to clearance-gate in W-8 step 3, step 7 drops pipeline-runner).
+// Set but empty, nobody may ask and the endpoint answers 503.
 
 import (
 	"bytes"
@@ -30,11 +35,15 @@ import (
 
 	"github.com/glidepath/broker/token-review-interceptor/internal/githubapp"
 
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
 const agentPinAudience = "agent-pin"
+
+// defaultAgentPinServiceAccounts is the W-8 overlap list, used when AGENT_PIN_SERVICE_ACCOUNTS is unset.
+const defaultAgentPinServiceAccounts = "pipeline-runner,clearance-gate"
 
 var (
 	pinName      = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -71,6 +80,58 @@ func appOfNamespace(ns string) (string, bool) {
 		return "", false
 	}
 	return m[2], true
+}
+
+// parseServiceAccountUsername splits a TokenReview username, strictly: exactly system:serviceaccount:<ns>:<sa>, both
+// parts non-empty names. Anything else (a user, a node, extra or missing colons) is rejected.
+func parseServiceAccountUsername(username string) (ns, sa string, ok bool) {
+	parts := strings.Split(username, ":")
+	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" {
+		return "", "", false
+	}
+	// Namespace and ServiceAccount names are DNS-1123 labels / subdomains: no empty dot components ("a..b"), no
+	// uppercase, no stray characters.
+	if len(validation.IsDNS1123Label(parts[2])) != 0 || len(validation.IsDNS1123Subdomain(parts[3])) != 0 {
+		return "", "", false
+	}
+	return parts[2], parts[3], true
+}
+
+// loadAgentPinServiceAccounts reads AGENT_PIN_SERVICE_ACCOUNTS: comma-separated ServiceAccount names. Unset: the
+// default overlap list. Set but empty: no one (the endpoint answers 503).
+func loadAgentPinServiceAccounts() map[string]bool {
+	raw, set := os.LookupEnv("AGENT_PIN_SERVICE_ACCOUNTS")
+	if !set {
+		raw = defaultAgentPinServiceAccounts
+	}
+	out := map[string]bool{}
+	for _, n := range strings.Split(raw, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			out[n] = true
+		}
+	}
+	return out
+}
+
+// checkPinCaller is the whole caller decision for /agent-pin, pure for a table test: the TokenReview username must be
+// a ServiceAccount in an app's -cicd namespace and one of the allowed ServiceAccount names. It returns the namespace
+// and the app, or the HTTP status and message to refuse with.
+func checkPinCaller(username string, allowed map[string]bool) (ns, app string, status int, err error) {
+	if len(allowed) == 0 {
+		return "", "", http.StatusServiceUnavailable, fmt.Errorf("agent pins are not configured (AGENT_PIN_SERVICE_ACCOUNTS is empty)")
+	}
+	ns, sa, ok := parseServiceAccountUsername(username)
+	if !ok {
+		return "", "", http.StatusUnauthorized, fmt.Errorf("caller is not a ServiceAccount identity")
+	}
+	app, ok = appOfNamespace(ns)
+	if !ok {
+		return "", "", http.StatusForbidden, fmt.Errorf("namespace %q is not an app's -cicd namespace", ns)
+	}
+	if !allowed[sa] {
+		return "", "", http.StatusForbidden, fmt.Errorf("ServiceAccount %q in %q may not pin agents: /agent-pin serves only the allowed pipeline ServiceAccounts (AGENT_PIN_SERVICE_ACCOUNTS)", sa, ns)
+	}
+	return ns, app, 0, nil
 }
 
 // checkPinRequest is the whole request decision except repo ownership, pure for a table test.
@@ -229,14 +290,14 @@ func handleAgentPin(clientset kubernetes.Interface, dynClient dynamic.Interface,
 			fail(http.StatusUnauthorized, "missing or malformed Authorization: Bearer <token> header")
 			return
 		}
-		ns, authErr := verifyCallerAppNamespace(clientset, token, agentPinAudience)
+		username, authErr := verifyCallerUsername(clientset, token, agentPinAudience)
 		if authErr != "" {
 			fail(http.StatusUnauthorized, authErr)
 			return
 		}
-		app, ok := appOfNamespace(ns)
-		if !ok {
-			fail(http.StatusForbidden, fmt.Sprintf("namespace %q is not an app's -cicd namespace", ns))
+		ns, app, status, err := checkPinCaller(username, loadAgentPinServiceAccounts())
+		if err != nil {
+			fail(status, err.Error())
 			return
 		}
 		var req agentPinRequest
