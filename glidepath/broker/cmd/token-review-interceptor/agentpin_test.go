@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -99,4 +100,94 @@ func TestOpenPinPR(t *testing.T) {
 	if out.PR != 23 || out.Head != "headsha" || out.File != "tenants/gate-api/xr-requests/gate-reader.yaml" {
 		t.Errorf("got %+v (calls %v)", out, calls)
 	}
+}
+
+func TestParseServiceAccountUsername(t *testing.T) {
+	cases := []struct {
+		username, ns, sa string
+		ok               bool
+	}{
+		{"system:serviceaccount:app-gate-api-cicd:pipeline-runner", "app-gate-api-cicd", "pipeline-runner", true},
+		{"system:serviceaccount:app-gate-api-cicd", "", "", false},
+		{"system:serviceaccount:app-gate-api-cicd:", "", "", false},
+		{"system:serviceaccount::pipeline-runner", "", "", false},
+		{"system:serviceaccount:a:b:c", "", "", false},
+		{"system:serviceaccount:a:b:", "", "", false},
+		{"system:node:worker-1", "", "", false},
+		{"alice", "", "", false},
+		{"", "", "", false},
+		{"system:serviceaccounts:app-gate-api-cicd:pipeline-runner", "", "", false},
+		{"prefix system:serviceaccount:app-gate-api-cicd:pipeline-runner", "", "", false},
+		{"system:serviceaccount:app-gate-api-cicd:pipeline-runner\n", "", "", false},
+		{"system:serviceaccount:App-X-cicd:pipeline-runner", "", "", false},
+	}
+	for _, c := range cases {
+		ns, sa, ok := parseServiceAccountUsername(c.username)
+		if ns != c.ns || sa != c.sa || ok != c.ok {
+			t.Errorf("%q: got %q %q %v", c.username, ns, sa, ok)
+		}
+	}
+}
+
+func TestCheckPinCaller(t *testing.T) {
+	allowed := map[string]bool{"pipeline-runner": true, "clearance-gate": true}
+	cases := []struct {
+		name, username string
+		allowed        map[string]bool
+		status         int
+		app            string
+		msgHas         string
+	}{
+		{"pipeline-runner allowed", "system:serviceaccount:app-gate-api-cicd:pipeline-runner", allowed, 0, "gate-api", ""},
+		{"clearance-gate allowed", "system:serviceaccount:app-gate-api-cicd:clearance-gate", allowed, 0, "gate-api", ""},
+		{"infra namespace allowed", "system:serviceaccount:infra-skyport-broker-cicd:clearance-gate", allowed, 0, "skyport-broker", ""},
+		{"other SA in the right namespace", "system:serviceaccount:app-gate-api-cicd:default", allowed, http.StatusForbidden, "", `ServiceAccount "default"`},
+		{"look-alike SA name", "system:serviceaccount:app-gate-api-cicd:pipeline-runner-2", allowed, http.StatusForbidden, "", "may not pin agents"},
+		{"allowed SA in the wrong namespace", "system:serviceaccount:platform-system:pipeline-runner", allowed, http.StatusForbidden, "", "not an app's -cicd namespace"},
+		{"allowed SA in an app prod namespace", "system:serviceaccount:app-gate-api-prod:clearance-gate", allowed, http.StatusForbidden, "", "not an app's -cicd namespace"},
+		{"malformed: too few parts", "system:serviceaccount:app-gate-api-cicd", allowed, http.StatusUnauthorized, "", "not a ServiceAccount identity"},
+		{"malformed: too many parts", "system:serviceaccount:app-gate-api-cicd:pipeline-runner:x", allowed, http.StatusUnauthorized, "", "not a ServiceAccount identity"},
+		{"malformed: a user", "jfillman", allowed, http.StatusUnauthorized, "", "not a ServiceAccount identity"},
+		{"malformed: empty SA", "system:serviceaccount:app-gate-api-cicd:", allowed, http.StatusUnauthorized, "", "not a ServiceAccount identity"},
+		{"empty allowlist", "system:serviceaccount:app-gate-api-cicd:pipeline-runner", map[string]bool{}, http.StatusServiceUnavailable, "", "not configured"},
+	}
+	for _, c := range cases {
+		ns, app, status, err := checkPinCaller(c.username, c.allowed)
+		if status != c.status {
+			t.Errorf("%s: status %d, want %d (err %v)", c.name, status, c.status, err)
+			continue
+		}
+		if c.status == 0 {
+			if err != nil || app != c.app || ns == "" {
+				t.Errorf("%s: ns %q app %q err %v", c.name, ns, app, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), c.msgHas) {
+			t.Errorf("%s: err %v, want it to contain %q", c.name, err, c.msgHas)
+		}
+	}
+}
+
+func TestLoadAgentPinServiceAccounts(t *testing.T) {
+	t.Run("unset defaults to the W-8 overlap list", func(t *testing.T) {
+		os.Unsetenv("AGENT_PIN_SERVICE_ACCOUNTS")
+		got := loadAgentPinServiceAccounts()
+		if len(got) != 2 || !got["pipeline-runner"] || !got["clearance-gate"] {
+			t.Errorf("got %v", got)
+		}
+	})
+	t.Run("set replaces the default", func(t *testing.T) {
+		t.Setenv("AGENT_PIN_SERVICE_ACCOUNTS", " clearance-gate , ,")
+		got := loadAgentPinServiceAccounts()
+		if len(got) != 1 || !got["clearance-gate"] {
+			t.Errorf("got %v", got)
+		}
+	})
+	t.Run("set but empty allows no one", func(t *testing.T) {
+		t.Setenv("AGENT_PIN_SERVICE_ACCOUNTS", "")
+		if got := loadAgentPinServiceAccounts(); len(got) != 0 {
+			t.Errorf("got %v", got)
+		}
+	})
 }

@@ -19,6 +19,14 @@ everything about agents; Glidepath gathers, asks, and opens the PR.
    from its namespace, the source repo must be that app's own, and nothing about the file is the caller's to choose
    but the agent's name, path, commit, owner group and one line of description. No app pipeline holds a token for the
    tenants repo.
+
+   The broker also checks **who** is asking, not only which namespace: the TokenReview username must be
+   `system:serviceaccount:<app>-cicd-namespace:<sa>` (parsed strictly; anything else is refused) and `<sa>` must be in the
+   allowlist, `agentPin.serviceAccounts` in the `glidepath-control-plane` chart (env `AGENT_PIN_SERVICE_ACCOUNTS` on the
+   broker, comma-separated ServiceAccount names). Default `pipeline-runner,clearance-gate`: the W-8 overlap, where
+   `agent-release` moves to `clearance-gate` in step 3 and step 7 drops `pipeline-runner`. Any other ServiceAccount in
+   the app's `-cicd` namespace, even one whose pod mounts an `agent-pin` audience token, gets a 403 naming the
+   ServiceAccount; a non-ServiceAccount identity is 401; an empty list answers 503.
 3. The change is registered with Clearance's deployment gate, tiered by what the definition change lets the agent do:
    **0** no change in authority, **1** narrows only (both cleared by policy at once), **2** spends or runs more, **3**
    touches more (the owner group, and for 3 an outside group, on the Clearances page). The PR body carries the tier and
@@ -57,6 +65,6 @@ NetworkPolicy must admit pods labelled `hangar.io/autopilot-gateway-client: agen
 - `charts/glidepath-app/files/onboarding-templates/app-repo/pull-request-agent-definitions.yaml`, `push-agent-release.yaml`
   (every app repo; each runs only when `agents/` changes)
 - the broker: `/agent-pin` (`glidepath/broker/cmd/token-review-interceptor/agentpin.go`), `AGENT_PIN_TENANTS_REPO` from
-  `glidepath-control-plane` `tenantsRepoUrl`
+  `glidepath-control-plane` `tenantsRepoUrl`, `AGENT_PIN_SERVICE_ACCOUNTS` from its `agentPin.serviceAccounts`
 - `glidepath-catalog` values: `agentRelease.cluster`, `agentPreflight.*`; Clearance's URL and audience are `agentGates`'
 - Apron's Clearance NetworkPolicy admits `hangar.io/clearance-client` `agent-definitions` and `agent-release`
