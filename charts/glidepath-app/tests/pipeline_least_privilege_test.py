@@ -146,7 +146,8 @@ class Identities(unittest.TestCase):
     # a chart change binds beyond this fails the test; widening a right is a deliberate edit of this table.
     CLUSTER_REGISTRY = ("", "configmaps", ("get",), ("cluster-registry",))
     TARGET = {   # OWN = the application's own -cicd namespace
-        "release-record-writer": {OWN: {("", "configmaps", ("create", "get", "list", "patch"), ())}},
+        "release-record-writer": {OWN: {("", "configmaps", ("create", "get", "list", "patch"), ()),
+                                        ("tekton.dev", "pipelineruns", ("get",), ())}},   # get: open-release-pr reads its own run's lineage annotations
         "clearance-gate": {OWN: {("tekton.dev", "pipelineruns", ("get",), ()), ("", "configmaps", ("create", "get", "patch"), ())}},
         "test-runner": {OWN: {("tekton.dev", "pipelineruns", ("get", "list", "watch"), ()),
                              ("tekton.dev", "taskruns", ("get", "list", "watch"), ()),

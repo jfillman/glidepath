@@ -45,6 +45,10 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "create", "patch"]
+  # open-release-pr reads its own run's glidepath.io/origin-* lineage annotations (kubectl get pipelinerun); get only.
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
