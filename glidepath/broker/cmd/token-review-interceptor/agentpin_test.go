@@ -120,6 +120,11 @@ func TestParseServiceAccountUsername(t *testing.T) {
 		{"prefix system:serviceaccount:app-gate-api-cicd:pipeline-runner", "", "", false},
 		{"system:serviceaccount:app-gate-api-cicd:pipeline-runner\n", "", "", false},
 		{"system:serviceaccount:App-X-cicd:pipeline-runner", "", "", false},
+		{"system:serviceaccount:app-gate-api-cicd:pipeline..runner", "", "", false},
+		{"system:serviceaccount:app-gate-api-cicd:.pipeline-runner", "", "", false},
+		{"system:serviceaccount:app-gate-api-cicd:pipeline-runner.", "", "", false},
+		{"system:serviceaccount:app.gate-cicd:pipeline-runner", "", "", false},
+		{"system:serviceaccount:app-gate-api-cicd:pipeline_runner", "", "", false},
 	}
 	for _, c := range cases {
 		ns, sa, ok := parseServiceAccountUsername(c.username)
@@ -149,6 +154,7 @@ func TestCheckPinCaller(t *testing.T) {
 		{"malformed: too many parts", "system:serviceaccount:app-gate-api-cicd:pipeline-runner:x", allowed, http.StatusUnauthorized, "", "not a ServiceAccount identity"},
 		{"malformed: a user", "jfillman", allowed, http.StatusUnauthorized, "", "not a ServiceAccount identity"},
 		{"malformed: empty SA", "system:serviceaccount:app-gate-api-cicd:", allowed, http.StatusUnauthorized, "", "not a ServiceAccount identity"},
+		{"malformed: empty dot component in SA", "system:serviceaccount:app-gate-api-cicd:pipeline..runner", allowed, http.StatusUnauthorized, "", "not a ServiceAccount identity"},
 		{"empty allowlist", "system:serviceaccount:app-gate-api-cicd:pipeline-runner", map[string]bool{}, http.StatusServiceUnavailable, "", "not configured"},
 	}
 	for _, c := range cases {

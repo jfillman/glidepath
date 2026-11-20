@@ -35,6 +35,7 @@ import (
 
 	"github.com/glidepath/broker/token-review-interceptor/internal/githubapp"
 
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
@@ -49,7 +50,6 @@ var (
 	pinCommit    = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	pinOwner     = regexp.MustCompile(`^group:[a-z0-9-]+/[a-z0-9._-]+$`)
 	pinNamespace = regexp.MustCompile(`^(app|infra)-([a-z0-9][a-z0-9-]*)-cicd$`)
-	saUsername   = regexp.MustCompile(`^system:serviceaccount:([a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?):([a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?)$`)
 )
 
 type agentPinRequest struct {
@@ -85,11 +85,16 @@ func appOfNamespace(ns string) (string, bool) {
 // parseServiceAccountUsername splits a TokenReview username, strictly: exactly system:serviceaccount:<ns>:<sa>, both
 // parts non-empty names. Anything else (a user, a node, extra or missing colons) is rejected.
 func parseServiceAccountUsername(username string) (ns, sa string, ok bool) {
-	m := saUsername.FindStringSubmatch(username)
-	if m == nil {
+	parts := strings.Split(username, ":")
+	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" {
 		return "", "", false
 	}
-	return m[1], m[3], true
+	// Namespace and ServiceAccount names are DNS-1123 labels / subdomains: no empty dot components ("a..b"), no
+	// uppercase, no stray characters.
+	if len(validation.IsDNS1123Label(parts[2])) != 0 || len(validation.IsDNS1123Subdomain(parts[3])) != 0 {
+		return "", "", false
+	}
+	return parts[2], parts[3], true
 }
 
 // loadAgentPinServiceAccounts reads AGENT_PIN_SERVICE_ACCOUNTS: comma-separated ServiceAccount names. Unset: the
