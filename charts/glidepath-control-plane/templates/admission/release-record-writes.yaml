@@ -1,0 +1,153 @@
+{{- if .Values.cicdRunAdmission.enabled }}
+{{- $c := .Values.cicdRunAdmission }}
+# Pipeline trust T4, step 5 (specs/plans/pipeline-trust-t4-split-runner.md): who may write a release record and a gate report.
+#
+# RBAC cannot narrow `create` by name, and cannot limit a ConfigMap write to keys, so once the task accounts are split
+# (pipeline-runner, release-record-writer, clearance-gate) these two policies do that part, for ConfigMaps in a -cicd namespace
+# written by one of those three ServiceAccounts (matchConditions). Everything else (the control-plane accounts glidepath-relay and
+# release-record-sweeper, a person, any other ServiceAccount) is not matched, so they are exempt by construction.
+#
+#   release-record-writes  pipeline-runner and clearance-gate may not create, update or delete a ConfigMap named release-tracking-* or
+#                          labelled hangar.io/subcomponent=release-tracking (before or after the write), nor add that label.
+#                          release-record-writer may touch only a release record (named release-tracking-*; an existing one is also
+#                          recognised by its label, a new one only by name, so the label cannot be used to adopt another ConfigMap), never
+#                          a gate-report-*, and may not change prUrl, releaseId, image, imageDigest, gitRevision or kind once they hold a
+#                          value (they may be filled in from empty: a re-run completes a record and never blanks a field).
+#   gate-report-writes     clearance-gate and pipeline-runner may create or update only gate-report-<run> with an ownerReference to
+#                          the PipelineRun <run> (an ownerReference names an object of the same namespace, there is no cross-namespace form).
+#
+# Staged like cicd-run-shape: recordWritesActions and gateReportActions, Audit by default (nothing is refused). Deny is the owner's call
+# once every app has resynced and no active run still uses the old pipeline-runner mapping (plan, step 5).
+#
+# Every expression is has()-guarded and every matchCondition cannot raise on a missing field, so a CEL error cannot refuse a request
+# cluster-wide (failurePolicy Fail would turn one into an outage). object is null on DELETE and oldObject on CREATE: each is read only for an
+# operation that has it (the policy never compares to null: cel-python cannot).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: release-record-writes
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["configmaps"]
+  matchConditions:
+    - name: a-task-account-in-a-cicd-namespace
+      expression: >-
+        has(request.userInfo) && has(request.userInfo.username) && has(request.namespace) &&
+        request.namespace.matches(r'^(app|infra)-[a-z0-9-]+-cicd$') &&
+        request.userInfo.username.matches(r'^system:serviceaccount:(app|infra)-[a-z0-9-]+-cicd:(pipeline-runner|clearance-gate|release-record-writer)$')
+  variables:
+    - name: sa
+      expression: >-
+        request.userInfo.username.endsWith(':release-record-writer') ? 'release-record-writer' :
+        (request.userInfo.username.endsWith(':clearance-gate') ? 'clearance-gate' : 'pipeline-runner')
+    - name: target
+      expression: "request.operation == 'DELETE' ? oldObject : object"
+    - name: name
+      expression: >-
+        has(variables.target.metadata) && has(variables.target.metadata.name) &&
+        type(variables.target.metadata.name) == string ? variables.target.metadata.name : ''
+    - name: newLabelled
+      expression: >-
+        request.operation != 'DELETE' && has(object.metadata) && has(object.metadata.labels) &&
+        'hangar.io/subcomponent' in object.metadata.labels && object.metadata.labels['hangar.io/subcomponent'] == 'release-tracking'
+    - name: oldLabelled
+      expression: >-
+        request.operation != 'CREATE' && has(oldObject.metadata) && has(oldObject.metadata.labels) &&
+        'hangar.io/subcomponent' in oldObject.metadata.labels && oldObject.metadata.labels['hangar.io/subcomponent'] == 'release-tracking'
+    - name: isRecord
+      expression: "variables.name.startsWith('release-tracking-') || variables.newLabelled || variables.oldLabelled"
+    - name: oldData
+      expression: "request.operation != 'CREATE' && has(oldObject.data) ? oldObject.data : {}"
+    - name: newData
+      expression: "request.operation != 'DELETE' && has(object.data) ? object.data : {}"
+  validations:
+    - expression: "variables.sa == 'release-record-writer' || !variables.isRecord"
+      message: "pipeline-runner and clearance-gate may not create, update or delete a release record (a ConfigMap named release-tracking-* or labelled hangar.io/subcomponent=release-tracking), nor add that label: the release record is written by release-record-writer only (docs/admin/security.md, 'Pipeline identities')."
+    - expression: >-
+        variables.sa != 'release-record-writer' ||
+        (!variables.name.startsWith('gate-report-') &&
+         (variables.name.startsWith('release-tracking-') || (request.operation != 'CREATE' && variables.oldLabelled)))
+      message: "release-record-writer may touch only a release record (a ConfigMap named release-tracking-*, or an existing one labelled hangar.io/subcomponent=release-tracking), never a gate-report-* or any other ConfigMap."
+    - expression: >-
+        variables.sa != 'release-record-writer' || request.operation != 'UPDATE' ||
+        ['prUrl', 'releaseId', 'image', 'imageDigest', 'gitRevision', 'kind'].all(k,
+          !(k in variables.oldData) || variables.oldData[k] == '' ||
+          (k in variables.newData && variables.newData[k] == variables.oldData[k]))
+      message: "release-record-writer may not change prUrl, releaseId, image, imageDigest, gitRevision or kind of a release record once set (it may fill one in from empty): a release's identity is fixed when it is proposed."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: release-record-writes
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+  {{- if not (has "Deny" $c.recordWritesActions) }}
+  annotations:
+    glidepath.io/enforcement: "NOT ENFORCING: recordWritesActions has no Deny (Audit by default while the task accounts are rolled out; docs/admin/security.md, 'Pipeline identities')."
+  {{- end }}
+spec:
+  policyName: release-record-writes
+  validationActions: {{ $c.recordWritesActions | toJson }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: gate-report-writes
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["configmaps"]
+  matchConditions:
+    - name: a-gate-or-runner-account-in-a-cicd-namespace
+      expression: >-
+        has(request.userInfo) && has(request.userInfo.username) && has(request.namespace) &&
+        request.namespace.matches(r'^(app|infra)-[a-z0-9-]+-cicd$') &&
+        request.userInfo.username.matches(r'^system:serviceaccount:(app|infra)-[a-z0-9-]+-cicd:(pipeline-runner|clearance-gate)$')
+  variables:
+    - name: name
+      expression: >-
+        has(object.metadata) && has(object.metadata.name) && type(object.metadata.name) == string ?
+        object.metadata.name : ''
+    - name: owners
+      expression: >-
+        has(object.metadata) && has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []
+  validations:
+    - expression: "variables.name.startsWith('gate-report-') && size(variables.name) > size('gate-report-')"
+      message: "clearance-gate and pipeline-runner may write only a gate report: a ConfigMap named gate-report-<run> (docs/admin/security.md, 'Pipeline identities')."
+    - expression: >-
+        !variables.name.startsWith('gate-report-') ||
+        variables.owners.exists(o, has(o.kind) && o.kind == 'PipelineRun' && has(o.apiVersion) && o.apiVersion.startsWith('tekton.dev/') &&
+          has(o.name) && type(o.name) == string && o.name != '' && variables.name == 'gate-report-' + o.name)
+      message: "A gate report gate-report-<run> must carry an ownerReference to the PipelineRun <run> of its own namespace (kind PipelineRun, apiVersion tekton.dev/*, name <run>)."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: gate-report-writes
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+  {{- if not (has "Deny" $c.gateReportActions) }}
+  annotations:
+    glidepath.io/enforcement: "NOT ENFORCING: gateReportActions has no Deny (Audit by default while the task accounts are rolled out; docs/admin/security.md, 'Pipeline identities')."
+  {{- end }}
+spec:
+  policyName: gate-report-writes
+  validationActions: {{ $c.gateReportActions | toJson }}
+{{- end }}
