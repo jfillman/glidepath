@@ -1,22 +1,26 @@
 # catalog/tasks/record-gate-verdict.yaml
 #
-# Pipeline trust T4 (specs/plans/pipeline-trust-t4-split-runner.md), step 2. The ledger write of comment-pr-check-result
-# (its "gate ledger" block), carved out so the ConfigMap write can run as release-record-writer while the rest of that
-# Task stays on pipeline-runner. NOT in any Pipeline, and comment-pr-check-result is unchanged, after step 3 as well: the plan
-# put it in the Pipelines' finally lists after comment-pr, and Tekton cannot do that. All finally tasks start together; none may
-# have runAfter or read a result of another finally task (pipeline_validation.go, validateFinalTasks; docs/pipelines.md, "Cannot
-# configure the finally task execution order"), and the verdict and the resolved PR number exist only inside comment-pr. A task
-# after comment-pr in the DAG would be skipped whenever the gate failed. The ledger write must also precede the promotion decision
-# that reads it (two gates finishing together). docs/admin/security.md, "Task mapping", has the way out being weighed.
-# Step 6 removes pipeline-runner's right to write a record, so that write needs a home first.
+# Pipeline trust T4 (specs/plans/pipeline-trust-t4-split-runner.md), steps 2 and 3. The ledger write of comment-pr-check-result
+# (its former "gate ledger" block), carved out so the ConfigMap write runs as release-record-writer while the rest of that Task
+# stays on pipeline-runner. A finally task of every gate Pipeline, beside comment-pr.
 #
-# What it does is exactly what the block does today: finds the release record for this gitops PR (by prUrl), and patches
+# Why it works out its own verdict: all finally tasks start together; none may have runAfter or read a result of another finally
+# task (pipeline_validation.go, validateFinalTasks; docs/pipelines.md, "Cannot configure the finally task execution order"), so it
+# cannot be handed comment-pr's verdict or PR number, and a task after comment-pr in the DAG would be skipped whenever the gate
+# failed. The `derive` step therefore redoes comment-pr's verdict decision from what a finally task CAN read: the Pipeline's
+# aggregate `$(tasks.status)`, the run's own TaskRuns (an `-advisory` task's failure is not a failed gate) and its own PipelineRun
+# (the tasks timeout, and the pipelinesascode.tekton.dev/pull-request label for the PR number). The decision is the same text as
+# comment-pr-check-result's `comment` step and `promotion-ready` step, and a chart test (tests/gate_ledger_verdict_test.sh) holds
+# the two equal. The promotion decision (comment-pr's promotion-ready step) no longer writes the ledger: it waits a bounded time for
+# THIS gate's entry, which restores the write-then-read order a Pipeline cannot express (docs/admin/security.md, "Task mapping").
+#
+# The `record` step is what the block did before: finds the release record for this gitops PR (by prUrl), and patches
 # gate.<sha12>.<gate>=<verdict> into it with the record's resourceVersion, so two gates finishing together are serialized
 # (the second one sees both verdicts). Result `ledger`: the JSON object of this commit's gate.<sha12>.* entries from the
-# record after the write - the only part of the record the promotion decision reads - so the result stays far below
-# Tekton's 4 KiB limit for any number of gates this catalog can have (not the whole record, whose data holds the image
-# reference, rollback reason and more). Empty `{}` when there is no record, as the block's `ledger="{}"` was.
-# Always succeeds: a release with no record, or five lost races, is not a failed gate (the caller decides from the check runs).
+# record after the write, so the result stays far below Tekton's 4 KiB limit for any number of gates this catalog can have (not
+# the whole record, whose data holds the image reference, rollback reason and more). Empty `{}` when there is no record.
+# Always succeeds: a release with no record, no PR number, or five lost races, is not a failed gate (the promotion decision then
+# falls back to the check runs, as it did with no record).
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -25,41 +29,113 @@ metadata:
     {{- include "glidepath-catalog.labels" . | nindent 4 }}
     hangar.io/catalog: "true"
 spec:
-  description: Writes one gate's verdict for one commit into the release record's gate ledger and returns this commit's ledger.
+  description: Works out one gate's verdict for one commit and writes it into the release record's gate ledger; returns this commit's ledger.
   params:
-    - name: pr-url
+    - name: repo-url
       type: string
-      description: The gitops pull request's html URL (https://github.com/<owner>/gitops-<app>/pull/<n>); the record is found by it.
-    - name: head-sha
+      description: The gitops repo's own URL - PaC's `repo_url`. With the PR number it gives the pull request's html URL, by which the record is found.
+    - name: revision
       type: string
-      description: The pull request's head commit sha (the first 12 characters key the ledger).
+      description: The gitops PR's head commit as PaC reports it (the first 12 characters key the ledger).
+    - name: pr-number
+      type: string
+      default: ""
+      description: "PaC's pull_request.number template variable. Used only when the run's pipelinesascode.tekton.dev/pull-request label is missing; it is the literal template text for a /retest comment."
     - name: gate-name
       type: string
-    - name: verdict
+    - name: pipeline-run-name
       type: string
-      description: success or failure.
+      description: $(context.pipelineRun.name) from the calling Pipeline - its TaskRuns, tasks timeout and PR label are read.
+    - name: status
+      type: string
+      description: $(tasks.status) from the calling Pipeline's finally block.
   results:
     - name: ledger
       description: 'JSON object of the gate.<sha12>.<gate> entries of this commit in the record, e.g. {"gate.0123456789ab.sast":"success"}; {} when no record exists.'
+  volumes:
+    - name: derived
+      emptyDir: {}
   steps:
+    - name: derive
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: derived, mountPath: /workspace/derived }
+      env:
+        - { name: REPO_URL, value: $(params.repo-url) }
+        - { name: REVISION, value: $(params.revision) }
+        - { name: PR_NUMBER, value: $(params.pr-number) }
+        - { name: GATE_NAME, value: $(params.gate-name) }
+        - { name: PIPELINE_RUN_NAME, value: $(params.pipeline-run-name) }
+        - { name: STATUS, value: $(params.status) }
+        - { name: NAMESPACE, value: $(context.taskRun.namespace) }
+      script: |
+        #!/usr/bin/env bash
+        # Writes pr-url, head-sha and verdict into $DERIVED (an empty file: not known, nothing to record). Never fails the gate.
+        set -uo pipefail
+        d="${DERIVED:-/workspace/derived}"
+        : > "${d}/pr-url"; : > "${d}/head-sha"; : > "${d}/verdict"
+        # The pull request: the label Pipelines-as-Code puts on the run it creates (it is set for a /retest comment too, where the
+        # pull_request.number template variable is not a number), else the numeric param. Neither: nothing is recorded (the
+        # promotion decision then reads this gate's check run instead of its ledger entry).
+        run_json="$(kubectl get pipelinerun "${PIPELINE_RUN_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null || true)"
+        pr="$(jq -r '.metadata.labels["pipelinesascode.tekton.dev/pull-request"] // empty' <<<"${run_json:-null}" 2>/dev/null || true)"
+        [[ "${pr}" =~ ^[1-9][0-9]*$ ]] || pr="${PR_NUMBER}"
+        [[ "${pr}" =~ ^[1-9][0-9]*$ ]] || { echo "no pull request number for ${GATE_NAME} (no pipelinesascode.tekton.dev/pull-request label, pr-number '${PR_NUMBER}'): nothing recorded" >&2; exit 0; }
+        [[ "${REPO_URL}" =~ ^https://github\.com/([A-Za-z0-9-]+)/(gitops-[a-z0-9][a-z0-9-]*)(\.git)?/?$ ]] \
+          || { echo "${REPO_URL} is not a gitops-<app> repository: not a release"; exit 0; }
+        printf 'https://github.com/%s/%s/pull/%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${pr}" > "${d}/pr-url"
+        printf '%s' "${REVISION}" > "${d}/head-sha"
+        # The verdict: comment-pr-check-result's, from the same inputs (see that Task's `comment` and `promotion-ready` steps).
+        # ADR-0021 phase 4: an eligible rollback runs the check as <task>-advisory with onError: continue, and $(tasks.status) still
+        # reads "Failed" then, so STATUS alone cannot tell an advisory failure from a real one: a failed TaskRun that is not an
+        # -advisory one is a real failure, only -advisory failures means a pass.
+        taskrun_results="$(kubectl get taskrun -n "${NAMESPACE}" -l "tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json 2>/dev/null)"
+        advisory_failed="$(echo "${taskrun_results}" | jq -r '[.items[] | select((.metadata.labels["tekton.dev/pipelineTask"] // "") | endswith("-advisory")) | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
+        hard_failed="$(echo "${taskrun_results}" | jq -r '[.items[] | select((.metadata.labels["tekton.dev/pipelineTask"] // "") | endswith("-advisory") | not) | select(.status.conditions[0].status == "False")][0].metadata.name // empty')"
+        if [[ "${STATUS}" == "Succeeded" || "${STATUS}" == "Completed" || ( -n "${advisory_failed}" && -z "${hard_failed}" ) ]]; then
+          verdict=success
+        else
+          verdict=failure
+        fi
+        # Tekton (v1.15) measures timeouts.tasks from the run's start to the end of finally: past that deadline a success is
+        # recorded as the failure it will be; within a minute of it nothing is recorded (as promotion-ready does). A run that
+        # cannot be read is not judged here.
+        if [[ "${verdict}" == success ]]; then
+          left="$(jq -r --argjson now "$(date -u +%s)" '
+            def secs: [scan("([0-9.]+)(h|ms|m|s)")] | map((.[0] | tonumber) * {"h": 3600, "m": 60, "s": 1, "ms": 0.001}[.[1]]) | add // empty;
+            (.spec.timeouts.tasks // .spec.timeouts.pipeline // empty | secs) as $t
+            | (.status.startTime // empty | fromdateiso8601) as $s
+            | if $t > 0 then ($s + $t - $now | floor) else empty end' <<<"${run_json:-null}" 2>/dev/null || true)"
+          if [[ "${left}" =~ ^-?[0-9]+$ ]]; then
+            if (( left < 0 )); then
+              echo "${PIPELINE_RUN_NAME} is past its tasks timeout by $(( -left ))s: Tekton ends it timed out, recorded as a failure"
+              verdict=failure
+            elif (( left < 60 )); then
+              echo "${PIPELINE_RUN_NAME} is ${left}s from its tasks timeout and may end timed out: nothing recorded"
+              exit 0
+            fi
+          fi
+        fi
+        printf '%s' "${verdict}" > "${d}/verdict"
+        echo "${GATE_NAME}: ${verdict}"
     - name: record
       image: {{ .Values.toolboxImage }}
       imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: derived, mountPath: /workspace/derived }
       env:
-        - name: PR_URL
-          value: $(params.pr-url)
-        - name: HEAD_SHA
-          value: $(params.head-sha)
         - name: GATE_NAME
           value: $(params.gate-name)
-        - name: VERDICT
-          value: $(params.verdict)
         - name: NAMESPACE
           value: $(context.taskRun.namespace)
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
         printf '{}' > "$(results.ledger.path)"
+        d="${DERIVED:-/workspace/derived}"
+        PR_URL="$(cat "${d}/pr-url" 2>/dev/null || true)"; HEAD_SHA="$(cat "${d}/head-sha" 2>/dev/null || true)"; VERDICT="$(cat "${d}/verdict" 2>/dev/null || true)"
+        [[ -n "${PR_URL}" && -n "${VERDICT}" ]] || { echo "no pull request or no verdict for ${GATE_NAME}: nothing recorded"; exit 0; }
         [[ "${PR_URL}" =~ ^https://github\.com/[A-Za-z0-9-]+/gitops-[a-z0-9-]+/pull/[1-9][0-9]*$ ]] || { echo "not a gitops pull request URL: ${PR_URL}" >&2; exit 0; }
         [[ "${HEAD_SHA}" =~ ^[0-9a-f]{12,40}$ ]] || { echo "not a commit sha: ${HEAD_SHA}" >&2; exit 0; }
         [[ "${GATE_NAME}" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "not a gate name: ${GATE_NAME}" >&2; exit 0; }

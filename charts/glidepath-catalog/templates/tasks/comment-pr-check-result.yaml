@@ -24,7 +24,8 @@
 # old-marker branch once confident no PR with an old-marker comment is still open.
 #
 # With promotion on (catalog promotion.enabled, ADR-0029 phase 3), a second step is the promotion fan-in: every gate
-# ends here, so after this gate's verdict it records the verdict in the release record's gate ledger and, when every
+# ends here, so after this gate's verdict it waits for the gate's ledger entry (written by the record-gate-verdict finally task of
+# the same Pipeline, which works out the same verdict; pipeline trust T4, step 3) and, when every
 # required gate is green on the release PR's head commit, sends `release.promotion-ready` to the broker. A Trigger in
 # the catalog namespace turns that into the `promote` PipelineRun (rbac/promote-trigger.yaml), which re-checks
 # everything itself; this step only decides when to ask.
@@ -65,6 +66,10 @@ spec:
       type: string
       default: "true"
       description: "\"false\" records the verdict (for the promotion fan-in) without posting the PR comment: agent-gates-check sets it from its agent-pr result, so a person's or a release PR gets no comment while its verdict still counts."
+    - name: ledger-wait-seconds
+      type: string
+      default: "90"
+      description: "How long the promotion-ready step waits for this gate's own entry in the release record's gate ledger (written by the record-gate-verdict finally task of the same Pipeline) before it reads the other gates'. Only a number of seconds."
   volumes:
     - name: github-token-broker-token
       projected:
@@ -377,6 +382,7 @@ spec:
         - { name: GATE_NAME, value: $(params.gate-name) }
         - { name: PIPELINE_RUN_NAME, value: $(params.pipeline-run-name) }
         - { name: NAMESPACE, value: $(context.taskRun.namespace) }
+        - { name: LEDGER_WAIT_SECONDS, value: $(params.ledger-wait-seconds) }
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
@@ -429,26 +435,28 @@ spec:
         jq -e '[.[].filename | select(test("^[^/]+/[^/]+/release\\.yaml$"))] | length > 0' >/dev/null <<<"${pr_files}" \
           || { echo "#${pr_number} changes no <cluster>/<env>/release.yaml: nothing to promote"; exit 0; }
 
-        # The gate ledger: this gate's verdict for this commit in the release record, written with the record's
-        # resourceVersion so two gates finishing together are serialized - the second one sees both verdicts. A
-        # gate's check run is still in progress while its finally runs, so the check runs alone would let two
-        # simultaneous last gates each wait for the other and nobody would ask.
+        # The gate ledger. Its WRITE is the record-gate-verdict finally task of this Pipeline (as release-record-writer; pipeline
+        # trust T4, step 3), which works out the same verdict itself. It starts together with this Task, so this step first waits a
+        # bounded time (ledger-wait-seconds, default 90) for THIS gate's own entry for this commit, then reads the others': that
+        # restores the write-then-read order two gates finishing together depend on (each must see the other's entry, or at least
+        # one of them must see both). The ledger outranks a gate's check run, which is still in progress while its finally runs.
+        # Not found in time (the writer is slow or never ran: no PR label, a lost race): the step goes on, this gate's own verdict
+        # is known here, and the others are read from the ledger as far as it goes and from their check runs; a gate that is not
+        # green on either is waited for, and the next gate to finish asks again.
         key="gate.${head_sha:0:12}.${GATE_NAME}"
         pr_url="$(jq -r .html_url <<<"${pr}")"
         ledger="{}"
-        for attempt in 1 2 3 4 5; do
+        own_found=""
+        [[ "${LEDGER_WAIT_SECONDS}" =~ ^[0-9]{1,3}$ ]] || LEDGER_WAIT_SECONDS=90
+        for attempt in $(seq 1 $(( (LEDGER_WAIT_SECONDS + 2) / 3 + 1 ))); do
           record="$(kubectl get configmap -n "${NAMESPACE}" -l hangar.io/subcomponent=release-tracking -o json 2>/dev/null \
             | jq -c --arg u "${pr_url}" '[.items[] | select(.data.prUrl == $u)] | .[0] // empty')"
           [[ -n "${record}" ]] || { echo "no release record for ${pr_url}: deciding from the check runs alone"; break; }
-          patch="$(jq -nc --arg rv "$(jq -r .metadata.resourceVersion <<<"${record}")" --arg k "${key}" --arg v "${verdict}" \
-            '{metadata: {resourceVersion: $rv}, data: {($k): $v}}')"
-          if kubectl patch configmap "$(jq -r .metadata.name <<<"${record}")" -n "${NAMESPACE}" --type merge -p "${patch}" >/dev/null; then
-            ledger="$(jq -c --arg k "${key}" --arg v "${verdict}" '.data + {($k): $v}' <<<"${record}")"
-            break
-          fi
-          echo "release record changed underneath (attempt ${attempt}); retrying"
-          sleep 1
+          ledger="$(jq -c --arg p "gate.${head_sha:0:12}." '.data | with_entries(select(.key | startswith($p)))' <<<"${record}")"
+          [[ -z "$(jq -r --arg k "${key}" '.[$k] // empty' <<<"${ledger}")" ]] || { own_found=yes; break; }
+          sleep 3
         done
+        [[ -z "${record}" || -n "${own_found}" ]] || echo "warn: ${key} is not in the release record after ${LEDGER_WAIT_SECONDS}s (record-gate-verdict slow, or it could not tell the pull request): going on with this gate's own verdict"
         # A gate advisory for this app (releaseGuardrailOverridesByApp) keeps its red check, but finishing last it must
         # still ask, or a release whose advisory gate happened to finish after the required ones would never promote.
         advisory="$(advisory_gates_for_app "${app}")"

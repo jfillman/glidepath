@@ -133,6 +133,24 @@ spec:
       params:
         - { name: repo-url, value: $(params.repo-url) }
         - { name: joins, value: $(tasks.{{ ternary "register" "register-advisory" $required }}.results.joins) }
+    # Pipeline trust T4 (step 3): the gate ledger's write, as release-record-writer. It works out the same verdict as comment-pr
+    # (docs/admin/security.md, "Task mapping"); comment-pr's promotion-ready step waits for its entry.
+    - name: record-gate-verdict
+      when:
+        - { input: $(params.pr-number), operator: notin, values: [""] }
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: record-gate-verdict }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: gate-name, value: clearance-gate }
+        - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
+        - { name: status, value: $(tasks.status) }
     - name: comment-pr
       when:
         - { input: $(params.pr-number), operator: notin, values: [""] }

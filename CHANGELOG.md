@@ -7,7 +7,11 @@ Notable changes to Glidepath. Newest first.
 ### Pipeline trust T4, step 3: the writer, Clearance-token and test tasks run as their own accounts
 
 - Every run the platform starts now names the per-task account in `taskRunSpecs`: `open-release-pr`, `mark-release-merged`, `itsm-*` as `release-record-writer`; `clearance-gate` (fetch, register, render-check), `agent-gates`, `agent-definitions` and `agent-release` as `clearance-gate`; `run-testworkflow` as `test-runner`. Trigger templates and the onboarding templates (resynced into each app's `.tekton/`) both carry it; the onboarding task fills in the task names the catalog renders (`task_names`). New chart value `itsm.enabled` (default `false`) for the two Triggers that start the itsm close tasks. `pipeline-runner` keeps every right until step 6.
-- The Clearance join moved to the `join-release` finally task of `clearance-gate-check` (fed by a new `joins` result of the clearance-gate Task, which no longer writes the release record). The gate-ledger write of `comment-pr-check-result` stays: Tekton cannot order finally tasks (see docs/admin/security.md, "Task mapping").
+- The Clearance join moved to the `join-release` finally task of `clearance-gate-check` (fed by a new `joins` result of the clearance-gate Task, which no longer writes the release record). The gate-ledger write of `comment-pr-check-result` moved to a `record-gate-verdict` finally task of every gate Pipeline (below): Tekton cannot order finally tasks (see docs/admin/security.md, "Task mapping").
+
+### Pipeline trust T4, step 3: the gate ledger is written by `record-gate-verdict` (finally task, `release-record-writer`)
+
+- Every gate Pipeline that has `comment-pr` has a `record-gate-verdict` finally task beside it. It works out the verdict from `$(tasks.status)`, the run's TaskRuns (an `-advisory` failure alone passes) and its tasks timeout, the PR from the `pipelinesascode.tekton.dev/pull-request` label (else the numeric `pr-number`), and writes `gate.<sha12>.<gate>` with the record's `resourceVersion`. `comment-pr-check-result` no longer writes the ledger: its `promotion-ready` step waits up to `ledger-wait-seconds` (90) for its own gate's entry, then reads the others'. Mapped to `release-record-writer` in every onboarding template and in `cicdRunAdmission.recordWriterTasks`; the account gains `get`/`list` on TaskRuns. Test: `gate_ledger_verdict_test.sh`.
 
 ### stalled-pipeline detector: catch a PaC queue that waits with free slots (R-4)
 

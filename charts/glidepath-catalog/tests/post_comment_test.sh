@@ -82,9 +82,9 @@ expect "leak: the log excerpt was posted, redacted" "$(grep -c 'redacted' "$work
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
   --show-only templates/pipelines/agent-gates-check.yaml > "$work/pipeline.yaml" || exit 1
 expect "agent-gates-check: the finally task runs on every PR" \
-  "$(yq -o=json '.spec.finally[0].when' "$work/pipeline.yaml" | jq -c '[.[].input]')" '["$(params.pr-number)"]'
+  "$(yq -o=json '.spec.finally[] | select(.name == "comment-pr") | .when' "$work/pipeline.yaml" | jq -c '[.[].input]')" '["$(params.pr-number)"]'
 expect "agent-gates-check: post-comment is agent-pr" \
-  "$(yq '.spec.finally[0].params[] | select(.name == "post-comment") | .value' "$work/pipeline.yaml")" \
+  "$(yq '.spec.finally[] | select(.name == "comment-pr") | .params[] | select(.name == "post-comment") | .value' "$work/pipeline.yaml")" \
   '$(tasks.agent-gates.results.agent-pr)'
 
 [[ ${fail} -eq 0 ]] && echo "PASS post_comment_test" || { echo "FAIL post_comment_test"; exit 1; }

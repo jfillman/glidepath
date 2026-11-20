@@ -34,6 +34,9 @@ spec:
     - { name: repo-url, value: "{{ repo_url }}" }
     - { name: revision, value: "{{ revision }}" }
     - { name: pr-number, value: "{{ pull_request_number }}" }
+  # Pipeline trust T4 (step 3): the gate ledger's write is the record-gate-verdict finally task, which runs as release-record-writer.
+  taskRunSpecs:
+    - { pipelineTaskName: record-gate-verdict, serviceAccountName: release-record-writer }
   taskRunTemplate:
     serviceAccountName: pipeline-runner
   timeouts:

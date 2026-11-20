@@ -73,13 +73,25 @@ cicdRunAdmission:
   # templates' and the Trigger templates' taskRunSpecs); the policy that would REQUIRE the mapping (step 5, Warn then Audit then Deny)
   # is not part of that change. The chart test derives each list from the catalog Pipelines in `pipelines` below.
   #   release-record-writer: the tasks that write the release record (open-release-pr, mark-release-merged, itsm-change, itsm-gate,
-  #                          and the carve-out join-release, a finally task of clearance-gate-check; the carve-out record-gate-verdict
-  #                          is not in a Pipeline: see docs/admin/security.md, "Pipeline identities", on why the ledger write stays).
+  #                          the carve-out join-release, a finally task of clearance-gate-check, and the carve-out record-gate-verdict,
+  #                          a finally task of every gate Pipeline: it works out the gate's verdict itself and writes the gate ledger).
   recordWriterTasks:
+    agent-definitions-check: [record-gate-verdict]
+    agent-gates-check: [record-gate-verdict]
+    agent-preflight-check: [record-gate-verdict]
+    api-compat-check: [record-gate-verdict]
     bypass-merge-check: [mark-release-merged, itsm-implement]
-    clearance-gate-check: [join-release]
-    itsm-check: [verify-change, verify-change-advisory]
+    cicd-validate-check: [record-gate-verdict]
+    clearance-gate-check: [join-release, record-gate-verdict]
+    image-scan-check: [record-gate-verdict]
+    itsm-check: [verify-change, verify-change-advisory, record-gate-verdict]
+    policy-validation-check: [record-gate-verdict]
+    provenance-check: [record-gate-verdict]
+    qa-check: [record-gate-verdict]
     release: [open-release-pr]
+    sast-check: [record-gate-verdict]
+    sbom-check: [record-gate-verdict]
+    values-check: [record-gate-verdict]
   #   clearance-gate: the four Tasks that present the projected token for the `clearance` audience (clearance-gate, agent-gates,
   #                   agent-definitions, agent-release).
   clearanceTasks:

@@ -54,6 +54,7 @@ spec:
     - { pipelineTaskName: <CLEARANCE_REGISTER_TASK>, serviceAccountName: clearance-gate }
     - { pipelineTaskName: render-check, serviceAccountName: clearance-gate } # <IF_CLEARANCE_ADVISORY>
     - { pipelineTaskName: join-release, serviceAccountName: release-record-writer }
+    - { pipelineTaskName: record-gate-verdict, serviceAccountName: release-record-writer }
   taskRunTemplate:
     serviceAccountName: pipeline-runner
   timeouts:
