@@ -359,6 +359,18 @@ class CicdRunAdmission(unittest.TestCase):
             r = subprocess.run(["helm", "template", "cp", CHART, "-f", VALUES] + [a for v in bad for a in ("--set", v)], capture_output=True, text=True)
             self.assertNotEqual(r.returncode, 0, bad)
 
+    def test_itsm_enabled_reaches_the_tenant_onboarding_applicationset(self):
+        # Pipeline trust T4 step 3: the platform's itsm.enabled is forwarded to every app's glidepath-app valuesObject, and only when true
+        def forwarded(*extra):
+            extra = extra + ("--set", "tenantsRepoUrl=https://github.com/o/tenants")
+            sets = [d for d in render(*extra) if d["kind"] == "ApplicationSet" and d["metadata"]["name"] == "glidepath-tenant-onboarding"]
+            self.assertEqual(len(sets), 1, "the tenant-onboarding ApplicationSet must render: the comparison would be vacuous")
+            srcs = [s for s in sets[0]["spec"]["template"]["spec"]["sources"] if "valuesObject" in s.get("helm", {})]
+            self.assertEqual(len(srcs), 1)
+            return srcs[0]["helm"]["valuesObject"]
+        self.assertNotIn("itsm", forwarded())
+        self.assertEqual(forwarded("--set", "itsm.enabled=true")["itsm"], {"enabled": True})
+
     def test_off_renders_nothing(self):
         pols, binds = policies("--set", "cicdRunAdmission.enabled=false")
         self.assertFalse([n for n in list(pols) + list(binds) if n.startswith("cicd-run-")])

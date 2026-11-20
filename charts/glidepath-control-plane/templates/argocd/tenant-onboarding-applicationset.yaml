@@ -122,6 +122,11 @@ spec:
               observability:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
+              {{- if (.Values.itsm).enabled }}
+              # The catalog has a change-management provider: glidepath-app maps the itsm close tasks (values.yaml itsm.enabled).
+              itsm:
+                enabled: true
+              {{- end }}
               {{- /* Pipelines-as-Code's per-repository queue: only the limits that are set, so unset forwards nothing. */}}
               {{- $pac := dict }}
               {{- range $k := list "concurrencyLimit" "appRepoConcurrencyLimit" "gitopsRepoConcurrencyLimit" "gitopsRepoProvenance" }}
