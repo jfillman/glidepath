@@ -667,3 +667,34 @@ glidepath-catalog.buildPullSecretName: the name of the read-only pull credential
 {{- end -}}
 {{- $n -}}
 {{- end -}}
+
+{{- /*
+glidepath-catalog.onboardingTaskNames: a bash function, task_names, for a step's script. It is a sed filter that fills in the task
+names of the onboarding templates' taskRunSpecs (charts/glidepath-app/files/onboarding-templates), pipeline trust T4 step 3.
+Tekton refuses a run whose taskRunSpecs names a task its Pipeline lacks, and three Pipelines differ by what this catalog renders:
+  clearance-gate-check  register, or register-advisory and render-check, by the gate's `required`   <CLEARANCE_REGISTER_TASK>, <IF_CLEARANCE_ADVISORY>
+  itsm-check            verify-change or verify-change-advisory with a change-management provider, else only the stub's `check`  <ITSM_GATE_TASK>, <IF_ITSM>
+  bypass-merge-check    itsm-implement only with a change-management provider                          <IF_ITSM>
+A line that ends in `# <IF_...>` is kept (without the marker) when the catalog has that task, and dropped when it does not.
+Same decisions as the Pipelines themselves (gateRequired, itsmEnabled), so the two cannot drift; a chart test compares them.
+*/ -}}
+{{- define "glidepath-catalog.onboardingTaskNames" -}}
+{{- $clearanceRequired := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "clearance-gate")) "true" -}}
+{{- $itsmOn := eq (include "glidepath-catalog.itsmEnabled" .) "true" -}}
+{{- $itsmRequired := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "itsm")) "true" -}}
+task_names() {
+  sed \
+    -e 's#<CLEARANCE_REGISTER_TASK>#{{ ternary "register" "register-advisory" $clearanceRequired }}#g' \
+    -e 's#<ITSM_GATE_TASK>#{{ ternary "verify-change" "verify-change-advisory" $itsmRequired }}#g' \
+{{- if $clearanceRequired }}
+    -e '/<IF_CLEARANCE_ADVISORY>/d' \
+{{- else }}
+    -e 's# *\# <IF_CLEARANCE_ADVISORY>$##' \
+{{- end }}
+{{- if $itsmOn }}
+    -e 's# *\# <IF_ITSM>$##'
+{{- else }}
+    -e '/<IF_ITSM>/d'
+{{- end }}
+}
+{{- end -}}

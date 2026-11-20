@@ -2,7 +2,8 @@
 #
 # Pipeline trust T4 (specs/plans/pipeline-trust-t4-split-runner.md), step 2. The release-record join of clearance-gate
 # (its join_release function), carved out so the ConfigMap write can run as release-record-writer while clearance-gate
-# keeps the Clearance token and no record write. NOT in any Pipeline yet and clearance-gate is unchanged: step 3 wires it.
+# keeps the Clearance token and no record write. Wired in step 3: a finally task of the clearance-gate-check Pipeline, run as
+# release-record-writer, fed by the `joins` result of that Pipeline's register task (clearance-gate no longer writes the record).
 #
 # G-ARGO-6: writes the Clearance change's id and tree digest (clearanceId, clearanceTree) into the release's own record
 # (release-tracking-<chainId>, found by the PR's URL, cluster and environment), so glidepath-api's

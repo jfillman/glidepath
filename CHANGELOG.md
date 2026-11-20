@@ -4,6 +4,11 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### Pipeline trust T4, step 3: the writer, Clearance-token and test tasks run as their own accounts
+
+- Every run the platform starts now names the per-task account in `taskRunSpecs`: `open-release-pr`, `mark-release-merged`, `itsm-*` as `release-record-writer`; `clearance-gate` (fetch, register, render-check), `agent-gates`, `agent-definitions` and `agent-release` as `clearance-gate`; `run-testworkflow` as `test-runner`. Trigger templates and the onboarding templates (resynced into each app's `.tekton/`) both carry it; the onboarding task fills in the task names the catalog renders (`task_names`). New chart value `itsm.enabled` (default `false`) for the two Triggers that start the itsm close tasks. `pipeline-runner` keeps every right until step 6.
+- The Clearance join moved to the `join-release` finally task of `clearance-gate-check` (fed by a new `joins` result of the clearance-gate Task, which no longer writes the release record). The gate-ledger write of `comment-pr-check-result` stays: Tekton cannot order finally tasks (see docs/admin/security.md, "Task mapping").
+
 ### ref guard: an Off-here rerun names its real ref (I-11)
 
 - With `refProtection.mode: off`, a rerun or chained run (no Pipelines-as-Code annotations) recorded "the commits of unknown" in `ref-protection-summary`. It now names the run's `glidepath.io/origin-ref`, or says it is a platform-created run when none is stamped. Cosmetic: the verdict and result are unchanged. Test: `charts/glidepath-catalog/tests/ref_protection_pipelines_test.py`.

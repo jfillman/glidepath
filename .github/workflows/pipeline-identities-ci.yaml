@@ -32,6 +32,7 @@ jobs:
       - run: python3 charts/glidepath-app/tests/pac_concurrency_test.py
       - run: python3 charts/glidepath-app/tests/pac_provenance_test.py
       - run: python3 charts/glidepath-control-plane/tests/cicd_run_admission_test.py
+      - run: python3 charts/glidepath-control-plane/tests/values_unique_keys_test.py
       - run: python3 charts/glidepath-control-plane/tests/record_policies_test.py
       # no two platform CronJobs share a minute of the hour; the per-app token refresher's minute derives from the app name
       - run: python3 charts/glidepath-control-plane/tests/cronjob_schedule_test.py

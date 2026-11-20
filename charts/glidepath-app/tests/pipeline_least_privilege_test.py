@@ -55,12 +55,12 @@ def helm(chart, *args):
     return [d for d in yaml.safe_load_all(p.stdout) if d]
 
 
-def app_docs(cicd=None):
+def app_docs(cicd=None, *extra):
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
         yaml.safe_dump(cicd or CICD, f)
         path = f.name
     try:
-        return helm(APP, "--namespace", NS, "-f", path, "-f", os.path.join(APP, "tests", "fixtures", "control-plane-values.yaml"))
+        return helm(APP, "--namespace", NS, "-f", path, "-f", os.path.join(APP, "tests", "fixtures", "control-plane-values.yaml"), *extra)
     finally:
         os.unlink(path)
 
@@ -228,14 +228,18 @@ class Identities(unittest.TestCase):
             self.assertEqual(self.sas[sa].get("imagePullSecrets"), [{"name": "registry-credentials"}], sa)
         self.assertEqual(({"pipeline-runner", "source-runner", "image-pusher", "pipeline-trigger"} | set(self.TARGET)) - set(self.sas), set())
 
-    def test_nothing_runs_as_the_split_accounts_yet(self):
-        # step 2 is additive: the Triggers' runs and every Job still use pipeline-runner / pipeline-trigger, and no
-        # workload names a split account (step 3 maps tasks with taskRunSpecs, and that edit must update this test)
+    def test_the_split_accounts_are_named_only_by_a_runs_taskrunspecs(self):
+        # step 3 maps tasks with taskRunSpecs (TaskMapping below checks which). No workload runs as a split account, and no
+        # run-wide taskRunTemplate does: a split account is a per-task choice, so a task nobody maps stays on pipeline-runner.
         for d in self.docs:
-            if d["kind"] in ("Job", "Deployment", "CronJob", "StatefulSet", "TriggerTemplate", "Trigger"):
+            if d["kind"] in ("Job", "Deployment", "CronJob", "StatefulSet"):
                 text = yaml.safe_dump(d)
                 for sa in self.TARGET:
                     self.assertNotIn("serviceAccountName: " + sa, text, d["metadata"]["name"])
+            if d["kind"] == "TriggerTemplate":
+                for r in d["spec"]["resourcetemplates"]:
+                    if r.get("kind") == "PipelineRun":
+                        self.assertNotIn(r["spec"]["taskRunTemplate"]["serviceAccountName"], self.TARGET, d["metadata"]["name"])
 
     def test_pipeline_runner_keeps_its_rights_until_step_6(self):
         # R1 (whole-namespace configmaps incl. delete), R4 and R9 are still on pipeline-runner: the split is additive, and a
@@ -315,7 +319,8 @@ class Identities(unittest.TestCase):
                 stage = d["metadata"]["labels"].get("hangar.io/stage")
                 # build is never chained, so only the test stage names source-runner here
                 if stage == "test":
-                    self.assertEqual(specs, [[{"pipelineTaskName": "run-integration-script", "serviceAccountName": "source-runner"}]])
+                    self.assertEqual(specs, [[{"pipelineTaskName": "run-integration-script", "serviceAccountName": "source-runner"},
+                                              {"pipelineTaskName": "run-testworkflow", "serviceAccountName": "test-runner"}]])
                 else:
                     self.assertNotIn("source-runner", str(specs), d["metadata"]["name"])
 
@@ -425,7 +430,105 @@ class SourceTasks(unittest.TestCase):
         script = "\n".join(s.get("script", "") for s in self.tasks["deliver-onboarding-files"]["spec"]["steps"])
         m = re.search(r'if \[\[ "\$\{root_stage\}" == "test" \]\]; then(.*?)\n\s+fi', script, re.S)
         self.assertIsNotNone(m)
-        self.assertEqual(re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: ([^\s\"]+)", m.group(1)), [("run-integration-script", "source-runner")])
+        self.assertEqual(re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: ([^\s\"]+)", m.group(1)),
+                         [("run-integration-script", "source-runner"), ("run-testworkflow", "test-runner")])
+
+    def test_generated_release_run_hands_open_release_pr_to_the_record_writer(self):
+        script = "\n".join(s.get("script", "") for s in self.tasks["deliver-onboarding-files"]["spec"]["steps"])
+        m = re.search(r'if \[\[ "\$\{root_stage\}" == "release" \]\]; then(.*?)\n\s+fi', script, re.S)
+        self.assertIsNotNone(m, "the release taskRunSpecs block is missing from deliver-onboarding-files")
+        self.assertEqual(re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: ([^\s\"]+)", m.group(1)), [("open-release-pr", "release-record-writer")])
+
+
+# ---- pipeline trust T4, step 3: every run the platform starts maps each writer and gate task to its account ----
+#   (catalog Task name -> the account it runs as); the Pipeline's own task names come from the rendered catalog.
+ACCOUNT_OF_TASK = {
+    "open-release-pr": "release-record-writer", "mark-release-merged": "release-record-writer", "itsm-change": "release-record-writer",
+    "itsm-gate": "release-record-writer", "join-release": "release-record-writer",
+    "clearance-gate": "clearance-gate", "agent-gates": "clearance-gate", "agent-definitions": "clearance-gate", "agent-release": "clearance-gate",
+    "run-testworkflow": "test-runner",
+}
+SPLIT_ACCOUNTS = {"release-record-writer", "clearance-gate", "test-runner"}
+
+
+def catalog_split_tasks(docs):
+    """{Pipeline: {pipeline task name: account}} for every task of every catalog Pipeline that must run as a split account (tasks and finally)."""
+    out = {}
+    for d in docs:
+        if d["kind"] != "Pipeline":
+            continue
+        for t in d["spec"].get("tasks", []) + d["spec"].get("finally", []):
+            ref = [p["value"] for p in t.get("taskRef", {}).get("params", []) if p["name"] == "name"]
+            if ref and ref[0] in ACCOUNT_OF_TASK:
+                out.setdefault(d["metadata"]["name"], {})[t["name"]] = ACCOUNT_OF_TASK[ref[0]]
+    return out
+
+
+def catalog_task_names(docs):
+    return {d["metadata"]["name"]: {t["name"] for t in d["spec"].get("tasks", []) + d["spec"].get("finally", [])} for d in docs if d["kind"] == "Pipeline"}
+
+
+def split_mapping(run_spec):
+    return {e["pipelineTaskName"]: e["serviceAccountName"] for e in run_spec.get("taskRunSpecs") or [] if e["serviceAccountName"] in SPLIT_ACCOUNTS}
+
+
+class TaskMapping(unittest.TestCase):
+    """Every PipelineRun a Trigger template starts maps the catalog's record-writer, Clearance-token and test tasks to their accounts, and only
+    those, and names only tasks its Pipeline has (Tekton refuses a taskRunSpecs entry for a task the Pipeline lacks)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.catalog = {
+            "itsm": helm(CATALOG, "-f", os.path.join(CATALOG, "tests", "values.example.yaml"), "--set", "itsm.provider=webhook"),
+            "no itsm": helm(CATALOG, "-f", os.path.join(CATALOG, "tests", "values.example.yaml")),
+        }
+        # a cluster-mapped Flight environment renders the release-outcome and rollback Triggers (hasClusterMappedUpperEnv)
+        cicd = {**CICD, "deploy": {"environments": [{"name": "dev", "tier": "ground"}, {"name": "prod", "tier": "flight", "cluster": "example-prod"}]}}
+        cls.apps = {"itsm": app_docs(cicd, "--set", "itsm.enabled=true"), "no itsm": app_docs(cicd)}
+
+    def runs(self, variant):
+        for d in self.apps[variant]:
+            if d["kind"] == "TriggerTemplate":
+                for r in d["spec"]["resourcetemplates"]:
+                    if r.get("kind") == "PipelineRun":
+                        pipeline = [p["value"] for p in r["spec"]["pipelineRef"]["params"] if p["name"] == "name"][0]
+                        yield d["metadata"]["name"], pipeline, r["spec"]
+
+    def test_every_trigger_run_maps_exactly_the_writer_and_gate_tasks_its_pipeline_has(self):
+        seen = {}
+        for variant in self.apps:
+            want = catalog_split_tasks(self.catalog[variant])
+            have = catalog_task_names(self.catalog[variant])
+            n = 0
+            for name, pipeline, spec in self.runs(variant):
+                n += 1
+                seen.setdefault(variant, set()).add(pipeline)
+                self.assertEqual(split_mapping(spec), want.get(pipeline, {}), "%s (%s): %s" % (name, variant, pipeline))
+                for e in spec.get("taskRunSpecs") or []:
+                    self.assertIn(e["pipelineTaskName"], have[pipeline], "%s (%s): taskRunSpecs names a task %s does not have" % (name, variant, pipeline))
+                    self.assertEqual(sorted(e), ["pipelineTaskName", "serviceAccountName"], name)
+                self.assertEqual(spec["taskRunTemplate"]["serviceAccountName"], "pipeline-runner", name)
+            self.assertGreaterEqual(n, 7, "too few runs rendered: the comparison would be vacuous (%s)" % variant)
+        # the runs the platform starts that hold a writer task are all there, in the variant that has the task
+        self.assertLessEqual({"release", "test", "release-outcome-notify", "release-rollback-notify"}, seen["itsm"])
+        want = {p: m for p, m in catalog_split_tasks(self.catalog["itsm"]).items() if p in ("release", "test", "release-outcome-notify", "release-rollback-notify")}
+        self.assertEqual(want, {"release": {"open-release-pr": "release-record-writer"},
+                                "test": {"run-testworkflow": "test-runner"},
+                                "release-outcome-notify": {"itsm-close": "release-record-writer"},
+                                "release-rollback-notify": {"itsm-close-rolled-back": "release-record-writer"}})
+        # without a provider the itsm close tasks do not exist, so no entry may name them
+        self.assertNotIn("itsm-close", str([spec for _, _, spec in self.runs("no itsm")]))
+
+    def test_the_mapping_is_in_the_run_itself(self):
+        # The T5 rule: a glidepath-api rerun copies the original run's taskRunSpecs (security.md, "What is not closed", item 6), so the per-task
+        # accounts must be in the run itself, not added by anything that runs later. That the rerun really copies them is tested where the
+        # rerun is implemented: glidepath/api/internal/pipelineruns (TestRerunKeepsTaskRunSpecs). The PaC-started runs (onboarding templates)
+        # are checked the same way in the control plane's cicd_run_admission_test.py, against the admission lists.
+        n = 0
+        for variant in self.apps:
+            for name, pipeline, spec in self.runs(variant):
+                n += bool(split_mapping(spec))
+        self.assertGreaterEqual(n, 8, "too few mapped runs: the comparison would be vacuous")
 
 
 if __name__ == "__main__":

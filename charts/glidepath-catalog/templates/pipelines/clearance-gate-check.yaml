@@ -14,6 +14,12 @@
 # render-manifests, run as source-runner (the onboarding template's taskRunSpecs, and the control plane's cicdRunAdmission.sourceTasks,
 # make a run say so): the chart is rendered where there is no token, and the gate reads the output as data (docs/admin/security.md).
 # A failure to fetch or to render is never green, advisory or not: the advisory copy's onError applies to the decide phase only.
+#
+# join-release (pipeline trust T4, step 3) is a finally task: it writes the Clearance change id and tree digest of each environment
+# into that release's record, from the `joins` result of the register task, as release-record-writer (the onboarding template's
+# taskRunSpecs). The register task holds the Clearance token and no longer writes the record. It is a finally task, not a task after
+# register, because a holding or denied change fails register, which would skip a task that runs after it, and a held change is
+# the one whose join matters most. A finally task cannot read results of another finally task, so it reads the register task's.
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
@@ -117,6 +123,16 @@ spec:
         - { name: rendered, workspace: gate, subPath: rendered }
     {{- end }}
   finally:
+    - name: join-release
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: join-release }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: joins, value: $(tasks.{{ ternary "register" "register-advisory" $required }}.results.joins) }
     - name: comment-pr
       when:
         - { input: $(params.pr-number), operator: notin, values: [""] }

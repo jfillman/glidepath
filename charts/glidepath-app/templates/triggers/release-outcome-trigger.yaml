@@ -83,6 +83,14 @@ spec:
           - { name: chain-id, value: $(tt.params.chain-id) }
           - { name: flow-start-time, value: $(tt.params.flow-start-time) }
           - { name: finished-at, value: $(tt.params.finished-at) }
+        {{- /* Pipeline trust T4 (step 3): the change-management close writes the release record, so it runs as
+        release-record-writer (identity/task-accounts.yaml). The task exists only where the catalog has a change-management provider
+        (itsm.enabled, values.yaml); Tekton refuses a taskRunSpecs entry naming a task its Pipeline lacks. */ -}}
+        {{- if (.Values.itsm).enabled }}
+        taskRunSpecs:
+          - pipelineTaskName: itsm-close
+            serviceAccountName: release-record-writer
+        {{- end }}
         taskRunTemplate:
           serviceAccountName: pipeline-runner
           {{- /* Same cross-cluster DNS gap as flow-triggers.yaml's identical block - see

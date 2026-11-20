@@ -225,7 +225,7 @@ An Application's `-cicd` namespace runs four kinds of code, and they do not shar
 | The **image push**: `push-image`, which holds the registry push credential and runs nothing from the repository | `image-pusher` | **No.** Same as `source-runner`: no Role, no token. It is a separate account so the admission policy can say which task may have it. |
 | The **catalog's own tasks** (preflight, gates, release, deploy, notify, ...), whose code the platform ships | `pipeline-runner` | Namespace-scoped, least RBAC (below). Cannot create a run. |
 | The **triggers** that chain the next stage, and the one-time onboarding bootstrap Job | `pipeline-trigger` | `create` on `pipelineruns` in this namespace, nothing else. No task runs as it. |
-| The **release record writes**, the **Clearance-token tasks** and the **Testkube test task**, once split from `pipeline-runner` (pipeline trust T4; accounts exist, no task runs as them yet, see "Split task accounts" below) | `release-record-writer`, `clearance-gate`, `test-runner` | Namespace-scoped, one narrow Role each. None can create a run or a pod, request a token or delete anything. |
+| The **release record writes**, the **Clearance-token tasks** and the **Testkube test task**, split from `pipeline-runner` (pipeline trust T4; tasks mapped in step 3, `pipeline-runner` keeps its old rights until step 6; see "Split task accounts" below) | `release-record-writer`, `clearance-gate`, `test-runner` | Namespace-scoped, one narrow Role each. None can create a run or a pod, request a token or delete anything. |
 
 Why it matters. A pull request to the app repository can change `build.sh`, `test.sh`, a lockfile or a build backend, and that
 code runs in the pipeline before anything is merged. When it ran as `pipeline-runner`, with the ServiceAccount token mounted, it
@@ -245,26 +245,74 @@ What each part does.
 - **`pipeline-runner`** lost `create` on `pipelineruns` and `taskruns` (it keeps get/list/watch: `stage-debrief` and
   `comment-pr-check-result` read their own run). Its other grants are unchanged in this release: `app-secrets` `get` by name, and
   ConfigMaps get/list/create/patch/delete in its own namespace (see "Known, accepted gaps" below).
-- **Split task accounts (pipeline trust T4, in progress).** `pipeline-runner` still runs every catalog task and still holds the
-  release-record write, the `app-secrets` read and the Testkube grants, so one flawed catalog task reaches all of them. The
-  glidepath-app chart now also renders three accounts that will take those powers apart (`templates/identity/task-accounts.yaml`).
-  Nothing runs as them yet and `pipeline-runner` has lost nothing: this step only adds. Each holds exactly the rights below and the
+- **Split task accounts (pipeline trust T4, in progress).** `pipeline-runner` still holds the release-record write, the
+  `app-secrets` read and the Testkube grants, so one flawed catalog task reaches all of them until step 6 removes them. The
+  glidepath-app chart renders three accounts that take those powers apart (`templates/identity/task-accounts.yaml`, step 2), and
+  since step 3 the writer, Clearance-token and test tasks run as them (the next paragraph). `pipeline-runner` has lost nothing yet:
+  a task a run does not map still works, and the policy that would refuse the old mapping is a later step. Each holds exactly the rights below and the
   chart test (`charts/glidepath-app/tests/pipeline_least_privilege_test.py`) fails if a chart change binds one more to any of them.
   None of the three can create a PipelineRun, TaskRun or pod, request a ServiceAccount token, impersonate, delete, or read a Secret
   beyond what is listed.
 
   | Account | Holds | Will run |
   |---|---|---|
-  | `release-record-writer` | ConfigMaps `get`, `list`, `create`, `patch` in the `-cicd` namespace (no `delete`, no `update`); `get` on PipelineRuns (`open-release-pr` reads its own run's lineage annotations); `get` on the `cluster-registry` ConfigMap of `platform-system` (only for an app with a cluster-mapped environment). No Secret. No `clearance` token. | `open-release-pr`, `mark-release-merged`, `itsm-change`, `itsm-gate`, and two small Tasks carved out of tasks that must stay on `pipeline-runner`: `record-gate-verdict` (the gate-ledger write of `comment-pr-check-result`) and `join-release` (the `clearanceId` join of `clearance-gate`). The two Tasks are in the catalog but in no Pipeline yet. |
+  | `release-record-writer` | ConfigMaps `get`, `list`, `create`, `patch` in the `-cicd` namespace (no `delete`, no `update`); `get` on PipelineRuns (`open-release-pr` reads its own run's lineage annotations); `get` on the `cluster-registry` ConfigMap of `platform-system` (only for an app with a cluster-mapped environment). No Secret. No `clearance` token. | `open-release-pr`, `mark-release-merged`, `itsm-change`, `itsm-gate`, and `join-release`, a small Task carved out of `clearance-gate` (the `clearanceId` join). The second carve-out, `record-gate-verdict` (the gate-ledger write of `comment-pr-check-result`), is in the catalog but in no Pipeline: see "Task mapping, step 3" below. |
   | `clearance-gate` | `get` on PipelineRuns; ConfigMaps `get`, `create`, `patch` (gate reports `gate-report-<run>`). No Secret. | The four Tasks that mount the projected token for the `clearance` audience: `clearance-gate`, `agent-gates`, `agent-definitions`, `agent-release`. Clearance trusts the pod's ServiceAccount principal, so this account needs `app-*-cicd/clearance-gate` in Clearance's verifier list before any task runs as it. |
   | `test-runner` | `get` on `app-secrets` and `dex-check-ride-credentials`; the app's own Testkube placeholder Secret and the `testkube-testworkflow-runner` Role (only for an app with a `test` stage); `get`, `list`, `watch` on this namespace's runs, pods, logs and events. No ConfigMap, no `clearance` token. | `run-testworkflow` only. |
+
+  **Task mapping (step 3).** The mapping is a `taskRunSpecs` entry per task (`serviceAccountName` only), in every run the platform
+  starts. For the runs started by a Trigger it is in the Trigger templates of the glidepath-app chart (`promote-release`,
+  `rollback-release`, the flow Triggers for the `release` and `test` stages, and the release-outcome and release-rollback Triggers); for the
+  runs Pipelines-as-Code starts it is in the onboarding templates, which render each app's `.tekton/` files (the generated flow files for the
+  `release` and `test` stages included). Tekton fixes the account per pod, so a step cannot change it. All other tasks run as `pipeline-runner`.
+
+  | Task (Pipeline task name) | Runs as | Where mapped |
+  |---|---|---|
+  | `open-release-pr` (Pipeline `release`) | `release-record-writer` | Trigger templates (flow `release` stage, promote, rollback); generated flow file for a release-rooted flow |
+  | `mark-release-merged`, `itsm-implement` (`bypass-merge-check`) | `release-record-writer` | `pull-request-merged.yaml` |
+  | `verify-change` or `verify-change-advisory` (`itsm-check`) | `release-record-writer` | `pull-request-itsm.yaml` (also the pin-PR gate files) |
+  | `itsm-close` (`release-outcome-notify`), `itsm-close-rolled-back` (`release-rollback-notify`) | `release-record-writer` | `release-outcome-trigger.yaml`, `release-rollback-trigger.yaml` (chart value `itsm.enabled`) |
+  | `join-release` (`clearance-gate-check`, a finally task) | `release-record-writer` | `pull-request-clearance-gate.yaml` |
+  | `fetch`, `register` or `register-advisory`, `render-check` (`clearance-gate-check`) | `clearance-gate` | `pull-request-clearance-gate.yaml` |
+  | `agent-gates` (`agent-gates-check`), `review` (`agent-definitions-check`), `release` (`agent-release`) | `clearance-gate` | `pull-request-agent-gates.yaml` (app and gitops repo), `pull-request-agent-definitions.yaml`, `push-agent-release.yaml` |
+  | `run-testworkflow` (`test`) | `test-runner` | Trigger template and generated flow file for the `test` stage |
+
+  Which tasks a Pipeline has depends on the catalog, and Tekton refuses a run whose `taskRunSpecs` names a task its Pipeline lacks.
+  Three things vary: the Clearance gate's `register` task is `register` where the gate is `required` and `register-advisory` plus
+  `render-check` where it is not; the change-management gate's task is `verify-change` or `verify-change-advisory`, and the
+  `itsm-implement`, `itsm-close` and `itsm-close-rolled-back` tasks exist only where the catalog has a change-management provider
+  (`itsm.provider`). The onboarding task (`deliver-onboarding-files`) fills in the right names from what the catalog renders
+  (`task_names`, from the same helpers the Pipelines use); the glidepath-app chart cannot see the catalog, so the two Triggers that
+  start the itsm close tasks need the chart value `itsm.enabled: true` where the catalog has a provider (default `false`, which leaves
+  those two tasks on `pipeline-runner`; set it wrongly to `true` and every release-outcome and rollback notification run is refused).
+  The chart tests (`pipeline_least_privilege_test.py`, `cicd_run_admission_test.py`) render every Trigger template and every onboarding
+  template for each catalog variant and compare the mapping with the tasks the catalog Pipeline has. A `glidepath-api` rerun copies the
+  run's `taskRunSpecs` (item 6 of "What is not closed"), so the mapping survives a rerun; the cluster policy that holds `glidepath-api`
+  to a shape must therefore also allow the three accounts on these tasks, as it must for `source-runner`.
+
+  **`join-release` and the ledger.** The Clearance join moved: `clearance-gate` no longer writes the release record. Its decide step
+  hands the joins to a `joins` result and the `join-release` finally task of `clearance-gate-check` writes `clearanceId` and
+  `clearanceTree` as `release-record-writer`. It is a finally task, not a task after `register`, because a holding or denied change
+  fails `register` and a task after it would be skipped (a held change is the one whose join is most wanted). The ledger write of
+  `comment-pr-check-result` (`gate.<sha12>.<gate>`, with the record's `resourceVersion`) did **not** move: Tekton cannot order two
+  finally tasks nor pass a result from one finally task to another, and `comment-pr-check-result` is a finally task whose
+  verdict and resolved pull request number a following `record-gate-verdict` would need, and whose promotion decision must read the
+  ledger after the write (two gates finishing together depend on it). So `record-gate-verdict` is not in a Pipeline and
+  `comment-pr-check-result` still writes the ledger as `pipeline-runner`; step 6 (removing the record write from `pipeline-runner`)
+  cannot go ahead until that write has a home. Ways to give it one, not built: (a) a finally `record-gate-verdict` that computes the
+  verdict itself from the tasks' `$(tasks.<name>.status)` values, finds the pull request from the run's `pipelinesascode.tekton.dev/pull-request`
+  label (the writer can `get` PipelineRuns) and the commit from `revision`, with the promotion decision waiting a bounded time for its own
+  gate's ledger entry before it reads the others (this restores the write-then-read order a Pipeline cannot express); (b) the
+  glidepath-api record service the plan leaves as a follow-up (owner decision 1), which would take the write and the read.
 
   RBAC cannot narrow `create` by name nor a ConfigMap write to keys, so until the admission policies of the next steps
   (`release-record-writes`, `gate-report-writes`) exist, a record write is limited by RBAC to `release-record-writer` only in
   intent: `pipeline-runner` can still write one. `cicdRunAdmission.recordWriterTasks`, `clearanceTasks` and `testRunnerTasks`
-  list, per Pipeline, the tasks `cicd-run-shape` will let a `.tekton` file give to each account (a `taskRunSpecs` entry). They only
+  list, per Pipeline, the tasks `cicd-run-shape` lets a `.tekton` file give to each account (a `taskRunSpecs` entry). They only
   widen what that policy admits (nothing is refused that was admitted before, in any `shapeActions`); the policy that would
-  require the mapping is not part of this step.
+  require the mapping is not part of step 3. They name Pipeline task names, so `register`, `register-advisory`, `render-check` and
+  `verify-change`, `verify-change-advisory` are all listed. The platform-started Pipelines (`release-outcome-notify`,
+  `release-rollback-notify`) are not PaC-startable and not listed.
 - **Who may write a release record and a gate report (`release-record-writes`, `gate-report-writes`).** Two more
   ValidatingAdmissionPolicies in `glidepath-control-plane` (`templates/admission/release-record-writes.yaml`) do what RBAC cannot:
   narrow `create` by name and limit a ConfigMap write to keys. They apply to ConfigMaps in an `app-*-cicd` or `infra-*-cicd`
@@ -707,7 +755,11 @@ What is not closed, in the order to do it:
 6. **A rerun started through glidepath-api** copies the original run's `taskRunSpecs`. The policy that holds glidepath-api to a
    shape (`tower-identity-writes`, in the cluster repository, not here) says "no `taskRunSpecs`", so a rerun of a build or test
    run is refused until it allows entries of exactly `{pipelineTaskName, serviceAccountName: source-runner}` for the tasks in
-   `cicdRunAdmission.sourceTasks`. A new push or `/retest` is not affected.
+   `cicdRunAdmission.sourceTasks`. A new push or `/retest` is not affected. Since pipeline trust T4 step 3 the same holds for the
+   split accounts: a rerun of a `release`, `test`, `bypass-merge-check`, `itsm-check`, `clearance-gate-check`, `agent-*` or
+   outcome/rollback run carries entries for `release-record-writer`, `clearance-gate` or `test-runner`, and the policy must allow
+   exactly those (task lists: `cicdRunAdmission.recordWriterTasks`, `clearanceTasks`, `testRunnerTasks`, plus the two platform-started
+   Pipelines' `itsm-close` and `itsm-close-rolled-back`, which are not in those lists) before such a rerun is admitted.
 
 ### Ref protection
 

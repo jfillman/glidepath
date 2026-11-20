@@ -26,6 +26,11 @@ spec:
     - { name: revision, value: "{{ revision }}" }
     - { name: before, value: "{{ body.before }}" }
     - { name: app-name, value: "<APP_NAME>" }
+  # Pipeline trust T4 (step 3): this task presents the Clearance token, so it runs as clearance-gate; the rest of the run
+  # (the PR comment) stays on pipeline-runner.
+  taskRunSpecs:
+    - pipelineTaskName: release
+      serviceAccountName: clearance-gate
   taskRunTemplate:
     serviceAccountName: pipeline-runner
   timeouts:

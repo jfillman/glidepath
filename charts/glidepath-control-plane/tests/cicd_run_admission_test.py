@@ -158,20 +158,51 @@ SUBST = {"{{ repo_url }}": REPO, "{{ revision }}": SHA, "{{ pull_request_number 
          "<GITOPS_REPO_URL>": "https://github.com/o/gitops-sample"}
 
 
-def delivered_templates():
-    """(path, PipelineRun with the placeholders PaC and the onboarding task fill in, the event PaC would record)"""
+# The catalog renderings the onboarding task's task_names filter (the <CLEARANCE_REGISTER_TASK>, <ITSM_GATE_TASK> and <IF_...> markers of the
+# templates' taskRunSpecs, pipeline trust T4 step 3) is run against: what is rendered decides which tasks the Pipelines have.
+#   (name, helm args)
+CATALOG_VARIANTS = [
+    ("itsm, clearance advisory", ["--set", "itsm.provider=webhook"]),
+    ("itsm advisory, clearance required", ["--set", "itsm.provider=webhook", "--set", "releaseGuardrailOverrides.clearance-gate.required=true",
+                                          "--set", "releaseGuardrailOverrides.itsm.required=false"]),
+    ("no change-management provider", []),
+]
+
+
+def task_names_filter(extra):
+    """The task_names function deliver-onboarding-files renders for this catalog (a sed filter), as a callable text -> text."""
+    docs = render_catalog_itsm(*extra) if extra else render_catalog()
+    task = [d for d in docs if d["kind"] == "Task" and d["metadata"]["name"] == "deliver-onboarding-files"][0]
+    fns = set()
+    for s in task["spec"]["steps"]:
+        fns |= set(re.findall(r"^task_names\(\) \{.*?^\}$", s.get("script", ""), re.S | re.M))
+    assert len(fns) == 1, "both steps of deliver-onboarding-files must render the same task_names function: %s" % fns
+
+    def apply(text):
+        r = subprocess.run(["bash", "-c", fns.copy().pop() + "\ntask_names"], input=text, capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        return r.stdout
+    return apply
+
+
+def delivered_templates(variants=None):
+    """(path, PipelineRun with the placeholders PaC and the onboarding task fill in, the event PaC would record), once per catalog variant"""
     out = []
-    for path in sorted(glob.glob(os.path.join(TEMPLATES, "*", "*.yaml"))):
-        with open(path) as f:
-            text = f.read()
-        for k, v in SUBST.items():
-            text = text.replace(k, v)
-        for d in yaml.safe_load_all(text):
-            if d and d.get("kind") == "PipelineRun":
-                base = os.path.basename(path)
-                event = "pull_request" if base.startswith("pull-request-") and base != "pull-request-merged.yaml" else "push"
-                d["metadata"] = dict(meta(event, "main"), generateName=d["metadata"].get("generateName", "x-"))
-                out.append((path, d))
+    for _name, extra in (variants if variants is not None else CATALOG_VARIANTS):
+        names = task_names_filter(extra)
+        for path in sorted(glob.glob(os.path.join(TEMPLATES, "*", "*.yaml"))):
+            with open(path) as f:
+                text = f.read()
+            for k, v in SUBST.items():
+                text = text.replace(k, v)
+            if os.path.basename(os.path.dirname(path)) == "gitops-repo":
+                text = names(text)   # the gitops templates are the ones the onboarding task runs through task_names
+            for d in yaml.safe_load_all(text):
+                if d and d.get("kind") == "PipelineRun":
+                    base = os.path.basename(path)
+                    event = "pull_request" if base.startswith("pull-request-") and base != "pull-request-merged.yaml" else "push"
+                    d["metadata"] = dict(meta(event, "main"), generateName=d["metadata"].get("generateName", "x-"))
+                    out.append((path, d))
     return out
 
 
@@ -328,6 +359,20 @@ class CicdRunAdmission(unittest.TestCase):
                     ("buildPullCredential.remoteKey=x", "buildPullCredential.secretName=registry-credentials")):
             r = subprocess.run(["helm", "template", "cp", CHART, "-f", VALUES] + [a for v in bad for a in ("--set", v)], capture_output=True, text=True)
             self.assertNotEqual(r.returncode, 0, bad)
+
+    def test_itsm_enabled_reaches_the_tenant_onboarding_applicationset(self):
+        # Pipeline trust T4 step 3: the platform's itsm.enabled is forwarded to every app's glidepath-app valuesObject, true or false
+        def forwarded(*extra):
+            extra = extra + ("--set", "tenantsRepoUrl=https://github.com/o/tenants")
+            sets = [d for d in render(*extra) if d["kind"] == "ApplicationSet" and d["metadata"]["name"] == "glidepath-tenant-onboarding"]
+            self.assertEqual(len(sets), 1, "the tenant-onboarding ApplicationSet must render: the comparison would be vacuous")
+            srcs = [s for s in sets[0]["spec"]["template"]["spec"]["sources"] if "valuesObject" in s.get("helm", {})]
+            self.assertEqual(len(srcs), 1)
+            return srcs[0]["helm"]["valuesObject"]
+        # and always, true or false: a tenant's cicd.yaml must not be able to enable it where the platform has no provider
+        self.assertEqual(forwarded()["itsm"], {"enabled": False})
+        self.assertEqual(forwarded("--set", "itsm.enabled=false")["itsm"], {"enabled": False})
+        self.assertEqual(forwarded("--set", "itsm.enabled=true")["itsm"], {"enabled": True})
 
     def test_off_renders_nothing(self):
         pols, binds = policies("--set", "cicdRunAdmission.enabled=false")
@@ -661,7 +706,7 @@ class CicdRunAdmission(unittest.TestCase):
         self.refused(bad, msg="protected branch")
 
     def test_every_template_is_admitted_in_every_event_shape_pac_can_record_for_it(self):
-        found = delivered_templates()
+        found = delivered_templates(CATALOG_VARIANTS[:1])
         self.assertGreater(len(found), 15, "vacuous")
         shapes_seen = 0
         for path, d in found:
@@ -886,7 +931,7 @@ class CicdRunAdmission(unittest.TestCase):
     # ---- pipeline trust T4, step 2: the three split task accounts (specs/plans/pipeline-trust-t4-split-runner.md) ----
     SPLIT = {"release-record-writer": "recordWriterTasks", "clearance-gate": "clearanceTasks", "test-runner": "testRunnerTasks"}
     # the Tasks (by catalog name) each account is for, in the plan's Target table
-    SPLIT_CATALOG_TASKS = {"release-record-writer": {"open-release-pr", "mark-release-merged", "itsm-change", "itsm-gate"},
+    SPLIT_CATALOG_TASKS = {"release-record-writer": {"open-release-pr", "mark-release-merged", "itsm-change", "itsm-gate", "join-release"},
                            "clearance-gate": {"clearance-gate", "agent-gates", "agent-definitions", "agent-release"},
                            "test-runner": {"run-testworkflow"}}
 
@@ -934,6 +979,46 @@ class CicdRunAdmission(unittest.TestCase):
                         if ref and ref[0] in self.SPLIT_CATALOG_TASKS[account]:
                             want.setdefault(pname, set()).add(t["name"])
             self.assertEqual({k: sorted(v) for k, v in self.values[value].items()}, {k: sorted(v) for k, v in want.items()}, value)
+
+    def test_every_delivered_template_maps_the_writer_and_gate_tasks_of_its_pipeline_exactly(self):
+        # Pipeline trust T4, step 3: each .tekton template the platform delivers hands every record-writer, Clearance-token and test task of
+        # its Pipeline to the plan's account, and nothing else to a split account; and names only tasks its Pipeline has in this catalog
+        # (Tekton refuses a taskRunSpecs entry for a task the Pipeline lacks, so a gate's variant names, and a task only a provider-ful
+        # catalog has, are decided by task_names). Both gate variants and with and without a provider are checked.
+        account_of = {t: a for a, ts in self.SPLIT_CATALOG_TASKS.items() for t in ts}
+        mapped_tasks = set()
+        for name, extra in CATALOG_VARIANTS:
+            docs = render_catalog_itsm(*extra) if extra else render_catalog()
+            pipelines = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Pipeline"}
+            found = delivered_templates([(name, extra)])
+            self.assertGreater(len(found), 15, name)
+            for path, d in found:
+                pname = template_pipeline(d)
+                tasks = {}
+                for t in pipelines[pname]["spec"].get("tasks", []) + pipelines[pname]["spec"].get("finally", []):
+                    ref = [p["value"] for p in t.get("taskRef", {}).get("params", []) if p["name"] == "name"]
+                    tasks[t["name"]] = ref[0] if ref else None
+                want = {k: account_of[v] for k, v in tasks.items() if v in account_of}
+                got = {e["pipelineTaskName"]: e["serviceAccountName"] for e in d["spec"].get("taskRunSpecs", []) if e["serviceAccountName"] in self.SPLIT}
+                self.assertEqual(got, want, "%s (%s): %s" % (os.path.basename(path), name, pname))
+                for e in d["spec"].get("taskRunSpecs", []):
+                    self.assertIn(e["pipelineTaskName"], tasks, "%s (%s): names a task %s does not have" % (os.path.basename(path), name, pname))
+                # the run-wide account is still pipeline-runner, and a glidepath-api rerun copies the entries unchanged (T5)
+                self.assertEqual(d["spec"]["taskRunTemplate"]["serviceAccountName"], "pipeline-runner")
+                for task, account in got.items():
+                    self.assertIn(task, self.values[self.SPLIT[account]].get(pname, []), (path, pname, task, account))
+                    mapped_tasks.add((pname, task, account))
+        # nothing the templates map is missing from the admission lists, and the lists name nothing no template maps (each is a PaC-started Pipeline task)
+        # (the release and test Pipelines are started by a generated flow file, not a template: its generator maps open-release-pr and run-testworkflow)
+        _, gen = generator_params()
+        generated = set()
+        for stage, task, account in (("release", "open-release-pr", "release-record-writer"), ("test", "run-testworkflow", "test-runner")):
+            m = re.search(r'if \[\[ "\$\{root_stage\}" == "%s" \]\]; then(.*?)\n\s+fi' % stage, gen, re.S)
+            self.assertIsNotNone(m, stage)
+            self.assertIn((task, account), re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: ([^\s\"]+)", m.group(1)), stage)
+            generated.add((stage, task, account))
+        listed = {(p, t, a) for a, v in self.SPLIT.items() for p, ts in self.values[v].items() for t in ts}
+        self.assertEqual(mapped_tasks | generated, listed)
 
     def test_split_accounts_do_not_change_the_run_wide_account_or_who_else_is_allowed(self):
         for account in self.SPLIT:

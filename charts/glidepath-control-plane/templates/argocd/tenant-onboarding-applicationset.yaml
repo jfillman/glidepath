@@ -122,6 +122,10 @@ spec:
               observability:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
+              # Whether the catalog has a change-management provider: glidepath-app maps the itsm close tasks (values.yaml itsm.enabled). Always
+              # forwarded, true or false, so a tenant's cicd.yaml cannot turn the mappings on where the platform has no provider.
+              itsm:
+                enabled: {{ ternary "true" "false" (default false (.Values.itsm).enabled) }}
               {{- /* Pipelines-as-Code's per-repository queue: only the limits that are set, so unset forwards nothing. */}}
               {{- $pac := dict }}
               {{- range $k := list "concurrencyLimit" "appRepoConcurrencyLimit" "gitopsRepoConcurrencyLimit" "gitopsRepoProvenance" }}

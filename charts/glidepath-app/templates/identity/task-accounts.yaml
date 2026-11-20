@@ -1,8 +1,8 @@
 {{- $appNamespace := include "glidepath-app.namespace" . }}
 # Pipeline trust T4 (specs/plans/pipeline-trust-t4-split-runner.md in the hangar repository), step 2: three more task
-# accounts beside pipeline-runner, each holding one slice of what pipeline-runner holds today. ADDITIVE: no Task or run
-# names them yet (step 3 maps the tasks with taskRunSpecs), and pipeline-runner keeps every right it has until the
-# admission policies are in Deny (step 6 removes the ones that moved). Unconditional, like pipeline-runner: every
+# accounts beside pipeline-runner, each holding one slice of what pipeline-runner holds today. ADDITIVE: this file only adds
+# them. Step 3 maps the tasks to them with taskRunSpecs (the Trigger templates and the onboarding templates), and
+# pipeline-runner keeps every right it has until the admission policies are in Deny (step 6 removes the ones that moved). Unconditional, like pipeline-runner: every
 # Application has these identities regardless of its declared stages.
 #
 # What none of them can do, by construction and by the chart test (tests/pipeline_least_privilege_test.py): create a run

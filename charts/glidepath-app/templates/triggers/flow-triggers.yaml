@@ -322,6 +322,18 @@ spec:
         taskRunSpecs:
           - pipelineTaskName: run-integration-script
             serviceAccountName: source-runner
+          {{- /* Pipeline trust T4 (step 3): run-testworkflow forwards app-secrets and talks to Testkube, so it runs as test-runner
+          (identity/task-accounts.yaml), the only account that holds those, and nothing else in the run does. */}}
+          - pipelineTaskName: run-testworkflow
+            serviceAccountName: test-runner
+        {{- end }}
+        {{- /* Pipeline trust T4 (step 3): open-release-pr writes the release record, so it runs as release-record-writer
+        (identity/task-accounts.yaml). Every release Pipeline has it, always (the catalog renders it unconditionally), so Tekton's
+        check that a taskRunSpecs entry names a task of the Pipeline holds. Every other task of the run stays on pipeline-runner. */ -}}
+        {{- if eq $stageName "release" }}
+        taskRunSpecs:
+          - pipelineTaskName: open-release-pr
+            serviceAccountName: release-record-writer
         {{- end }}
         taskRunTemplate:
           serviceAccountName: pipeline-runner
