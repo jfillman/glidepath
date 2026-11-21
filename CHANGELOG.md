@@ -4,6 +4,10 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### I-1 interim guard: a flow may not have two release steps
+
+- `validateFlows` (glidepath-app) now refuses a flow with more than one `release` step, naming the flow and both steps. A release record is named per release chain (one flow), so two release steps wrote the same record and the second overwrote the first's PR, image and state. The owner chose this interim guard (option a, strip Y-41); per-environment record names (option b, hangar `specs/plans/i1-release-record-per-env.md`) stay deferred and would lift the limit. A scan of the 14 onboarded apps' `cicd.yaml` found at most one release step per flow. docs/user/cicd-yaml-reference.md, "How flows work". Test: `charts/glidepath-app/tests/test_roles_test.py`.
+
 ### W-8: api-compat and policy-validation hand their report over in the step log (`gateReports.transport`)
 
 - New catalog value `gateReports.transport` (`configmap` default: renders byte for byte as before; `log`). With `log`, `api-compat-gate` and `policy-validation-gate` write no ConfigMap: the full report goes into the gate step's own log as `glidepath:gate-report` lines (gzip + base64 chunks; their digest also goes to a new `report-digest` Task result), and `comment-pr-check-result` reads it from the TaskRuns of its own PipelineRun that run that gate's Task (step container `step-check` / `step-evaluate`), only the set that result names, never from a ConfigMap. Its log excerpts drop those lines. No new right, audience or endpoint; `pipeline-runner`'s `pods/log` read (kept by T4) does it. These were the last `pipeline-runner` ConfigMap writes once `promotion.gateLedger.writer` is `api`, so W-8 step 6 can remove `create`, `patch` and `delete` on ConfigMaps after both switches. `clearance-gate`'s report is unchanged. docs/admin/security.md, "Pipeline identities".

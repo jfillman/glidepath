@@ -277,7 +277,8 @@ pipelines:
     steps:
       - stage: build              # REQUIRED per step. One of build/test/deploy/
                                    # release. build, if present, must be the flow's
-                                   # first step - nothing chains into it.
+                                   # first step - nothing chains into it. At
+                                   # most one release step per flow.
         env: dev                  # Required for test/deploy/release steps; not
                                    # valid on build. Which environment this step
                                    # targets/exercises.
@@ -973,6 +974,16 @@ draft had one, but nothing ever read it (chaining was always determined by a ste
 index in the `steps:` list, looking at whichever stage the previous entry declares), so
 it was pure decoration that could silently disagree with what actually ran. It was
 removed rather than left in place. Write your steps in the order they execute.
+
+**A flow may have only one `release` step (multi-release flows are not supported yet).** The
+release record that tracks a release (its PR, state and change request) is named from the flow's
+chain id alone, and a flow is one chain. Two `release` steps in one flow would write the same
+record, and the second would overwrite the first's PR, image and state, so the first environment's
+release would silently lose its tracking. The chart refuses such a flow at render time with an error
+naming the flow and both steps. To release to several environments, put each release in its own
+flow, or promote with Tower's Promote (which starts its own flow and its own record). Release
+records are planned to be named per environment, which would lift this limit; until then the
+refusal stands.
 
 **Every `test` step needs `env` and a resolvable test name.** `env` says which
 environment's build this run is exercising (there's no default - a test result is
