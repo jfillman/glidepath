@@ -12,6 +12,7 @@ Renders glidepath-app and glidepath-catalog and asserts, from the manifests alon
     plan's Target table, in every namespace they are bound in, and nothing else: no run or pod creation, no token request,
     no impersonation, no delete, no Secret beyond test-runner's two named ones. pipeline-runner keeps all its rights until
     the plan's step 6 (a test asserts that too, so a removal is a deliberate edit of this file).
+  - glidepath-api's only grant here is configmaps patch in the app's -cicd namespace (the W-8 gate ledger).
   - every Trigger creates runs as pipeline-trigger, every run executes as pipeline-runner, and the broker may
     impersonate pipeline-trigger only.
   - the catalog's source-executing tasks carry no credential: no projected token, no kubectl, no secret mounted into
@@ -251,6 +252,18 @@ class Identities(unittest.TestCase):
         self.assertTrue(allows(rules, "", "secrets", "get", "dex-check-ride-credentials"))
         testkube = self.per_namespace(self.docs, "pipeline-runner").get("testkube", set())
         self.assertIn(("", "secrets", ("get", "patch", "update"), (TESTKUBE_SECRET,)), testkube)
+
+    def test_glidepath_api_may_only_patch_configmaps_here(self):
+        # W-8: glidepath-api writes the gate ledger itself (POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict). Its only grant
+        # from this chart is configmaps patch in the app's own -cicd namespace (no create, update, delete, no other resource);
+        # the control plane's gate-ledger-writes policy limits the patch to the ledger keys of a release record.
+        own = self.sas["pipeline-runner"]["metadata"]["namespace"]
+        bindings = [b for b in self.docs if b["kind"] in ("RoleBinding", "ClusterRoleBinding")
+                    and any(s.get("kind") == "ServiceAccount" and s.get("name") == "glidepath-api" for s in b.get("subjects") or [])]
+        self.assertEqual([(b["kind"], b["metadata"]["name"], b["metadata"]["namespace"]) for b in bindings],
+                         [("RoleBinding", "glidepath-api-gate-ledger", own)])
+        self.assertEqual([s.get("namespace") for s in bindings[0]["subjects"]], ["platform-system"])
+        self.assertEqual(self.per_namespace(self.docs, "glidepath-api"), {own: {("", "configmaps", ("patch",), ())}})
 
     def test_pipeline_trigger_creates_runs_and_nothing_else(self):
         self.assertIs(self.sas["pipeline-trigger"].get("automountServiceAccountToken"), False)

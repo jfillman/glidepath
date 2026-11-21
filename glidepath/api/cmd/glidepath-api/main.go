@@ -76,6 +76,7 @@ import (
 	"github.com/glidepath/api/internal/events"
 	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
+	"github.com/glidepath/api/internal/gateverdict"
 	"github.com/glidepath/api/internal/github"
 	"github.com/glidepath/api/internal/lineage"
 	"github.com/glidepath/api/internal/live"
@@ -326,6 +327,12 @@ func main() {
 				BotLogins:         splitList(env("PIPELINE_LOGINS", "")),
 			},
 			GitHub: func(app string) refprotection.Reader { return broker.Session(app) },
+		},
+		// POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict: the gate ledger, written as this account (pipeline trust T4, W-8).
+		GateVerdict: &gateverdict.Service{
+			Store:           gateverdict.KubeStore{Dyn: dyn, CS: cs},
+			ServiceAccounts: splitList(env("GATE_VERDICT_SERVICE_ACCOUNTS", "pipeline-runner")),
+			Now:             time.Now,
 		},
 		Events: store,
 		Tap: &events.Tap{

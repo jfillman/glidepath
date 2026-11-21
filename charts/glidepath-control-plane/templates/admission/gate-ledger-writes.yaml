@@ -1,0 +1,82 @@
+{{- if .Values.apiImage }}
+{{- $c := .Values.cicdRunAdmission }}
+# Pipeline trust T4, W-8 (hangar specs/plans/w8-gate-verdict-record-service.md): glidepath-api writes the gate ledger itself
+# (POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict, docs/admin/api.md "Gate verdicts"), as platform-system/glidepath-api,
+# with configmaps patch in each app's -cicd namespace (glidepath-app identity/glidepath-api-gate-ledger.yaml). RBAC cannot narrow
+# a patch to a name or to keys, so this policy does: a ConfigMap write by that account in a -cicd namespace must be an UPDATE of an
+# existing release record (named release-tracking-* and labelled hangar.io/subcomponent=release-tracking, before and after) that
+# leaves its labels as they were and changes, adds or removes no key but gate.<sha12>.<gate> (success or failure) and
+# gateRun.<sha12>.<gate>. No create, no delete (RBAC grants neither; this refuses them too).
+#
+# Deny from the start (cicdRunAdmission.gateLedgerActions): glidepath-api wrote no ConfigMap before this route. Every other
+# account is not matched. Every expression is has()-guarded and the matchCondition cannot raise, so a CEL error cannot refuse a
+# request beyond this one account's ConfigMap writes (failurePolicy Fail).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: gate-ledger-writes
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["configmaps"]
+  matchConditions:
+    - name: glidepath-api-in-a-cicd-namespace
+      expression: >-
+        has(request.userInfo) && has(request.userInfo.username) && has(request.namespace) &&
+        request.namespace.matches(r'^(app|infra)-[a-z0-9-]+-cicd$') &&
+        request.userInfo.username == 'system:serviceaccount:platform-system:glidepath-api'
+  variables:
+    - name: ledgerKey
+      expression: "r'^(gate|gateRun)\\.[0-9a-f]{12}\\.[a-z0-9][a-z0-9-]{0,62}$'"
+    - name: oldData
+      expression: "request.operation == 'UPDATE' && has(oldObject.data) ? oldObject.data : {}"
+    - name: newData
+      expression: "request.operation == 'UPDATE' && has(object.data) ? object.data : {}"
+    - name: oldLabels
+      expression: "request.operation == 'UPDATE' && has(oldObject.metadata) && has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}"
+    - name: newLabels
+      expression: "request.operation == 'UPDATE' && has(object.metadata) && has(object.metadata.labels) ? object.metadata.labels : {}"
+    - name: name
+      expression: >-
+        request.operation == 'UPDATE' && has(object.metadata) && has(object.metadata.name) && type(object.metadata.name) == string ?
+        object.metadata.name : ''
+  validations:
+    - expression: "request.operation == 'UPDATE'"
+      message: "glidepath-api may not create or delete a ConfigMap in a -cicd namespace: it only patches the gate ledger of an existing release record."
+    - expression: >-
+        variables.name.startsWith('release-tracking-') &&
+        'hangar.io/subcomponent' in variables.oldLabels && variables.oldLabels['hangar.io/subcomponent'] == 'release-tracking'
+      message: "glidepath-api may patch only a release record (an existing ConfigMap named release-tracking-* labelled hangar.io/subcomponent=release-tracking)."
+    - expression: "variables.oldLabels == variables.newLabels"
+      message: "glidepath-api may not change a release record's labels."
+    - expression: >-
+        variables.oldData.all(k, k.matches(variables.ledgerKey) || (k in variables.newData && variables.newData[k] == variables.oldData[k])) &&
+        variables.newData.all(k, k.matches(variables.ledgerKey) || k in variables.oldData)
+      message: "glidepath-api may change only the gate ledger keys (gate.<sha12>.<gate>, gateRun.<sha12>.<gate>) of a release record."
+    - expression: >-
+        variables.newData.all(k, !k.startsWith('gate.') ||
+          (k in variables.oldData && variables.oldData[k] == variables.newData[k]) || variables.newData[k] in ['success', 'failure'])
+      message: "A gate ledger verdict is success or failure."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: gate-ledger-writes
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+  {{- if not (has "Deny" $c.gateLedgerActions) }}
+  annotations:
+    glidepath.io/enforcement: "NOT ENFORCING: gateLedgerActions has no Deny (docs/admin/security.md, 'Pipeline identities')."
+  {{- end }}
+spec:
+  policyName: gate-ledger-writes
+  validationActions: {{ $c.gateLedgerActions | toJson }}
+{{- end }}

@@ -4,6 +4,13 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### W-8: glidepath-api writes the gate ledger (`POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict`)
+
+- New glidepath-api route (API 0.14.0): records a gate run's verdict in the release record's gate ledger as glidepath-api's own account. Only the run's own `comment-pr` pod may call it, with a projected token for the new audience `glidepath-gate-verdict` (TokenReview with that audience, then the token's pod claims); the verdict, PR, commit and gate are derived from the PipelineRun and its TaskRuns, never from the request; one write per run (`gateRun.<sha12>.<gate>`), an older run never overwrites a newer one; resourceVersion CAS as before. docs/admin/api.md, "Gate verdicts".
+- glidepath-app: Role `glidepath-api-gate-ledger` (`configmaps` `patch` only) in each app's `-cicd` namespace for `platform-system/glidepath-api`. Control plane: `gate-ledger-writes` ValidatingAdmissionPolicy (`cicdRunAdmission.gateLedgerActions`, default `[Deny]`): glidepath-api may only patch the ledger keys of an existing release record; new value `api.gateVerdict.serviceAccounts` (default `[pipeline-runner]`).
+- Catalog: `promotion.gateLedger.writer` (`direct` default: unchanged; `api`: `promotion-ready` calls the route, never patches a ConfigMap, reads the other gates from the answer, and when the API does not answer after a bounded retry decides from the check runs alone and exits 1 so it shows). Switch to `api` once the glidepath-api image with the route is live; W-8 step 6 follows.
+- Tests: `glidepath/api/internal/gateverdict`, `internal/server/gateverdict_test.go`, `record_policies_test.py` (gate-ledger-writes), `pipeline_least_privilege_test.py`, `promotion_fan_in_test.sh` (api scenarios).
+
 ### Pipeline trust T4, step 3: the writer, Clearance-token and test tasks run as their own accounts
 
 - Every run the platform starts now names the per-task account in `taskRunSpecs`: `open-release-pr`, `mark-release-merged`, `itsm-*` as `release-record-writer`; `clearance-gate` (fetch, register, render-check), `agent-gates`, `agent-definitions` and `agent-release` as `clearance-gate`; `run-testworkflow` as `test-runner`. Trigger templates and the onboarding templates (resynced into each app's `.tekton/`) both carry it; the onboarding task fills in the task names the catalog renders (`task_names`). New chart value `itsm.enabled` (default `false`) for the two Triggers that start the itsm close tasks. `pipeline-runner` keeps every right until step 6.

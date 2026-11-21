@@ -47,6 +47,9 @@ type Caller struct {
 	Groups     []string `json:"groups,omitempty"`
 	OnBehalfOf string   `json:"onBehalfOf,omitempty"`
 	Delegate   bool     `json:"delegate"`
+	// The pod a pod-bound ServiceAccount token was minted for (AuthenticateAudience only).
+	PodName string `json:"-"`
+	PodUID  string `json:"-"`
 }
 
 // Error carries the HTTP status and a stable rule id, in the shape Clearance's decisions use.

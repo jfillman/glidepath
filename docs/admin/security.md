@@ -304,6 +304,15 @@ What each part does.
   label (the writer can `get` PipelineRuns) and the commit from `revision`, with the promotion decision waiting a bounded time for its own
   gate's ledger entry before it reads the others (this restores the write-then-read order a Pipeline cannot express); (b) the
   glidepath-api record service the plan leaves as a follow-up (owner decision 1), which would take the write and the read.
+  The owner chose (b) (W-8, hangar `specs/plans/w8-gate-verdict-record-service.md`): `POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict`
+  (api.md, [Gate verdicts](api.md#gate-verdicts)). With the catalog's `promotion.gateLedger.writer: api` the `promotion-ready` step asks it
+  with a projected token for audience `glidepath-gate-verdict`; glidepath-api accepts only the `comment-pr` pod of that same run (TokenReview's
+  pod claims), derives the verdict, PR, commit and gate from the run and its TaskRuns, and patches the ledger as its own account, once per
+  run. Its only ConfigMap right is `patch` in each app's `-cicd` namespace (glidepath-app `identity/glidepath-api-gate-ledger.yaml`), and
+  the control plane's `gate-ledger-writes` policy (Deny from the start) admits only the `gate.<sha12>.<gate>` and `gateRun.<sha12>.<gate>`
+  keys of an existing release record. The default is still `direct` (the step patches as `pipeline-runner`) until glidepath-api serves the
+  route everywhere; after the switch, step 6 can remove `pipeline-runner`'s ConfigMap writes (`api-compat-gate` and `policy-validation-gate`
+  still write `gate-report-*` as `pipeline-runner` and need the same treatment first).
 
   RBAC cannot narrow `create` by name nor a ConfigMap write to keys, so until the admission policies of the next steps
   (`release-record-writes`, `gate-report-writes`) exist, a record write is limited by RBAC to `release-record-writer` only in

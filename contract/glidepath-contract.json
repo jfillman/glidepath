@@ -1397,7 +1397,7 @@
   ],
   "api": {
     "spec": "api/openapi.yaml",
-    "version": "0.13.0",
+    "version": "0.14.0",
     "actions": [
       {
         "operationId": "whoami",
@@ -1566,6 +1566,13 @@
         "path": "/v1/apps/{app}/pipelineruns/{name}/cancel",
         "tier": "T1",
         "summary": "Cancel a PipelineRun (CancelledRunFinally, so its finally tasks still report)"
+      },
+      {
+        "operationId": "recordGateVerdict",
+        "method": "POST",
+        "path": "/v1/apps/{app}/pipelineruns/{name}/gate-verdict",
+        "tier": "T1",
+        "summary": "Record a gate run's verdict in the release record's gate ledger (the gate's own comment-pr task only)"
       },
       {
         "operationId": "listPreviews",

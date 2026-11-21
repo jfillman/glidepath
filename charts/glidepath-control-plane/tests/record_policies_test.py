@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Tests for the release-record-writes and gate-report-writes admission policies (pipeline trust T4, step 5).
+"""Tests for the release-record-writes and gate-report-writes admission policies (pipeline trust T4, step 5), and gate-ledger-writes
+(W-8: glidepath-api's own gate ledger patch).
 
 Renders the chart, then evaluates the policies' own CEL (matchConditions, variables, validations) over fixtures with the same real CEL
 implementation (cel-python) cicd_run_admission_test.py uses, for each of the three task accounts, so a typo or a has()-less field access
@@ -247,6 +248,84 @@ class RecordPolicies(unittest.TestCase):
             for pol in (self.rec, self.rep):
                 for mc in pol["matchConditions"]:
                     self.assertFalse(cel(mc["expression"], act))
+
+
+API = "system:serviceaccount:platform-system:glidepath-api"
+SHA12 = "0123456789ab"
+
+
+class GateLedgerWrites(unittest.TestCase):
+    """gate-ledger-writes: glidepath-api may only patch the gate ledger keys of an existing release record."""
+
+    @classmethod
+    def setUpClass(cls):
+        docs = render()
+        cls.pol = {d["metadata"]["name"]: d["spec"] for d in docs if d["kind"] == "ValidatingAdmissionPolicy"}["gate-ledger-writes"]
+        cls.bind = {d["metadata"]["name"]: d for d in docs if d["kind"] == "ValidatingAdmissionPolicyBinding"}["gate-ledger-writes"]
+
+    def ev(self, new, old=None, **kw):
+        kw.setdefault("username", API)
+        return evaluate(self.pol, new, old=old, **kw)
+
+    def test_deny_from_the_start_and_fail_closed(self):
+        self.assertEqual(self.bind["spec"]["validationActions"], ["Deny"])
+        self.assertNotIn("annotations", self.bind["metadata"])
+        self.assertEqual(self.pol["failurePolicy"], "Fail")
+        self.assertEqual(self.pol["matchConstraints"]["resourceRules"][0]["operations"], ["CREATE", "UPDATE", "DELETE"])
+        b = {d["metadata"]["name"]: d for d in render("--set", "cicdRunAdmission.gateLedgerActions={Audit}")
+             if d["kind"] == "ValidatingAdmissionPolicyBinding"}["gate-ledger-writes"]
+        self.assertIn("NOT ENFORCING", b["metadata"]["annotations"]["glidepath.io/enforcement"])
+
+    def test_a_ledger_patch_is_admitted(self):
+        old = record(**{"gate.%s.sbom" % SHA12: "success"})
+        self.assertEqual(self.ev(record(**{"gate.%s.sbom" % SHA12: "success", "gate.%s.sast" % SHA12: "failure",
+                                           "gateRun.%s.sast" % SHA12: "2026-11-20T11:50:00Z sast-abcde"}), old), [])
+        # overwriting a verdict (a later run of the gate), and the infra namespaces
+        self.assertEqual(self.ev(record(**{"gate.%s.sbom" % SHA12: "failure"}), old), [])
+        self.assertEqual(self.ev(record(**{"gate.%s.sast" % SHA12: "success"}), record(), namespace="infra-queue-cicd"), [])
+
+    def test_anything_else_is_refused(self):
+        old = record()
+        cases = [
+            (record(**{"gate.%s.sast" % SHA12: "success"}), None, "CREATE"),                       # create
+            (None, old, "DELETE"),                                                                 # delete
+            (record(prUrl="https://github.com/o/gitops/pull/8"), old, "UPDATE"),                   # another key
+            (record(state="healthy"), old, "UPDATE"),
+            (record(extra="x"), old, "UPDATE"),                                                    # a new non-ledger key
+            (record(**{"gate.%s.sast" % SHA12: "maybe"}), old, "UPDATE"),                          # not a verdict
+            (record(**{"gate.short.sast": "success"}), old, "UPDATE"),                             # not a ledger key
+            (record(**{"gate.%s.Bad_Name" % SHA12: "success"}), old, "UPDATE"),
+        ]
+        gone = record()
+        del gone["data"]["image"]
+        cases.append((gone, old, "UPDATE"))                                                        # a removed key
+        relabel = record(**{"gate.%s.sast" % SHA12: "success"})
+        relabel["metadata"]["labels"]["hangar.io/app"] = "other"
+        cases.append((relabel, old, "UPDATE"))                                                     # a label change
+        other = cm("app-config", {}, {"gate.%s.sast" % SHA12: "success"})
+        cases.append((other, cm("app-config", {}, {}), "UPDATE"))                                  # not a record
+        named = cm(RECORD, {}, {"gate.%s.sast" % SHA12: "success"})
+        cases.append((named, cm(RECORD, {}, {}), "UPDATE"))                                        # named like one, not labelled
+        for new, o, op in cases:
+            got = self.ev(new, o, operation=op)
+            self.assertIsInstance(got, list, (new, op))
+            self.assertTrue(got, (new, op))
+
+    def test_only_glidepath_api_in_a_cicd_namespace(self):
+        r = record(state="healthy")
+        for u in (RUNNER, WRITER, "system:serviceaccount:platform-system:glidepath-relay", "system:serviceaccount:other:glidepath-api", "kubernetes-admin"):
+            self.assertIsNone(self.ev(r, record(), username=u), u)
+        for ns in ("app-sample-prod", "platform-system", "kube-system", ""):
+            self.assertIsNone(self.ev(r, record(), namespace=ns), ns)
+
+    def test_sparse_objects_do_not_raise(self):
+        shapes = [{}, {"metadata": {}}, {"metadata": {"name": 3}}, {"metadata": {"name": RECORD, "labels": {}}}, {"data": {}},
+                  {"metadata": {"name": RECORD, "labels": {LABEL: "release-tracking"}}}, {"metadata": {"name": "x"}, "data": {"a": "b"}}]
+        for new in shapes:
+            self.assertIsInstance(self.ev(copy.deepcopy(new), operation="CREATE"), list)
+            for old in shapes:
+                self.assertIsInstance(self.ev(copy.deepcopy(new), old=copy.deepcopy(old), operation="UPDATE"), list)
+            self.assertIsInstance(self.ev(None, old=copy.deepcopy(new), operation="DELETE"), list)
 
 
 if __name__ == "__main__":
