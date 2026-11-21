@@ -4,6 +4,11 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### W-8: api-compat and policy-validation hand their report over in the step log (`gateReports.transport`)
+
+- New catalog value `gateReports.transport` (`configmap` default: renders byte for byte as before; `log`). With `log`, `api-compat-gate` and `policy-validation-gate` write no ConfigMap: the full report goes into the gate step's own log as `glidepath:gate-report` lines (gzip + base64 chunks; their digest also goes to a new `report-digest` Task result), and `comment-pr-check-result` reads it from the TaskRuns of its own PipelineRun that run that gate's Task (step container `step-check` / `step-evaluate`), only the set that result names, never from a ConfigMap. Its log excerpts drop those lines. No new right, audience or endpoint; `pipeline-runner`'s `pods/log` read (kept by T4) does it. These were the last `pipeline-runner` ConfigMap writes once `promotion.gateLedger.writer` is `api`, so W-8 step 6 can remove `create`, `patch` and `delete` on ConfigMaps after both switches. `clearance-gate`'s report is unchanged. docs/admin/security.md, "Pipeline identities".
+- Tests: `charts/glidepath-catalog/tests/gate_report_log_test.sh` (new, in catalog-ci), log-mode cases in `api_compat_test.sh` and `policy_validation_test.sh`.
+
 ### W-8: glidepath-api writes the gate ledger (`POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict`)
 
 - New glidepath-api route (API 0.14.0): records a gate run's verdict in the release record's gate ledger as glidepath-api's own account. Only the run's own `comment-pr` pod may call it, with a projected token for the new audience `glidepath-gate-verdict` (TokenReview with that audience, then the token's pod claims); the verdict, PR, commit and gate are derived from the PipelineRun and its TaskRuns, never from the request; one write per run (`gateRun.<sha12>.<gate>`), an older run never overwrites a newer one; resourceVersion CAS as before. docs/admin/api.md, "Gate verdicts".

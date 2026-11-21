@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # api-compat-gate.yaml's script against stub GitHub/registry/Prometheus (curl), cosign and kubectl, with the real
-# oasdiff: every verdict, the owner override, usage, the JSON line Tower parses, and truncation. Needs helm, yq, jq
-# and oasdiff on PATH.
+# oasdiff: every verdict, the owner override, usage, the JSON line Tower parses, and truncation; and with
+# gateReports.transport log (W-8) the same report in the step's log instead of a ConfigMap. Needs helm, yq, jq and oasdiff on PATH.
 # Usage: charts/glidepath-catalog/tests/api_compat_test.sh
 set -u
 cd "$(dirname "$0")/../../.."
@@ -80,12 +80,18 @@ bundle() { # <spec-json> [apiType]
     | base64 | tr -d '\n' | jq -Rc '{dsseEnvelope: {payload: ., payloadType: "application/vnd.in-toto+json", signatures: [{sig: "s"}]}, verificationMaterial: {}}'
 }
 
+# The report a run left: the ConfigMap it applied or, with gateReports.transport log, the last set of report lines in its log.
+body() {
+  if [[ -f "$FX/applied.json" ]]; then jq -r '.data.body' "$FX/applied.json"; return; fi
+  local s; s="$(grep '^glidepath:gate-report api-compat ' "$FX/log" | tail -1 | cut -d' ' -f3)"
+  [[ -n "$s" ]] && awk -v s="$s" '$1 == "glidepath:gate-report" && $3 == s { printf "%s", $6 }' "$FX/log" | base64 -d | gzip -dc
+}
 new_case() { FX="$d/fx/$1"; mkdir -p "$FX"; export FX
   printf 'release:\n  image: {repository: ghcr.io/o/flight-api, tag: base}\n' > "$FX/base-manifest.yaml"
   bundle "${SPEC_BASE}" > "$FX/att-base.jsonl"; bundle "${SPEC_BASE}" > "$FX/att-cand.jsonl"; }
 run() { # <expect-verdict> <expect-exit> [ENV=V ...]
   local want="$1" want_rc="$2"; shift 2
-  sed -e "s|\$(results.outcome.path)|$FX/outcome|g" -e "s|\$(results.findings-summary.path)|$FX/summary|g" "$d/script.raw" > "$FX/script.sh"
+  sed -e "s|\$(results.outcome.path)|$FX/outcome|g" -e "s|\$(results.findings-summary.path)|$FX/summary|g" -e "s|\$(results.report-digest.path)|$FX/digest|g" "${SCRIPT:-$d/script.raw}" > "$FX/script.sh"
   local envs=(); while IFS= read -r kv; do envs+=("$kv"); done < <(jq -r '.[] | select(.value != null and (.value | test("^\\$\\(") | not)) | "\(.name)=\(.value)"' "$d/env.json")
   env "${envs[@]}" PATH="$d/bin:$PATH" PLATFORM_LIB="$d/lib" FX="$FX" DOCKER_CONFIG="$FX" \
     REPO_URL=https://github.com/o/gitops-flight-api REVISION=headsha PR_NUMBER=7 IMAGE_REF=ghcr.io/o/flight-api:cand \
@@ -94,7 +100,7 @@ run() { # <expect-verdict> <expect-exit> [ENV=V ...]
   local rc=$? got; got="$(cat "$FX/outcome" 2>/dev/null)"
   [[ "$got" == "$want" && "$rc" == "$want_rc" ]] || { echo "FAIL: $(basename "$FX"): verdict '$got' exit $rc, want '$want' exit $want_rc"; tail -15 "$FX/log"; fail=1; }
   # The contract line: present once, valid JSON, no "--" inside the HTML comment.
-  line="$(jq -r '.data.body' "$FX/applied.json" 2>/dev/null | grep -o '<!-- glidepath:api-compat .* -->')"
+  line="$(body 2>/dev/null | grep -o '<!-- glidepath:api-compat .* -->')"
   [[ "$(grep -c . <<<"$line")" == 1 ]] || { echo "FAIL: $(basename "$FX"): contract line missing"; fail=1; return; }
   j="${line#<!-- glidepath:api-compat }"; j="${j% -->}"
   [[ "$j" != *"--"* ]] || { echo "FAIL: $(basename "$FX"): '--' inside the HTML comment"; fail=1; }
@@ -169,7 +175,21 @@ bundle "${BIG}" > "$FX/att-base.jsonl"; bundle "${SPEC_BASE}" > "$FX/att-cand.js
 run warn 0
 jqt '.breakingTotal == 600 and (.breaking | length) < 600 and (.breaking | length) > 0' "truncate: total kept, list cut"
 [[ "$(wc -c < "$FX/report.json")" -le 40000 ]] || { echo "FAIL: truncate: JSON over budget"; fail=1; }
-[[ "$(jq -r '.data.body' "$FX/applied.json" | wc -c)" -lt 65536 ]] || { echo "FAIL: truncate: comment over GitHub's limit"; fail=1; }
-jq -r '.data.body' "$FX/applied.json" | grep -q '| … | 550 more' || { echo "FAIL: truncate: table not cut at 50"; fail=1; }
+[[ "$(body | wc -c)" -lt 65536 ]] || { echo "FAIL: truncate: comment over GitHub's limit"; fail=1; }
+body | grep -q '| … | 550 more' || { echo "FAIL: truncate: table not cut at 50"; fail=1; }
+
+# gateReports.transport log (W-8): no ConfigMap is written; the same report is in the step's log, as report lines printed last.
+body > "$d/truncate.md"; FX="$d/fx/warn"; body > "$d/warn.md"
+helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
+  --set apiCompat.usage.prod-cluster.url=http://prom.example --set gateReports.transport=log \
+  --show-only templates/tasks/api-compat-gate.yaml | yq '.spec.steps[0].script' > "$d/script-log.raw" || { echo "FAIL: render (log)"; exit 1; }
+new_case log-warn;        bundle "${SPEC_BREAK}" > "$FX/att-cand.jsonl"; SCRIPT="$d/script-log.raw" run warn 0 USAGE_CONFIG='{}'
+[[ ! -f "$FX/applied.json" ]] || { echo "FAIL: log-warn: a ConfigMap was written"; fail=1; }
+[[ "$(body)" == "$(cat "$d/warn.md")" ]] || { echo "FAIL: log-warn: the log's report differs from the ConfigMap's"; fail=1; }
+[[ -s "$FX/digest" && "$(grep -c "^glidepath:gate-report api-compat $(cat "$FX/digest") " "$FX/log")" -ge 1 ]] || { echo "FAIL: log-warn: no report-digest result naming the set"; fail=1; }
+[[ "$(grep -v '^verdict=' "$FX/log" | tail -1)" == "glidepath:gate-report api-compat "* ]] || { echo "FAIL: log-warn: the report lines are not last"; fail=1; }
+new_case log-truncate;    bundle "${BIG}" > "$FX/att-base.jsonl"; bundle "${SPEC_BASE}" > "$FX/att-cand.jsonl"; SCRIPT="$d/script-log.raw" run warn 0
+[[ "$(body)" == "$(cat "$d/truncate.md")" ]] || { echo "FAIL: log-truncate: the log's report differs from the ConfigMap's"; fail=1; }
+[[ "$(awk '/^glidepath:gate-report / && length > 8192' "$FX/log" | wc -l | tr -d ' ')" == 0 ]] || { echo "FAIL: log-truncate: a report line over 8 KiB"; fail=1; }
 
 [ $fail -eq 0 ] && echo ok || exit 1

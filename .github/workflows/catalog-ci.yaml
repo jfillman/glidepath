@@ -148,6 +148,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
       - run: charts/glidepath-catalog/tests/post_comment_test.sh
+      # gateReports.transport (W-8): log carries api-compat's and policy-validation's report in the gate's own step log, read
+      # back by comment-pr from that pod only; configmap renders as before.
+      - run: charts/glidepath-catalog/tests/gate_report_log_test.sh
 
   # The break-glass detector (detect-bypass-merge): a per-app advisory gate (releaseGuardrailOverridesByApp) merged
   # past red is not a bypass for that app, and still is for every other.

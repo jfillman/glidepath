@@ -192,6 +192,15 @@ qa:
   # Ns, Nm, Nh or Nd. A rollback to an eligible target is advisory and not held to this.
   maxAge: 72h
 
+# How api-compat-gate and policy-validation-gate hand their full report (too big for a Task result) to comment-pr-check-result
+# (pipeline trust T4, W-8; hangar specs/plans/pipeline-trust-t4-split-runner.md, "Addendum: the last runner gate reports").
+# configmap: the gate writes gate-report-<run> as pipeline-runner, as before. log: the gate prints the report into its own step's
+# log and comment-pr reads it from that pod (pods/log, which pipeline-runner keeps); nothing writes a ConfigMap, so pipeline-runner
+# can lose its ConfigMap writes (W-8 step 6). Switch to log once this catalog is installed: the reader and the writer are one
+# catalog release, and a run keeps the Tasks it resolved at its start. clearance-gate's report is unchanged (its own account).
+gateReports:
+  transport: configmap
+
 # The api-compat release check (docs/admin/api-compat.md).
 apiCompat:
   # Block (only when the gate is also required) when a breaking change touches an operation observed in use in the
