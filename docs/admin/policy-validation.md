@@ -28,7 +28,9 @@ release PR on gitops-<app>          broker (platform-system)               Kyver
    (below). The gate never receives a token for that repo: it also holds generated passwords.
 4. **Evaluate.** `kyverno apply` (1.19.0, the clusters' version) per environment, after normalizing the bundle for an
    offline run (below).
-5. **Report.** A PR comment with one row per finding: environment, policy, rule, resource, message.
+5. **Report.** A PR comment with one row per finding: environment, policy, rule, resource, message. The `comment-pr` task posts
+   it from a `gate-report-<run>` ConfigMap (catalog `gateReports.transport: configmap`, the default) or, with `log`, from the
+   `glidepath:gate-report` lines at the end of the `evaluate` step's log: no ConfigMap is written (docs/admin/security.md).
 
 | Result | Meaning | Check |
 |---|---|---|

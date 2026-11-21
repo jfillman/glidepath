@@ -708,3 +708,64 @@ release record as its own account) or api (glidepath-api's gate-verdict route wr
 {{- if not (has $w (list "direct" "api")) -}}{{- fail (printf "promotion.gateLedger.writer must be direct or api, not %q" $w) -}}{{- end -}}
 {{- $w -}}
 {{- end -}}
+
+{{/*
+How api-compat-gate and policy-validation-gate hand their full report to comment-pr-check-result (pipeline trust T4, W-8; hangar
+specs/plans/pipeline-trust-t4-split-runner.md, "Addendum: the last runner gate reports"): configmap (the gate writes gate-report-<run>
+as its own account, pipeline-runner) or log (the gate prints the report into its own step log and comment-pr reads it from that pod:
+nothing writes a ConfigMap).
+*/}}
+{{- define "glidepath-catalog.gateReportTransport" -}}
+{{- $t := ((.Values.gateReports | default dict).transport | default "configmap") -}}
+{{- if not (has $t (list "configmap" "log")) -}}{{- fail (printf "gateReports.transport must be configmap or log, not %q" $t) -}}{{- end -}}
+{{- $t -}}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.gateReportEmit: gate_report_emit, for a gate step with gateReports.transport log. The report file is printed into the step's
+own log as `glidepath:gate-report <gate> <sha256> <i> <n> <chunk>` lines: gzip, then base64, cut into chunks under the container runtime's
+16 KiB line split. The reader (gateReportReadLog) takes the last complete set, so the caller prints it LAST, after anything that echoes
+app-controlled text (an oasdiff change, a Kyverno message): a forged line printed before it cannot win, and the report's own text is inside
+the base64, where it cannot pose as a line.
+*/ -}}
+{{- define "glidepath-catalog.gateReportEmit" -}}
+gate_report_emit() { # <gate> <report file>
+  local b64 sum n i
+  b64="$(gzip -c < "$2" | base64 | tr -d '\n')"
+  sum="$(printf '%s' "${b64}" | sha256sum | cut -d' ' -f1)"
+  n=$(( (${#b64} + 5999) / 6000 ))
+  for (( i = 0; i < n; i++ )); do
+    printf 'glidepath:gate-report %s %s %d %d %s\n' "$1" "${sum}" "$(( i + 1 ))" "${n}" "${b64:$(( i * 6000 )):6000}"
+  done
+}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.gateReportReadLog: for comment-pr-check-result with gateReports.transport log. gate_report_source names the Task and step
+whose log holds a gate's report (nothing for a gate whose report is still a ConfigMap, clearance-gate). gate_report_from_log reads it from the
+TaskRuns of THIS PipelineRun that run that Task (taskrun_results: the controller sets those labels, and no task account can create a TaskRun),
+container step-<step> only, and prints the last complete set's report, or nothing. Needs taskrun_results, NAMESPACE, kubectl.
+*/ -}}
+{{- define "glidepath-catalog.gateReportReadLog" -}}
+gate_report_source() { # <gate>: "<task> <step>", or nothing
+  case "$1" in
+    api-compat) echo "api-compat-gate check" ;;
+    policy-validation) echo "policy-validation-gate evaluate" ;;
+  esac
+}
+gate_report_from_log() { # <gate> <task> <step>: the report, or nothing
+  local pods p lines="" sum b64
+  pods="$(jq -r --arg t "$2" '[.items[]? | select(.metadata.labels["tekton.dev/task"] == $t and (.status.podName // "") != "")]
+    | sort_by(.metadata.creationTimestamp) | .[].status.podName' <<<"${taskrun_results:-}" 2>/dev/null || true)"
+  for p in ${pods}; do
+    lines+="$(kubectl logs "${p}" -n "${NAMESPACE}" -c "step-$3" 2>/dev/null \
+      | grep -E "^glidepath:gate-report $1 [0-9a-f]{64} [0-9]+ [0-9]+ [A-Za-z0-9+/=]+\$" || true)"$'\n'
+  done
+  sum="$(grep . <<<"${lines}" | tail -n 1 | cut -d' ' -f3 || true)"
+  [[ -n "${sum}" ]] || return 0
+  b64="$(awk -v s="${sum}" '$3 == s && !($4 in c) { c[$4] = $6; n = $5 + 0 }
+    END { if (n < 1) exit 1; for (i = 1; i <= n; i++) { if (!(i in c)) exit 1; printf "%s", c[i] } }' <<<"${lines}")" || return 0
+  [[ "$(printf '%s' "${b64}" | sha256sum | cut -d' ' -f1)" == "${sum}" ]] || return 0
+  base64 -d <<<"${b64}" 2>/dev/null | gzip -dc 2>/dev/null || true
+}
+{{- end -}}

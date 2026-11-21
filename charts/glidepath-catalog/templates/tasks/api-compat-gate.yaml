@@ -344,6 +344,13 @@ spec:
           echo "<!-- glidepath:api-compat ${json} -->"
         } > "${work}/report.md"
         cat "${work}/report.md"
+{{- if eq (include "glidepath-catalog.gateReportTransport" .) "log" }}
+
+        # gateReports.transport log (W-8): no ConfigMap. The report goes into this step's log, last (nothing app-controlled is printed
+        # after it), and comment-pr-check-result reads it from this pod.
+        {{- include "glidepath-catalog.gateReportEmit" . | nindent 8 }}
+        gate_report_emit api-compat "${work}/report.md"
+{{- else }}
 
         # The report ConfigMap, owned by the PipelineRun so it goes when the run is pruned.
         uid="$(kubectl get pipelinerun "${PIPELINE_RUN}" -n "${NAMESPACE}" -o jsonpath='{.metadata.uid}' 2>/dev/null)"
@@ -353,6 +360,7 @@ spec:
               '.metadata.labels = {"glidepath.io/gate-report": "api-compat", "tekton.dev/pipelineRun": $run}
                | if $uid != "" then .metadata.ownerReferences = [{apiVersion: "tekton.dev/v1", kind: "PipelineRun", name: $run, uid: $uid}] else . end' \
           | kubectl apply -f - >/dev/null || echo "warning: could not write the report ConfigMap; the PR comment falls back to the summary" >&2
+{{- end }}
 
         printf '%s' "${verdict}" > "$(results.outcome.path)"
         printf '%s' "${title#\#\#\# } (${total} breaking, ${nonbreaking} other)" | head -c 900 > "$(results.findings-summary.path)"

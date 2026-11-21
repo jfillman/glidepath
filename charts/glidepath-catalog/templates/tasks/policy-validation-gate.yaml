@@ -406,6 +406,13 @@ spec:
         } > "${report}"
         cat "${report}"
         jq -r -s '.[] | "\(.level)\t\(.env)\t\(.policy // "")\t\(.resource // "")\t\(.message // "")"' /work/findings.jsonl
+{{- if eq (include "glidepath-catalog.gateReportTransport" .) "log" }}
+
+        # gateReports.transport log (W-8): no ConfigMap. The report goes into this step's log, after the findings lines above (which
+        # carry the rendered manifests' text), and comment-pr-check-result reads it from this pod.
+        {{- include "glidepath-catalog.gateReportEmit" . | nindent 8 }}
+        gate_report_emit policy-validation "${report}"
+{{- else }}
 
         # The report ConfigMap, owned by the PipelineRun so it goes when the run is pruned.
         if [[ -n "${PIPELINE_RUN}" ]]; then
@@ -417,6 +424,7 @@ spec:
                  | if $uid != "" then .metadata.ownerReferences = [{apiVersion: "tekton.dev/v1", kind: "PipelineRun", name: $run, uid: $uid}] else . end' \
             | kubectl apply -f - >/dev/null || echo "warning: could not write the report ConfigMap; the PR comment falls back to the summary" >&2
         fi
+{{- end }}
 
         write_results "${outcome}" "${title#\#\#\# } (${envs} environment(s), ${denies} deny, ${warns} warning(s))"
         echo "outcome=${outcome}"

@@ -2,7 +2,8 @@
 # policy-validation-gate.yaml's render and evaluate steps against fixtures (fixtures/policy-validation): a stand-in
 # chart, Airframe XRD plurals and a cluster's 30-policy tree with every policy shape the gate reads (Kyverno
 # ValidatingPolicy Deny/Audit, admission-only, namespaceSelector, a ClusterPolicy, native VAPs + bindings), with the
-# real helm and Kyverno CLI. The fetch step (git and the GitHub API) is replaced by the /work layout it leaves.
+# real helm and Kyverno CLI. The fetch step (git and the GitHub API) is replaced by the /work layout it leaves. With
+# gateReports.transport log (W-8) the report is in the evaluate step's log, printed last, and no ConfigMap is written.
 # Needs helm, yq, jq, python3 + pyyaml and kyverno (the toolbox's version) on PATH.
 # Usage: charts/glidepath-catalog/tests/policy_validation_test.sh
 set -u
@@ -23,7 +24,7 @@ source "${here}/lib/gate_chain.sh"
 # Paths the steps hardcode, the shared volume and the validator image's Airframe tree, replaced per scenario (the
 # ingest step's Python is a quoted heredoc, so a shell variable would not reach it). Used for the evaluate step.
 step() { # <index> <work dir>
-  yq ".spec.steps[$1].script" "$d/task.yaml" \
+  yq ".spec.steps[$1].script" "${TASK:-$d/task.yaml}" \
     | sed -e "s#/work#$2#g" -e "s#\$(results.outcome.path)#$2/outcome#g" -e "s#\$(results.findings-summary.path)#$2/summary#g" \
     | sed -e "s#/opt/airframe/charts/airframe-application#${fx}/chart#g" -e "s#/opt/airframe/xrds#${fx}/airframe/xrds#g" \
     > "$2/step$1.sh"  # /work first: the checkout path itself may contain "/work" (GitHub runners do)
@@ -132,5 +133,20 @@ step 3 "$WORK"
 ( cd "$WORK" && PATH="$d/bin:$PATH" PHASE=decide APP_NAME=x NAMESPACE=app-x-cicd PIPELINE_RUN="" bash "$WORK/step3.sh" ) > "$WORK/eval.log" 2>&1; echo $? > "$WORK/eval.rc"
 expect "skipped: outcome" "$(cat "$WORK/outcome")" skipped
 expect "skipped: exit" "$(cat "$WORK/eval.rc")" 0
+
+# gateReports.transport log (W-8): the red scenario again; the same report, in the evaluate step's log instead of a ConfigMap.
+helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --set gateReports.transport=log \
+  --show-only templates/tasks/policy-validation-gate.yaml > "$d/task-log.yaml" || { echo "FAIL: render (log)"; exit 1; }
+TASK="$d/task-log.yaml" run red-log red 'serviceType: NodePort
+serviceLabels: {team: skyport}'
+w="$d/red-log"
+expect "red-log: outcome" "$(cat "$w/outcome")" fail
+expect "red-log: exit" "$(cat "$w/eval.rc")" 1
+expect "red-log: no ConfigMap written" "$([[ -f "$w/applied.json" ]] && echo yes || echo no)" no
+s="$(grep '^glidepath:gate-report policy-validation ' "$w/eval.log" | tail -1 | cut -d' ' -f3)"
+expect "red-log: the log's report is the report" \
+  "$([[ -n "$s" ]] && awk -v s="$s" '$1 == "glidepath:gate-report" && $3 == s { printf "%s", $6 }' "$w/eval.log" | base64 -d | gzip -dc | cmp -s - "$w/report.md" && echo same)" same
+expect "red-log: the report lines are last (after the findings lines)" \
+  "$(grep -v '^outcome=' "$w/eval.log" | tail -1 | cut -d' ' -f1-2)" "glidepath:gate-report policy-validation"
 
 [[ "${fail}" == 0 ]] && echo "PASS policy_validation_test" || { echo "FAILED (KEEP=1 keeps ${d})"; exit 1; }

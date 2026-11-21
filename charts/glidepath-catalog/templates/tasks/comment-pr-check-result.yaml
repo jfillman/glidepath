@@ -139,6 +139,9 @@ spec:
         set -euo pipefail
         source "${PLATFORM_LIB}/github-app.sh"
         {{- include "glidepath-catalog.redactSecrets" . | nindent 8 }}
+{{- if eq (include "glidepath-catalog.gateReportTransport" .) "log" }}
+        {{- include "glidepath-catalog.gateReportReadLog" . | nindent 8 }}
+{{- end }}
 
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         # the whole repository name: a dot is part of it (acme.web), only a trailing .git is not
@@ -198,7 +201,11 @@ spec:
             pod_name="$(kubectl get taskrun "${advisory_failed}" -n "${NAMESPACE}" -o jsonpath='{.status.podName}' 2>/dev/null || true)"
             excerpt="(no log excerpt available)"
             if [[ -n "${pod_name}" ]]; then
+{{- if eq (include "glidepath-catalog.gateReportTransport" .) "log" }}
+              excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=200 2>/dev/null | { grep -v '^glidepath:gate-report ' || true; } | tail -n 20 | redact_secrets | tail -c 1200 || true)"
+{{- else }}
               excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=20 2>/dev/null | redact_secrets | tail -c 1200 || true)"
+{{- end }}
             fi
             if [[ "${ADVISORY_REASON}" == "not-required" ]]; then
               body="$(printf '### ⚠️ `%s` found a problem, advisory until the gate is required\n\nThis check would fail once the `%s` gate is required on this cluster (`required: true` on its `releaseGuardrails` entry in the Glidepath catalog, docs/admin/release-guardrails.md). It did not block because the gate runs report-only here. The finding is recorded here and on the check run.\n\n**What it found:**\n```\n%s\n```' \
@@ -240,7 +247,11 @@ spec:
           if [[ -n "${failed_taskrun}" ]]; then
             pod_name="$(kubectl get taskrun "${failed_taskrun}" -n "${NAMESPACE}" -o jsonpath='{.status.podName}' 2>/dev/null || true)"
             if [[ -n "${pod_name}" ]]; then
+{{- if eq (include "glidepath-catalog.gateReportTransport" .) "log" }}
+              log_excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=200 2>/dev/null | { grep -v '^glidepath:gate-report ' || true; } | tail -n 20 | redact_secrets | tail -c 1200 || true)"
+{{- else }}
               log_excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=20 2>/dev/null | redact_secrets | tail -c 1200 || true)"
+{{- end }}
             fi
           fi
           [[ -z "${log_excerpt}" ]] && log_excerpt="(no log excerpt available)"
@@ -300,8 +311,22 @@ spec:
         # A gate whose full report does not fit a Task result (4096 bytes) leaves it in a ConfigMap owned by its
         # PipelineRun, labelled glidepath.io/gate-report=<gate> (api-compat-gate.yaml). It replaces the plain
         # headline, or follows the failure text, so the comment carries the whole finding.
+{{- if eq (include "glidepath-catalog.gateReportTransport" .) "log" }}
+        # gateReports.transport log (W-8): api-compat and policy-validation leave their report in their own gate step's log, and only
+        # there: no ConfigMap is read for them, so no other pod of this namespace can supply one. Other gates (clearance-gate) still
+        # write a ConfigMap.
+        report=""; report_task=""; report_step=""
+        read -r report_task report_step <<<"$(gate_report_source "${GATE_NAME}")" || true
+        if [[ -n "${report_task}" ]]; then
+          report="$(gate_report_from_log "${GATE_NAME}" "${report_task}" "${report_step}")"
+        else
         report="$(kubectl get configmap -n "${NAMESPACE}" -l "glidepath.io/gate-report=${GATE_NAME},tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json 2>/dev/null \
           | jq -r '.items[0].data.body // empty')"
+        fi
+{{- else }}
+        report="$(kubectl get configmap -n "${NAMESPACE}" -l "glidepath.io/gate-report=${GATE_NAME},tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json 2>/dev/null \
+          | jq -r '.items[0].data.body // empty')"
+{{- end }}
         if [[ -n "${report}" ]]; then
           if [[ "${body}" == "### ❌"* ]]; then
             body="${body}"$'\n\n'"${report}"
