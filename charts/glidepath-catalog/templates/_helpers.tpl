@@ -724,12 +724,12 @@ nothing writes a ConfigMap).
 {{- /*
 glidepath-catalog.gateReportEmit: gate_report_emit, for a gate step with gateReports.transport log. The report file is printed into the step's
 own log as `glidepath:gate-report <gate> <sha256> <i> <n> <chunk>` lines: gzip, then base64, cut into chunks under the container runtime's
-16 KiB line split. The reader (gateReportReadLog) takes the last complete set, so the caller prints it LAST, after anything that echoes
-app-controlled text (an oasdiff change, a Kyverno message): a forged line printed before it cannot win, and the report's own text is inside
-the base64, where it cannot pose as a line.
+16 KiB line split. The digest also goes to the step's report-digest result, which only the step's script can write: the reader
+(gateReportReadLog) takes only the set with that digest, so lines that app-controlled text printed into the log (an oasdiff change, a Kyverno
+message), before or instead of these, are never taken. The caller still prints the set last.
 */ -}}
 {{- define "glidepath-catalog.gateReportEmit" -}}
-gate_report_emit() { # <gate> <report file>
+gate_report_emit() { # <gate> <report file> <report-digest result path>
   local b64 sum n i
   b64="$(gzip -c < "$2" | base64 | tr -d '\n')"
   sum="$(printf '%s' "${b64}" | sha256sum | cut -d' ' -f1)"
@@ -737,14 +737,16 @@ gate_report_emit() { # <gate> <report file>
   for (( i = 0; i < n; i++ )); do
     printf 'glidepath:gate-report %s %s %d %d %s\n' "$1" "${sum}" "$(( i + 1 ))" "${n}" "${b64:$(( i * 6000 )):6000}"
   done
+  printf '%s' "${sum}" > "$3"
 }
 {{- end -}}
 
 {{- /*
 glidepath-catalog.gateReportReadLog: for comment-pr-check-result with gateReports.transport log. gate_report_source names the Task and step
 whose log holds a gate's report (nothing for a gate whose report is still a ConfigMap, clearance-gate). gate_report_from_log reads it from the
-TaskRuns of THIS PipelineRun that run that Task (taskrun_results: the controller sets those labels, and no task account can create a TaskRun),
-container step-<step> only, and prints the last complete set's report, or nothing. Needs taskrun_results, NAMESPACE, kubectl.
+TaskRuns of THIS PipelineRun that run that Task (taskrun_results: the controller sets those labels, and no task account can create a TaskRun)
+and carry a report-digest result, container step-<step> only, takes only the set with that digest (the step's script wrote it; text in the log
+cannot), and prints the newest such report, or nothing (the comment then falls back to the summary). Needs taskrun_results, NAMESPACE, kubectl.
 */ -}}
 {{- define "glidepath-catalog.gateReportReadLog" -}}
 gate_report_source() { # <gate>: "<task> <step>", or nothing
@@ -754,18 +756,21 @@ gate_report_source() { # <gate>: "<task> <step>", or nothing
   esac
 }
 gate_report_from_log() { # <gate> <task> <step>: the report, or nothing
-  local pods p lines="" sum b64
-  pods="$(jq -r --arg t "$2" '[.items[]? | select(.metadata.labels["tekton.dev/task"] == $t and (.status.podName // "") != "")]
-    | sort_by(.metadata.creationTimestamp) | .[].status.podName' <<<"${taskrun_results:-}" 2>/dev/null || true)"
-  for p in ${pods}; do
-    lines+="$(kubectl logs "${p}" -n "${NAMESPACE}" -c "step-$3" 2>/dev/null \
-      | grep -E "^glidepath:gate-report $1 [0-9a-f]{64} [0-9]+ [0-9]+ [A-Za-z0-9+/=]+\$" || true)"$'\n'
-  done
-  sum="$(grep . <<<"${lines}" | tail -n 1 | cut -d' ' -f3 || true)"
-  [[ -n "${sum}" ]] || return 0
-  b64="$(awk -v s="${sum}" '$3 == s && !($4 in c) { c[$4] = $6; n = $5 + 0 }
-    END { if (n < 1) exit 1; for (i = 1; i <= n; i++) { if (!(i in c)) exit 1; printf "%s", c[i] } }' <<<"${lines}")" || return 0
-  [[ "$(printf '%s' "${b64}" | sha256sum | cut -d' ' -f1)" == "${sum}" ]] || return 0
-  base64 -d <<<"${b64}" 2>/dev/null | gzip -dc 2>/dev/null || true
+  local runs pod sum b64 out=""
+  runs="$(jq -r --arg t "$2" '[.items[]? | select(.metadata.labels["tekton.dev/task"] == $t and (.status.podName // "") != "")
+      | {pod: .status.podName, ts: (.metadata.creationTimestamp // ""),
+         sum: ([.status.results[]? | select(.name == "report-digest") | .value][0] // "")}
+      | select(.sum | test("^[0-9a-f]{64}$"))]
+    | sort_by(.ts) | .[] | "\(.pod) \(.sum)"' <<<"${taskrun_results:-}" 2>/dev/null || true)"
+  while read -r pod sum; do
+    [[ -n "${pod}" ]] || continue
+    b64="$(kubectl logs "${pod}" -n "${NAMESPACE}" -c "step-$3" 2>/dev/null \
+      | grep -E "^glidepath:gate-report $1 ${sum} [0-9]+ [0-9]+ [A-Za-z0-9+/=]+\$" \
+      | awk '!($4 in c) { c[$4] = $6; n = $5 + 0 }
+        END { if (n < 1) exit 1; for (i = 1; i <= n; i++) { if (!(i in c)) exit 1; printf "%s", c[i] } }')" || continue
+    [[ "$(printf '%s' "${b64}" | sha256sum | cut -d' ' -f1)" == "${sum}" ]] || continue
+    out="$(base64 -d <<<"${b64}" 2>/dev/null | gzip -dc 2>/dev/null || true)"
+  done <<<"${runs}"
+  [[ -z "${out}" ]] || printf '%s\n' "${out}"
 }
 {{- end -}}

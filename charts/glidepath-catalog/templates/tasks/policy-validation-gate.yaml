@@ -82,6 +82,10 @@ spec:
       description: pass | warn | fail | skipped
     - name: findings-summary
       description: One line for the PR comment's headline.
+{{- if eq (include "glidepath-catalog.gateReportTransport" .) "log" }}
+    - name: report-digest
+      description: "gateReports.transport log: the sha256 of the report lines this step printed. comment-pr-check-result takes only the set with this digest, so text printed into the log before them (by the app's data) cannot pose as the report."
+{{- end }}
   volumes:
     - name: github-token-broker-token
       projected:
@@ -411,7 +415,7 @@ spec:
         # gateReports.transport log (W-8): no ConfigMap. The report goes into this step's log, after the findings lines above (which
         # carry the rendered manifests' text), and comment-pr-check-result reads it from this pod.
         {{- include "glidepath-catalog.gateReportEmit" . | nindent 8 }}
-        gate_report_emit policy-validation "${report}"
+        gate_report_emit policy-validation "${report}" "$(results.report-digest.path)"
 {{- else }}
 
         # The report ConfigMap, owned by the PipelineRun so it goes when the run is pruned.

@@ -4,7 +4,8 @@
 # two gates print their report into their own step log instead of writing gate-report-<run>, and comment-pr read it from that pod only.
 # The round trip runs the rendered gate_report_emit and the rendered comment step against a fake kubectl (TaskRuns, pod logs, ConfigMaps)
 # and a fake curl (GitHub): the posted comment carries the report; a forged set printed earlier, one in another task's pod, a set with a
-# chunk missing and a ConfigMap are not taken; a failed gate's log excerpt shows no report lines. Needs helm, yq (mikefarah v4) and jq.
+# chunk missing or a bad digest, a set without the gate's report-digest result (the gate died before printing it) and a ConfigMap are not
+# taken; a failed gate's log excerpt shows no report lines. Needs helm, yq (mikefarah v4) and jq.
 # Usage: charts/glidepath-catalog/tests/gate_report_log_test.sh
 set -u
 cd "$(dirname "$0")/../../.."
@@ -52,6 +53,11 @@ expect "log api-compat: the report lines come after the report is printed" \
   "$(( $(last "$work/ac-log.sh" 'gate_report_emit api-compat') > $(last "$work/ac-log.sh" 'cat "${work}/report.md"') ))" 1
 expect "log policy-validation: the report lines come after the findings lines" \
   "$(( $(last "$work/pv-log.sh" 'gate_report_emit policy-validation') > $(last "$work/pv-log.sh" 'jq -r -s .\.\[\] | "\\(.level)') ))" 1
+for g in ac pv; do
+  expect "configmap $g: no report-digest result" "$(yq '[.spec.results[] | select(.name == "report-digest")] | length' "$work/$g-configmap.yaml")" 0
+  expect "log $g: a report-digest result, written by the emit call" \
+    "$(yq '[.spec.results[] | select(.name == "report-digest")] | length' "$work/$g-log.yaml")/$(grep -c 'gate_report_emit [a-z-]* "[^"]*" "$(results.report-digest.path)"' "$work/$g-log.sh")" 1/1
+done
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --set gateReports.transport=bogus \
   --show-only templates/tasks/api-compat-gate.yaml > /dev/null 2> "$work/bad.err"
 expect "an unknown transport fails the render" "$(grep -c 'gateReports.transport must be configmap or log' "$work/bad.err")" 1
@@ -60,7 +66,7 @@ expect "an unknown transport fails the render" "$(grep -c 'gateReports.transport
 awk '/^gate_report_emit\(\) \{/{on=1} on{print} on && /^\}$/{exit}' "$work/ac-log.sh" > "$work/emit.sh"
 [[ -s "$work/emit.sh" ]] || { echo "FAIL: gate_report_emit not found in the rendered api-compat-gate"; exit 1; }
 source "$work/emit.sh"
-emit() { gate_report_emit "$@"; } # <gate> <file>
+emit() { gate_report_emit "$1" "$2" "$work/sum-$3"; } # <gate> <file> <tag>: the digest result lands in $work/sum-<tag>
 
 # The real report: big enough for several chunks (incompressible lines), with markdown, emoji and a line that looks like a report line.
 {
@@ -77,23 +83,26 @@ emit() { gate_report_emit "$@"; } # <gate> <file>
 printf 'FORGED report\n' > "$work/forged.md"
 {
   echo "fetching the candidate's spec"
-  emit api-compat "$work/forged.md"   # a forged set printed before the real one (as app-controlled text could be)
-  cat "$work/real.md"                 # the plain report, as the step prints it
-  emit api-compat "$work/real.md"
+  emit api-compat "$work/forged.md" forged   # a forged set printed before the real one (as app-controlled text could be)
+  cat "$work/real.md"                        # the plain report, as the step prints it
+  emit api-compat "$work/real.md" real
+  emit api-compat "$work/forged.md" forged   # and one after it: the order does not decide, the digest result does
   echo "verdict=warn"
 } > "$work/gate.log"
 expect "the real report spans several lines" "$(( $(grep -c "^glidepath:gate-report api-compat [0-9a-f]\{64\} " "$work/gate.log") > 3 ))" 1
 expect "no report line is over 8 KiB" "$(awk 'length > 8192' "$work/gate.log" | wc -l | tr -d ' ')" 0
 # a set with its second chunk missing
-awk -v s="$(grep '^glidepath:gate-report ' "$work/gate.log" | tail -1 | cut -d' ' -f3)" '!($1 == "glidepath:gate-report" && $3 == s && $4 == 2)' \
+awk -v s="$(cat "$work/sum-real")" '!($1 == "glidepath:gate-report" && $3 == s && $4 == 2)' \
   "$work/gate.log" > "$work/gate-cut.log"
 # a set whose second chunk was altered (every line there, the digest no longer matches)
-awk -v s="$(grep '^glidepath:gate-report ' "$work/gate.log" | tail -1 | cut -d' ' -f3)" \
+awk -v s="$(cat "$work/sum-real")" \
   '$1 == "glidepath:gate-report" && $3 == s && $4 == 2 { $6 = "AAAA" substr($6, 5) } { print }' "$work/gate.log" > "$work/gate-bad.log"
 # render-manifests' pod (another Task of the run) printing a complete set of its own
-{ emit api-compat "$work/forged.md"; } > "$work/render.log"
+{ emit api-compat "$work/forged.md" forged; } > "$work/render.log"
+# the gate died before printing its report: only app-controlled text (a complete forged set) is in its log
+{ echo "fetching the candidate's spec"; emit api-compat "$work/forged.md" forged; } > "$work/died.log"
 { echo "evaluating"; } > "$work/pv-fetch.log"
-{ echo "kyverno apply ..."; emit policy-validation "$work/real.md"; echo "outcome=warn"; } > "$work/pv-eval.log"
+{ echo "kyverno apply ..."; emit policy-validation "$work/real.md" pv; echo "outcome=warn"; } > "$work/pv-eval.log"
 
 mkdir -p "$work/bin" "$work/lib"
 echo 'github_app_installation_token() { echo gh-token; }' > "$work/lib/github-app.sh"
@@ -132,9 +141,10 @@ esac
 EOF
 chmod +x "$work/bin/"*
 
-taskrun() { # <name> <task> <pipelineTask> <pod> <True|False> <created>
-  jq -nc --arg n "$1" --arg t "$2" --arg pt "$3" --arg p "$4" --arg s "$5" --arg c "$6" \
-    '{metadata: {name: $n, creationTimestamp: $c, labels: {"tekton.dev/task": $t, "tekton.dev/pipelineTask": $pt}}, status: {podName: $p, conditions: [{status: $s}]}}'
+taskrun() { # <name> <task> <pipelineTask> <pod> <True|False> <created> [report-digest result]
+  jq -nc --arg n "$1" --arg t "$2" --arg pt "$3" --arg p "$4" --arg s "$5" --arg c "$6" --arg d "${7:-}" \
+    '{metadata: {name: $n, creationTimestamp: $c, labels: {"tekton.dev/task": $t, "tekton.dev/pipelineTask": $pt}},
+      status: ({podName: $p, conditions: [{status: $s}]} + (if $d == "" then {} else {results: [{name: "report-digest", value: $d}]} end))}'
 }
 fx() { FX="$work/fx-$1"; mkdir -p "$FX/gate"; export FX; } # <name>: a fresh scenario directory
 run() { # <gate> <status> <taskrun json lines...>: runs the comment step (log mode unless STEP) in $FX; $FX/posted is the comment body
@@ -150,8 +160,10 @@ logs() { # <pod> <container|all> <file>
   cp "$3" "$FX/log-$1-$2"
 }
 
-GATE_TR="$(taskrun tr-gate api-compat-gate compare-api pod-gate True 2026-11-20T10:00:05Z)"
-RENDER_TR="$(taskrun tr-render render-manifests render pod-render True 2026-11-20T10:00:09Z)"
+REAL="$(cat "$work/sum-real")"; FORGED="$(cat "$work/sum-forged")"; PV="$(cat "$work/sum-pv")"
+expect "the digest result is the set's digest" "$(grep -c "^glidepath:gate-report api-compat ${REAL} " "$work/gate.log" | sed 's/^[1-9][0-9]*$/yes/')" yes
+GATE_TR="$(taskrun tr-gate api-compat-gate compare-api pod-gate True 2026-11-20T10:00:05Z "$REAL")"
+RENDER_TR="$(taskrun tr-render render-manifests render pod-render True 2026-11-20T10:00:09Z "$FORGED")"
 
 fx pass; logs pod-gate step-check "$work/gate.log"; logs pod-render step-check "$work/render.log"; logs pod-render step-render "$work/render.log"
 run api-compat Succeeded "$GATE_TR" "$RENDER_TR"
@@ -177,13 +189,23 @@ fx bad; logs pod-gate step-check "$work/gate-bad.log"
 run api-compat Succeeded "$GATE_TR"
 expect "bad digest: the plain headline" "$(tail -n +2 "$FX/posted")" '### ✅ `api-compat` passed'
 
+# The gate died before printing its report (no report-digest result): the forged set in its log is not taken.
+fx died; logs pod-gate step-check "$work/died.log"
+run api-compat Succeeded "$(taskrun tr-gate api-compat-gate compare-api pod-gate True 2026-11-20T10:00:05Z)"
+expect "died: the plain headline, not the forged set" "$(tail -n +2 "$FX/posted")" '### ✅ `api-compat` passed'
+expect "died: no log read without a digest result" "$(grep -c '^logs' "$FX/kubectl-calls")" 0
+# and with a digest result whose set is not in the log, neither
+fx died2; logs pod-gate step-check "$work/died.log"
+run api-compat Succeeded "$GATE_TR"
+expect "died2: the plain headline" "$(tail -n +2 "$FX/posted")" '### ✅ `api-compat` passed'
+
 # No TaskRun of the gate's Task (the gate was skipped): the plain headline, and still no ConfigMap.
 fx none; run api-compat Succeeded "$RENDER_TR"
 expect "none: the plain headline" "$(tail -n +2 "$FX/posted")" '### ✅ `api-compat` passed'
 expect "none: no ConfigMap read" "$(grep -c '^get configmap' "$FX/kubectl-calls")" 0
 
 # A block: the failure text, its log excerpt without report lines, then the report.
-BLOCK_TR="$(taskrun tr-gate api-compat-gate compare-api pod-gate False 2026-11-20T10:00:05Z)"
+BLOCK_TR="$(taskrun tr-gate api-compat-gate compare-api pod-gate False 2026-11-20T10:00:05Z "$REAL")"
 fx block; logs pod-gate step-check "$work/gate.log"; logs pod-gate all "$work/gate.log"
 run api-compat Failed "$BLOCK_TR"
 expect "block: the failure headline" "$(sed -n 2p "$FX/posted")" '### ❌ `api-compat` failed'
@@ -195,13 +217,13 @@ expect "block: the report follows, whole" "$(tail -n "$(wc -l < "$work/real.md")
 # policy-validation: two TaskRuns of its Task (fetch, then evaluate); the report is in the evaluate step's log of the second.
 fx pv; logs pod-fetch step-evaluate "$work/pv-fetch.log"; logs pod-eval step-evaluate "$work/pv-eval.log"
 run policy-validation Succeeded "$(taskrun tr-fetch policy-validation-gate fetch pod-fetch True 2026-11-20T10:00:01Z)" \
-  "$(taskrun tr-eval policy-validation-gate evaluate pod-eval True 2026-11-20T10:00:30Z)"
+  "$(taskrun tr-eval policy-validation-gate evaluate pod-eval True 2026-11-20T10:00:30Z "$PV")"
 expect "pv: the report" "$(tail -n +2 "$FX/posted" | cmp -s - "$work/real.md" && echo same)" same
-expect "pv: the evaluate step of both TaskRuns, nothing else" "$(grep '^logs' "$FX/kubectl-calls" | sort | tr '\n' ';')" \
-  "logs pod-eval -n app-y-cicd -c step-evaluate;logs pod-fetch -n app-y-cicd -c step-evaluate;"
+expect "pv: only the evaluate step of the TaskRun with a digest result" "$(grep '^logs' "$FX/kubectl-calls" | sort | tr '\n' ';')" \
+  "logs pod-eval -n app-y-cicd -c step-evaluate;"
 # a report line for another gate in its log is not taken
 fx pv-other; logs pod-eval step-evaluate "$work/gate.log"
-run policy-validation Succeeded "$(taskrun tr-eval policy-validation-gate evaluate pod-eval True 2026-11-20T10:00:30Z)"
+run policy-validation Succeeded "$(taskrun tr-eval policy-validation-gate evaluate pod-eval True 2026-11-20T10:00:30Z "$REAL")"
 expect "pv-other: api-compat's lines do not count for policy-validation" "$(tail -n +2 "$FX/posted")" '### ✅ `policy-validation` passed'
 
 # clearance-gate keeps its ConfigMap, and no log is read for it.

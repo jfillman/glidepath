@@ -25,7 +25,7 @@ source "${here}/lib/gate_chain.sh"
 # ingest step's Python is a quoted heredoc, so a shell variable would not reach it). Used for the evaluate step.
 step() { # <index> <work dir>
   yq ".spec.steps[$1].script" "${TASK:-$d/task.yaml}" \
-    | sed -e "s#/work#$2#g" -e "s#\$(results.outcome.path)#$2/outcome#g" -e "s#\$(results.findings-summary.path)#$2/summary#g" \
+    | sed -e "s#/work#$2#g" -e "s#\$(results.outcome.path)#$2/outcome#g" -e "s#\$(results.findings-summary.path)#$2/summary#g" -e "s#\$(results.report-digest.path)#$2/digest#g" \
     | sed -e "s#/opt/airframe/charts/airframe-application#${fx}/chart#g" -e "s#/opt/airframe/xrds#${fx}/airframe/xrds#g" \
     > "$2/step$1.sh"  # /work first: the checkout path itself may contain "/work" (GitHub runners do)
 }
@@ -146,6 +146,7 @@ expect "red-log: no ConfigMap written" "$([[ -f "$w/applied.json" ]] && echo yes
 s="$(grep '^glidepath:gate-report policy-validation ' "$w/eval.log" | tail -1 | cut -d' ' -f3)"
 expect "red-log: the log's report is the report" \
   "$([[ -n "$s" ]] && awk -v s="$s" '$1 == "glidepath:gate-report" && $3 == s { printf "%s", $6 }' "$w/eval.log" | base64 -d | gzip -dc | cmp -s - "$w/report.md" && echo same)" same
+expect "red-log: the report-digest result names the set" "$(cat "$w/digest" 2>/dev/null)" "$s"
 expect "red-log: the report lines are last (after the findings lines)" \
   "$(grep -v '^outcome=' "$w/eval.log" | tail -1 | cut -d' ' -f1-2)" "glidepath:gate-report policy-validation"
 

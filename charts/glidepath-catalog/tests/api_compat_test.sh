@@ -91,7 +91,7 @@ new_case() { FX="$d/fx/$1"; mkdir -p "$FX"; export FX
   bundle "${SPEC_BASE}" > "$FX/att-base.jsonl"; bundle "${SPEC_BASE}" > "$FX/att-cand.jsonl"; }
 run() { # <expect-verdict> <expect-exit> [ENV=V ...]
   local want="$1" want_rc="$2"; shift 2
-  sed -e "s|\$(results.outcome.path)|$FX/outcome|g" -e "s|\$(results.findings-summary.path)|$FX/summary|g" "${SCRIPT:-$d/script.raw}" > "$FX/script.sh"
+  sed -e "s|\$(results.outcome.path)|$FX/outcome|g" -e "s|\$(results.findings-summary.path)|$FX/summary|g" -e "s|\$(results.report-digest.path)|$FX/digest|g" "${SCRIPT:-$d/script.raw}" > "$FX/script.sh"
   local envs=(); while IFS= read -r kv; do envs+=("$kv"); done < <(jq -r '.[] | select(.value != null and (.value | test("^\\$\\(") | not)) | "\(.name)=\(.value)"' "$d/env.json")
   env "${envs[@]}" PATH="$d/bin:$PATH" PLATFORM_LIB="$d/lib" FX="$FX" DOCKER_CONFIG="$FX" \
     REPO_URL=https://github.com/o/gitops-flight-api REVISION=headsha PR_NUMBER=7 IMAGE_REF=ghcr.io/o/flight-api:cand \
@@ -186,6 +186,7 @@ helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/value
 new_case log-warn;        bundle "${SPEC_BREAK}" > "$FX/att-cand.jsonl"; SCRIPT="$d/script-log.raw" run warn 0 USAGE_CONFIG='{}'
 [[ ! -f "$FX/applied.json" ]] || { echo "FAIL: log-warn: a ConfigMap was written"; fail=1; }
 [[ "$(body)" == "$(cat "$d/warn.md")" ]] || { echo "FAIL: log-warn: the log's report differs from the ConfigMap's"; fail=1; }
+[[ -s "$FX/digest" && "$(grep -c "^glidepath:gate-report api-compat $(cat "$FX/digest") " "$FX/log")" -ge 1 ]] || { echo "FAIL: log-warn: no report-digest result naming the set"; fail=1; }
 [[ "$(grep -v '^verdict=' "$FX/log" | tail -1)" == "glidepath:gate-report api-compat "* ]] || { echo "FAIL: log-warn: the report lines are not last"; fail=1; }
 new_case log-truncate;    bundle "${BIG}" > "$FX/att-base.jsonl"; bundle "${SPEC_BASE}" > "$FX/att-cand.jsonl"; SCRIPT="$d/script-log.raw" run warn 0
 [[ "$(body)" == "$(cat "$d/truncate.md")" ]] || { echo "FAIL: log-truncate: the log's report differs from the ConfigMap's"; fail=1; }

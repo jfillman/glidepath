@@ -319,8 +319,10 @@ What each part does.
   `glidepath:gate-report <gate> <sha256> <i> <n> <chunk>` lines (gzip and base64, under 8 KiB a line), last, after everything that
   echoes app-controlled text; `comment-pr-check-result` reads it back with the `pods/log` right `pipeline-runner` already keeps, from the
   TaskRuns of its own PipelineRun that run that gate's Task (`api-compat-gate`, step `check`; `policy-validation-gate`, step
-  `evaluate`) and from no other pod, takes the last complete set whose chunks add up to its digest, and reads no ConfigMap for those two
-  gates. So no account gains a right, no token audience or endpoint is added, and a report can no longer be supplied by another pod of the
+  `evaluate`) and from no other pod, takes only the set whose digest the step also wrote to its `report-digest` Task result (a file
+  only the step's script writes, so text the app controls that lands in the log, before or instead of the report, never counts; no
+  result, no report: the comment falls back to the summary), checks that its chunks add up to that digest, and reads no ConfigMap for
+  those two gates. So no account gains a right, no token audience or endpoint is added, and a report can no longer be supplied by another pod of the
   namespace (any `pipeline-runner` pod could write any run's `gate-report-<run>` before). A report is still a display artifact: a gate's
   own pod can say anything in it, as before. The default is `configmap` (renders as before); `clearance-gate` keeps its ConfigMap under
   its own account (`gate-report-writes`). Hangar `specs/plans/pipeline-trust-t4-split-runner.md`, "Addendum: the last runner gate
