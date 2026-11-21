@@ -6,6 +6,8 @@
 # merged PR or a PR without a release file. A green run past (or within a minute of) its tasks timeout is not taken as
 # green: Tekton ends it timed out (2026-10-29). With releaseGuardrailOverridesByApp (2026-10-28) a gate advisory for one app
 # (backstage: image-scan) does not hold that app's promotion, red or last, and still holds every other app's.
+# With promotion.gateLedger.writer api (W-8) glidepath-api records the verdict: the step never patches, reads the others from the
+# answer, and when the API does not answer decides from the check runs alone and exits 1.
 # Needs helm, yq (mikefarah v4) and jq.
 # Usage: charts/glidepath-catalog/tests/promotion_fan_in_test.sh
 set -u
@@ -22,34 +24,49 @@ render_step() { # <out> [extra helm args...]
     --set promotion.enabled=true --set promotion.pinDigest=true --set registries.flight.namespace=riley-roooo "$@" \
     --show-only templates/tasks/comment-pr-check-result.yaml > "$work/task.yaml" || exit 1
   yq '.spec.steps[] | select(.name == "promotion-ready") | .script' "$work/task.yaml" \
-    | sed "s#/var/run/secrets/platform/broker-token#$work/broker-token#" > "$work/$out"
+    | sed -e "s#/var/run/secrets/platform/broker-token#$work/broker-token#" -e "s#/var/run/secrets/platform/glidepath-api-token#$work/gv-token#" > "$work/$out"
   [[ -s "$work/$out" ]] || { echo "FAIL: no promotion-ready step rendered ($out)"; exit 1; }
 }
 # Every scenario runs against the per-app render (backstage: image-scan advisory); the gate-api ones are untouched by it.
 render_step step.sh --set-json 'releaseGuardrailOverridesByApp={"backstage":{"image-scan":{"required":false}}}'
+cp "$work/task.yaml" "$work/task-direct.yaml"
 render_step step-noapp.sh
 # C-7: Clearance's App reports the agent checks; nothing of Glidepath runs for them.
 render_step step-clearance.sh --set agentGates.clearanceUrl=http://clearance.example --set agentGates.clearanceChecks=true
+# W-8: glidepath-api writes the gate ledger (promotion.gateLedger.writer api).
+render_step step-api.sh --set promotion.gateLedger.writer=api
+cp "$work/task.yaml" "$work/task-api.yaml"
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
   --show-only templates/tasks/comment-pr-check-result.yaml | yq -e '.spec.steps[] | select(.name == "promotion-ready")' >/dev/null 2>&1 \
   && { echo "FAIL: promotion-ready renders with promotion off"; fail=1; }
 echo t > "$work/broker-token"
+echo gv-tok > "$work/gv-token"
 
 mkdir -p "$work/bin" "$work/lib"
 echo 'github_app_installation_token() { echo gh-token; }' > "$work/lib/github-app.sh"
 cat > "$work/bin/curl" <<'EOF'
 #!/usr/bin/env bash
-method=GET url="" data=""
+method=GET url="" data="" out="" fmt="" auth=""
 while (( $# )); do
   case "$1" in
     -X) method="$2"; shift ;;
     -d) data="$2"; shift ;;
-    -H|--max-time|--retry) shift ;;
+    -o) out="$2"; shift ;;
+    -w) fmt="$2"; shift ;;
+    -H) [[ "$2" == Authorization:* ]] && auth="$2"; shift ;;
+    --max-time|--retry|--retry-max-time) shift ;;
     http*) url="$1" ;;
   esac
   shift
 done
 case "$method $url" in
+  "POST http://glidepath-api"*/gate-verdict)
+    # W-8: glidepath-api's answer (gv.json, HTTP gv-code, default 200); the call is recorded with its token.
+    printf '%s %s %s\n' "$url" "$auth" "$data" >> "$FX/gv-calls"
+    [[ ! -f "$FX/gv-down" ]] || exit 7
+    cat "$FX/gv.json" > "${out:-/dev/stdout}" 2>/dev/null || echo '{}' > "${out:-/dev/stdout}"
+    [[ -z "$fmt" ]] || printf '%s' "$(cat "$FX/gv-code" 2>/dev/null || echo 200)"
+    exit 0 ;;
   "POST http://el-cdevents-broker"*) printf '%s\n' "$data" >> "$FX/events"; exit 0 ;;
   "GET "*/pulls/53/files*) [[ ! -f "$FX/files-fail" ]] || exit 22; cat "$FX/files.json" ;;
   "GET "*/pulls/53) cat "$FX/pr.json" ;;
@@ -106,6 +123,7 @@ scenario() { # <name> [gate]: a promotable release PR whose required gates are g
 run() {
   ( cd "$FX" && PATH="$work/bin:$PATH" PLATFORM_LIB="$work/lib" GATE_WORK="$FX/gate" GITHUB_TOKEN_BROKER_URL=x \
       CDEVENTS_BROKER_URL=http://el-cdevents-broker.platform-system.svc.cluster.local:8080 \
+      GLIDEPATH_API_URL=http://glidepath-api.platform-system.svc.cluster.local:8080 \
       REPO_URL="https://github.com/jfillman/gitops-${APP:-gate-api}" REVISION="${REV-$SHA}" GATE_NAME="$GATE" \
       PIPELINE_RUN_NAME="$GATE-x1" NAMESPACE="app-${APP:-gate-api}-cicd" bash "$work/${STEP:-step.sh}" ) > "$FX/out" 2>&1
   echo $? > "$FX/rc"
@@ -341,6 +359,71 @@ expect "clearance never reports: says agent-scope is missing" "$(grep -c 'agent-
 scenario cc-impostor; cc_checks success success
 jq '.check_runs |= map(if .name == "Clearance / agent-scope" then .name = "Pipelines as Code CI / agent-scope-" else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"; run
 expect "a Glidepath-named agent-scope- does not count: no event" "$(events)" 0
+STEP=
+
+# ---- W-8: promotion.gateLedger.writer api. glidepath-api records the verdict (it derives it from the run; nothing is sent) and
+# answers with this commit's ledger; the step never patches a ConfigMap, reads the other gates from the answer, and when the API
+# does not answer decides from the check runs alone and exits 1 at the end (visible; onError: continue keeps the gate's verdict).
+STEP=step-api.sh
+gv() { # <outcome> <verdict> [ledger json] [code]
+  local l="${3:-}"; [[ -n "$l" ]] || l='{}'
+  jq -n --arg o "$1" --arg v "$2" --argjson l "$l" '{outcome: $o, verdict: $v, gate: "sbom", record: "release-tracking-abc", reason: "why", ledger: $l}' > "$FX/gv.json"
+  [[ -z "${4:-}" ]] || echo "$4" > "$FX/gv-code"
+}
+expect "api: the step asks glidepath-api with retries and a bound, and no 4xx retry" \
+  "$(grep -c -- '--retry 4 --retry-connrefused --retry-max-time 60' "$work/step-api.sh")/$(grep -c -- '--retry-all-errors' "$work/step-api.sh")" 1/0
+expect "api: the step never patches a ConfigMap" "$(grep -c 'kubectl patch' "$work/step-api.sh")" 0
+expect "api: the token is a projected one for glidepath-gate-verdict" \
+  "$(yq -r '.spec.volumes[] | select(.name == "github-token-broker-token") | .projected.sources[] | select(.serviceAccountToken.path == "glidepath-api-token") | .serviceAccountToken.audience' "$work/task-api.yaml")" glidepath-gate-verdict
+expect "direct: no glidepath-api token, no API URL" \
+  "$(yq -r '[.spec.volumes[].projected.sources[]? | select(.serviceAccountToken.audience == "glidepath-gate-verdict")] | length' "$work/task-direct.yaml")/$(grep -c GLIDEPATH_API_URL "$work/task-direct.yaml")" 0/0
+
+scenario api-last; gv recorded success '{"gate.111111111111.sbom":"success"}'; run
+expect "api-last: exit 0" "$(cat "$FX/rc")" 0
+expect "api-last: one event" "$(events)" 1
+expect "api-last: no patch" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
+expect "api-last: one call, for this run, with the projected token" "$(cat "$FX/gv-calls")" \
+  "http://glidepath-api.platform-system.svc.cluster.local:8080/v1/apps/gate-api/pipelineruns/sbom-x1/gate-verdict Authorization: Bearer gv-tok {}"
+expect "api-last: says recorded" "$(grep -c 'gate ledger: recorded gate.111111111111.sbom=success' "$FX/out")" 1
+
+# a peer still running on its check run, already green in the ledger glidepath-api answered: asks.
+scenario api-peer; gv recorded success '{"gate.111111111111.sbom":"success","gate.111111111111.values":"success"}'
+jq '.check_runs |= map(if .name == "Pipelines as Code CI / values-" then .status = "in_progress" | .conclusion = null else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+run
+expect "api-peer: the ledger's verdict counts: one event" "$(events)" 1
+# and without it in the ledger, waits
+scenario api-peer-missing; gv recorded success '{"gate.111111111111.sbom":"success"}'
+jq '.check_runs |= map(if .name == "Pipelines as Code CI / values-" then .status = "in_progress" | .conclusion = null else . end)' "$FX/checks.json" > "$FX/x" && mv "$FX/x" "$FX/checks.json"
+run
+expect "api-peer-missing: no event" "$(events)" 0
+
+# glidepath-api derived failure (the comment said success): failure decides.
+scenario api-red; gv recorded failure '{"gate.111111111111.sbom":"failure"}'; run
+expect "api-red: no event" "$(events)" 0
+expect "api-red: says the API's verdict decides" "$(grep -c 'glidepath-api derived failure' "$FX/out")" 1
+expect "api-red: exit 0" "$(cat "$FX/rc")" 0
+
+scenario api-deferred; gv deferred ""; run
+expect "api-deferred: no event, exit 0" "$(events)/$(cat "$FX/rc")" 0/0
+scenario api-superseded; gv superseded ""; run
+expect "api-superseded: no event, exit 0" "$(events)/$(cat "$FX/rc")" 0/0
+expect "api-superseded: says a later run decides" "$(grep -c 'that run decides' "$FX/out")" 1
+scenario api-no-record; gv no-record success; run
+expect "api-no-record: decides from the check runs: one event, exit 0" "$(events)/$(cat "$FX/rc")" 1/0
+
+# unanswered: unreachable, 503 after the retries, an older API (404), a refusal (403). Decides from the check runs alone, and fails
+# visibly at the end.
+for c in down 503 404 403; do
+  scenario "api-$c"
+  if [[ "$c" == down ]]; then touch "$FX/gv-down"; else jq -n '{error: "nope", rule: "GP-X"}' > "$FX/gv.json"; echo "$c" > "$FX/gv-code"; fi
+  run
+  expect "api-$c: still decides from the check runs (one event)" "$(events)" 1
+  expect "api-$c: exit 1 (visible)" "$(cat "$FX/rc")" 1
+  expect "api-$c: says it was not recorded" "$(grep -c 'did not record sbom for 1111111' "$FX/out")" 1
+  expect "api-$c: no patch" "$([[ -f "$FX/patches" ]] && echo yes || echo no)" no
+done
+expect "api-404: says to upgrade glidepath-api" "$(grep -c 'upgrade glidepath-api first' "$work/fx-api-404/out")" 1
+expect "api-down: HTTP 000" "$(grep -c 'HTTP 000' "$work/fx-api-down/out")" 1
 STEP=
 
 [[ "${fail}" == 0 ]] && echo "PASS promotion_fan_in_test" || exit 1

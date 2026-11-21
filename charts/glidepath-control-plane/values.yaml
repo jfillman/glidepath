@@ -52,6 +52,10 @@ cicdRunAdmission:
   # mapping; [Warn, Audit] also shows the finding to the client. Anything but Deny is NOT enforcing (binding annotation).
   recordWritesActions: [Audit]
   gateReportActions: [Audit]
+  # gate-ledger-writes (templates/admission/gate-ledger-writes.yaml): glidepath-api's own ConfigMap writes in a -cicd namespace may only
+  # patch the gate ledger keys (gate.<sha12>.<gate>, gateRun.<sha12>.<gate>) of an existing release record. Deny from the start:
+  # glidepath-api wrote no ConfigMap before the gate-verdict route, so this refuses nothing that worked.
+  gateLedgerActions: [Deny]
   # The storage classes a .tekton file's workspace volumeClaimTemplate may name (it may also leave it unset, which is what the onboarding
   # templates do). Everything else about the template is fixed: ReadWriteOnce, 1 to 20Gi, no dataSource, volumeName or selector.
   workspaceStorageClassNames: []
@@ -252,6 +256,12 @@ api:
     maxEvents: 2000
     maxAge: 24h
     maxStreams: 100
+  # POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict (docs/admin/api.md, Gate verdicts; pipeline trust T4, W-8): the task
+  # accounts (in an app's own -cicd namespace) whose comment-pr pod may ask glidepath-api to record its gate's verdict in the release
+  # record. glidepath-api writes the ledger as its own account (glidepath-app's Role glidepath-api-gate-ledger: configmaps patch),
+  # limited by the gate-ledger-writes admission policy below.
+  gateVerdict:
+    serviceAccounts: [pipeline-runner]
   # GET /v1/apps/{app}/live/stream: how many live streams one replica serves at once (a full replica answers 503 and
   # Tower polls instead). GlidepathApiLiveStreamsNearLimit fires at 90%.
   liveMaxStreams: 200

@@ -698,3 +698,13 @@ task_names() {
 {{- end }}
 }
 {{- end -}}
+
+{{/*
+Who writes the gate ledger (comment-pr-check-result's promotion-ready step; pipeline trust T4, W-8): direct (the task patches the
+release record as its own account) or api (glidepath-api's gate-verdict route writes it as glidepath-api).
+*/}}
+{{- define "glidepath-catalog.gateLedgerWriter" -}}
+{{- $w := ((.Values.promotion.gateLedger | default dict).writer | default "direct") -}}
+{{- if not (has $w (list "direct" "api")) -}}{{- fail (printf "promotion.gateLedger.writer must be direct or api, not %q" $w) -}}{{- end -}}
+{{- $w -}}
+{{- end -}}

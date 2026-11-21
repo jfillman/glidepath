@@ -505,6 +505,15 @@ promotion:
   # environments, open-release-pr for Flight). airframe-application before v0.3.166 rejects both keys, so turn this
   # on only after every cluster's defaultChart is at v0.3.166 or later.
   pinDigest: false
+  # Who writes the gate ledger, the promotion fan-in's record of each gate's verdict in the release record (comment-pr-check-result,
+  # promotion-ready step; pipeline trust T4, W-8, hangar specs/plans/w8-gate-verdict-record-service.md). direct: the task patches
+  # the record as its own account (pipeline-runner), as before. api: it asks glidepath-api (POST
+  # /v1/apps/{app}/pipelineruns/{run}/gate-verdict), which derives the verdict from the run and writes it as its own account, so
+  # pipeline-runner can lose its ConfigMap writes (W-8 step 6). Switch to api only once glidepath-api serves the route (an older
+  # one answers 404: the step then decides from the check runs alone and shows as failed). apiUrl: glidepath-api in cluster.
+  gateLedger:
+    writer: direct
+    apiUrl: http://glidepath-api.platform-system.svc.cluster.local:8080
   # The promote pipeline (ADR-0029 phase 2, docs/admin/registries.md): it starts this workflow through the broker's
   # /promoter-token (glidepath-control-plane promoter.*), waits for it, verifies the copy in Flight
   # (registries.flight.namespace) and posts the release PR's image-promotion check. Empty repo: the pipeline refuses.

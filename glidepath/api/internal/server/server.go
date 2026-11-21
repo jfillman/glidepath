@@ -26,6 +26,7 @@ import (
 	"github.com/glidepath/api/internal/events"
 	"github.com/glidepath/api/internal/evidence"
 	"github.com/glidepath/api/internal/explain"
+	"github.com/glidepath/api/internal/gateverdict"
 	"github.com/glidepath/api/internal/live"
 	"github.com/glidepath/api/internal/metrics"
 	"github.com/glidepath/api/internal/pipelineruns"
@@ -54,6 +55,8 @@ type Server struct {
 	Envs     *environments.Client
 	Previews *previews.Client // GET /v1/apps/{app}/previews
 	Cicd     *cicd.Client     // POST /v1/apps/{app}/cicd/validations
+	// POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict: nil answers 503.
+	GateVerdict *gateverdict.Service
 	// GET /v1/apps/{app}/ref-protection: nil answers 503 (the route is registered but unconfigured).
 	RefProtection *refprotection.Client
 	Events        *events.Store // nil: no event routes
@@ -124,6 +127,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/apps/{app}/environments/{env}/rollback", s.wrap(op{"rollbackEnvironment", "T2", "environments", "", "rollback", false}, s.rollbackEnvironment))
 	mux.Handle("GET /v1/events", s.wrap(op{"streamEvents", "T0", "events", "", "list", true}, s.streamEvents))
 	mux.Handle("GET /v1/events/recent", s.wrap(op{"listRecentEvents", "T0", "events", "", "list", true}, s.listRecentEvents))
+	// Only the comment-pr pod of the gate's own run, with a token for audience glidepath-gate-verdict (internal/gateverdict).
+	mux.Handle("POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict", s.wrapWith(op{"recordGateVerdict", "T1", "", "", "", false},
+		func(r *http.Request) (*auth.Caller, error) {
+			return s.Auth.AuthenticateAudience(r, gateverdict.Audience)
+		}, s.recordGateVerdict))
 	mux.Handle("GET /v1/apps/{app}/ref-protection", s.wrap(op{"getRefProtection", "T0", "refprotection", "", "get", false}, s.getRefProtection))
 	// A POST that writes nothing: T0, so a delegate needs no on-behalf-of and the audit line has no dryRun.
 	mux.Handle("POST /v1/apps/{app}/cicd/validations", s.wrap(op{"validateCicd", "T0", "cicd", "", "validate", false}, s.validateCicd))
@@ -180,11 +188,20 @@ func classify(err error) (int, apiError) {
 		lvGone live.Gone
 		ciInv  cicd.Invalid
 		rpInv  refprotection.Invalid
+		gvNF   gateverdict.NotFound
+		gvRef  gateverdict.Refused
+		gvNot  gateverdict.NotGate
 	)
 	var pgInv pageInvalid
 	switch {
 	case errors.As(err, &pgInv):
 		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", "page with limit, then pass the answer's continue back with the same limit"}
+	case errors.As(err, &gvRef):
+		return http.StatusForbidden, apiError{err.Error(), "GP-GV-403", "only the comment-pr task of the gate's own run asks, with the token its Task mounts (docs/admin/api.md, Gate verdicts)"}
+	case errors.As(err, &gvNot):
+		return http.StatusUnprocessableEntity, apiError{err.Error(), "GP-GV-422", "nothing is recorded for this run; retrying won't help"}
+	case errors.As(err, &gvNF):
+		return http.StatusNotFound, apiError{err.Error(), "GP-API-404", ""}
 	case errors.As(err, &rpInv):
 		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
 	case errors.As(err, &ciInv):
@@ -241,6 +258,11 @@ func (r *recorder) WriteHeader(s int) { r.status = s; r.ResponseWriter.WriteHead
 func (r *recorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func (s *Server) wrap(o op, h handler) http.Handler {
+	return s.wrapWith(o, s.Auth.Authenticate, h)
+}
+
+// wrapWith is wrap with its own authentication (a route that takes only a token minted for its audience).
+func (s *Server) wrapWith(o op, authenticate func(*http.Request) (*auth.Caller, error), h handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		done := s.Metrics.Start(o.id, o.tier, streamOps[o.id])
@@ -262,7 +284,7 @@ func (s *Server) wrap(o op, h handler) http.Handler {
 			appName = r.URL.Query().Get("app")
 		}
 		err := func() error {
-			c, err := s.Auth.Authenticate(r)
+			c, err := authenticate(r)
 			if err != nil {
 				return err
 			}
