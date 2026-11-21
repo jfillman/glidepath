@@ -1181,7 +1181,7 @@ components:
         key: { type: string, description: "gate.<sha12>.<gate>" }
         reason: { type: string }
         dryRun: { type: boolean }
-        ledger: { type: object, additionalProperties: { type: string }, description: "This commit's gate.<sha12>.* entries of the record after the call" }
+        ledger: { type: object, additionalProperties: { type: string }, description: "This commit's gate.<sha12>.* entries: of the record after the call (recorded, already-recorded, superseded); with dryRun, what the record would hold (nothing is written); {} for deferred and no-record" }
     ReleasePlan:
       type: object
       required: [order, orderSource, lower, upper]

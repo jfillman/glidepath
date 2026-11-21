@@ -754,13 +754,14 @@ record, so no task account needs a ConfigMap write for the ledger. It is not for
 - **What.** The body is not read. From the cluster: the pull request (label `pipelinesascode.tekton.dev/pull-request`), the commit
   (annotation `pipelinesascode.tekton.dev/sha`), the pull request URL (its `repo-url` annotation, a `gitops-<app>` repository), the gate
   (the caller's comment-pr TaskRun's `gate-name`), and the verdict: `success` when every task of the run's resolved Pipeline
-  (`status.pipelineSpec.tasks`) is done (or skipped) and the only failed ones are `-advisory` tasks, otherwise `failure`. A success past
+  (`status.pipelineSpec.tasks`) is done (or skipped by a `when` expression, directly or through a parent; a task skipped because the run was cancelled, stopped or timed out is not done) and the only failed ones are `-advisory` tasks, otherwise `failure`. Only TaskRuns owned by this run (its uid) count. A success past
   `startTime` + `timeouts.tasks` (else `timeouts.pipeline`) is `failure`; within 60 s of it nothing is recorded (`deferred`). A run without a
   pull request or commit, or not of a gitops repository: 422 `GP-GV-422`.
 - **Write.** A merge patch of `gate.<sha12>.<gate>` and `gateRun.<sha12>.<gate>` (`<created> <run>`) into the release record whose `prUrl` is
   that pull request, carrying the record's `resourceVersion`, retried up to 5 times on a conflict, as glidepath-api's own account
   (glidepath-app's Role `glidepath-api-gate-ledger`: `configmaps` `patch` in the app's namespace; the control plane's `gate-ledger-writes`
-  policy, Deny, admits only those keys of an existing release record). Once per run: a second call is `already-recorded`; a run created
+  policy, Deny, admits only those keys of an existing release record and nothing else of it: labels, annotations, owners, finalizers,
+  `immutable` and `binaryData` stay as they were). Once per run: a second call is `already-recorded`; a run created
   before the one that last wrote is `superseded`. No record: `no-record`. `?dryRun=true` writes nothing.
 - **Answer.** `{outcome, gate, sha, pullRequest, prUrl, verdict, record, key, reason, ledger}`, `ledger` being this commit's
   `gate.<sha12>.*` entries after the call.

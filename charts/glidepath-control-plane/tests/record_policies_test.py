@@ -282,6 +282,10 @@ class GateLedgerWrites(unittest.TestCase):
                                            "gateRun.%s.sast" % SHA12: "2026-11-20T11:50:00Z sast-abcde"}), old), [])
         # overwriting a verdict (a later run of the gate), and the infra namespaces
         self.assertEqual(self.ev(record(**{"gate.%s.sbom" % SHA12: "failure"}), old), [])
+        # an object that already carries annotations, owners and immutable: false, left as they were
+        keep = record(); keep["immutable"] = False; keep["metadata"]["annotations"] = {"a": "b"}; keep["metadata"]["ownerReferences"] = [{"kind": "X", "name": "y"}]
+        after = copy.deepcopy(keep); after["data"]["gate.%s.sast" % SHA12] = "success"
+        self.assertEqual(self.ev(after, keep), [])
         self.assertEqual(self.ev(record(**{"gate.%s.sast" % SHA12: "success"}), record(), namespace="infra-queue-cicd"), [])
 
     def test_anything_else_is_refused(self):
@@ -304,6 +308,15 @@ class GateLedgerWrites(unittest.TestCase):
         cases.append((relabel, old, "UPDATE"))                                                     # a label change
         other = cm("app-config", {}, {"gate.%s.sast" % SHA12: "success"})
         cases.append((other, cm("app-config", {}, {}), "UPDATE"))                                  # not a record
+        frozen = record(**{"gate.%s.sast" % SHA12: "success"})
+        frozen["immutable"] = True
+        cases.append((frozen, old, "UPDATE"))                                                      # immutable: true freezes it
+        for field, val in (("binaryData", {"x": "eA=="}),):
+            o2 = record(**{"gate.%s.sast" % SHA12: "success"}); o2[field] = val
+            cases.append((o2, old, "UPDATE"))
+        for field, val in (("annotations", {"a": "b"}), ("ownerReferences", [{"kind": "X", "name": "y"}]), ("finalizers", ["f"])):
+            o2 = record(**{"gate.%s.sast" % SHA12: "success"}); o2["metadata"][field] = val
+            cases.append((o2, old, "UPDATE"))
         named = cm(RECORD, {}, {"gate.%s.sast" % SHA12: "success"})
         cases.append((named, cm(RECORD, {}, {}), "UPDATE"))                                        # named like one, not labelled
         for new, o, op in cases:
@@ -320,7 +333,8 @@ class GateLedgerWrites(unittest.TestCase):
 
     def test_sparse_objects_do_not_raise(self):
         shapes = [{}, {"metadata": {}}, {"metadata": {"name": 3}}, {"metadata": {"name": RECORD, "labels": {}}}, {"data": {}},
-                  {"metadata": {"name": RECORD, "labels": {LABEL: "release-tracking"}}}, {"metadata": {"name": "x"}, "data": {"a": "b"}}]
+                  {"metadata": {"name": RECORD, "labels": {LABEL: "release-tracking"}}}, {"metadata": {"name": "x"}, "data": {"a": "b"}},
+                  {"immutable": True, "binaryData": {}, "metadata": {"annotations": {}, "ownerReferences": [], "finalizers": []}}]
         for new in shapes:
             self.assertIsInstance(self.ev(copy.deepcopy(new), operation="CREATE"), list)
             for old in shapes:

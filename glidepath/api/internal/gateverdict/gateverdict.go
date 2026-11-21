@@ -140,20 +140,20 @@ func (s *Service) Record(ctx context.Context, c *auth.Caller, ns, name string, d
 		return nil, err
 	}
 	a.Verdict, a.Reason = verdict(run, trs)
+	deferred := ""
 	if a.Verdict == "success" {
 		if left, ok := tasksLeft(run, s.Now()); ok {
 			switch {
 			case left < 0:
 				a.Verdict, a.Reason = "failure", fmt.Sprintf("the run is past its tasks timeout by %ds: Tekton ends it timed out", int(-left.Seconds()))
 			case left < timeoutMargin:
-				a.Outcome, a.Reason = Deferred, fmt.Sprintf("the run is %ds from its tasks timeout and may end timed out: nothing recorded", int(left.Seconds()))
-				a.Verdict = ""
-				return a, nil
+				// Not returned yet: a run that already recorded answers already-recorded (a retry near the deadline), not deferred.
+				deferred = fmt.Sprintf("the run is %ds from its tasks timeout and may end timed out: nothing recorded", int(left.Seconds()))
 			}
 		}
 	}
 	a.DryRun = dry
-	return a, s.write(ctx, ns, name, stamp(run, name), a, dry)
+	return a, s.write(ctx, ns, name, stamp(run, name), a, dry, deferred)
 }
 
 // authorize returns the caller's own comment-pr TaskRun and the PipelineRun, or Refused.
@@ -197,13 +197,7 @@ func (s *Service) authorize(ctx context.Context, c *auth.Caller, ns, name string
 	if err != nil {
 		return nil, nil, err
 	}
-	runUID := str(run, "metadata", "uid")
-	owned := false
-	for _, o := range list(tr, "metadata", "ownerReferences") {
-		m, _ := o.(map[string]any)
-		owned = owned || (m["kind"] == "PipelineRun" && m["name"] == name && m["uid"] == runUID && runUID != "")
-	}
-	if !owned || str(tr, "status", "podName") != pod.Name {
+	if !ownedBy(tr, name, str(run, "metadata", "uid")) || str(tr, "status", "podName") != pod.Name {
 		return nil, nil, Refused{fmt.Sprintf("TaskRun %s is not this run's (%s) task of pod %s", l[labelTaskRun], name, pod.Name)}
 	}
 	return tr, run, nil
@@ -243,6 +237,20 @@ func derive(run, tr map[string]any) (*Answer, error) {
 	return a, nil
 }
 
+// doneSkips are the status.skippedTasks reasons (Tekton's SkippingReason) of a task that was skipped by the Pipeline's own logic.
+var doneSkips = map[string]bool{"When Expressions evaluated to false": true, "Parent Tasks were skipped": true}
+
+// ownedBy: o has an owner reference to the PipelineRun name with uid.
+func ownedBy(o map[string]any, name, uid string) bool {
+	for _, r := range list(o, "metadata", "ownerReferences") {
+		m, _ := r.(map[string]any)
+		if m["kind"] == "PipelineRun" && m["name"] == name && m["uid"] == uid && uid != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // verdict is comment-pr's rule, from the TaskRuns: success when every DAG task is done and the only failures are -advisory
 // tasks; otherwise failure.
 func verdict(run map[string]any, trs []map[string]any) (string, string) {
@@ -250,12 +258,18 @@ func verdict(run map[string]any, trs []map[string]any) (string, string) {
 	for _, s := range list(run, "status", "skippedTasks") {
 		if m, ok := s.(map[string]any); ok {
 			n, _ := m["name"].(string)
-			skipped[n] = true
+			// Only a skip the Pipeline asked for counts as done: a when expression false, or a parent skipped for one. A skip
+			// because the run was cancelled, stopped or timed out ("PipelineRun was gracefully cancelled", ...) is not finished.
+			if r, _ := m["reason"].(string); doneSkips[r] {
+				skipped[n] = true
+			}
 		}
 	}
 	state := map[string][]string{} // pipeline task -> the Succeeded condition status of each of its TaskRuns
 	for _, tr := range trs {
-		if mapOf(tr, "metadata", "labels")[labelPipelineRun] != str(run, "metadata", "name") {
+		// A TaskRun of this run: the label and an owner reference to this run's uid (an earlier run of the same name, being
+		// deleted or orphaned, keeps the label).
+		if mapOf(tr, "metadata", "labels")[labelPipelineRun] != str(run, "metadata", "name") || !ownedBy(tr, str(run, "metadata", "name"), str(run, "metadata", "uid")) {
 			continue
 		}
 		t := mapOf(tr, "metadata", "labels")[labelPipelineTask]
@@ -323,7 +337,9 @@ func stamp(run map[string]any, name string) string {
 	return str(run, "metadata", "creationTimestamp") + " " + name
 }
 
-// newer: stamp a was made by a run created after b's.
+// newer: stamp a was made by a run created after b's. creationTimestamp has one-second granularity and comes from the API
+// server's clock: an equal (or unparseable) one is not newer, so the write proceeds (last writer wins, as the direct path does).
+// The guard is best effort; promote re-checks every gate's check run (PROM-03), so the ledger never passes a red gate.
 func newer(a, b string) bool {
 	ta, _, okA := strings.Cut(a, " ")
 	tb, _, okB := strings.Cut(b, " ")
@@ -332,7 +348,9 @@ func newer(a, b string) bool {
 	return okA && okB && errA == nil && errB == nil && pa.After(pb)
 }
 
-func (s *Service) write(ctx context.Context, ns, name, mine string, a *Answer, dry bool) error {
+// write records a (unless dry). deferred non-empty: nothing is written; the answer is already-recorded or superseded when the record
+// says so, else deferred with that reason.
+func (s *Service) write(ctx context.Context, ns, name, mine string, a *Answer, dry bool, deferred string) error {
 	runKey := "gateRun." + a.Sha[:12] + "." + a.Gate
 	for attempt := 1; ; attempt++ {
 		recs, err := s.Store.Records(ctx, ns)
@@ -346,6 +364,10 @@ func (s *Service) write(ctx context.Context, ns, name, mine string, a *Answer, d
 				rec = &recs[i]
 				break
 			}
+		}
+		if rec == nil && deferred != "" {
+			a.Outcome, a.Reason, a.Verdict = Deferred, deferred, ""
+			return nil
 		}
 		if rec == nil {
 			a.Outcome, a.Reason = NoRecord, "no release record has prUrl "+a.PrURL
@@ -362,6 +384,10 @@ func (s *Service) write(ctx context.Context, ns, name, mine string, a *Answer, d
 		case newer(prev, mine):
 			a.Outcome, a.Reason = Superseded, "a later run of this gate on this commit ("+prevRun+") already recorded "+rec.Data[a.Key]
 			a.Ledger = ledger(rec.Data, a.Sha)
+			return nil
+		}
+		if deferred != "" {
+			a.Outcome, a.Reason, a.Verdict = Deferred, deferred, ""
 			return nil
 		}
 		data := map[string]string{a.Key: a.Verdict, runKey: mine}

@@ -111,8 +111,9 @@ func taskRun(name, task, status string) map[string]any {
 		conds = append(conds, map[string]any{"type": "Succeeded", "status": status})
 	}
 	return map[string]any{
-		"metadata": map[string]any{"name": run + "-" + name, "labels": map[string]any{labelPipelineRun: run, labelPipelineTask: task}},
-		"status":   map[string]any{"conditions": conds},
+		"metadata": map[string]any{"name": run + "-" + name, "labels": map[string]any{labelPipelineRun: run, labelPipelineTask: task},
+			"ownerReferences": []any{map[string]any{"kind": "PipelineRun", "name": run, "uid": "run-uid"}}},
+		"status": map[string]any{"conditions": conds},
 	}
 }
 
@@ -197,6 +198,15 @@ func TestVerdictRule(t *testing.T) {
 			f.taskRuns = append(f.taskRuns[:1], f.taskRuns[2])
 			f.runs[run]["status"].(map[string]any)["skippedTasks"] = []any{map[string]any{"name": "scan", "reason": "When Expressions evaluated to false"}}
 		}, "success"},
+		{"a task skipped because the run was cancelled", func(f *fakeStore) {
+			f.taskRuns = append(f.taskRuns[:1], f.taskRuns[2])
+			f.runs[run]["status"].(map[string]any)["skippedTasks"] = []any{map[string]any{"name": "scan", "reason": "PipelineRun was gracefully cancelled"}}
+		}, "failure"},
+		{"a failed TaskRun of an earlier run of the same name does not count", func(f *fakeStore) {
+			o := taskRun("scan", "scan", "False")
+			o["metadata"].(map[string]any)["ownerReferences"] = []any{map[string]any{"kind": "PipelineRun", "name": run, "uid": "earlier-uid"}}
+			f.taskRuns = append(f.taskRuns, o)
+		}, "success"},
 		{"another run's failed TaskRun does not count", func(f *fakeStore) {
 			o := taskRun("scan", "scan", "False")
 			o["metadata"].(map[string]any)["labels"].(map[string]any)[labelPipelineRun] = "other"
@@ -228,6 +238,25 @@ func TestDeferredNearTheTimeout(t *testing.T) {
 	}
 }
 
+func TestARetryNearTheTimeoutIsAlreadyRecorded(t *testing.T) {
+	f := world()
+	s := svc(f)
+	if a, err := s.Record(context.Background(), runner, ns, run, false); err != nil || a.Outcome != Recorded {
+		t.Fatalf("%+v %v", a, err)
+	}
+	s.Now = func() time.Time { return now.Add(3*time.Minute + 30*time.Second) } // 30 s left of 14 m
+	a, err := s.Record(context.Background(), runner, ns, run, false)
+	if err != nil || a.Outcome != AlreadyRecorded || a.Verdict != "success" || f.patches != 1 {
+		t.Fatalf("a retry of a recorded run near the deadline: %+v %v", a, err)
+	}
+	g := world()
+	delete(g.records, "release-tracking-a")
+	g.runs[run]["status"].(map[string]any)["startTime"] = "2026-11-20T11:46:30Z"
+	if a, err := svc(g).Record(context.Background(), runner, ns, run, false); err != nil || a.Outcome != Deferred {
+		t.Fatalf("no record, near the deadline: still deferred: %+v %v", a, err)
+	}
+}
+
 func TestOneWritePerPipelineRun(t *testing.T) {
 	f := world()
 	s := svc(f)
@@ -251,8 +280,9 @@ func TestAnOlderRunDoesNotOverwriteANewerOne(t *testing.T) {
 	if err != nil || a.Outcome != Superseded || f.patches != 0 || f.records["release-tracking-a"].Data[key] != "success" {
 		t.Fatalf("%+v %v", a, err)
 	}
-	// An older run's entry, and the old direct path's (no gateRun key), are overwritten.
-	for _, prev := range []string{"2026-11-20T11:00:00Z sast-older", ""} {
+	// An older run's entry, the old direct path's (no gateRun key), and one created in the same second (not newer: last writer wins)
+	// are overwritten.
+	for _, prev := range []string{"2026-11-20T11:00:00Z sast-older", "", "2026-11-20T11:50:00Z sast-same-second"} {
 		f := world()
 		f.records["release-tracking-a"].Data[key] = "failure"
 		if prev != "" {
