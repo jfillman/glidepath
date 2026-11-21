@@ -935,6 +935,10 @@ class CicdRunAdmission(unittest.TestCase):
                            "clearance-gate": {"clearance-gate", "agent-gates", "agent-definitions", "agent-release"},
                            "test-runner": {"run-testworkflow"}}
 
+    # Pipelines the platform's Triggers start (a .tekton file cannot): their writer tasks are listed in recordWriterTasks only so a
+    # glidepath-api rerun's copied taskRunSpecs are allowed by the cluster policy; cicd-run-shape never sees them (PaC-only)
+    PLATFORM_STARTED = {"release-outcome-notify": ["itsm-close"], "release-rollback-notify": ["itsm-close-rolled-back"]}
+
     def may_run_as(self, pipeline, task, account):
         """True when the shape policy has no 'may run as' objection to this per-task account (other messages are not this question)."""
         specs = [{"pipelineTaskName": task, "serviceAccountName": account}]
@@ -946,7 +950,8 @@ class CicdRunAdmission(unittest.TestCase):
             listed = self.values[value]
             self.assertTrue(listed, value)
             for pipeline, tasks in listed.items():
-                self.assertIn(pipeline, self.values["pipelines"], "%s names %s, which a .tekton file cannot start" % (value, pipeline))
+                self.assertTrue(pipeline in self.values["pipelines"] or pipeline in self.PLATFORM_STARTED,
+                                "%s names %s, which neither a .tekton file nor a platform Trigger starts" % (value, pipeline))
                 for t in tasks:
                     self.assertTrue(self.may_run_as(pipeline, t, account), (account, pipeline, t))
                     # ... and no other account of the three takes that task, and a task of the same Pipeline that is not listed is refused
@@ -973,7 +978,7 @@ class CicdRunAdmission(unittest.TestCase):
             want = {}
             for docs in renderings:
                 pipelines = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Pipeline"}
-                for pname in self.values["pipelines"]:
+                for pname in list(self.values["pipelines"]) + list(self.PLATFORM_STARTED):
                     for t in pipelines[pname]["spec"].get("tasks", []) + pipelines[pname]["spec"].get("finally", []):
                         ref = [p["value"] for p in t.get("taskRef", {}).get("params", []) if p["name"] == "name"]
                         if ref and ref[0] in self.SPLIT_CATALOG_TASKS[account]:
@@ -1018,7 +1023,10 @@ class CicdRunAdmission(unittest.TestCase):
             self.assertIn((task, account), re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: ([^\s\"]+)", m.group(1)), stage)
             generated.add((stage, task, account))
         listed = {(p, t, a) for a, v in self.SPLIT.items() for p, ts in self.values[v].items() for t in ts}
-        self.assertEqual(mapped_tasks | generated, listed)
+        platform = {(p, t, "release-record-writer") for p, ts in self.PLATFORM_STARTED.items() for t in ts}
+        self.assertEqual(mapped_tasks | generated | platform, listed)
+        # the platform-started Pipelines are not PaC-startable, so the entries cannot widen what a .tekton file may start
+        self.assertFalse(set(self.PLATFORM_STARTED) & set(self.values["pipelines"]))
 
     def test_split_accounts_do_not_change_the_run_wide_account_or_who_else_is_allowed(self):
         for account in self.SPLIT:

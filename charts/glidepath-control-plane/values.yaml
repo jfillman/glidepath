@@ -79,13 +79,18 @@ cicdRunAdmission:
   # templates' and the Trigger templates' taskRunSpecs); the policy that would REQUIRE the mapping (step 5, Warn then Audit then Deny)
   # is not part of that change. The chart test derives each list from the catalog Pipelines in `pipelines` below.
   #   release-record-writer: the tasks that write the release record (open-release-pr, mark-release-merged, itsm-change, itsm-gate,
-  #                          and the carve-out join-release, a finally task of clearance-gate-check; the carve-out record-gate-verdict
+  #                          itsm-close and itsm-close-rolled-back (platform-started Pipelines), and the carve-out join-release, a finally task of clearance-gate-check; the carve-out record-gate-verdict
   #                          is not in a Pipeline: see docs/admin/security.md, "Pipeline identities", on why the ledger write stays).
   recordWriterTasks:
     bypass-merge-check: [mark-release-merged, itsm-implement]
     clearance-gate-check: [join-release]
     itsm-check: [verify-change, verify-change-advisory]
     release: [open-release-pr]
+    # Started by platform Triggers, not by PaC (so cicd-run-shape never sees a PaC run of them and these entries only allow): listed so the
+    # cluster policy that holds a glidepath-api rerun (tower-identity-writes, apron) allows the entries a rerun copies. Rendered only where
+    # the catalog has an itsm provider; an entry for a task the Pipeline lacks is inert.
+    release-outcome-notify: [itsm-close]
+    release-rollback-notify: [itsm-close-rolled-back]
   #   clearance-gate: the four Tasks that present the projected token for the `clearance` audience (clearance-gate, agent-gates,
   #                   agent-definitions, agent-release).
   clearanceTasks:
