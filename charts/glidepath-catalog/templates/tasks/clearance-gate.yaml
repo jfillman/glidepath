@@ -174,8 +174,13 @@ spec:
           value: $(params.clearance-url)
         - name: AGENT_LOGINS
           value: {{ join "," .Values.agentGates.agentLogins | quote }}
+{{- /* No value: when the list is empty: the API server drops an empty env value, so a rendered value: "" never matches the
+       live Task and Argo CD shows it OutOfSync forever. Unset and "" read the same to the script (${PIPELINE_LOGINS:-}).
+       tests/empty_env_value_test.py. */}}
         - name: PIPELINE_LOGINS
-          value: {{ join "," .Values.clearanceGate.pipelineLogins | quote }}
+{{- with .Values.clearanceGate.pipelineLogins }}
+          value: {{ join "," . | quote }}
+{{- end }}
         - name: DEFAULT_CHART_REPO_URL
           value: {{ .Values.defaultChart.repoURL | quote }}
         - name: DEFAULT_CHART_PATH
