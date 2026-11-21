@@ -169,7 +169,7 @@ func TestRecordsTheDerivedVerdict(t *testing.T) {
 		t.Fatalf("%+v", a)
 	}
 	d := f.records["release-tracking-a"].Data
-	if d[key] != "success" || d[rkey] != "2026-11-20T11:50:00Z "+run || f.patches != 1 {
+	if d[key] != "success" || d[rkey] != "2026-11-20T11:50:00Z "+run+" run-uid" || f.patches != 1 {
 		t.Fatalf("the verdict and the run that wrote it, in one patch: %v (%d patches)", d, f.patches)
 	}
 	if len(a.Ledger) != 2 || a.Ledger["gate.0123456789ab.sbom"] != "success" || a.Ledger[key] != "success" {
@@ -268,6 +268,24 @@ func TestOneWritePerPipelineRun(t *testing.T) {
 	a, err := s.Record(context.Background(), runner, ns, run, false)
 	if err != nil || a.Outcome != AlreadyRecorded || a.Verdict != "success" || f.patches != 1 {
 		t.Fatalf("a second call of the same run: %+v %v (%d patches)", a, err, f.patches)
+	}
+}
+
+func TestARecreatedRunOfTheSameNameIsNotAReplay(t *testing.T) {
+	f := world()
+	// an earlier run of this name (another uid) recorded failure; this one passed: it writes.
+	f.records["release-tracking-a"].Data[key] = "failure"
+	f.records["release-tracking-a"].Data[rkey] = "2026-11-20T11:50:00Z " + run + " earlier-uid"
+	a, err := svc(f).Record(context.Background(), runner, ns, run, false)
+	if err != nil || a.Outcome != Recorded || f.records["release-tracking-a"].Data[key] != "success" {
+		t.Fatalf("%+v %v", a, err)
+	}
+	// a legacy two-field marker of this name is this run
+	f = world()
+	f.records["release-tracking-a"].Data[rkey] = "2026-11-20T11:50:00Z " + run
+	f.records["release-tracking-a"].Data[key] = "success"
+	if a, err := svc(f).Record(context.Background(), runner, ns, run, false); err != nil || a.Outcome != AlreadyRecorded || f.patches != 0 {
+		t.Fatalf("legacy marker: %+v %v", a, err)
 	}
 }
 

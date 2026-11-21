@@ -14,7 +14,7 @@
 //     every failed one is an -advisory task (ADR-0021); a success past the tasks timeout is a failure, and within a minute of
 //     it nothing is recorded (the same rule as the promotion-ready step).
 //
-// One write per PipelineRun: beside gate.<sha12>.<gate> the same patch writes gateRun.<sha12>.<gate> = "<created> <run>". A
+// One write per PipelineRun: beside gate.<sha12>.<gate> the same patch writes gateRun.<sha12>.<gate> = "<created> <run> <uid>". A
 // second call for the same run writes nothing; a run older than the one that wrote last writes nothing (a slow old run cannot
 // overwrite a /retest that finished first). The patch carries the record's resourceVersion and is retried on a conflict, so two
 // gates finishing together are serialized.
@@ -332,9 +332,19 @@ func tasksLeft(run map[string]any, now time.Time) (time.Duration, bool) {
 	return start.Add(d).Sub(now), true
 }
 
-// stamp is the gateRun value of this run: "<creationTimestamp> <name>".
+// stamp is the gateRun value of this run: "<creationTimestamp> <name> <uid>". The uid tells a run from a later one of the same
+// name; a marker without it (two fields) is matched by name.
 func stamp(run map[string]any, name string) string {
-	return str(run, "metadata", "creationTimestamp") + " " + name
+	return str(run, "metadata", "creationTimestamp") + " " + name + " " + str(run, "metadata", "uid")
+}
+
+// sameRun: marker prev was written by the run whose stamp is mine.
+func sameRun(prev, mine string) bool {
+	p, m := strings.Fields(prev), strings.Fields(mine)
+	if len(p) < 2 || len(m) < 3 || p[1] != m[1] {
+		return false
+	}
+	return len(p) == 2 || p[2] == m[2]
 }
 
 // newer: stamp a was made by a run created after b's. creationTimestamp has one-second granularity and comes from the API
@@ -375,9 +385,12 @@ func (s *Service) write(ctx context.Context, ns, name, mine string, a *Answer, d
 		}
 		a.Record = rec.Name
 		prev := rec.Data[runKey]
-		_, prevRun, _ := strings.Cut(prev, " ")
+		prevRun := ""
+		if f := strings.Fields(prev); len(f) >= 2 {
+			prevRun = f[1]
+		}
 		switch {
-		case prevRun == name:
+		case sameRun(prev, mine):
 			a.Outcome, a.Verdict = AlreadyRecorded, rec.Data[a.Key]
 			a.Ledger = ledger(rec.Data, a.Sha)
 			return nil

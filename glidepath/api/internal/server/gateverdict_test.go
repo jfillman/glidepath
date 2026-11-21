@@ -118,7 +118,7 @@ func TestGateVerdictRecordsTheClustersVerdictNotTheBodys(t *testing.T) {
 		t.Fatalf("the TokenReview names the route's audience: %v", audiencesSeen)
 	}
 	cm, _ := cs.CoreV1().ConfigMaps("app-shop-cicd").Get(context.Background(), "release-tracking-shop-1", metav1.GetOptions{})
-	if cm.Data["gate.0123456789ab.sast"] != "failure" || cm.Data["gateRun.0123456789ab.sast"] != "2026-10-25T11:55:00Z sast-abcde" || cm.Data["gate.0123456789ab.sbom"] != "success" {
+	if cm.Data["gate.0123456789ab.sast"] != "failure" || cm.Data["gateRun.0123456789ab.sast"] != "2026-10-25T11:55:00Z sast-abcde run-uid" || cm.Data["gate.0123456789ab.sbom"] != "success" {
 		t.Fatalf("the record: %v", cm.Data)
 	}
 	ledger, _ := out["ledger"].(map[string]any)
