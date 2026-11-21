@@ -140,6 +140,18 @@ spec:
         source "${PLATFORM_LIB}/github-app.sh"
         {{- include "glidepath-catalog.redactSecrets" . | nindent 8 }}
 
+        # The end of a failed step's log, for a comment: the last 20 lines with Tekton's own entrypoint lines
+        # ("2026/11/17 20:25:30 Entrypoint initialization") dropped, at most 1200 bytes, cut at a line boundary so the
+        # excerpt never starts mid-word. Only a single line longer than that is cut inside the line.
+        log_tail() {
+          kubectl logs "$1" -n "${NAMESPACE}" --all-containers --tail=20 2>/dev/null | redact_secrets \
+            | LC_ALL=C awk '/^[0-9][0-9][0-9][0-9]\/[0-9][0-9]\/[0-9][0-9] [0-9:]+ [Ee]ntrypoint/ {next} {l[++n]=$0}
+                END { t=0; s=n+1
+                      for (i=n; i>=1; i--) { t+=length(l[i])+1; if (t>1200) break; s=i }
+                      if (s>n && n>0) { print substr(l[n], length(l[n])-1199); exit }
+                      for (i=s; i<=n; i++) print l[i] }' || true
+        }
+
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         # the whole repository name: a dot is part of it (acme.web), only a trailing .git is not
         repo="$(sed -E 's#^https?://github\.com/[^/]+/([A-Za-z0-9._-]+)/?$#\1#' <<<"${REPO_URL}")"; repo="${repo%.git}"
@@ -198,7 +210,7 @@ spec:
             pod_name="$(kubectl get taskrun "${advisory_failed}" -n "${NAMESPACE}" -o jsonpath='{.status.podName}' 2>/dev/null || true)"
             excerpt="(no log excerpt available)"
             if [[ -n "${pod_name}" ]]; then
-              excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=20 2>/dev/null | redact_secrets | tail -c 1200 || true)"
+              excerpt="$(log_tail "${pod_name}")"
             fi
             if [[ "${ADVISORY_REASON}" == "not-required" ]]; then
               body="$(printf '### ⚠️ `%s` found a problem, advisory until the gate is required\n\nThis check would fail once the `%s` gate is required on this cluster (`required: true` on its `releaseGuardrails` entry in the Glidepath catalog, docs/admin/release-guardrails.md). It did not block because the gate runs report-only here. The finding is recorded here and on the check run.\n\n**What it found:**\n```\n%s\n```' \
@@ -240,7 +252,7 @@ spec:
           if [[ -n "${failed_taskrun}" ]]; then
             pod_name="$(kubectl get taskrun "${failed_taskrun}" -n "${NAMESPACE}" -o jsonpath='{.status.podName}' 2>/dev/null || true)"
             if [[ -n "${pod_name}" ]]; then
-              log_excerpt="$(kubectl logs "${pod_name}" -n "${NAMESPACE}" --all-containers --tail=20 2>/dev/null | redact_secrets | tail -c 1200 || true)"
+              log_excerpt="$(log_tail "${pod_name}")"
             fi
           fi
           [[ -z "${log_excerpt}" ]] && log_excerpt="(no log excerpt available)"
@@ -299,12 +311,15 @@ spec:
 
         # A gate whose full report does not fit a Task result (4096 bytes) leaves it in a ConfigMap owned by its
         # PipelineRun, labelled glidepath.io/gate-report=<gate> (api-compat-gate.yaml). It replaces the plain
-        # headline, or follows the failure text, so the comment carries the whole finding.
+        # headline, or, on a failure, the log excerpt: the report is the gate's whole finding, and the excerpt was only
+        # the end of its log, which repeats the report cut short (seen 2026-11-17 on gitops-backstage#317).
         report="$(kubectl get configmap -n "${NAMESPACE}" -l "glidepath.io/gate-report=${GATE_NAME},tekton.dev/pipelineRun=${PIPELINE_RUN_NAME}" -o json 2>/dev/null \
           | jq -r '.items[0].data.body // empty')"
         if [[ -n "${report}" ]]; then
           if [[ "${body}" == "### ❌"* ]]; then
-            body="${body}"$'\n\n'"${report}"
+            # The report stays last: a gate may end it with a machine-readable line (api-compat's verdict marker).
+            body="$(printf '### ❌ `%s` failed\n\n**Recommendation:** %s\n\n**To retry:** comment `/retest %s-` on this PR once the underlying issue is fixed (the check name with its dash: PaC matches the PipelineRun generateName).' \
+              "${GATE_NAME}" "${recommendation}" "${GATE_NAME}")"$'\n\n'"${report}"
           else
             body="${report}"
           fi
