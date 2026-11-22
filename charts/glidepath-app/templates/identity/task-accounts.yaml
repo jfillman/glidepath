@@ -94,7 +94,9 @@ rules:
     verbs: ["get"]
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "create", "patch"]
+    # list: release-source.sh finds this app's release records by label (kubectl get configmap -l ...); without it
+    # every prod release gate fails closed with "the release records are unreadable".
+    verbs: ["get", "list", "create", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
