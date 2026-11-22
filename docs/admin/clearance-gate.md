@@ -36,7 +36,7 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
      check).
   2. `render` (**the `render-manifests` task, as `source-runner`: no token, no Secret**; the gate publishes the checkouts and the plan to
      the run's volume first and reads the result back read-only as data, then verifies it: [security.md](security.md#rendering-is-not-done-where-the-credentials-are)):
-     `helm template` of base and head per protected environment **exactly as Argo CD
+     `helm template` of base and head per registered environment **exactly as Argo CD
      renders it** (and so as Clearance's Argo CD plugin does): release name `<app>-<env>` (the Application's), the
      environment's namespace, the value files and the injected values the Flight ApplicationSet layers, including
      the **destination cluster's** `observability` block (that cluster's own `cluster-defaults.yaml`, which its
@@ -52,14 +52,16 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
      only and says so. Nothing is sent to Clearance but this description: no manifest content. The gate's `ingest` step computes
      the digests from the bytes it read and verified (the same function as before the render moved: the digests are unchanged). Then
      the Kyverno CLI's inputs for the head's tree (stand-in CRDs, Namespace labels, the normalized bundle).
-  3. `admission` (toolbox): the **offline admission verdict** per protected environment, `kyverno apply` of the
+  3. `admission` (toolbox): the **offline admission verdict** per registered environment, `kyverno apply` of the
      cluster's bundle to the rendered head: the policy-validation gate's own evaluation (the two tasks share
      `files/lib/policy-eval.sh` and `policy-eval-prepare.py`, so they cannot disagree). See "The policy in the record".
   4. `register` (toolbox): `POST /v1/clearances` per environment with a projected token for audience `clearance`
      (the same `CLEARANCE_VERIFIERS` rule as the agent gates). Clearance answers with the change's state.
   5. `report`: exits 1 unless every environment is **cleared**.
-- An environment that is not protected is skipped (phase 1 gates protected environments only); a PR that changes
-  none is `skipped` and passes.
+- With a Clearance, every environment the PR changes is registered, and one Clearance does not protect is cleared at
+  tier 0 (`unprotected`); only a cluster with no Clearance skips an environment that is not `production: true`
+  ([Which environments are protected](#which-environments-are-protected)). A PR that changes no environment is `skipped`
+  and passes.
 
 ## Which environments are protected
 

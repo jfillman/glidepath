@@ -101,11 +101,13 @@ awk '/^mkdir -p \/work\/charts$/,/^done < \/work\/envs.txt$/' "$d/fetch.sh" > "$
 [[ -s "$d/plan-loop.sh" ]] || { echo "FAIL: the plan loop was not found in the fetch step"; exit 1; }
 plan() { # <scenario dir> <cicd.yaml> <clearance url> <cluster|env>...: runs the loop; leaves plan.txt and declared.txt
   local W="$1" f="$2" url="$3"; shift 3
-  rm -rf "${W}"; mkdir -p "${W}"
+  rm -rf "${W}"; mkdir -p "${W}"; export FETCHED="${W}/fetched"; : > "${FETCHED}"
   printf '%s\n' "$@" > "${W}/envs.txt"; : > "${W}/plan.txt"; : > "${W}/declared.txt"
   sed "s#/work#${W}#g" "$d/plan-loop.sh" > "${W}/loop.sh"
   ( cd "${W}" && cicd="$(cat "${f}")" CLEARANCE_URL="${url}" DEFAULT_CHART_REPO_URL=https://github.com/acme/airframe DEFAULT_CHART_PATH=charts/airframe-application \
-      bash -c 'set -euo pipefail; eval "${PROTECTION_LIB}"; envs_json="$(echo "${cicd}" | yq -o json ".deploy.environments // []")"; source "$1"' _ "${W}/loop.sh" ) > "${W}/plan.log" 2>&1
+      bash -c 'set -euo pipefail; eval "${PROTECTION_LIB}"; envs_json="$(echo "${cicd}" | yq -o json ".deploy.environments // []")"
+        valid_chart_source() { return 0; }; fetch_repo() { mkdir -p "$3"; echo "fetched $1@$2" >> "${FETCHED}"; }  # no network: a chart fetch is recorded
+        source "$1"' _ "${W}/loop.sh" ) > "${W}/plan.log" 2>&1
   echo $? > "${W}/plan.rc"
 }
 plan "$d/p48" "${fxp}/flight-api-before-45.cicd.yaml" http://clearance hangar-prod\|prod
@@ -119,6 +121,13 @@ expect "gate-api plan: prod and staging are both registered" "$(cut -d'|' -f1,2,
 expect "gate-api plan: the declarations" "$(paste -sd ' ' "$d/pga/declared.txt")" "hangar-prod|prod|true hangar-prod|staging|missing"
 plan "$d/pgan" "${fxp}/gate-api.cicd.yaml" "" hangar-prod\|prod
 expect "no Clearance: a production: true environment is registered (and fails: no Clearance)" "$(cat "$d/pgan/plan.txt")" "hangar-prod|prod|default|true"
+# An environment deploy.environments does not list is registered too, so it must render with the app's deploy.chart, not the default.
+printf 'deploy:\n  chart: {repoURL: https://github.com/acme/charts, path: app, targetRevision: v1}\n  environments:\n    - name: prod\n      chart: {targetRevision: v2}\n' > "$d/own-chart.cicd.yaml"
+plan "$d/pown" "$d/own-chart.cicd.yaml" http://clearance hangar-prod\|prod hangar-prod\|perf
+expect "own chart: the loop ran" "$(cat "$d/pown/plan.rc")" 0
+expect "own chart: a listed environment keeps its own revision" "$(sed -n 1p "$d/pown/fetched")" "fetched https://github.com/acme/charts@v2"
+expect "own chart: an unlisted environment gets deploy.chart" "$(sed -n 2p "$d/pown/fetched")" "fetched https://github.com/acme/charts@v1"
+expect "own chart: and is planned with it" "$(grep '^hangar-prod|perf|' "$d/pown/plan.txt" | cut -d'|' -f3,4)" "$d/pown/charts/2/app|true"
 
 # --- 4-6. render, ingest and register ---------------------------------------------------------------------------------------
 mkdir -p "$d/bin"

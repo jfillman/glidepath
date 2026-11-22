@@ -333,7 +333,9 @@ spec:
           declared="$(protection_declared "${envs_json}" "${env}")"
           protected="$(protection_register "${declared}" "${CLEARANCE_URL}")"
           chart_dir=default
-          resolved="$(echo "${cicd}" | ENV_NAME="${env}" yq -o json '{"app": (.deploy.chart // {}), "env": ((.deploy.environments // [])[] | select(.name == strenv(ENV_NAME)) | .chart // {})}' 2>/dev/null \
+          # An environment deploy.environments does not list still gets the app's deploy.chart (it used to yield nothing, so the default chart):
+          # with a Clearance it is registered like any other.
+          resolved="$(echo "${cicd}" | ENV_NAME="${env}" yq -o json '{"app": (.deploy.chart // {}), "env": ([(.deploy.environments // [])[] | select(.name == strenv(ENV_NAME)) | .chart // {}] | .[0] // {})}' 2>/dev/null \
             | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" '
                 def over($b; $o): if ($o.repoURL // "") != "" then $o
                   else $b + ($o | with_entries(select(.value != null and .value != "")))
