@@ -19,7 +19,8 @@
 # philosophy. This Task is just automating the same commit a developer would make by
 # hand. Contrast with catalog/tasks/open-release-pr.yaml, which promotes to an upper
 # env via a real PR against a SEPARATE gitops-<app-name> repo - dev has no gitops repo
-# involved at all.
+# involved at all. The commit is made through GitHub's Git Data API, not `git push`, so GitHub signs it for the App
+# (clearance-gate then recognises it as the platform's: docs/admin/clearance-gate.md, "Platform release-file commits").
 #
 # Same GitHub App installation-token broker pattern as open-release-pr.yaml/
 # deliver-onboarding-files.yaml (catalog/lib/github-app.sh) - a fresh,
@@ -112,6 +113,7 @@ spec:
         {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
         source "${PLATFORM_LIB}/github-app.sh"
         source "${PLATFORM_LIB}/retry.sh"
+        {{- include "glidepath-catalog.releaseImagePin" . | nindent 8 }}
 
         owner="$(echo "${GIT_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         token="$(github_app_installation_token "${owner}" "${APP_NAME}")"
@@ -119,91 +121,161 @@ spec:
         workdir="$(mktemp -d)"
         git_auth "${token}"
         clone_url="https://${GIT_HOST}/${owner}/${APP_NAME}.git"
-        # --depth 1 --single-branch (2026-10-09, report item 7): this Task only writes on top of
-        # the default branch's tip and pushes main, so history is never read. GitHub accepts a push
-        # from a shallow clone (it already has the boundary commit).
-        with_retry 3 -- git clone --quiet --depth 1 --single-branch "${clone_url}" "${workdir}/repo"
-        cd "${workdir}/repo"
-
-        image_repo="${IMAGE_REF%:*}"
-        image_tag="${IMAGE_REF##*:}"
-
+        repo_api="https://api.github.com/repos/${owner}/${APP_NAME}"
         # ADR-0018: the environments folder is glidepath/ (the lower-envs ApplicationSet reads
         # only glidepath/envs/).
         envs_root=glidepath
+        image_repo="${IMAGE_REF%:*}"
+        image_tag="${IMAGE_REF##*:}"
 
-        # Refuse a deploy to an environment that runs no workload (2026-10-10): its human values say
-        # rollout.enabled: false (or the older rollout: null), layered glidepath/base.yaml then
-        # glidepath/envs/<env>.yaml the way the lower-envs ApplicationSet layers them. The deploy would
-        # render nothing, so say why instead.
-        human_files=()
-        for f in "${envs_root}/base.yaml" "${envs_root}/envs/${ENV}.yaml"; do [[ -f "${f}" ]] && human_files+=("${f}"); done
-        if (( ${#human_files[@]} > 0 )) && [[ "$(yq eval-all '. as $i ireduce ({}; . * $i) | (has("rollout") and (.rollout == null or .rollout.enabled == false))' "${human_files[@]}")" == "true" ]]; then
-          echo "error: ${ENV} runs no workload (rollout.enabled: false, or rollout: null, in ${human_files[*]}), so there is nothing to deploy an image to. Turn the Deployment switch on in Tower's App Configuration (rollout.enabled: true), then deploy again." >&2
+        # gh_api <method> <url> [<json body file>]: prints the body, then the HTTP status on its own last line. curl retries a
+        # connection failure and a 5xx; every call below is safe to repeat (a tree or commit object nothing points at is inert, and
+        # the ref update names the commit it moves to).
+        # The body goes to a regular file (--output), which curl truncates before each retry, so only the final attempt's body
+        # is read: on stdout a failed attempt's body would stay in front of the answer.
+        gh_api() {
+          local body=() code
+          [[ -n "${3:-}" ]] && body=(-H "Content-Type: application/json" --data "@$3")
+          : > "${workdir}/response"
+          code="$(curl --silent --show-error --max-time 30 --retry 3 --retry-connrefused --output "${workdir}/response" -w '%{http_code}' -X "$1" \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+            ${body[@]+"${body[@]}"} "$2")" || code=000
+          cat "${workdir}/response"; printf '\n%s' "${code:-000}"
+        }
+
+        # stage_release: in the fresh clone (cwd), writes the image into the release file and stages every change of this
+        # deploy in the index. The values come from the clone, so a retry after main moved re-reads them.
+        stage_release() {
+          # Refuse a deploy to an environment that runs no workload (2026-10-10): its human values say
+          # rollout.enabled: false (or the older rollout: null), layered glidepath/base.yaml then
+          # glidepath/envs/<env>.yaml the way the lower-envs ApplicationSet layers them. The deploy would
+          # render nothing, so say why instead.
+          human_files=()
+          for f in "${envs_root}/base.yaml" "${envs_root}/envs/${ENV}.yaml"; do [[ -f "${f}" ]] && human_files+=("${f}"); done
+          if (( ${#human_files[@]} > 0 )) && [[ "$(yq eval-all '. as $i ireduce ({}; . * $i) | (has("rollout") and (.rollout == null or .rollout.enabled == false))' "${human_files[@]}")" == "true" ]]; then
+            echo "error: ${ENV} runs no workload (rollout.enabled: false, or rollout: null, in ${human_files[*]}), so there is nothing to deploy an image to. Turn the Deployment switch on in Tower's App Configuration (rollout.enabled: true), then deploy again." >&2
+            exit 1
+          fi
+
+          # Release-file split (D9/AF-5, ADR-0018): release.image lives in a machine-owned
+          # <folder>/envs/<env>.release.yaml beside the human env file, which the lower-envs
+          # ApplicationSet layers last. deploy.releaseFile overrides the path; unset means that
+          # default (since 2026-10-06; before, unset wrote into the env file itself).
+          release_file_template=""
+          if [[ -f cicd.yaml ]]; then
+            release_file_template="$(yq -r '.deploy.releaseFile // ""' cicd.yaml)"
+          fi
+
+          default_release_file="${envs_root}/envs/${ENV}.release.yaml"
+          if [[ -z "${release_file_template}" ]]; then
+            manifest="${default_release_file}"
+          else
+            manifest="${release_file_template//\{env\}/${ENV}}"
+          fi
+          # The lower-envs ApplicationSet layers only <folder>/envs/<env>.release.yaml over the env
+          # file. A release file anywhere else would be a deploy that changes nothing.
+          if [[ "${manifest}" != "${default_release_file}" ]]; then
+            echo "error: deploy.releaseFile writes ${manifest}, but ${ENV} deploys from ${default_release_file} (the lower-envs ApplicationSet reads only that path) - set deploy.releaseFile to '${envs_root}/envs/{env}.release.yaml' or remove it" >&2
+            exit 1
+          fi
+          mkdir -p "$(dirname "${manifest}")"
+          [[ -f "${manifest}" ]] || printf '# machine-owned: written by deploy-manifests.yaml (D9/AF-5) - do not hand-edit\n' > "${manifest}"
+          # the values go in through the environment, never into the program text (an image reference is data, not yq)
+          IMAGE_REPO="${image_repo}" IMAGE_TAG="${image_tag}" yq -i -e '
+            .release.image.repository = strenv(IMAGE_REPO) |
+            .release.image.tag = strenv(IMAGE_TAG)
+          ' "${manifest}"
+          # ADR-0029: a Ground environment runs the Ground image, so repository and source are the same.
+          release_image_pin "${manifest}" "${image_repo}" "${IMAGE_DIGEST}"
+          git add "${manifest}"
+
+          # Moving an app onto the split: the env file may still carry the image an earlier deploy
+          # wrote there (release.image, or the deprecated rollout.image). Drop exactly those, once, in
+          # this same commit. A rollout: null is no longer dropped here (2026-10-10): it means "this
+          # environment runs no workload", and the check above already refused the deploy.
+          env_file="${envs_root}/envs/${ENV}.yaml"
+          # Checked first so yq never rewrites (and re-formats) a human file that has none of them.
+          if [[ -f "${env_file}" && "$(yq '(.release.image != null) or (.rollout.image != null)' "${env_file}")" == "true" ]]; then
+            yq -i '
+              del(.release.image) | del(.release | select(length == 0)) |
+              del(.rollout.image)
+            ' "${env_file}"
+            echo "moved the image out of ${env_file} into ${manifest}"
+            git add "${env_file}"
+          fi
+        }
+
+        # api_commit <parent sha> <message>: the staged change as ONE commit on main, made through GitHub's Git Data API with the
+        # App's installation token and NO author or committer: GitHub then signs it (verification.verified) and names the App's
+        # bot as author and committer. A `git push` of a local commit is unsigned, and clearance-gate's release source cannot
+        # tell it from anyone's direct push (docs/admin/clearance-gate.md, "Platform release-file commits"). Returns 2 when main
+        # is no longer <parent sha> (the ref update is not a fast-forward), 1 on any other failure.
+        api_commit() {
+          local parent="$1" msg="$2" out code base_tree entries p mode tree commit
+          out="$(gh_api GET "${repo_api}/git/commits/${parent}")"; code="${out##*$'\n'}"
+          [[ "${code}" == 200 ]] || { echo "error: could not read ${parent:0:7} from GitHub (HTTP ${code})" >&2; return 1; }
+          base_tree="$(jq -r '.tree.sha // ""' <<<"${out%$'\n'*}")"
+          entries='[]'
+          while IFS= read -r p; do
+            [[ -n "${p}" ]] || continue
+            if [[ -f "${p}" ]]; then
+              mode="$(git ls-files -s -- "${p}" | awk '{print $1; exit}')"
+              entries="$(jq -c --arg p "${p}" --arg m "${mode:-100644}" --rawfile c "${p}" '. + [{path: $p, mode: $m, type: "blob", content: $c}]' <<<"${entries}")"
+            else
+              entries="$(jq -c --arg p "${p}" '. + [{path: $p, mode: "100644", type: "blob", sha: null}]' <<<"${entries}")"
+            fi
+          done < <(git diff --cached --name-only)
+          jq -n --arg b "${base_tree}" --argjson e "${entries}" '{base_tree: $b, tree: $e}' > "${workdir}/tree.json"
+          out="$(gh_api POST "${repo_api}/git/trees" "${workdir}/tree.json")"; code="${out##*$'\n'}"
+          [[ "${code}" == 201 ]] || { echo "error: GitHub refused the tree (HTTP ${code}): $(head -c 300 <<<"${out%$'\n'*}")" >&2; return 1; }
+          tree="$(jq -r '.sha' <<<"${out%$'\n'*}")"
+          # No author, no committer, no signature: what GitHub needs to sign the commit as the App.
+          jq -n --arg m "${msg}" --arg t "${tree}" --arg p "${parent}" '{message: $m, tree: $t, parents: [$p]}' > "${workdir}/commit.json"
+          out="$(gh_api POST "${repo_api}/git/commits" "${workdir}/commit.json")"; code="${out##*$'\n'}"
+          [[ "${code}" == 201 ]] || { echo "error: GitHub refused the commit (HTTP ${code}): $(head -c 300 <<<"${out%$'\n'*}")" >&2; return 1; }
+          commit="$(jq -r '.sha' <<<"${out%$'\n'*}")"
+          jq -n --arg s "${commit}" '{sha: $s, force: false}' > "${workdir}/ref.json"
+          out="$(gh_api PATCH "${repo_api}/git/refs/heads/main" "${workdir}/ref.json")"; code="${out##*$'\n'}"
+          if [[ "${code}" == 200 ]]; then
+            echo "committed ${commit:0:7} to main through GitHub's API (signed by GitHub for the App)"
+            return 0
+          fi
+          # 422 "Update is not a fast forward": someone else's commit landed on main after the clone. GitHub answers other
+          # validation failures with 422 too: only that message means main moved.
+          if [[ "${code}" == 422 ]] && jq -e '(.message // "") | ascii_downcase | contains("not a fast forward")' <<<"${out%$'\n'*}" >/dev/null 2>&1; then
+            return 2
+          fi
+          echo "error: GitHub refused to move main to ${commit:0:7} (HTTP ${code}): $(head -c 300 <<<"${out%$'\n'*}")" >&2
+          return 1
+        }
+
+        # Clone, stage, commit; when main moved in between, start again from a fresh clone (the file is re-read, so a deploy
+        # that raced another never writes over what that one changed). At most 3 attempts.
+        attempt=1
+        while true; do
+          rm -rf "${workdir}/repo"
+          # --depth 1 --single-branch (2026-10-09, report item 7): this Task only reads the default branch's tip.
+          with_retry 3 -- git clone --quiet --depth 1 --single-branch "${clone_url}" "${workdir}/repo"
+          cd "${workdir}/repo"
+          stage_release
+          # A rerun of a deploy whose commit already landed (it failed later, in the wait) has nothing to commit:
+          # skip straight to the wait rather than fail on an empty commit.
+          if git diff --cached --quiet; then
+            echo "${manifest} already deploys ${IMAGE_REF} - nothing to commit"
+            break
+          fi
+          rc=0; api_commit "$(git rev-parse HEAD)" "Deploy ${APP_NAME} to ${ENV}: ${IMAGE_REF}" || rc=$?
+          (( rc == 0 )) && break
+          if (( rc == 2 && attempt < 3 )); then
+            echo "main moved since the clone: re-reading it and committing again (attempt $((attempt + 1))/3)"
+            attempt=$((attempt + 1)); cd /; sleep $((attempt * 2)); continue
+          fi
+          (( rc == 2 )) && echo "error: main kept moving; gave up after ${attempt} attempts" >&2
           exit 1
-        fi
-
-        # Release-file split (D9/AF-5, ADR-0018): release.image lives in a machine-owned
-        # <folder>/envs/<env>.release.yaml beside the human env file, which the lower-envs
-        # ApplicationSet layers last. deploy.releaseFile overrides the path; unset means that
-        # default (since 2026-10-06; before, unset wrote into the env file itself).
-        release_file_template=""
-        if [[ -f cicd.yaml ]]; then
-          release_file_template="$(yq -r '.deploy.releaseFile // ""' cicd.yaml)"
-        fi
-
-        default_release_file="${envs_root}/envs/${ENV}.release.yaml"
-        if [[ -z "${release_file_template}" ]]; then
-          manifest="${default_release_file}"
-        else
-          manifest="${release_file_template//\{env\}/${ENV}}"
-        fi
-        # The lower-envs ApplicationSet layers only <folder>/envs/<env>.release.yaml over the env
-        # file. A release file anywhere else would be a deploy that changes nothing.
-        if [[ "${manifest}" != "${default_release_file}" ]]; then
-          echo "error: deploy.releaseFile writes ${manifest}, but ${ENV} deploys from ${default_release_file} (the lower-envs ApplicationSet reads only that path) - set deploy.releaseFile to '${envs_root}/envs/{env}.release.yaml' or remove it" >&2
-          exit 1
-        fi
-        mkdir -p "$(dirname "${manifest}")"
-        [[ -f "${manifest}" ]] || printf '# machine-owned: written by deploy-manifests.yaml (D9/AF-5) - do not hand-edit\n' > "${manifest}"
-        # the values go in through the environment, never into the program text (an image reference is data, not yq)
-        IMAGE_REPO="${image_repo}" IMAGE_TAG="${image_tag}" yq -i -e '
-          .release.image.repository = strenv(IMAGE_REPO) |
-          .release.image.tag = strenv(IMAGE_TAG)
-        ' "${manifest}"
-        # ADR-0029: a Ground environment runs the Ground image, so repository and source are the same.
-        {{- include "glidepath-catalog.releaseImagePin" . | nindent 8 }}
-        release_image_pin "${manifest}" "${image_repo}" "${IMAGE_DIGEST}"
-        git add "${manifest}"
-
-        # Moving an app onto the split: the env file may still carry the image an earlier deploy
-        # wrote there (release.image, or the deprecated rollout.image). Drop exactly those, once, in
-        # this same commit. A rollout: null is no longer dropped here (2026-10-10): it means "this
-        # environment runs no workload", and the check above already refused the deploy.
-        env_file="${envs_root}/envs/${ENV}.yaml"
-        # Checked first so yq never rewrites (and re-formats) a human file that has none of them.
-        if [[ -f "${env_file}" && "$(yq '(.release.image != null) or (.rollout.image != null)' "${env_file}")" == "true" ]]; then
-          yq -i '
-            del(.release.image) | del(.release | select(length == 0)) |
-            del(.rollout.image)
-          ' "${env_file}"
-          echo "moved the image out of ${env_file} into ${manifest}"
-          git add "${env_file}"
-        fi
-
-        git config user.name "glidepath deploy automation"
-        git config user.email "deploy@glidepath.invalid"
-        # A rerun of a deploy whose commit already landed (it failed later, in the wait) has nothing to commit:
-        # skip straight to the wait rather than fail on an empty commit.
-        if git diff --cached --quiet; then
-          echo "${manifest} already deploys ${IMAGE_REF} - nothing to commit"
-        else
-          git commit --quiet -m "Deploy ${APP_NAME} to ${ENV}: ${IMAGE_REF}"
-          with_retry 3 -- git push --quiet "${clone_url}" main
-        fi
+        done
 
         NAMESPACE="${APP_TYPE}-${APP_NAME}-${ENV}"
-        echo "pushed ${manifest} - waiting for argocd-apps' ${APP_NAME}-${ENV} Application to sync and the Rollout to become Healthy"
+        echo "${manifest} is on main - waiting for argocd-apps' ${APP_NAME}-${ENV} Application to sync and the Rollout to become Healthy"
 
         # Ask Argo CD to look now rather than on its next poll (argocd-apps reconciles every 120 s plus up to 60 s
         # of jitter, and has no GitHub webhook): 2026-10-09, report item 8. `hard` so the repo-server re-resolves

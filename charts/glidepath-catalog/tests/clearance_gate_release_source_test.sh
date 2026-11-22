@@ -98,7 +98,7 @@ scenario() { # <name>: the normal one: previous release P (merged), this release
 resolve() { # (PRAUTHORTYPE: the PR author's account type) -> prints the function's JSON; the files list is $FIX/files.json
   ( source "$d/lib.sh"; github_app_installation_token() { echo tok; }
     PATH="$d/bin:$PATH" NAMESPACE=app-shop-cicd APP_NAME=shop CLEARANCE_URL=http://clearance PIPELINE_LOGINS="${PIPELINE_LOGINS:-}" \
-    release_source_resolve o gitops-shop 7 "$(cat "$FIX/files.json")" "$FIX/head" "$FIX/base" "${PRAUTHOR:-cicd-pac[bot]}" "${PRAUTHORTYPE:-Bot}" ) 2> "$FIX/stderr"
+    release_source_resolve o gitops-shop 7 "$(cat "$FIX/files.json")" "$FIX/head" "$FIX/base" "${PRAUTHOR:-cicd-pac[bot]}" "${PRAUTHORTYPE:-Bot}" "${RCFG:-}" ) 2> "$FIX/stderr"
 }
 # the clearance token the lib reads
 mkdir -p "$d/secret"; echo tok > "$d/secret/clearance-token"
@@ -328,6 +328,103 @@ scenario warn; jq '.items[0].data.prUrl = "https://github.com/o/gitops-shop/pull
 out="$(PIPELINE_LOGINS="" PRAUTHORTYPE=Bot resolve)"; expect "empty pipelineLogins and a Bot author: a warning is printed" "$(q '[.applicable, (.warning | test("pipelineLogins"))] | join(",")')" "false,true"
 out="$(PIPELINE_LOGINS="" PRAUTHORTYPE=User resolve)"; expect "no warning for a person" "$(q '.warning // "none"')" none
 
+# 15. Platform release-file commits (docs/admin/clearance-gate.md, "Platform release-file commits"): deploy-manifests' commit
+#     straight to main is dropped from noPr only when ALL four hold: GitHub verified it, its committer is the pipeline's App,
+#     its full diff vs its first parent is only release files, and none of them is the released environment's (prod here).
+#     C2 is the direct push of each case; P1 its first parent.
+P1="$(sha 900)"
+unset PIPELINE_LOGINS PRAUTHOR PRAUTHORTYPE   # case 6 leaves them set in this shell (a line of assignments only)
+CFG='{"environments":[{"name":"dev","tier":"ground"},{"name":"perf","tier":"ground"},{"name":"prod","tier":"flight","production":true}],"releaseFile":"glidepath/envs/{env}.release.yaml"}'
+rfc() { # <name> <verified> <committer login or ""> <json array of changed files> [<parents>] [<compare status>]: C2 pushed straight to main
+  scenario "$1"; cpulls "$C2" '[]'; prpages 282 dana "$C2" "[{\"sha\":\"$(sha 777)\"}]" "Co-Authored-By: Claude <noreply@anthropic.com>" "$M2"
+  gh "o/shop/commits/$C2" "$(jq -nc --arg s "$C2" --arg p "$P1" --argjson v "$2" --arg l "$3" --argjson n "${5:-1}" \
+    '{sha: $s, parents: ([range($n)] | map({sha: $p})), committer: (if $l == "" then null else {login: $l, type: "Bot"} end), commit: {verification: {verified: $v, reason: (if $v then "valid" else "unsigned" end)}}}')"
+  gh "o/shop/compare/$P1...$C2?per_page=1" "$(jq -nc --argjson f "$4" --arg st "${6:-ahead}" '{status: $st, files: [$f[] | if type == "string" then {filename: .} else . end]}')"
+}
+rel() { RCFG="${RCFG-$CFG}" PIPELINE_LOGINS="${PIPELINE_LOGINS-}" resolve; }
+platform_q='[.provenance, (.noPr | join(",")), ((.platformCommits // []) | join(","))] | join("|")'
+rfc all-hold true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'
+out="$(rel)"; expect "all four hold (another environment's release file, verified, the App's bot): not counted, provenance from the PRs" "$(q "$platform_q")" "unattested||$C2"
+expect "the skipped commit is reported apart" "$(q '.platformCommits | length')" 1
+out="$(PIPELINE_LOGINS="CICD-PAC[bot]" PRAUTHOR=someone PRAUTHORTYPE=User rel)"; expect "the App's login from clearanceGate.pipelineLogins (any case): skipped" "$(q "$platform_q")" "unattested||$C2"
+out="$(PIPELINE_LOGINS="other[bot]" rel)"; expect "pipelineLogins set to another login: the configured list wins over the PR author, kept" "$(q "$platform_q")" "unknown|$C2|"
+out="$(PRAUTHOR=someone PRAUTHORTYPE=User rel)"; expect "no configured login and a release PR not authored by a Bot: the App is unknown, kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc rename true "cicd-pac[bot]" '[{"filename":"glidepath/envs/perf.release.yaml","previous_filename":"glidepath/envs/dev.release.yaml"}]'
+out="$(rel)"; expect "a rename between two other environments' release files: skipped" "$(q "$platform_q")" "unattested||$C2"
+# condition 1: verified
+rfc unverified false "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'
+out="$(rel)"; expect "1 fails: an unverified commit naming the App's bot as committer (anyone can push that name): kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc verified-string '"true"' "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'
+out="$(rel)"; expect "1 fails: verified must be the boolean true" "$(q "$platform_q")" "unknown|$C2|"
+# condition 2: committer
+rfc other-bot true "renovate[bot]" '["glidepath/envs/dev.release.yaml"]'
+out="$(rel)"; expect "2 fails: verified, but another bot committed it: kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc web-flow true "" '["glidepath/envs/dev.release.yaml"]'
+out="$(rel)"; expect "2 fails: a web-UI commit (verified, committer not a GitHub account here): kept" "$(q "$platform_q")" "unknown|$C2|"
+# condition 3: only release files
+rfc extra-file true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml","src/a.ts"]'
+out="$(rel)"; expect "3 fails: a source file beside the release file: kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc env-file true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml","glidepath/envs/dev.yaml"]'
+out="$(rel)"; expect "3 fails: the human env file too (the one-time move onto the split): kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc merge-hides true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml","src/hidden.ts"]' 2
+out="$(rel)"; expect "3 fails: a merge commit whose diff vs its first parent brings in another file: kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc merge-clean true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]' 2
+out="$(rel)"; expect "a merge commit whose full diff vs its first parent is only another environment's release file: skipped" "$(q "$platform_q")" "unattested||$C2"
+rfc unlisted true "cicd-pac[bot]" '["glidepath/envs/staging.release.yaml"]'
+out="$(rel)"; expect "3 fails: the release-file path of an environment cicd.yaml does not list: kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc other-path true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'
+out="$(RCFG='{"environments":[{"name":"dev"},{"name":"prod"}],"releaseFile":"deploy/{env}.yaml"}' rel)"; expect "3 fails: deploy.releaseFile resolves elsewhere (deploy-manifests refuses it): nothing is a release file, kept" "$(q "$platform_q")" "unknown|$C2|"
+out="$(RCFG='' rel)"; expect "3 fails: no cicd.yaml answer: nothing is a release file, kept" "$(q "$platform_q")" "unknown|$C2|"
+out="$(RCFG='{"environments":[{"name":"dev"},{"name":"dev"},{"name":"prod"}]}' rel)"; expect "an environment listed twice is ambiguous: kept" "$(q "$platform_q")" "unknown|$C2|"
+out="$(RCFG='{"environments":[{"name":"dev"},{"name":"prod"}]}' rel)"; expect "no deploy.releaseFile: the default glidepath/envs/{env}.release.yaml, skipped" "$(q "$platform_q")" "unattested||$C2"
+rfc many-files true "cicd-pac[bot]" "$(jq -nc '[range(300) | "glidepath/envs/dev.release.yaml"]')"
+out="$(rel)"; expect "3 fails: a compare listing 300 files may be cut off: kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc not-ahead true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]' 1 diverged
+out="$(rel)"; expect "3 fails: the compare against the first parent is not 'ahead': kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc unreadable true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'; rm "$FIX/gh/$(sed -E 's#[^A-Za-z0-9]#_#g' <<<"o/shop/compare/$P1...$C2?per_page=1")"
+out="$(rel)"; expect "the diff cannot be read: kept" "$(q "$platform_q")" "unknown|$C2|"
+expect "why it was kept is in the step log" "$(grep -c "stays a commit no merged PR contains: could not read its diff" "$FIX/stderr")" 1
+# condition 4: not the released environment's file (the record releases prod)
+rfc released-env true "cicd-pac[bot]" '["glidepath/envs/prod.release.yaml"]'
+out="$(rel)"; expect "4 fails: the released environment's own release file: kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc both-envs true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml","glidepath/envs/prod.release.yaml"]'
+out="$(rel)"; expect "4 fails: one commit touching another environment's and the released one's file: kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc release-dev true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'; jq '.items[].data.env = "dev"' "$FIX/records.json" > "$FIX/r" && mv "$FIX/r" "$FIX/records.json"
+mkdir -p "$FIX/head/c1/dev" "$FIX/base/c1/dev"; mv "$FIX/head/c1/prod/release.yaml" "$FIX/head/c1/dev/"; mv "$FIX/base/c1/prod/release.yaml" "$FIX/base/c1/dev/"
+echo '[{"filename":"c1/dev/release.yaml","status":"modified"}]' > "$FIX/files.json"
+out="$(rel)"; expect "4 fails: the same dev commit, judged in a release of dev itself: kept" "$(q "$platform_q")" "unknown|$C2|"
+( source "$d/lib.sh"
+  expect "_rs_release_file_counts: another environment does not count" "$(_rs_release_file_counts dev prod)" false
+  expect "_rs_release_file_counts: the released environment counts" "$(_rs_release_file_counts prod prod)" true
+  expect "_rs_release_file_counts: an unknown released environment counts" "$(_rs_release_file_counts dev '')" true
+  expect "_rs_release_paths: each environment at its own path, only the released one counts" \
+    "$(_rs_release_paths "$CFG" prod | jq -c 'to_entries | map("\(.key)=\(.value.env):\(.value.counts)") | join(" ")' | tr -d '"')" \
+    "glidepath/envs/dev.release.yaml=dev:false glidepath/envs/perf.release.yaml=perf:false glidepath/envs/prod.release.yaml=prod:true"
+  [[ "${fail}" == 0 ]]   # the subshell's own flag: hand a failed assertion out
+) || fail=1
+# a release whose range is only platform commits still names no source PR: unresolved, as before
+rfc only-platform true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'; for c in "$C1" "$M1" "$M2"; do cpulls "$c" '[]'; done
+out="$(rel)"; expect "only platform commits and direct pushes: still unresolved (no source PR)" "$(q '[.resolved, (.reason | test("no commit of the range"))] | join(",")')" "false,true"
+
+# 16. Why the proposer is unknown, for Clearance (provenanceReason, clearance#213): unvouched-commits (held for two people)
+#     only when the one cause is commits no merged PR contains; unrecorded-agent when a source PR is unknown; else nothing.
+why_q='[.proposerKind, (.provenanceReason // "none"), ((.unvouchedCommits // []) | join(","))] | join("|")'
+scenario why-unvouched; cpulls "$C2" '[]'; prpages 282 dana "$C2" "[{\"sha\":\"$(sha 777)\"}]" "" "$M2"
+out="$(resolve)"; expect "only unvouched commits (every source PR vouched, a human named): unvouched-commits with the remaining noPr" "$(q "$why_q")" "unknown|unvouched-commits|$C2"
+echo '{"281":{"identity":{"status":"modified"}},"282":{"identity":{"status":"not-agent"}}}' > "$FIX/verdicts.json"
+out="$(resolve)"; expect "unvouched commits AND a modified agent PR: unrecorded-agent (denied)" "$(q "$why_q")" "unknown|unrecorded-agent|"
+echo '{"282":{"identity":{"status":"not-agent"}}}' > "$FIX/verdicts.json"
+out="$(resolve)"; expect "unvouched commits AND a PR Clearance could not answer for: unrecorded-agent" "$(q "$why_q")" "unknown|unrecorded-agent|"
+scenario why-agent; echo '{"281":{"identity":{"status":"unrecorded"}},"282":{"identity":{"status":"not-agent"}}}' > "$FIX/verdicts.json"
+out="$(resolve)"; expect "no unvouched commit, a forged-trailer PR: unrecorded-agent" "$(q "$why_q")" "unknown|unrecorded-agent|"
+scenario why-nohuman; cpulls "$C2" '[]'; prpages 282 "b[bot]" "$C2" "[{\"sha\":\"$(sha 777)\"}]" "" "$M2" "n[bot]"; prpages 281 "a[bot]" "$C1" "[{\"sha\":\"$C1\"}]" "" "$M1" "m[bot]"
+out="$(resolve)"; expect "unvouched commits but no human at all (proposerRule none): nothing sent" "$(q "$why_q")" "unknown|none|"
+scenario why-person; out="$(resolve)"; expect "a person's release (kind person): nothing sent" "$(q "$why_q")" "person|none|"
+rfc why-platform true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'
+out="$(rel)"; expect "the only direct push is a platform release-file commit: not unknown, nothing sent" "$(q "$why_q")" "person|none|"
+rfc why-mixed true "renovate[bot]" '["glidepath/envs/dev.release.yaml"]'
+out="$(rel)"; expect "the unvouched list is what remains after the platform skip" "$(q "$why_q")" "unknown|unvouched-commits|$C2"
+
 # 10. The mapping into the change request: the real publish -> render-manifests -> ingest chain (tests/lib/gate_chain.sh, real helm, the
 # policy-validation fixture's stand-in chart), with the fetch step's /work laid out the way it leaves it, source.json included.
 fx="$(pwd)/charts/glidepath-catalog/tests/fixtures/policy-validation"
@@ -359,5 +456,15 @@ expect "register: not a release PR: unchanged (the PR author, per the agent gate
   "$(change_for plain '{"applicable":false}' '{"identity":{"status":"not-agent"}}')" "user:cicd-pac[bot]|person|none|not-agent|-|-|-"
 expect "register: no source.json at all (an older fetch): unchanged" \
   "$(change_for none '' '{"identity":{"status":"not-agent"}}')" "user:cicd-pac[bot]|person|none|not-agent|-|-|-"
+
+why_of() { jq -c '[(.provenanceReason // "none"), ((.unvouchedCommits // []) | join(","))] | join("|")' "$d/chain-$1/eval/hangar-prod__prod/change.json" | tr -d '"'; }
+change_for why-u "$(jq -c --arg c "$C2" '.proposerKind = "unknown" | .provenance = "unknown" | .noPr = [$c] | .provenanceReason = "unvouched-commits" | .unvouchedCommits = [$c]' <<<"$good")" >/dev/null
+expect "register: unvouched-commits rides in the change request with its commits" "$(why_of why-u)" "unvouched-commits|$C2"
+change_for why-a "$(jq -c '.proposerKind = "unknown" | .provenance = "unknown" | .provenanceReason = "unrecorded-agent"' <<<"$good")" >/dev/null
+expect "register: unrecorded-agent rides alone" "$(why_of why-a)" "unrecorded-agent|"
+change_for why-p "$(jq -c '.provenanceReason = "unvouched-commits" | .unvouchedCommits = ["x"]' <<<"$good")" >/dev/null
+expect "register: never with a proposer kind other than unknown" "$(why_of why-p)" "none|"
+change_for why-r '{"applicable":true,"resolved":false,"reason":"r","provenanceReason":"unvouched-commits","unvouchedCommits":["a"]}' >/dev/null
+expect "register: an unresolved source sends no reason" "$(why_of why-r)" "none|"
 
 [[ "${fail}" == 0 ]] && echo "all passed" || { echo "FAILED"; exit 1; }

@@ -4,6 +4,14 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### Platform release-file commits no longer block a production release
+
+- `deploy-manifests` now commits a Ground environment's release file through GitHub's Git Data API with the App's installation token, and no author or committer. GitHub signs that commit, and its committer is the App's bot. It no longer runs `git push`. It still retries, and when main moves between the clone and the ref update (a 422, not a fast-forward) it re-clones and commits again, at most 3 attempts. The Argo CD refresh and the wait are unchanged.
+- The `clearance-gate` release source (`files/lib/release-source.sh`) leaves a commit no PR contains out of `noPr` only when all four hold. GitHub verified it. Its committer is the pipeline's App (`clearanceGate.pipelineLogins`, or else the release PR's Bot author). Its full diff against its first parent has only resolved release files. None of them is the released environment's. The comment lists these commits on their own line, "platform release-file commits, not counted". When an environment is itself released, commits to its own release file stay counted.
+- Unvouched commits (clearance#213): when the only cause of an `unknown` proposer is commits no merged PR contains (every source PR vouched for, a human named), the change carries `provenanceReason: unvouched-commits` and `unvouchedCommits` (the noPr left after the skip above), and Clearance holds it at tier 3 for two people. A source PR that is itself unknown sends `unrecorded-agent` (denied). Anything else sends nothing. A core that refuses the fields as unknown gets the change again without them, which is denied as before (fail closed), and the comment says so. The register step now allows three fallbacks instead of two.
+- The `DG-PROVENANCE` note under a denial now names the actual cause (commits no PR contains, an unresolved source, or the agent case) instead of always naming the agent case. docs/admin/clearance-gate.md, "Platform release-file commits".
+- Tests: `charts/glidepath-catalog/tests/release_file_commits_test.sh` (new, in catalog-ci `policy-validation`), and section 15 of `clearance_gate_release_source_test.sh`.
+
 ### I-1 interim guard: a flow may not have two release steps
 
 - `validateFlows` (glidepath-app) now refuses a flow with more than one `release` step, naming the flow and both steps. A release record is named per release chain (one flow), so two release steps wrote the same record and the second overwrote the first's PR, image and state. The owner chose this interim guard (option a, strip Y-41); per-environment record names (option b, hangar `specs/plans/i1-release-record-per-env.md`) stay deferred and would lift the limit. A scan of the 14 onboarded apps' `cicd.yaml` found at most one release step per flow. docs/user/cicd-yaml-reference.md, "How flows work". Test: `charts/glidepath-app/tests/test_roles_test.py`.
