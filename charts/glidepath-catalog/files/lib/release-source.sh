@@ -96,8 +96,9 @@ _rs_release_file_counts() {
 }
 # _rs_app_pushes <token> <owner/repo> <branch> <app logins json> <shas json>: condition 2 of step 3b, read from GitHub's own
 # record of who moved the branch (the repository activity API, GET /repos/{owner}/{repo}/activity). Prints a JSON object
-# {"<sha>": "<before>"} with every sha of <shas> that GitHub records as the new tip (`after`) of a `push` to refs/heads/<branch>
-# whose actor is one of <app logins> (an account GitHub types Bot); <before> is the tip that push moved from. The actor is the
+# {"<sha>": ["<before>", ...]} with every sha of <shas> that GitHub records as the new tip (`after`) of a `push` to
+# refs/heads/<branch> whose actor is one of <app logins> (an account GitHub types Bot); each <before> is a tip such a push moved
+# from (every one read is kept: a branch reset and pushed again records the same tip twice). The actor is the
 # account that authenticated the ref update, so a person with write access cannot make it the App: only a holder of the App's
 # installation token can. The query filters (ref, actor, activity_type) only narrow the listing; every field is checked here.
 # Reads at most RS_ACTIVITY_PAGES pages of 100 per login (default 10), newest first, and stops once every sha is found; a sha
@@ -114,10 +115,12 @@ _rs_app_pushes() {
       body="$(_rs_api "${tok}" "${url}" -D "${hdr}")" || { rm -f "${hdr}"; return 1; }
       found="$(jq -c --argjson f "${found}" --argjson w "${want}" --argjson l "${logins}" --arg ref "${ref}" '
         if type != "array" then error("not a list") else . end
-        | $f + ([.[] | select(type == "object" and .activity_type == "push" and .ref == $ref and (.actor.type // "") == "Bot"
+        | ([.[] | select(type == "object" and .activity_type == "push" and .ref == $ref and (.actor.type // "") == "Bot"
                    and (((.actor.login // "") | ascii_downcase) as $a | $a != "" and ($l | index($a)) != null)
                    and ((.after // "") as $s | $w | index($s)) != null)
-                 | {key: .after, value: (.before // "")}] | from_entries)' <<<"${body}")" || { rm -f "${hdr}"; return 1; }
+                 | {after, before: (.before // "")}]
+                 | reduce .[] as $p ({}; .[$p.after] += [$p.before]))
+          | reduce to_entries[] as $e ($f; .[$e.key] = ((.[$e.key] // []) + $e.value | unique))' <<<"${body}")" || { rm -f "${hdr}"; return 1; }
       [[ "$(jq --argjson w "${want}" '. as $f | [$w[] | select(. as $s | $f | has($s) | not)] | length' <<<"${found}")" == 0 ]] && { rm -f "${hdr}"; printf '%s\n' "${found}"; return 0; }
       next="$(tr -d '\r' < "${hdr}" | grep -i '^link:' | tr ',' '\n' | sed -nE 's/.*<([^>]+)>; *rel="next".*/\1/p' | head -n 1)"
       [[ -z "${next}" || "${next}" == https://api.github.com/* ]] || next=""
@@ -142,7 +145,7 @@ _rs_platform_commit() {
   [[ "${6:-null}" != null ]] || { echo "GitHub's activity log (who pushed it) could not be read"; return 0; }
   [[ "$(jq -r --arg s "$3" 'has($s)' <<<"$6" 2>/dev/null)" == true ]] \
     || { echo "GitHub's activity log does not show the pipeline's GitHub App pushing it to the released branch"; return 0; }
-  [[ "$(jq -r --arg s "$3" '.[$s]' <<<"$6")" == "${p1}" ]] \
+  [[ "$(jq -r --arg s "$3" --arg p "${p1}" '.[$s] | index($p) != null' <<<"$6")" == true ]] \
     || { echo "the App's push that made it the branch tip did not move the branch from its first parent"; return 0; }
   cmp="$(_rs_api "$1" "https://api.github.com/repos/$2/compare/${p1}...$3?per_page=1")" || { echo "could not read its diff"; return 0; }
   # GitHub lists at most 300 files of a compare: a full list is not provably complete.

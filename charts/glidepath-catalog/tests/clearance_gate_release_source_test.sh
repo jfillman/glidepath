@@ -396,6 +396,8 @@ out="$(rel)"; expect "2 fails: the activity log cannot be read: kept" "$(q "$pla
 expect "the step log says the log could not be read" "$(grep -c "GitHub's activity log (who pushed it) could not be read" "$FIX/stderr")" 1
 rfc not-a-list true "" '["glidepath/envs/dev.release.yaml"]'; act '{"message": "x"}'
 out="$(rel)"; expect "2 fails: the activity answer is not a list: kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc repeated-tip true "" '["glidepath/envs/dev.release.yaml"]'; act "[$(push "cicd-pac[bot]" Bot "$C2" "$P1"),$(push "cicd-pac[bot]" Bot "$C2" "$(sha 951)")]"
+out="$(rel)"; expect "the same tip pushed twice by the App (once from its parent, once from elsewhere): every before is kept, skipped" "$(q "$platform_q")" "unattested||$C2"
 # paging: the App's push is on the second page, reached through the Link header
 rfc page-2 true "" '["glidepath/envs/dev.release.yaml"]'; act "[$(push "cicd-pac[bot]" Bot "$(sha 950)" "$(sha 951)")]"
 act "[$(push "cicd-pac[bot]" Bot "$C2" "$P1")]" CUR2
