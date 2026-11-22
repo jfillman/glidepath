@@ -464,7 +464,8 @@ releaseGuardrails:
     check: "Clearance / agent-scope"
     integration: clearance
   # The deployment gate (Clearance docs/gate.md, decided 2026-10-31; docs/admin/clearance-gate.md): every release PR
-  # to a protected environment (production: true) is registered with Clearance, classified into a tier 0-3 from what
+  # is registered with Clearance, which decides which environments are protected (never cicd.yaml: clearance-gate.md,
+  # "Which environments are protected"); a change to a protected one is classified into a tier 0-3 from what
   # its rendered manifests change, and cleared by policy (0-1) or by named people in Tower (2-3). The check is green
   # once cleared, red while holding or denied (clear it in Tower, then /retest clearance-gate-). class process, like
   # itsm: a decision about the change, not a property of the image. Advisory until every gitops repo has the .tekton

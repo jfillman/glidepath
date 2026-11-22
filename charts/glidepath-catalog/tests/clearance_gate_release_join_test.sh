@@ -6,6 +6,8 @@
 # Needs helm, python3 (pyyaml) and jq. Usage: charts/glidepath-catalog/tests/clearance_gate_release_join_test.sh
 set -u
 cd "$(dirname "$0")/../../.."
+# The register step evals the protection library from its environment (files/lib/protection.sh).
+PROTECTION_LIB="$(cat charts/glidepath-catalog/files/lib/protection.sh)"; export PROTECTION_LIB
 fail=0
 d="$(mktemp -d)"
 step() { # <template> <step name> -> the step's script

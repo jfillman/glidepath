@@ -1,0 +1,12 @@
+# An app that already declares its protected environment (gate-api's shape): prod is production: true, staging is not.
+deploy:
+  environments:
+    - name: dev
+      tier: ground
+    - name: staging
+      tier: flight
+      cluster: hangar-prod
+    - name: prod
+      tier: flight
+      cluster: hangar-prod
+      production: true

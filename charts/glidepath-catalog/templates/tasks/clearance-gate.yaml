@@ -9,8 +9,9 @@
 # Five steps:
 #   fetch     (toolbox)          the PR (base, head, author, files with their line counts), the environments it changes
 #                                (policy-validation-gate's rule: <cluster>/<env>/values|release.yaml, or a cluster's
-#                                base.yaml = every environment on it), each environment's chart and whether it is
-#                                protected (cicd.yaml deploy.environments[].production), the repo's clearance.yaml at
+#                                base.yaml = every environment on it), each environment's chart, whether it is registered
+#                                (every one, with a Clearance: Clearance decides protection, files/lib/protection.sh) and
+#                                what cicd.yaml declares (deploy.environments[].production), the repo's clearance.yaml at
 #                                head and the commit that last changed it (the record's policy ref), the agent gates'
 #                                verdict on the PR (POST /v1/provenance: who proposed it), the head commit's check
 #                                runs, a one-commit checkout of base and head, and each target cluster's admission
@@ -41,8 +42,10 @@
 #
 # A PaC check is only green or red. "Holding" is red with the people who may clear it named in the comment; once
 # they clear in Tower, `/retest clearance-gate-` re-registers the same head and finds it cleared. A new push is a new
-# change (Clearance supersedes the old one). An unprotected environment (no production: true) is skipped: the gate
-# is for protected environments in phase 1.
+# change (Clearance supersedes the old one). Which environments are protected is the platform's to say, never the app's
+# (files/lib/protection.sh): every environment the PR changes is registered, and Clearance's core clears one it does not
+# protect at tier 0 (unprotected). cicd.yaml's production: true is compared with that answer, and a disagreement is a
+# warning in the comment. Only a cluster with no Clearance still skips an environment that is not production: true.
 #
 # The full report goes to a ConfigMap owned by the PipelineRun, labelled glidepath.io/gate-report=clearance-gate;
 # comment-pr-check-result posts it (the policy-validation-gate convention).
@@ -193,6 +196,8 @@ spec:
         # chart (the platform), never from the repository under test.
         - name: RELEASE_SOURCE_LIB
           value: {{ include "glidepath-catalog.releaseSourceLib" . | toJson }}
+        - name: PROTECTION_LIB
+          value: {{ include "glidepath-catalog.protectionLib" . | toJson }}
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -202,8 +207,10 @@ spec:
         source "${PLATFORM_LIB}/retry.sh"
         {{- include "glidepath-catalog.policyEvalLib" . | nindent 8 }}
         eval "${RELEASE_SOURCE_LIB}"
+        eval "${PROTECTION_LIB}"
         {{- include "glidepath-catalog.inputGuards" . | nindent 8 }}
         : > /work/plan.txt
+        : > /work/declared.txt
         owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
         repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
         token="$(github_app_installation_token "${owner}" "${repo}")"
@@ -297,7 +304,8 @@ spec:
         (( bad_env == 0 )) || { echo "FAIL: a changed file is under an environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1; }
         valid_env_plan /work/envs.txt || { echo "FAIL: a changed file is under a cluster or environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1; }
 
-        # The app's cicd.yaml: the chart, the target, and which environments are protected (production: true).
+        # The app's cicd.yaml: the chart, the target, and what it declares about each environment (production: true). The declaration
+        # does not decide what is registered: Clearance does (files/lib/protection.sh).
         cicd=""
         if [[ -f cicd.yaml ]]; then
           cicd="$(cat cicd.yaml)"
@@ -320,9 +328,14 @@ spec:
         n=0
         while IFS='|' read -r cluster env; do
           [[ -n "${cluster}" ]] || continue
-          protected="$(jq -r --arg e "${env}" '[.[] | select(.name == $e) | .production // false] | .[0] // false' <<<"${envs_json}")"
+          # The plan's 4th column is "register": every environment when this cluster has a Clearance (its protection is unknown until
+          # Clearance answers, and unknown is protected), otherwise only a production: true one (which then fails: no Clearance).
+          declared="$(protection_declared "${envs_json}" "${env}")"
+          protected="$(protection_register "${declared}" "${CLEARANCE_URL}")"
           chart_dir=default
-          resolved="$(echo "${cicd}" | ENV_NAME="${env}" yq -o json '{"app": (.deploy.chart // {}), "env": ((.deploy.environments // [])[] | select(.name == strenv(ENV_NAME)) | .chart // {})}' 2>/dev/null \
+          # An environment deploy.environments does not list still gets the app's deploy.chart (it used to yield nothing, so the default chart):
+          # with a Clearance it is registered like any other.
+          resolved="$(echo "${cicd}" | ENV_NAME="${env}" yq -o json '{"app": (.deploy.chart // {}), "env": ([(.deploy.environments // [])[] | select(.name == strenv(ENV_NAME)) | .chart // {}] | .[0] // {})}' 2>/dev/null \
             | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" '
                 def over($b; $o): if ($o.repoURL // "") != "" then $o
                   else $b + ($o | with_entries(select(.value != null and .value != "")))
@@ -345,7 +358,8 @@ spec:
             fi
           fi
           echo "${cluster}|${env}|${chart_dir}|${protected}" >> /work/plan.txt
-          echo "${cluster}/${env}: protected=${protected} chart=${chart_dir}"
+          echo "${cluster}|${env}|${declared}" >> /work/declared.txt
+          echo "${cluster}/${env}: register=${protected} (cicd.yaml production: ${declared}) chart=${chart_dir}"
         done < /work/envs.txt
 
         # Who proposed a release PR the pipeline opened: the author(s) of the source change it releases and the provenance of
@@ -670,11 +684,14 @@ spec:
           value: $(params.repo-url)
         - name: NAMESPACE
           value: $(context.taskRun.namespace)
+        - name: PROTECTION_LIB
+          value: {{ include "glidepath-catalog.protectionLib" . | toJson }}
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
         # Always written, so the Pipeline's join-release task (a finally task that reads it) is never skipped for a missing result.
         printf '[]' > "$(results.joins.path)"
+        eval "${PROTECTION_LIB}"
         [[ -f /work/skip-rest ]] && exit 0
         report=/work/report.md
         # collect_join <cluster> <env> <change id> <tree digest> <pr>: the PR is change.json .pr (resolved by fetch; the raw
@@ -701,8 +718,13 @@ spec:
             echo "FAIL: an environment did not render; the gate cannot classify what it cannot see" > /work/report
             write_results fail "an environment did not render (the render task's log says why)"; printf 1 > /work/failed; exit 0
           fi
-          echo "No protected environment changes in this PR: nothing to register."
-          write_results skipped "no protected environment (production: true) changes in this PR"
+          if [[ -n "${CLEARANCE_URL}" ]]; then
+            echo "This PR changes no environment: nothing to register."
+            write_results skipped "no environment changes in this PR"
+          else
+            echo "No Clearance on this cluster (agentGates.clearanceUrl is empty) and no production: true environment changes in this PR: nothing to register."
+            write_results skipped "no Clearance on this cluster, and no production: true environment changes in this PR"
+          fi
           exit 0
         fi
         if [[ -z "${CLEARANCE_URL}" ]]; then
@@ -711,6 +733,7 @@ spec:
         fi
         : > /work/rows.jsonl
         : > /work/joins.jsonl
+        : > /work/protection.jsonl
         for f in /work/eval/*/change.json; do
           out="$(curl --silent --show-error --max-time 30 --retry 2 --retry-connrefused -w '\n%{http_code}' \
                    -H "Authorization: Bearer $(cat /var/run/secrets/clearance/clearance-token)" \
@@ -738,6 +761,11 @@ spec:
             code="$(tail -n1 <<<"${out}")"; body="$(sed '$d' <<<"${out}")"
           done
           env="$(jq -r '"\(.cluster)/\(.env)"' "${f}")"
+          # What the platform said against what cicd.yaml declares. No answer (any status but 200) is unknown, which counts as
+          # protected; the row below is an error, which fails the check, so nothing is skipped for want of an answer.
+          declared="$(awk -F'|' -v k="${env}" '$1 "/" $2 == k {print $3; exit}' /work/declared.txt 2>/dev/null)"
+          if [[ "${code}" == 200 ]]; then platform="$(protection_platform <<<"${body}")"; else platform=unknown; fi
+          protection_verdict "${env}" "${declared:-missing}" "${platform}" | jq -c --arg env "${env}" '{env: $env} + .' >> /work/protection.jsonl
           if [[ "${code}" != 200 ]]; then
             echo "{\"env\":\"${env}\",\"state\":\"error\",\"detail\":$(jq -Rs . <<<"HTTP ${code:-none}: $(head -c 300 <<<"${body}")")}" >> /work/rows.jsonl
             continue
@@ -763,6 +791,7 @@ spec:
         errors="$(jq -s '[.[] | select(.state == "error")] | length' /work/rows.jsonl)"
         cleared="$(jq -s '[.[] | select(.state == "cleared")] | length' /work/rows.jsonl)"
         total="$(jq -s 'length' /work/rows.jsonl)"
+        nwarn="$(jq -s '[.[] | select(.warning)] | length' /work/protection.jsonl)"
         if (( errors > 0 )); then outcome=fail; title="### ❌ \`clearance-gate\` could not register ${errors} environment(s) with Clearance"
         elif (( denied > 0 )); then outcome=denied; title="### ❌ \`clearance-gate\`: ${denied} environment(s) denied"
         elif (( holding > 0 )); then outcome=holding; title="### ⏳ \`clearance-gate\`: ${holding} environment(s) holding for people"
@@ -776,6 +805,11 @@ spec:
           echo "|---|---|---|---|---|---|---|---|"
           jq -r '"| \(if .state == "cleared" then "✅" elif .state == "holding" then "⏳" else "❌" end) | \(.env) | \(.tier // "") | \(.state)\(if .state == "error" then ": " + .detail else "" end) | \(.admission // "") | \((.why // "") | .[0:200]) | \(.requirement // "") | \(if .cleared_by == "policy" then "policy" elif (.approvals // "") != "" then .approvals else "" end)\(if .deny_reason then " · denied: " + .deny_reason else "" end) |"' /work/rows.jsonl
           links="$(jq -r 'select(.link != "") | "[\(.env)](\(.link))"' /work/rows.jsonl | paste -sd ' ' -)"
+          if [[ "${nwarn}" -gt 0 ]]; then
+            echo
+            echo "**Protection:** the platform decides which environments are protected, not cicd.yaml (Clearance's protected environments, and the pairs its Argo CD agents report). cicd.yaml and Clearance disagree here:"
+            jq -r 'select(.warning) | "> **Warning:** " + .warning' /work/protection.jsonl
+          fi
           if [[ -s /work/source.json ]] && jq -e '.warning' /work/source.json >/dev/null; then
             echo
             jq -r '"> **Warning:** " + .warning' /work/source.json
@@ -815,7 +849,7 @@ spec:
                  | if $uid != "" then .metadata.ownerReferences = [{apiVersion: "tekton.dev/v1", kind: "PipelineRun", name: $run, uid: $uid}] else . end' \
             | kubectl apply -f - >/dev/null || echo "warning: could not write the report ConfigMap; the PR comment falls back to the summary" >&2
         fi
-        write_results "${outcome}" "${title#\#\#\# } (${total} environment(s): ${cleared} cleared, ${holding} holding, ${denied} denied, ${errors} error(s))"
+        write_results "${outcome}" "${title#\#\#\# } (${total} environment(s): ${cleared} cleared, ${holding} holding, ${denied} denied, ${errors} error(s))$(if [[ "${nwarn}" -gt 0 ]]; then echo "; ${nwarn} protection warning(s): cicd.yaml and Clearance disagree"; fi)"
         [[ "${outcome}" == cleared ]] || printf 1 > /work/failed
         echo "outcome=${outcome}"
     - name: report

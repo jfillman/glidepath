@@ -1,0 +1,11 @@
+# flight-api's cicd.yaml deploy block as it was when gitops-flight-api#48 (a release to hangar-prod/prod) ran: prod carries no
+# production: true (added by flight-api#45). The clearance-gate check then skipped it as "not a protected environment".
+deploy:
+  strategy: rollout
+  releaseFile: glidepath/envs/{env}.release.yaml
+  environments:
+    - name: dev
+      tier: ground
+    - name: prod
+      tier: flight
+      cluster: hangar-prod

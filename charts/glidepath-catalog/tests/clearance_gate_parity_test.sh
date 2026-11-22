@@ -13,6 +13,8 @@
 # Usage: charts/glidepath-catalog/tests/clearance_gate_parity_test.sh
 set -u
 cd "$(dirname "$0")/../../.."
+# The register step evals the protection library from its environment (files/lib/protection.sh).
+PROTECTION_LIB="$(cat charts/glidepath-catalog/files/lib/protection.sh)"; export PROTECTION_LIB
 fx="$(pwd)/charts/glidepath-catalog/tests/fixtures/clearance-parity"
 fail=0
 d="$(mktemp -d)"
@@ -195,9 +197,10 @@ sstep "$d/task.yaml" ingest | loc "$w/wf" x x x x > "$w/ingest-fetch.sh"
 ( cd "$w/wf" && env PHASE=fetch PIPELINE_RUN=run-1 bash "$w/ingest-fetch.sh" ) > /dev/null 2>&1
 [[ -f "$w/wf/skip-rest" && ! -d "$w/wf/eval" ]] && echo "ok   fetch phase: ingest skips the rest and reads nothing" || { echo "FAIL fetch phase"; fail=1; }
 
-# A release to an environment that is not `production: true` (staging) is never registered, and a REQUIRED check must
-# still pass for it: render skips it (no helm call), register writes outcome `skipped`, report exits 0. Then a PR that
-# changes a protected and an unprotected environment registers only the protected one.
+# A plan line whose 4th column is false is never rendered or registered, and a REQUIRED check must still pass for it: render
+# skips it (no helm call), register writes outcome `skipped`, report exits 0. The fetch step writes false only on a cluster
+# with no Clearance, for an environment cicd.yaml does not mark production: true (files/lib/protection.sh; with a Clearance
+# every environment is registered and Clearance decides, tests/clearance_gate_protection_test.sh).
 run unprot
 w="$d/unprot"; rm -f "$w"/helm-*.args
 echo "hangar-staging|staging|default|false" > "$w/plan.txt"
@@ -211,7 +214,7 @@ for st in register report; do
   yq ".spec.steps[${i}].script" "$d/task.yaml" | sed -e "s#/work#$w#g" -e "s#\$(results.outcome.path)#$w/r.outcome#g" \
     -e "s#\$(results.findings-summary.path)#$w/r.summary#g" -e "s#\$(results.change-ids.path)#$w/r.ids#g" \
     -e "s#/var/run/secrets/clearance#$w#g" > "$w/${st}.sh"
-  ( cd "$w" && PATH="$d/bin:$PATH" APP_NAME=gate-api CLEARANCE_URL=http://clearance.invalid TOWER_URL= PIPELINE_RUN=pr1 REPO_URL=https://github.com/o/gitops-gate-api NAMESPACE=x bash "$w/${st}.sh" ) > "$w/${st}.log" 2>&1
+  ( cd "$w" && PATH="$d/bin:$PATH" APP_NAME=gate-api CLEARANCE_URL= TOWER_URL= PIPELINE_RUN=pr1 REPO_URL=https://github.com/o/gitops-gate-api NAMESPACE=x bash "$w/${st}.sh" ) > "$w/${st}.log" 2>&1
   expect "unprotected: ${st} exits 0 (a required check passes)" "$?" 0
 done
 expect "unprotected: outcome is skipped" "$(cat "$w/r.outcome")" skipped
