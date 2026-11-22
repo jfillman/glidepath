@@ -149,7 +149,7 @@ class Identities(unittest.TestCase):
     TARGET = {   # OWN = the application's own -cicd namespace
         "release-record-writer": {OWN: {("", "configmaps", ("create", "get", "list", "patch"), ()),
                                         ("tekton.dev", "pipelineruns", ("get",), ())}},   # get: open-release-pr reads its own run's lineage annotations
-        "clearance-gate": {OWN: {("tekton.dev", "pipelineruns", ("get",), ()), ("", "configmaps", ("create", "get", "patch"), ())}},
+        "clearance-gate": {OWN: {("tekton.dev", "pipelineruns", ("get",), ()), ("", "configmaps", ("create", "get", "list", "patch"), ())}},
         "test-runner": {OWN: {("tekton.dev", "pipelineruns", ("get", "list", "watch"), ()),
                              ("tekton.dev", "taskruns", ("get", "list", "watch"), ()),
                              ("", "pods", ("get", "list", "watch"), ()), ("", "pods/log", ("get", "list", "watch"), ()),

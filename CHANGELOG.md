@@ -11,6 +11,11 @@ Notable changes to Glidepath. Newest first.
 - `policy-validation-gate` and `validate-values`: an environment `deploy.environments` does not list now gets `deploy.chart`. Their chart selector yielded nothing for it, so the default chart (clearance-gate was fixed in #289).
 - docs/admin/release-guardrails.md, "The values gate". Test: `charts/glidepath-catalog/tests/default_chart_revision_test.sh` (new, in catalog-ci `policy-validation`).
 
+### W-48: a platform release-file commit is recognised by who pushed it, not by its committer
+
+- `clearance-gate`'s release source (`files/lib/release-source.sh`, step 3b, condition 2) no longer checks a deploy commit's committer. GitHub signs an App's API commit with GitHub (`web-flow`) as committer, so the old check never passed (flight-api `ce1f7f7`, the first deploy after glidepath#290, stayed unvouched). The commit's author is not used either: anyone with write access can create a web-flow-signed commit naming the App's bot as author. Condition 2 now reads GitHub's repository activity (`GET /repos/{owner}/{repo}/activity`): the commit must be the new tip of a `push` to the released branch, moved from its first parent, whose actor is the pipeline's App (typed `Bot`). At most 10 pages of 100 of the App's pushes are read. Anything else, or a log that cannot be read, keeps the commit counted. docs/admin/clearance-gate.md, "Platform release-file commits"; known-gaps #45.
+- Tests: `clearance_gate_release_source_test.sh` section 15 (a forged-author web-flow commit pushed by a person, another bot, a User-typed actor, another branch, a force push, another parent, paging and the page cap, an unreadable log); `release_file_commits_test.sh` checks the one-commit, no-force ref update the gate looks up.
+
 ### Platform release-file commits no longer block a production release
 
 - `deploy-manifests` now commits a Ground environment's release file through GitHub's Git Data API with the App's installation token, and no author or committer. GitHub signs that commit, and its committer is the App's bot. It no longer runs `git push`. It still retries, and when main moves between the clone and the ref update (a 422, not a fast-forward) it re-clones and commits again, at most 3 attempts. The Argo CD refresh and the wait are unchanged.

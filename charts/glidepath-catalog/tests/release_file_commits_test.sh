@@ -70,7 +70,8 @@ case "${method} ${path}" in
     reply "$(jq -nc --arg t "$(g write-tree)" '{sha: $t}')" 201 ;;
   "POST git/commits")
     cp "${data}" "${LOG}/commit.json"
-    c="$(GIT_AUTHOR_NAME='cicd-pac[bot]' GIT_AUTHOR_EMAIL=bot@x GIT_COMMITTER_NAME='cicd-pac[bot]' GIT_COMMITTER_EMAIL=bot@x \
+    # what GitHub records for an App's signed API commit: the bot as author, GitHub (web-flow) as committer
+    c="$(GIT_AUTHOR_NAME='cicd-pac[bot]' GIT_AUTHOR_EMAIL=bot@x GIT_COMMITTER_NAME=GitHub GIT_COMMITTER_EMAIL=noreply@github.com \
          g commit-tree "$(jq -r .tree "${data}")" -p "$(jq -r '.parents[0]' "${data}")" -m "$(jq -r .message "${data}")")"
     reply "$(jq -nc --arg c "$c" '{sha: $c}')" 201 ;;
   "PATCH git/refs/heads/main")
@@ -113,13 +114,17 @@ o() { "${REAL_GIT}" -C "${ORIGIN}" "$@"; }
 origin $'envName: dev\n'
 deploy ghcr.io/o/shop:1.2-abc; rc=$?
 expect "a deploy succeeds" "$rc" 0
-expect "the commit is on main, made through the API" "$(o log -1 --format='%s|%cn' main)" "Deploy shop to dev: ghcr.io/o/shop:1.2-abc|cicd-pac[bot]"
+expect "the commit is on main, made through the API" "$(o log -1 --format='%s|%an|%cn' main)" "Deploy shop to dev: ghcr.io/o/shop:1.2-abc|cicd-pac[bot]|GitHub"
 expect "the release file carries the image" "$(o show main:glidepath/envs/dev.release.yaml | yq -r '.release.image.repository + ":" + .release.image.tag')" "ghcr.io/o/shop:1.2-abc"
 expect "one commit on top of the clone's tip" "$(o rev-list --count main)" 2
 expect "the commit request names no author, committer or signature (GitHub signs it as the App)" "$(jq -c 'keys' "${LOG}/commit.json")" '["message","parents","tree"]'
 expect "the tree holds only the release file, over the parent's tree" "$(jq -r '[.tree[].path] | join(",")' "${LOG}/tree.json"),$(jq -r '.base_tree | length' "${LOG}/tree.json")" "glidepath/envs/dev.release.yaml,40"
 expect "every write sends its JSON body; reads send none" "$(awk '{print $1, $3, $4}' "${LOG}/calls" | sort -u | paste -sd ';' -)" "GET none ;PATCH json body;POST json body"
 expect "the ref moves without force" "$(jq -c .force "${LOG}/ref.json")" false
+# What clearance-gate looks up in GitHub's activity log (W-48): one push, by the App, whose new tip is this commit and whose old
+# tip is its only parent.
+expect "one ref update, to the new commit, whose only parent was main's tip" \
+  "$(grep -c '^PATCH git/refs/heads/main' "${LOG}/calls"),$(jq -r .sha "${LOG}/ref.json"),$(o rev-list --parents -n 1 main | wc -w | tr -d ' ')" "1,$(o rev-parse main),2"
 expect "git push is never run" "$([[ -f "${LOG}/push" ]] && echo yes || echo no)" no
 expect "the other files are untouched" "$(o show main:README.md)" readme
 before="$(o rev-parse main)"
