@@ -35,13 +35,14 @@ STUB
 chmod +x "${tmp}/bin/"*
 
 taskruns='{"items":[{"metadata":{"name":"g","labels":{"tekton.dev/pipelineTask":"register"}},"status":{"conditions":[{"status":"False"}],"results":[]}}]}'
-run() { # gate report -> the posted body
+run() { # gate report -> the posted body in ${body}; called directly (not in $(...)) so a failure reaches ${fail}
   rm -f "${tmp}/posted"
   PATH="${tmp}/bin:${PATH}" PLATFORM_LIB="${tmp}/lib" GITHUB_TOKEN_BROKER_URL=x REPO_URL="https://github.com/o/gitops-app.git" \
     PR_NUMBER=12 REVISION=abc GATE_NAME="$1" PIPELINE_RUN_NAME=pr-1 STATUS=Failed ADVISORY_REASON="" NAMESPACE=ns \
     TASKRUNS="${taskruns}" REPORT="$2" LOGS_FILE="${tmp}/log" \
     bash "${tmp}/${SCRIPT:-script.sh}" >/dev/null 2>"${tmp}/err" || { echo "FAIL: script exited non-zero: $(tail -2 "${tmp}/err")"; fail=1; }
-  cat "${tmp}/posted" 2>/dev/null
+  body="$(cat "${tmp}/posted" 2>/dev/null)"
+  [[ -n "${body}" ]] || { echo "FAIL: no comment was posted for ${1}"; fail=1; }
 }
 excerpt() { awk '/^\*\*What happened:\*\*/{f=1; next} f && /^```$/ {if (s) exit; s=1; next} s' ; }
 check() { # name condition-result
@@ -54,12 +55,12 @@ for i in $(seq -w 1 30); do printf 'line %s the quick brown fox jumps over the l
 echo '2026/11/17 20:25:30 Entrypoint initialization' >> "${tmp}/log"
 
 # 1. A gate that left a full report: report shown, no excerpt.
-body="$(run clearance-gate '### ⏳ `clearance-gate`: 1 environment(s) holding for people')"
+run clearance-gate '### ⏳ `clearance-gate`: 1 environment(s) holding for people'
 check "report replaces the excerpt" "$([[ "${body}" == *'holding for people'* && "${body}" != *'What happened'* && "${body}" != *'line 30'* ]] && echo ok)"
 check "report keeps the recommendation and retry" "$([[ "${body}" == *'**Recommendation:**'* && "${body}" == *'/retest clearance-gate-'* ]] && echo ok)"
 
 # 2. No report: the excerpt is whole lines, entrypoint line dropped, within 1200 bytes.
-body="$(run sast '')"
+run sast ''
 ex="$(printf '%s\n' "${body}" | excerpt)"
 check "excerpt present" "$([[ -n "${ex}" ]] && echo ok)"
 check "excerpt starts at a line start" "$([[ "$(printf '%s\n' "${ex}" | head -1)" == line\ * ]] && echo ok)"
@@ -69,18 +70,18 @@ check "excerpt within 1200 bytes" "$([[ $(printf '%s\n' "${ex}" | LC_ALL=C wc -c
 
 # 3. A single line longer than 1200 bytes is still shown (cut to its last 1200 bytes).
 python3 -c "print('x' * 3000)" > "${tmp}/log"
-body="$(run sast '')"
+run sast ''
 ex="$(printf '%s\n' "${body}" | excerpt)"
 check "one very long line is cut, not dropped" "$([[ ${#ex} -eq 1200 ]] && echo ok)"
 
 # 4. transport log: a report line is not in the excerpt, a token is redacted before the cut, the other lines stay.
 tok="ghp_$(printf 'A%.0s' $(seq 36))"
 { echo 'glidepath:gate-report 1/1 aGVsbG8='; echo "fatal: could not read ${tok}"; echo 'last real line'; } > "${tmp}/log"
-body="$(SCRIPT=script-log.sh run sast '')"
+SCRIPT=script-log.sh run sast ''
 ex="$(printf '%s\n' "${body}" | excerpt)"
 check "log transport: report line dropped from the excerpt" "$([[ "${ex}" != *gate-report* && "${ex}" == *'last real line' ]] && echo ok)"
 check "log transport: token redacted" "$([[ "${ex}" != *"${tok}"* && "${ex}" == *redacted* ]] && echo ok)"
-body="$(run sast '')"
+run sast ''
 check "configmap transport: token redacted" "$([[ "${body}" != *"${tok}"* ]] && echo ok)"
 
 rm -rf "${tmp}"
