@@ -179,6 +179,12 @@ gate advisory for one release. On GitHub Free a failed check still cannot block 
 (GATE-03), so `required: true` makes a bypass detectable (GATE-04), not impossible; re-run the
 ruleset script after changing it so the required status checks match.
 
+### Accepting individual findings (instead of the whole gate)
+
+If only a few findings are the problem, accept those rather than turning the gate off: a `.trivyignore.yaml` on the gitops repo's
+default branch, each entry with a statement and an `expired_at`. The gate lists what it accepted in its result. See
+[image-scan-exceptions.md](image-scan-exceptions.md).
+
 ### One app only: `releaseGuardrailOverridesByApp` (2026-10-28)
 
 Sometimes one app has a real, known finding that cannot be fixed yet and should not hold its
@@ -235,7 +241,7 @@ change management sets it advisory the same way. Today `qa` and `api-compat` ([a
 | Gate | What it verifies | Status | Required |
 |---|---|---|---|
 | `sast` | Static analysis (Semgrep) of the promoted commit's source | real | yes (locked) |
-| `image-scan` | Vulnerability scan (Trivy) of the promoted image | real | yes |
+| `image-scan` | Vulnerability scan (Trivy) of the promoted image; findings can be accepted, with an expiry, in the gitops repo's `.trivyignore.yaml` ([image-scan-exceptions.md](image-scan-exceptions.md)) | real | yes |
 | `provenance` | Commit signature (gitsign, or a GitHub PR merge by an allowed login) + SLSA provenance (Conforma) | real | yes (locked) |
 | `sbom` | Software bill of materials | real | yes |
 | `values` | Values-file validation by the validator image (Airframe's by default); check `Glidepath / values-` | real | yes |

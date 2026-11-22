@@ -1,0 +1,160 @@
+{{- $appNamespace := include "glidepath-app.namespace" . }}
+# Pipeline trust T4 (specs/plans/pipeline-trust-t4-split-runner.md in the hangar repository), step 2: three more task
+# accounts beside pipeline-runner, each holding one slice of what pipeline-runner holds today. ADDITIVE: this file only adds
+# them. Step 3 maps the tasks to them with taskRunSpecs (the Trigger templates and the onboarding templates), and
+# pipeline-runner keeps every right it has until the admission policies are in Deny (step 6 removes the ones that moved). Unconditional, like pipeline-runner: every
+# Application has these identities regardless of its declared stages.
+#
+# What none of them can do, by construction and by the chart test (tests/pipeline_least_privilege_test.py): create a run
+# or a pod, request a token (serviceaccounts/token), impersonate, read any Secret but the two test-runner names below,
+# delete anything, or reach any namespace beyond the ones named here. A pod that runs as one of them can therefore not
+# start a pod of its own with another account, another image or another projected-token audience.
+#
+# The Clearance token (projected, audience `clearance`) is not an RBAC matter: which pod gets one is fixed by its Task's
+# volume, and Clearance trusts the pod's ServiceAccount principal (app-<app>-cicd/<sa>, CLEARANCE_VERIFIERS).
+#
+# Writes of release records are limited to release-record-writer by RBAC only so far: RBAC cannot narrow `create` by
+# name, nor a ConfigMap write to keys. The ValidatingAdmissionPolicies that do (release-record-writes, gate-report-writes)
+# are step 5 of the plan and are not part of this change.
+# ---------------------------------------------------------------------------------------------------------------------
+# release-record-writer: the one account that writes the release record (release-tracking-<chain-id>) and the gate ledger
+# in it. It runs open-release-pr, mark-release-merged, itsm-change, itsm-gate and the two small carve-out Tasks
+# record-gate-verdict and join-release. Holds no Secret and no Clearance token. No delete: no catalog step deletes a
+# ConfigMap (the sweeper does, under its own account, release-record-relay.yaml); no update: every write is a patch or a
+# create. It reads the cluster-registry ConfigMap of platform-system (clusters/read-registry-rbac.yaml), nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-record-writer
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+imagePullSecrets:
+  - name: registry-credentials
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-record-writer
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "patch"]
+  # open-release-pr reads its own run's glidepath.io/origin-* lineage annotations (kubectl get pipelinerun); get only.
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-record-writer
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: release-record-writer }
+subjects:
+  - kind: ServiceAccount
+    name: release-record-writer
+    namespace: {{ $appNamespace }}
+---
+# clearance-gate: the account of the four Tasks that present a projected token with the `clearance` audience:
+# clearance-gate, agent-gates, agent-definitions, agent-release. It reads its own run (the gate report's owner reference
+# takes the run's uid) and writes the gate report `gate-report-<run>` (a display and debrief artifact, not a record); it
+# reads ConfigMaps (glidepath-observability, the policy config). It cannot write a release record by the admission policy
+# of step 5 (RBAC alone cannot say which ConfigMap), holds no Secret, and cannot create a run.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: clearance-gate
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+imagePullSecrets:
+  - name: registry-credentials
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: clearance-gate
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+rules:
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: clearance-gate
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: clearance-gate }
+subjects:
+  - kind: ServiceAccount
+    name: clearance-gate
+    namespace: {{ $appNamespace }}
+---
+# test-runner: runs run-testworkflow only. It holds the two Secret reads that Task forwards to Testkube (app-secrets and
+# dex-check-ride-credentials, get by name) and, through templates/testkube/rbac-and-secret.yaml, the Testkube grants (the
+# app's own placeholder Secret and the testkube-testworkflow-runner Role). Read access to this run's own runs, pods and
+# logs for its output. No ConfigMap, no Clearance token, no run creation.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: test-runner
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+imagePullSecrets:
+  - name: registry-credentials
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: test-runner
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+rules:
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns", "taskruns"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["app-secrets", "dex-check-ride-credentials"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: test-runner
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: test-runner }
+subjects:
+  - kind: ServiceAccount
+    name: test-runner
+    namespace: {{ $appNamespace }}

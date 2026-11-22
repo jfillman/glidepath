@@ -55,7 +55,12 @@ spec:
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
         - { name: REPO_URL, value: $(params.repo-url) }
         - { name: PR_NUMBER, value: $(params.pr-number) }
+{{- /* No value: when unset: the API server drops an empty env value (tests/empty_env_value_test.py). The script reads "" either way. */}}
+{{- if .Values.agentGates.clearanceUrl }}
         - { name: CLEARANCE_URL, value: {{ .Values.agentGates.clearanceUrl | quote }} }
+{{- else }}
+        - { name: CLEARANCE_URL }
+{{- end }}
         - { name: AGENT_LOGINS, value: {{ join "," .Values.agentGates.agentLogins | quote }} }
       script: |
         #!/usr/bin/env bash

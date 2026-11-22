@@ -68,6 +68,11 @@ spec:
         workspaces:
           - name: source
             emptyDir: {}
+        {{- /* Pipeline trust T4 (step 3): open-release-pr writes the release record, so it runs as release-record-writer
+        (identity/task-accounts.yaml); every other task of the run stays on pipeline-runner. */}}
+        taskRunSpecs:
+          - pipelineTaskName: open-release-pr
+            serviceAccountName: release-record-writer
         taskRunTemplate:
           serviceAccountName: pipeline-runner
           {{- /* Run-wide podTemplate, same shape and reasoning as flow-triggers.yaml. */ -}}

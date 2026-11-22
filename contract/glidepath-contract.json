@@ -1388,11 +1388,16 @@
       "id": "ImageVulnerabilities",
       "match": "image-scan: trivy found [0-9]+ HIGH/CRITICAL vulnerabilities",
       "hint": "The image has HIGH or CRITICAL vulnerabilities. Rebuild on a patched base image or update the listed packages; the scan step's log lists each CVE. Don't turn the scan off."
+    },
+    {
+      "id": "ImageScanExceptionsRefused",
+      "match": "image-scan: exceptions file refused",
+      "hint": "The gitops repo's .trivyignore.yaml on its default branch is invalid: every entry needs an id, a statement (the reason) and an expired_at (an unquoted date) no more than the configured maximum ahead (90 days by default). The check's comment names the entry. Fix it with a reviewed change to the default branch (a release PR's own copy is never read), then re-run the check."
     }
   ],
   "api": {
     "spec": "api/openapi.yaml",
-    "version": "0.13.0",
+    "version": "0.14.0",
     "actions": [
       {
         "operationId": "whoami",
@@ -1561,6 +1566,13 @@
         "path": "/v1/apps/{app}/pipelineruns/{name}/cancel",
         "tier": "T1",
         "summary": "Cancel a PipelineRun (CancelledRunFinally, so its finally tasks still report)"
+      },
+      {
+        "operationId": "recordGateVerdict",
+        "method": "POST",
+        "path": "/v1/apps/{app}/pipelineruns/{name}/gate-verdict",
+        "tier": "T1",
+        "summary": "Record a gate run's verdict in the release record's gate ledger (the gate's own comment-pr task only)"
       },
       {
         "operationId": "listPreviews",

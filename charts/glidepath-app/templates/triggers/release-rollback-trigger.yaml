@@ -67,6 +67,14 @@ spec:
           - { name: image-ref, value: $(tt.params.image-ref) }
           - { name: config-json, value: $(tt.params.config-json) }
           - { name: chain-id, value: $(tt.params.chain-id) }
+        {{- /* Pipeline trust T4 (step 3): the change-management close writes the release record, so it runs as
+        release-record-writer (identity/task-accounts.yaml). The task exists only where the catalog has a change-management provider
+        (itsm.enabled, values.yaml); Tekton refuses a taskRunSpecs entry naming a task its Pipeline lacks. */ -}}
+        {{- if (.Values.itsm).enabled }}
+        taskRunSpecs:
+          - pipelineTaskName: itsm-close-rolled-back
+            serviceAccountName: release-record-writer
+        {{- end }}
         taskRunTemplate:
           serviceAccountName: pipeline-runner
           {{- /* Same Backstage host alias as release-outcome-trigger.yaml: this run posts to Backstage. */ -}}

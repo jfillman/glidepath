@@ -270,7 +270,7 @@ class Survives(unittest.TestCase):
     # ---- a normal run ----
     GOLDEN = {
         "prUrl": PR_URL, "prCreatedAt": "2026-11-16T12:00:00.000000000Z", "releaseId": f"{CHAIN}:hangar-prod/prod", "kind": "promote",
-        "image": "ghcr.io/o/shop:1.0.2-7150a18", "rollbackOf": "", "rollbackReason": "", "refProtection": "verified", "originChainId": "",
+        "image": "ghcr.io/o/shop:1.0.2-7150a18", "imageDigest": "", "imageRepository": "ghcr.io/o/shop", "imageSource": "", "initiator": "", "rollbackOf": "", "rollbackReason": "", "refProtection": "verified", "originChainId": "",
         "originChainSlug": "", "originTraceId": "", "reissueOf": "", "appNamespace": "app-shop", "appName": "shop", "env": "prod",
         "cluster": "hangar-prod", "gitUrl": "https://github.com/o/shop", "gitRevision": "7150a186aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "flowStartTime": "2026-11-16T11:00:00Z", "configJson": "{}", "changeRequestId": "chg-1", "changeRequestNumber": "CHG0010034",

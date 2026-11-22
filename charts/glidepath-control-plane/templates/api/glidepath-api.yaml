@@ -16,6 +16,9 @@
 #     Results grant. The Fulcio root (fulcio-root-ca in platform-catalog) needs nothing here:
 #     templates/sigstore/fulcio-root-configmap.yaml already lets every ServiceAccount get exactly
 #     that ConfigMap.
+#     Its one write of a ConfigMap is the gate ledger (POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict): configmaps
+#     patch, granted per app by glidepath-app (identity/glidepath-api-gate-ledger.yaml) in that app's -cicd namespace only,
+#     not here, and limited to the ledger keys of an existing release record by admission/gate-ledger-writes.yaml.
 #   - glidepath-api-reader: who may READ through the API. A virtual group, glidepath.hangar.io, that
 #     nothing in the cluster serves; the API asks a SubjectAccessReview against it in the app's
 #     namespace. Bound cluster-wide to api.readers. An app-scoped grant is a RoleBinding to the same
@@ -361,6 +364,9 @@ spec:
               value: {{ .Values.api.brokerUrl | default "http://cdevents-broker-auth.platform-system.svc.cluster.local:8080" | quote }}
             - name: BROKER_TOKEN_PATH
               value: /var/run/secrets/glidepath/broker/token
+            # POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict: the task accounts whose comment-pr pod may ask.
+            - name: GATE_VERDICT_SERVICE_ACCOUNTS
+              value: {{ join "," (.Values.api.gateVerdict | default dict).serviceAccounts | quote }}
             # POST /v1/apps/{app}/cicd/validations asks the validator sidecar below, on the pod's loopback.
             - name: VALIDATOR_URL
               value: http://127.0.0.1:8081

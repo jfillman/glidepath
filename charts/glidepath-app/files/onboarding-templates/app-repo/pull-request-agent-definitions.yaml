@@ -22,6 +22,11 @@ spec:
     - { name: repo-url, value: "{{ repo_url }}" }
     - { name: revision, value: "{{ revision }}" }
     - { name: pr-number, value: "{{ pull_request_number }}" }
+  # Pipeline trust T4 (step 3): this task presents the Clearance token, so it runs as clearance-gate; the rest of the run
+  # (the PR comment) stays on pipeline-runner.
+  taskRunSpecs:
+    - pipelineTaskName: review
+      serviceAccountName: clearance-gate
   taskRunTemplate:
     serviceAccountName: pipeline-runner
   timeouts:

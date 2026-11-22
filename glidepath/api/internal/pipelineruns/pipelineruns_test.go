@@ -177,6 +177,30 @@ func rerunAnnotations(t *testing.T, src map[string]any) map[string]any {
 	return m.created[0]["metadata"].(map[string]any)["annotations"].(map[string]any)
 }
 
+// A rerun keeps every per-task account of the original (the T5 rule): taskRunSpecs, and the run-wide taskRunTemplate, come through unchanged.
+func TestRerunKeepsTaskRunSpecs(t *testing.T) {
+	src := runWith(nil)
+	spec := src["spec"].(map[string]any)
+	specs := []any{
+		map[string]any{"pipelineTaskName": "open-release-pr", "serviceAccountName": "release-record-writer"},
+		map[string]any{"pipelineTaskName": "run-testworkflow", "serviceAccountName": "test-runner"},
+		map[string]any{"pipelineTaskName": "clearance-gate", "serviceAccountName": "clearance-gate"},
+	}
+	spec["taskRunSpecs"] = specs
+	spec["taskRunTemplate"] = map[string]any{"serviceAccountName": "pipeline-runner"}
+	m := &memStore{runs: map[string]map[string]any{"src": src}}
+	if _, _, err := (&Client{Store: m}).Rerun(context.Background(), "ns", "app", "src", "key-1", false); err != nil {
+		t.Fatal(err)
+	}
+	got := m.created[0]["spec"].(map[string]any)
+	if !reflect.DeepEqual(got["taskRunSpecs"], specs) {
+		t.Fatalf("taskRunSpecs changed by the rerun: %v", got["taskRunSpecs"])
+	}
+	if !reflect.DeepEqual(got["taskRunTemplate"], map[string]any{"serviceAccountName": "pipeline-runner"}) {
+		t.Fatalf("taskRunTemplate changed by the rerun: %v", got["taskRunTemplate"])
+	}
+}
+
 func TestRerunOfAMainBuildCarriesItsPushOrigin(t *testing.T) {
 	a := rerunAnnotations(t, runWith(map[string]any{
 		"pipelinesascode.tekton.dev/event-type": "push", "pipelinesascode.tekton.dev/source-branch": "refs/heads/main", "pipelinesascode.tekton.dev/sha": "a1",

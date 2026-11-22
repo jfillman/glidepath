@@ -130,6 +130,9 @@ spec:
             # /agent-pin (agentpin.go, the agent release): the tenants repo pin PRs land in, owner/repo from tenantsRepoUrl.
             - name: AGENT_PIN_TENANTS_REPO
               value: {{ .Values.tenantsRepoUrl | trimPrefix "https://github.com/" | trimSuffix ".git" | quote }}
+            # /agent-pin (agentpin.go): the ServiceAccount names (in the caller's own app -cicd namespace) it serves. Not the namespace alone.
+            - name: AGENT_PIN_SERVICE_ACCOUNTS
+              value: {{ join "," (.Values.agentPin.serviceAccounts | default list) | quote }}
             {{- if .Values.agentToken.enabled }}
             # /agent-installation-token (agenttoken.go): the ServiceAccounts it serves (Clearance).
             - name: AGENT_TOKEN_CALLERS

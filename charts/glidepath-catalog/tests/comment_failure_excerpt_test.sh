@@ -12,6 +12,9 @@ fail=0
 tmp="$(mktemp -d)"
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only templates/tasks/comment-pr-check-result.yaml \
   | python3 -c "import sys,yaml; print(yaml.safe_load(sys.stdin.read())['spec']['steps'][0]['script'])" > "${tmp}/script.sh"
+# the same task with gateReports.transport=log (W-8): its excerpt also drops the gate's report lines
+helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --set gateReports.transport=log --show-only templates/tasks/comment-pr-check-result.yaml \
+  | python3 -c "import sys,yaml; print(yaml.safe_load(sys.stdin.read())['spec']['steps'][0]['script'])" > "${tmp}/script-log.sh"
 
 mkdir -p "${tmp}/lib" "${tmp}/bin"
 echo 'github_app_installation_token() { echo faketoken; }' > "${tmp}/lib/github-app.sh"
@@ -37,7 +40,7 @@ run() { # gate report -> the posted body
   PATH="${tmp}/bin:${PATH}" PLATFORM_LIB="${tmp}/lib" GITHUB_TOKEN_BROKER_URL=x REPO_URL="https://github.com/o/gitops-app.git" \
     PR_NUMBER=12 REVISION=abc GATE_NAME="$1" PIPELINE_RUN_NAME=pr-1 STATUS=Failed ADVISORY_REASON="" NAMESPACE=ns \
     TASKRUNS="${taskruns}" REPORT="$2" LOGS_FILE="${tmp}/log" \
-    bash "${tmp}/script.sh" >/dev/null 2>"${tmp}/err" || { echo "FAIL: script exited non-zero: $(tail -2 "${tmp}/err")"; fail=1; }
+    bash "${tmp}/${SCRIPT:-script.sh}" >/dev/null 2>"${tmp}/err" || { echo "FAIL: script exited non-zero: $(tail -2 "${tmp}/err")"; fail=1; }
   cat "${tmp}/posted" 2>/dev/null
 }
 excerpt() { awk '/^\*\*What happened:\*\*/{f=1; next} f && /^```$/ {if (s) exit; s=1; next} s' ; }
@@ -69,6 +72,16 @@ python3 -c "print('x' * 3000)" > "${tmp}/log"
 body="$(run sast '')"
 ex="$(printf '%s\n' "${body}" | excerpt)"
 check "one very long line is cut, not dropped" "$([[ ${#ex} -eq 1200 ]] && echo ok)"
+
+# 4. transport log: a report line is not in the excerpt, a token is redacted before the cut, the other lines stay.
+tok="ghp_$(printf 'A%.0s' $(seq 36))"
+{ echo 'glidepath:gate-report 1/1 aGVsbG8='; echo "fatal: could not read ${tok}"; echo 'last real line'; } > "${tmp}/log"
+body="$(SCRIPT=script-log.sh run sast '')"
+ex="$(printf '%s\n' "${body}" | excerpt)"
+check "log transport: report line dropped from the excerpt" "$([[ "${ex}" != *gate-report* && "${ex}" == *'last real line' ]] && echo ok)"
+check "log transport: token redacted" "$([[ "${ex}" != *"${tok}"* && "${ex}" == *redacted* ]] && echo ok)"
+body="$(run sast '')"
+check "configmap transport: token redacted" "$([[ "${body}" != *"${tok}"* ]] && echo ok)"
 
 rm -rf "${tmp}"
 [[ ${fail} == 0 ]] && echo "comment_failure_excerpt_test: all passed" || exit 1

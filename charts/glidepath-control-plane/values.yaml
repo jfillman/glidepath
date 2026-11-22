@@ -46,6 +46,16 @@ cicdRunAdmission:
   # anything but Deny is NOT enforcing (binding annotation, and an alert where prometheus-operator is installed). Only platform values set these.
   shapeActions: [Deny]
   noTaskRunsActions: [Deny]
+  # Pipeline trust T4 step 5 (templates/admission/release-record-writes.yaml): who may write a release record (release-record-writes) and a gate
+  # report (gate-report-writes) in a -cicd namespace. [Audit] by default: nothing is refused, the API server records each write that would
+  # be. Set [Deny] (hangar-dev first; prod on the owner's OK) once every app has resynced and no active run uses the old pipeline-runner
+  # mapping; [Warn, Audit] also shows the finding to the client. Anything but Deny is NOT enforcing (binding annotation).
+  recordWritesActions: [Audit]
+  gateReportActions: [Audit]
+  # gate-ledger-writes (templates/admission/gate-ledger-writes.yaml): glidepath-api's own ConfigMap writes in a -cicd namespace may only
+  # patch the gate ledger keys (gate.<sha12>.<gate>, gateRun.<sha12>.<gate>) of an existing release record. Deny from the start:
+  # glidepath-api wrote no ConfigMap before the gate-verdict route, so this refuses nothing that worked.
+  gateLedgerActions: [Deny]
   # The storage classes a .tekton file's workspace volumeClaimTemplate may name (it may also leave it unset, which is what the onboarding
   # templates do). Everything else about the template is fixed: ReadWriteOnce, 1 to 20Gi, no dataSource, volumeName or selector.
   workspaceStorageClassNames: []
@@ -67,6 +77,34 @@ cicdRunAdmission:
   # with the catalog and the generator. source-runner is allowed on exactly sourceTasks.
   cloudDeployerTasks:
     deploy: [deploy-aws-lambda, deploy-aws-ecs]
+  # Pipeline trust T4 (specs/plans/pipeline-trust-t4-split-runner.md, steps 2 and 3): the tasks of each Pipeline that may run as one of the
+  # three split task accounts beside pipeline-runner, in the same shape as cloudDeployerTasks (Pipeline -> the Pipeline's own task names).
+  # These ADD allowed accounts to cicd-run-shape and refuse nothing that was admitted before. Step 3 maps the tasks (the onboarding
+  # templates' and the Trigger templates' taskRunSpecs); the policy that would REQUIRE the mapping (step 5, Warn then Audit then Deny)
+  # is not part of that change. The chart test derives each list from the catalog Pipelines in `pipelines` below.
+  #   release-record-writer: the tasks that write the release record (open-release-pr, mark-release-merged, itsm-change, itsm-gate,
+  #                          itsm-close and itsm-close-rolled-back (platform-started Pipelines), and the carve-out join-release, a finally task of clearance-gate-check; the carve-out record-gate-verdict
+  #                          is not in a Pipeline: see docs/admin/security.md, "Pipeline identities", on why the ledger write stays).
+  recordWriterTasks:
+    bypass-merge-check: [mark-release-merged, itsm-implement]
+    clearance-gate-check: [join-release]
+    itsm-check: [verify-change, verify-change-advisory]
+    release: [open-release-pr]
+    # Started by platform Triggers, not by PaC (so cicd-run-shape never sees a PaC run of them and these entries only allow): listed so the
+    # cluster policy that holds a glidepath-api rerun (tower-identity-writes, apron) allows the entries a rerun copies. Rendered only where
+    # the catalog has an itsm provider; an entry for a task the Pipeline lacks is inert.
+    release-outcome-notify: [itsm-close]
+    release-rollback-notify: [itsm-close-rolled-back]
+  #   clearance-gate: the four Tasks that present the projected token for the `clearance` audience (clearance-gate, agent-gates,
+  #                   agent-definitions, agent-release).
+  clearanceTasks:
+    agent-definitions-check: [review]
+    agent-gates-check: [agent-gates]
+    agent-release: [release]
+    clearance-gate-check: [fetch, register, register-advisory, render-check]   # register when the guardrail is required, register-advisory + render-check when not
+  #   test-runner: run-testworkflow (the app-secrets and Testkube grants).
+  testRunnerTasks:
+    test: [run-testworkflow]
   # Tasks of each Pipeline that run the repository's own code (the ones whose steps run $(params.agent-image) or the
   # repository's scripts, and build-image, whose Containerfile RUN lines are the repository's code) or render a chart it chooses
   # (render-manifests). A run of the Pipeline must give them to source-runner. The chart test derives this from the catalog.
@@ -169,12 +207,12 @@ tektonResultsRelayImage: ghcr.io/jfillman/glidepath-tekton-results-relay:latest
 
 # templates/api/glidepath-api.yaml (docs/admin/api.md). Empty renders nothing; api-ci.yaml sets it
 # to an immutable sha- tag on main after pushing a multi-arch image.
-apiImage: ghcr.io/jfillman/glidepath-api:sha-e983044
+apiImage: ghcr.io/jfillman/glidepath-api:sha-95c02cf
 # The glidepath-validate image (tools/validate.Containerfile), run beside the API as `glidepath validate --serve
 # 127.0.0.1:8081` for POST /v1/apps/{app}/cicd/validations (docs/admin/api.md#validate-a-cicdyaml-change): the same
 # validator the catalog's cicd-validate check runs, so the API has no second copy of the rules. validate-image-ci sets
 # this line and the catalog's to the same sha- tag; not hand-edited.
-cicdValidatorImage: ghcr.io/jfillman/glidepath-validate:sha-e983044
+cicdValidatorImage: ghcr.io/jfillman/glidepath-validate:sha-95c02cf
 api:
   replicas: 2
   # Usernames (as TokenReview reports them) that may send X-Glidepath-On-Behalf-Of: Tower's
@@ -218,6 +256,12 @@ api:
     maxEvents: 2000
     maxAge: 24h
     maxStreams: 100
+  # POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict (docs/admin/api.md, Gate verdicts; pipeline trust T4, W-8): the task
+  # accounts (in an app's own -cicd namespace) whose comment-pr pod may ask glidepath-api to record its gate's verdict in the release
+  # record. glidepath-api writes the ledger as its own account (glidepath-app's Role glidepath-api-gate-ledger: configmaps patch),
+  # limited by the gate-ledger-writes admission policy below.
+  gateVerdict:
+    serviceAccounts: [pipeline-runner]
   # GET /v1/apps/{app}/live/stream: how many live streams one replica serves at once (a full replica answers 503 and
   # Tower polls instead). GlidepathApiLiveStreamsNearLimit fires at 90%.
   liveMaxStreams: 200
@@ -335,6 +379,10 @@ pipelinesAsCode:
   concurrencyLimit: null
   appRepoConcurrencyLimit: null
   gitopsRepoConcurrencyLimit: null
+  # default_branch makes Pipelines-as-Code read each app's gitops-<app> repository's .tekton files from its default branch, not from the
+  # pull request's head (docs/admin/security.md). null (the default) forwards nothing: today's behaviour. Apron sets it from cluster.yaml
+  # glidepath.gitopsPipelineProvenance. The app repositories are not affected.
+  gitopsRepoProvenance: null
 
 # See templates/argocd/tenant-onboarding-applicationset.yaml's own header comment for
 # the real name collision this guards against and why it's a value, not an in-place
@@ -568,6 +616,10 @@ policyValidation:
 # cluster-external-secret.yaml). The values live in the platform's Infisical project under itsm-<key>; this chart
 # never holds one. Off until a change tool is configured in the catalog.
 itsm:
+  # Pipeline trust T4 step 3: true where the catalog has a change-management provider (catalog itsm.provider servicenow or webhook).
+  # Forwarded to every app's glidepath-app itsm.enabled, which maps the release-outcome and rollback itsm close tasks to
+  # release-record-writer. It must say what the catalog renders: true with no provider refuses those notification runs.
+  enabled: false
   credentials:
     enabled: false
     secretName: itsm-credentials
@@ -581,6 +633,16 @@ itsm:
 githubRead:
   callers:
     - system:serviceaccount:platform-system:glidepath-api
+
+# The broker's /agent-pin (agentpin.go, the agent release): it serves a caller only if it is one of these ServiceAccount
+# names in an app's own -cicd namespace (TokenReview, audience agent-pin); every other ServiceAccount there, a pod that
+# mounts an agent-pin token included, is 403. Names, not full usernames: the namespace is the app's and is checked
+# separately. W-8 overlap: pipeline-runner (today's agent-release) and clearance-gate (where it moves in W-8 step 3);
+# step 7 of hangar specs/plans/pipeline-trust-t4-split-runner.md drops pipeline-runner. Empty: the endpoint answers 503.
+agentPin:
+  serviceAccounts:
+    - pipeline-runner
+    - clearance-gate
 
 # The broker's /agent-installation-token (agenttoken.go, Autopilot AP-B1, hangar D4): a token for the agents' own GitHub
 # App on one of an app's own repos (the /github-read-token rule), contents and pull_requests write, metadata read; never
@@ -622,3 +684,9 @@ cronSchedules:
   releaseRecordSweeper: "2-59/10 * * * *"
   prNamespaceTtlSweep: "8-59/30 * * * *"
   pipelinerunPruner: "13 * * * *"
+
+# The stalled-pipeline detector's queue rule (docs/admin/stalled-pipeline-detector.md, "Queue stalls"): a Pipelines-as-Code
+# queued run (pending, state=queued) that has waited this many minutes while fewer than its Repository's concurrency_limit runs
+# are started and unfinished raises a QueueStalled Event. Detect-only.
+stalledPipelineDetector:
+  queueStallMinutes: 10

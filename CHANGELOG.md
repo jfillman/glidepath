@@ -4,6 +4,47 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### I-1 interim guard: a flow may not have two release steps
+
+- `validateFlows` (glidepath-app) now refuses a flow with more than one `release` step, naming the flow and both steps. A release record is named per release chain (one flow), so two release steps wrote the same record and the second overwrote the first's PR, image and state. The owner chose this interim guard (option a, strip Y-41); per-environment record names (option b, hangar `specs/plans/i1-release-record-per-env.md`) stay deferred and would lift the limit. A scan of the 14 onboarded apps' `cicd.yaml` found at most one release step per flow. docs/user/cicd-yaml-reference.md, "How flows work". Test: `charts/glidepath-app/tests/test_roles_test.py`.
+
+### W-8: api-compat and policy-validation hand their report over in the step log (`gateReports.transport`)
+
+- New catalog value `gateReports.transport` (`configmap` default: renders byte for byte as before; `log`). With `log`, `api-compat-gate` and `policy-validation-gate` write no ConfigMap: the full report goes into the gate step's own log as `glidepath:gate-report` lines (gzip + base64 chunks; their digest also goes to a new `report-digest` Task result), and `comment-pr-check-result` reads it from the TaskRuns of its own PipelineRun that run that gate's Task (step container `step-check` / `step-evaluate`), only the set that result names, never from a ConfigMap. Its log excerpts drop those lines. No new right, audience or endpoint; `pipeline-runner`'s `pods/log` read (kept by T4) does it. These were the last `pipeline-runner` ConfigMap writes once `promotion.gateLedger.writer` is `api`, so W-8 step 6 can remove `create`, `patch` and `delete` on ConfigMaps after both switches. `clearance-gate`'s report is unchanged. docs/admin/security.md, "Pipeline identities".
+- Tests: `charts/glidepath-catalog/tests/gate_report_log_test.sh` (new, in catalog-ci), log-mode cases in `api_compat_test.sh` and `policy_validation_test.sh`.
+
+### W-8: glidepath-api writes the gate ledger (`POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict`)
+
+- New glidepath-api route (API 0.14.0): records a gate run's verdict in the release record's gate ledger as glidepath-api's own account. Only the run's own `comment-pr` pod may call it, with a projected token for the new audience `glidepath-gate-verdict` (TokenReview with that audience, then the token's pod claims); the verdict, PR, commit and gate are derived from the PipelineRun and its TaskRuns, never from the request; one write per run (`gateRun.<sha12>.<gate>`), an older run never overwrites a newer one; resourceVersion CAS as before. docs/admin/api.md, "Gate verdicts".
+- glidepath-app: Role `glidepath-api-gate-ledger` (`configmaps` `patch` only) in each app's `-cicd` namespace for `platform-system/glidepath-api`. Control plane: `gate-ledger-writes` ValidatingAdmissionPolicy (`cicdRunAdmission.gateLedgerActions`, default `[Deny]`): glidepath-api may only patch the ledger keys of an existing release record; new value `api.gateVerdict.serviceAccounts` (default `[pipeline-runner]`).
+- Catalog: `promotion.gateLedger.writer` (`direct` default: unchanged; `api`: `promotion-ready` calls the route, never patches a ConfigMap, reads the other gates from the answer, and when the API does not answer after a bounded retry decides from the check runs alone and exits 1 so it shows). Switch to `api` once the glidepath-api image with the route is live; W-8 step 6 follows.
+- Tests: `glidepath/api/internal/gateverdict`, `internal/server/gateverdict_test.go`, `record_policies_test.py` (gate-ledger-writes), `pipeline_least_privilege_test.py`, `promotion_fan_in_test.sh` (api scenarios).
+
+### Pipeline trust T4, step 3: the writer, Clearance-token and test tasks run as their own accounts
+
+- Every run the platform starts now names the per-task account in `taskRunSpecs`: `open-release-pr`, `mark-release-merged`, `itsm-*` as `release-record-writer`; `clearance-gate` (fetch, register, render-check), `agent-gates`, `agent-definitions` and `agent-release` as `clearance-gate`; `run-testworkflow` as `test-runner`. Trigger templates and the onboarding templates (resynced into each app's `.tekton/`) both carry it; the onboarding task fills in the task names the catalog renders (`task_names`). New chart value `itsm.enabled` (default `false`) for the two Triggers that start the itsm close tasks. `pipeline-runner` keeps every right until step 6.
+- The Clearance join moved to the `join-release` finally task of `clearance-gate-check` (fed by a new `joins` result of the clearance-gate Task, which no longer writes the release record). The gate-ledger write of `comment-pr-check-result` stays: Tekton cannot order finally tasks (see docs/admin/security.md, "Task mapping").
+
+### ref guard: an Off-here rerun names its real ref (I-11)
+
+- With `refProtection.mode: off`, a rerun or chained run (no Pipelines-as-Code annotations) recorded "the commits of unknown" in `ref-protection-summary`. It now names the run's `glidepath.io/origin-ref`, or says it is a platform-created run when none is stamped. Cosmetic: the verdict and result are unchanged. Test: `charts/glidepath-catalog/tests/ref_protection_pipelines_test.py`.
+
+### Pipeline trust T4 step 5: `release-record-writes` and `gate-report-writes` (Audit only)
+
+- Two ValidatingAdmissionPolicies for ConfigMaps in `-cicd` namespaces: `pipeline-runner` and `clearance-gate` may not write a release record (`release-tracking-*` or `hangar.io/subcomponent=release-tracking`); `release-record-writer` may touch only release records and may not change `prUrl`, `releaseId`, `image`, `imageDigest`, `gitRevision` or `kind` once set; `clearance-gate` and `pipeline-runner` may write only `gate-report-<run>` owned by that PipelineRun. `cicdRunAdmission.recordWritesActions` and `gateReportActions` default to `[Audit]`: nothing is refused. docs/admin/security.md, "Pipeline identities". Tests: `charts/glidepath-control-plane/tests/record_policies_test.py`.
+
+### stalled-pipeline detector: catch a PaC queue that waits with free slots (R-4)
+
+- Pipelines-as-Code keeps its `concurrency_limit` queue in the watcher's memory; a missed completion leaks a slot and later runs stay `PipelineRunPending` with nothing running (SRVKP-7608). The stalled-pipeline detector now also flags a run that is pending with state `queued`, older than `stalledPipelineDetector.queueStallMinutes` (default 10), while fewer runs of the same Repository (`pipelinesascode.tekton.dev/repository`) are started and unfinished than its `concurrency_limit`. It logs `QUEUE STALL DETECTED` and creates one `QueueStalled` Warning Event per repository, with the repository, queued run, wait and running-against-limit counts and the watcher-restart recovery; it labels the stalled runs `hangar.io/stall-alerted` and changes nothing else. The ClusterRole gains read-only `get`/`list` on `repositories.pipelinesascode.tekton.dev`. docs/admin/stalled-pipeline-detector.md "Queue stalls", pipeline-performance.md. Tests: `charts/glidepath-control-plane/tests/stalled_queue_detector_test.sh`. On merge to `main` hangar-dev renders the CronJob within minutes.
+
+### clearance-gate: a release is proposed by the author of its source, not by the release bot
+
+- A release PR the pipeline opened is registered with Clearance under the author(s) of the app-repo commits it releases (previous release to this
+  one) and the weakest provenance of their source PRs, not the pipeline's GitHub App (kind `person`, `not-agent`), which also let the author clear their
+  own tier-2 change. Resolved from the release record, accepted only for a PR whose content is what the record says the pipeline wrote; an unresolvable
+  source is registered `unknown` (Clearance denies it). `open-release-pr` keeps `imageDigest` and the promoter (`initiator`) on the record. Every author
+  rides in `checks.sourceAuthors`; the promoter is in the gate's comment. See docs/admin/clearance-gate.md, "Who proposed a release".
+
 ### propose-merge-check no longer runs for the deploy write-back
 
 - The app-repo audit `push-propose-merge-check.yaml` started on every push to main, including the pipeline's own deploy commits ("Deploy <app> to <env>: <image>"), which change only `glidepath/envs/<env>.release.yaml` and are never PR merges: a PipelineRun and pod per deploy per environment. It now does not start when every changed file, in every commit of the push, is such a release file, the push carries no `Hangar-Merge:` trailer and its tip is not a PR merge. `glidepath/`, `cicd.yaml` and `.tekton/` changes still start it. Checked with cel-go (`hack/ci/build-exemption-cel`, 21 payloads; a push of 20 or more commits, GitHub's cap, is never skipped, and the trailer is read from the head commit too). Existing app repos get it with their next onboarding resync PR. docs/admin/contract.md "propose".

@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# G-ARGO-6: runs clearance-gate.yaml's real register step and release-log-emit's join lookup against stub curl and
-# kubectl, and checks that the change id and tree digest reach the release-tracking record and the release log body.
+# G-ARGO-6: runs clearance-gate.yaml's real register step, the join-release Task's real step (the carve-out the Pipeline feeds
+# with the register step's `joins` result: pipeline trust T4, step 3) and release-log-emit's join lookup against stub curl and
+# kubectl, and checks that the change id and tree digest reach the release-tracking record and the release log body, and that
+# the register step itself (the Clearance token's pod) writes no ConfigMap.
 # Needs helm, python3 (pyyaml) and jq. Usage: charts/glidepath-catalog/tests/clearance_gate_release_join_test.sh
 set -u
 cd "$(dirname "$0")/../../.."
+# The register step evals the protection library from its environment (files/lib/protection.sh).
+PROTECTION_LIB="$(cat charts/glidepath-catalog/files/lib/protection.sh)"; export PROTECTION_LIB
 fail=0
 d="$(mktemp -d)"
 step() { # <template> <step name> -> the step's script
@@ -13,7 +17,9 @@ step() { # <template> <step name> -> the step's script
 # Tekton's result paths and the /work volume are redirected into the temp dir (/work first: see policy_validation_test.sh).
 step clearance-gate register \
   | sed -e "s|/work|$d/w|g" -e "s|\$(results.outcome.path)|$d/outcome|" -e "s|\$(results.findings-summary.path)|$d/summary|" \
-        -e "s|\$(results.change-ids.path)|$d/ids|" -e "s|/var/run/secrets/clearance|$d/secret|" > "$d/register.sh"
+        -e "s|\$(results.change-ids.path)|$d/ids|" -e "s|\$(results.joins.path)|$d/joins|" -e "s|/var/run/secrets/clearance|$d/secret|" > "$d/register.sh"
+step join-release join | sed -e "s|\$(results.joined.path)|$d/joined|" -e "s|\$(params.joins)|JOINS_PARAM|" > "$d/join.sh"
+[[ -s "$d/join.sh" ]] || { echo "FAIL: no join step rendered"; exit 1; }
 mkdir -p "$d/w/eval/hangar-prod-prod" "$d/secret" "$d/bin"
 echo tok > "$d/secret/clearance-token"
 echo plan > "$d/w/plan.txt"
@@ -32,21 +38,39 @@ esac
 STUB
 chmod +x "$d/bin/"*
 
-run() { # records json -> the patch log
+run() { # records json -> the patch log: register, then join-release on what register handed over
   PATCHLOG="$d/patch.$RANDOM"; : > "${PATCHLOG}"; export PATCHLOG
   PATH="$d/bin:${PATH}" RECORDS="$1" APP_NAME=shop CLEARANCE_URL=http://clearance TOWER_URL= PIPELINE_RUN= \
     REPO_URL=https://github.com/o/gitops-shop.git PR_NUMBER='$(params.pr-number)' NAMESPACE=app-shop-cicd bash "$d/register.sh" >"$d/out" 2>&1 \
     || { echo "FAIL: register exited non-zero"; cat "$d/out"; fail=1; }
+  [[ -s "${PATCHLOG}" ]] && echo "FAIL: the register step (holds the Clearance token) patched a ConfigMap" >&2 && fail=1
+  PATH="$d/bin:${PATH}" RECORDS="$1" REPO_URL=https://github.com/o/gitops-shop.git JOINS="$(cat "$d/joins")" NAMESPACE=app-shop-cicd \
+    bash "$d/join.sh" >"$d/jout" 2>&1 || { echo "FAIL: join-release exited non-zero"; cat "$d/jout"; fail=1; }
   cat "${PATCHLOG}"
 }
 rec='{"items":[{"metadata":{"name":"release-tracking-other"},"data":{"prUrl":"https://github.com/o/gitops-shop/pull/6"}},{"metadata":{"name":"release-tracking-c7"},"data":{"prUrl":"https://github.com/o/gitops-shop/pull/7"}}]}'
 out="$(run "$rec")"
+[[ "$(cat "$d/joins")" == '[{"cluster":"hangar-prod","env":"prod","id":"chg-77","tree":"sha256:feed","pr":"7"}]' ]] \
+  || { echo "FAIL: the register step must hand the join over as a result: $(cat "$d/joins")"; fail=1; }
 [[ "$out" == release-tracking-c7*'"clearanceId":"chg-77"'*'"clearanceTree":"sha256:feed"'* ]] \
   || { echo "FAIL: the change id and tree digest must be patched onto this PR's record only: $out"; fail=1; }
 [[ "$(wc -l <<<"$out" | tr -d ' ')" == 1 ]] || { echo "FAIL: exactly one record patched: $out"; fail=1; }
 out="$(run '{"items":[{"metadata":{"name":"release-tracking-z"},"data":{"prUrl":"https://github.com/o/gitops-shop/pull/99"}}]}')"
 [[ -z "$out" ]] || { echo "FAIL: patched a record of a different PR: $out"; fail=1; }
 [[ "$(cat "$d/outcome")" == cleared ]] || { echo "FAIL: a missing record must not fail the check: $(cat "$d/outcome")"; fail=1; }
+# a gate that is skipped before it registers anything still writes the result the Pipeline's join-release reads (a missing result skips that task)
+rm -rf "$d/w/eval"; rm -f "$d/joins"
+PATH="$d/bin:${PATH}" RECORDS= APP_NAME=shop CLEARANCE_URL=http://clearance TOWER_URL= PIPELINE_RUN= REPO_URL=u PR_NUMBER=1 NAMESPACE=n bash "$d/register.sh" >/dev/null 2>&1
+[[ "$(cat "$d/joins" 2>/dev/null)" == '[]' ]] || { echo "FAIL: joins must be [] when nothing was registered: $(cat "$d/joins" 2>/dev/null)"; fail=1; }
+
+# past the 20-join result cap the register step says so, and hands over exactly 20
+rm -rf "$d/w/eval"; rm -f "$d/joins"
+for i in $(seq 1 25); do
+  mkdir -p "$d/w/eval/c-e$i"; echo "{\"cluster\":\"c\",\"env\":\"e$i\",\"pr\":7,\"treeDigest\":\"sha256:feed\"}" > "$d/w/eval/c-e$i/change.json"
+done
+PATH="$d/bin:${PATH}" RECORDS= APP_NAME=shop CLEARANCE_URL=http://clearance TOWER_URL= PIPELINE_RUN= REPO_URL=u PR_NUMBER=1 NAMESPACE=n bash "$d/register.sh" >"$d/out25" 2>&1
+[[ "$(jq 'length' "$d/joins" 2>/dev/null)" == 20 ]] || { echo "FAIL: the joins result must hold 20 entries for 25 environments: $(jq 'length' "$d/joins")"; fail=1; }
+grep -q "only the first 20 joins" "$d/out25" || { echo "FAIL: the dropped joins must be reported"; fail=1; }
 
 # release-log-emit: its real emit step, against stub curl, kubectl and platform libs. The record it sends carries
 # clearance_id and clearance_tree when the release record has them, and neither when it does not.

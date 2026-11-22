@@ -9,7 +9,7 @@
 # token (the admission policy cicd-run-source-isolation makes a run give this task to that account, for the two gate Pipelines).
 #
 # What it takes (the same inputs the gates always rendered from), read-only at /work:
-#   plan.txt        one line per environment: cluster|env|chart (policy-validation) or cluster|env|chart|protected (clearance-gate);
+#   plan.txt        one line per environment: cluster|env|chart (policy-validation) or cluster|env|chart|register (clearance-gate: true renders it);
 #                   chart is a path under /work/charts, or `default` (the chart baked into the validator image)
 #   repo/ base/     the checkouts of the PR head and of its base (clearance-gate renders both)
 #   charts/         the repository charts the plan names, already fetched by the gate's fetch step

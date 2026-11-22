@@ -19,11 +19,8 @@ CDEvent therefore either creates the PipelineRun once or hits a harmless
 `AlreadyExists`. This detector covers the opposite failure: a stage finishing and
 **nothing** happening next.
 
-**Queued runs are not covered either.** With Pipelines-as-Code's `concurrency_limit` set
-([pipeline-performance.md](pipeline-performance.md#queueing-gate-runs)) a run waits as a pending PipelineRun. The detector
-only reads PipelineRuns that have already succeeded with a completion time, so a queued run is never flagged, and it never
-cancels anything. A queue that stops draining (a leaked slot in the PaC watcher) is not detected here; the recovery is in
-that page ("If a repository's queue stalls").
+**Queued runs are covered by a second rule**, below ("Queue stalls"). The chain rule above only reads PipelineRuns that
+succeeded with a completion time, so it never flags a queued run and never cancels anything.
 
 ## Detection mechanism
 
@@ -58,6 +55,32 @@ including runs with real, existing successors. The label-based check isn't coupl
 `cdevent_send()`'s naming scheme at all any more, and it also now covers `release`
 (previously never checked, even though an event-chained release can have real
 successors - e.g. `release -> test`).
+
+## Queue stalls (leaked Pipelines-as-Code slot)
+
+With `concurrency_limit` set on a Repository ([pipeline-performance.md](pipeline-performance.md#queueing-gate-runs)), PaC
+keeps the queue in its watcher's memory. If a run finishes, is deleted or loses its `pipelinesascode.tekton.dev/state`
+label through a missed event, the watcher keeps counting it as running and later runs sit `PipelineRunPending` with
+nothing running (upstream SRVKP-7608, unresolved). The same CronJob checks for this on every run. A queue is stalled when
+a PipelineRun:
+
+- has `spec.status: PipelineRunPending` and the label `pipelinesascode.tekton.dev/state: queued`;
+- is older (by `creationTimestamp`) than `QUEUE_STALL_MINUTES`, default 10, chart value
+  `stalledPipelineDetector.queueStallMinutes`;
+- while fewer than its Repository's `spec.concurrency_limit` runs are running. Running means the same namespace and
+  `pipelinesascode.tekton.dev/repository` label, state `started`, not pending, and not finished (no `completionTime` and no
+  decided `Succeeded` condition). A Repository without a limit has no queue and is skipped.
+
+Detect only: it never restarts the watcher and never cancels or edits a run beyond the dedup label. For each stalled
+repository it logs one `QUEUE STALL DETECTED` line (it matches the `STALL DETECTED` Loki query below) and creates one
+Warning `Event`, reason `QueueStalled`, on the repository's oldest stalled queued run. The message gives the repository,
+the run, how long it has waited and the running count against the limit, with the recovery
+(`kubectl -n tekton-pipelines rollout restart deployment/pipelines-as-code-watcher`). Every stalled queued run gets
+`hangar.io/stall-alerted: "true"` so it alerts once. A run that is merely waiting for a free slot (running count at the
+limit) or has been queued under the threshold is not flagged. Tests:
+`charts/glidepath-control-plane/tests/stalled_queue_detector_test.sh` (stalled, busy, fresh, other repository).
+
+Needs `get`/`list` on `repositories.pipelinesascode.tekton.dev` (read-only, added to the ClusterRole).
 
 ## Scan scope, threshold, and dedup
 
@@ -102,7 +125,7 @@ above for a feature nobody's asked for yet.
 Cluster-scoped by necessity (PipelineRuns live in every Application's namespace, same
 unavoidable exception as the TTL sweep's namespace access), narrow by verb: `get`/`list`/
 `patch` on `pipelineruns.tekton.dev` (patch only for the dedup label), `create` on
-`events`. Nothing else - no Secrets, no other resource types, no write access to a
+`events`, and read-only `get`/`list` on `repositories.pipelinesascode.tekton.dev` for the queue rule. Nothing else - no Secrets, no other resource types, no write access to a
 PipelineRun's actual spec/status.
 
 ## Verification
@@ -128,7 +151,7 @@ PipelineRun's actual spec/status.
   actually being falsely flagged by the time this was caught live, 2026-08-11.
 - RBAC check: `kubectl auth can-i --list
   --as=system:serviceaccount:platform-system:stalled-pipeline-detector` shows exactly
-  `get`/`list`/`patch` on `pipelineruns.tekton.dev` and `create` on `events`.
+  `get`/`list`/`patch` on `pipelineruns.tekton.dev`, `create` on `events` and `get`/`list` on `repositories.pipelinesascode.tekton.dev`.
 
 ## Schedule
 

@@ -520,11 +520,22 @@ spec:
               serviceAccountName: image-pusher"
           fi
           # A test-rooted flow: run-integration-script runs the repository's ./integration-test.sh (see run-integration-script.yaml).
+          # run-testworkflow (the app-secrets and Testkube grants) runs as test-runner (pipeline trust T4, step 3).
           if [[ "${root_stage}" == "test" ]]; then
             task_run_specs_block="
           taskRunSpecs:
             - pipelineTaskName: run-integration-script
-              serviceAccountName: source-runner"
+              serviceAccountName: source-runner
+            - pipelineTaskName: run-testworkflow
+              serviceAccountName: test-runner"
+          fi
+          # A release-rooted flow: open-release-pr writes the release record, so it runs as release-record-writer (pipeline trust T4,
+          # step 3). The release Pipeline always has it, so the entry is always valid (Tekton refuses a name the Pipeline lacks).
+          if [[ "${root_stage}" == "release" ]]; then
+            task_run_specs_block="
+          taskRunSpecs:
+            - pipelineTaskName: open-release-pr
+              serviceAccountName: release-record-writer"
           fi
           # Run-wide taskRunTemplate.podTemplate (2026-10-08), not a per-task
           # taskRunSpecs entry naming `notify-backstage`: Tekton validates taskRunSpecs
@@ -896,6 +907,7 @@ spec:
         # under glidepath/releases/, so an ordinary code PR never runs a release gate. Which gates:
         # releaseGuardrails entries whose `targets` include this deploy.target (or have none).
         # Provenance keeps its image half only: commit signing is not required for cloud targets.
+        {{- include "glidepath-catalog.onboardingTaskNames" . | nindent 8 }}
         rm -f .tekton/pin-gate-*.yaml
         if [[ "${DEPLOY_TARGET}" != "k8s-rollout" ]] && jq -e '[.[] | select(.pinFile)] | length > 0' <<<"${pipelines_json}" >/dev/null; then
           while IFS= read -r gate; do
@@ -908,7 +920,7 @@ spec:
               -e "s|<APP_NAMESPACE>|${APP_NAMESPACE}|g" \
               -e "s|<APP_NAME>|${APP_NAME}|g" \
               -e 's|source_branch.startsWith("release-")|source_branch.startsWith("glidepath-release-") \&\& files.all.all(f, f.startsWith("glidepath/releases/"))|' \
-              "${tmpl}" > ".tekton/pin-gate-${gate}.yaml"
+              "${tmpl}" | task_names > ".tekton/pin-gate-${gate}.yaml"
             if [[ "${gate}" == "provenance" ]]; then
               yq -i '.spec.params += [{"name": "commit-signature", "value": "false"}]' ".tekton/pin-gate-${gate}.yaml"
             fi
@@ -1073,6 +1085,7 @@ spec:
             echo "gitops repo: removed .tekton/pull-request-agent-gates.yaml - Clearance's App reports agent-identity and agent-scope"
           fi
         fi
+        {{- include "glidepath-catalog.onboardingTaskNames" . | nindent 8 }}
         templates_compared=0
         for f in /opt/platform/onboarding-templates/gitops-repo/*.yaml; do
           base="$(basename "${f}")"
@@ -1080,7 +1093,7 @@ spec:
           sed \
             -e "s|<APP_NAMESPACE>|${APP_NAMESPACE}|g" \
             -e "s|<APP_NAME>|${APP_NAME}|g" \
-            "${f}" > ".tekton/${base}"
+            "${f}" | task_names > ".tekton/${base}"
           templates_compared=$(( templates_compared + 1 ))
         done
 

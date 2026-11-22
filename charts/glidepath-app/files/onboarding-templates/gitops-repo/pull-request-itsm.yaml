@@ -29,6 +29,12 @@ spec:
     - { name: repo-url, value: "{{ repo_url }}" }
     - { name: revision, value: "{{ revision }}" }
     - { name: pr-number, value: "{{ pull_request_number }}" }
+  # Pipeline trust T4 (step 3): the change-management gate reads and updates the release record, so it runs as
+  # release-record-writer. Its task is verify-change, or verify-change-advisory where the gate is not required, and exists only
+  # where the catalog has a change-management provider (the stub's `check` task is a no-op on pipeline-runner): the onboarding task
+  # fills in the name and drops the key otherwise, because Tekton refuses a name the Pipeline lacks.
+  taskRunSpecs: # <IF_ITSM>
+    - { pipelineTaskName: <ITSM_GATE_TASK>, serviceAccountName: release-record-writer } # <IF_ITSM>
   taskRunTemplate:
     serviceAccountName: pipeline-runner
   timeouts:

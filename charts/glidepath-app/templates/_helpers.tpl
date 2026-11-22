@@ -244,6 +244,22 @@ else fails the render (the CRD's minimum is 1, and Pipelines-as-Code reads 0 as 
 {{- end -}}
 
 {{/*
+glidepath-app.pacGitopsProvenance - the Pipelines-as-Code `spec.settings.pipelinerun_provenance` for the gitops-<app> Repository CR, or ""
+for none (the default: the CR then renders exactly as it did before the value existed, and Pipelines-as-Code reads .tekton from the
+pull request's head, its own "source"). Only "default_branch" and "source" exist in Pipelines-as-Code v0.49.0's CRD; anything else fails
+the render rather than being rejected by the API server at sync.
+*/}}
+{{- define "glidepath-app.pacGitopsProvenance" -}}
+{{- $v := (.Values.pipelinesAsCode | default dict).gitopsRepoProvenance -}}
+{{- if not (kindIs "invalid" $v) -}}
+{{- if not (and (kindIs "string" $v) (has $v (list "default_branch" "source"))) -}}
+{{- fail (printf "pipelinesAsCode.gitopsRepoProvenance is %v: default_branch, source, or unset (Pipelines-as-Code's pipelinerun_provenance)" $v) -}}
+{{- end -}}
+{{- $v -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 glidepath-app.checksOnly - "true" when cicd.yaml declares no build: a checks-only repository (configuration only).
 It builds, deploys and releases nothing, so it has no flows, environments, build cache or Argo CD Applications; it
 keeps its registration (namespace, Pipelines-as-Code Repository, pipeline-runner) and the PR checks every repository
@@ -553,9 +569,13 @@ glidepath-app.validateFlows - validates pipeline flow definitions. Rules:
 - Any stage may be git-rooted; start-flow-root-span.yaml's task is idempotent either way.
 - build, if present, must be the first (and only) step - nothing chains into or from it.
 - A git-rooted release must be the flow's sole step (it starts a new trace root).
-  Event-chained release has no position restriction - deploy/test/release may repeat or
-  reorder freely once past a required leading build; flow-triggers.yaml keys off each
+  Event-chained release has no position restriction - deploy/test may repeat or
+  reorder freely once past a required leading build (release may not repeat, see below); flow-triggers.yaml keys off each
   step's actual predecessor, not a fixed slot.
+- A flow may contain at most one release step (I-1, interim guard). A release record is
+  named per release chain, and a chain is one flow, so two release steps would both write
+  the same record and the second would overwrite the first's. Lifted once records are
+  named per environment (hangar specs/plans/i1-release-record-per-env.md, option 1).
 - cluster: is only valid on a release step.
 - env: is required for deploy, release, and test steps.
 - A deploy step's env must be listed under deploy.environments -
@@ -608,8 +628,18 @@ Fails fast with a descriptive message if violated.
     {{- end -}}
 
     {{- $checkRides := 0 -}}
+    {{- $firstRelease := 0 -}}
+    {{- $firstReleaseEnv := "" -}}
     {{- range $index, $step := $steps -}}
       {{- $stageName := $step.stage | default "" -}}
+
+      {{- if eq $stageName "release" -}}
+        {{- if $firstRelease -}}
+          {{- fail (printf "Flow '%s': steps %d (env '%s') and %d (env '%s') are both release steps. A flow may have only one release step: a release record is named per release chain (one flow), so two release steps would write the same record and the second would overwrite the first's. Give each release its own flow, or promote with Tower's Promote. Multi-release flows are not supported yet." $flowName $firstRelease $firstReleaseEnv (add $index 1) ($step.env | default "")) -}}
+        {{- end -}}
+        {{- $firstRelease = add $index 1 -}}
+        {{- $firstReleaseEnv = $step.env | default "" -}}
+      {{- end -}}
 
       {{- if or (eq $stageName "deploy") (eq $stageName "release") (eq $stageName "test") -}}
         {{- if not $step.env -}}

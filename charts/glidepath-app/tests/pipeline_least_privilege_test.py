@@ -7,6 +7,12 @@ Renders glidepath-app and glidepath-catalog and asserts, from the manifests alon
     RBAC the way the API server would and expects zero rules.
   - pipeline-runner cannot create a run, cannot read a Secret other than app-secrets, cannot mint tokens or
     impersonate; pipeline-trigger can only create PipelineRuns and mounts no token.
+  - the three split task accounts of pipeline trust T4 (release-record-writer, clearance-gate, test-runner; plan
+    specs/plans/pipeline-trust-t4-split-runner.md in the hangar repository, section 2) hold EXACTLY the rights of the
+    plan's Target table, in every namespace they are bound in, and nothing else: no run or pod creation, no token request,
+    no impersonation, no delete, no Secret beyond test-runner's two named ones. pipeline-runner keeps all its rights until
+    the plan's step 6 (a test asserts that too, so a removal is a deliberate edit of this file).
+  - glidepath-api's only grant here is configmaps patch in the app's -cicd namespace (the W-8 gate ledger).
   - every Trigger creates runs as pipeline-trigger, every run executes as pipeline-runner, and the broker may
     impersonate pipeline-trigger only.
   - the catalog's source-executing tasks carry no credential: no projected token, no kubectl, no secret mounted into
@@ -28,6 +34,8 @@ APP = os.path.join(ROOT, "charts", "glidepath-app")
 CATALOG = os.path.join(ROOT, "charts", "glidepath-catalog")
 CP = os.path.join(ROOT, "charts", "glidepath-control-plane")
 NS = "app-x-cicd"   # the chart derives the real namespace from platformIdentity.appName; rules_for reads it back
+TESTKUBE_SECRET = "example-app-app-secrets"   # <appName>-app-secrets, the app's placeholder Secret in the Testkube namespace
+OWN = "(own -cicd namespace)"
 SOURCE_TASKS = ["build-source", "unit-test", "build-image", "build-python-wheel-artifact", "build-go-binary-artifact"]
 PUSHER_TASKS = ["push-image"]
 
@@ -48,12 +56,12 @@ def helm(chart, *args):
     return [d for d in yaml.safe_load_all(p.stdout) if d]
 
 
-def app_docs():
+def app_docs(cicd=None, *extra):
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
-        yaml.safe_dump(CICD, f)
+        yaml.safe_dump(cicd or CICD, f)
         path = f.name
     try:
-        return helm(APP, "--namespace", NS, "-f", path, "-f", os.path.join(APP, "tests", "fixtures", "control-plane-values.yaml"))
+        return helm(APP, "--namespace", NS, "-f", path, "-f", os.path.join(APP, "tests", "fixtures", "control-plane-values.yaml"), *extra)
     finally:
         os.unlink(path)
 
@@ -134,6 +142,129 @@ class Identities(unittest.TestCase):
                                  ("", "*", "*")):
             self.assertFalse(allows(rules, group, res, verb), f"{verb} {group}/{res}")
 
+    # ---- pipeline trust T4, step 2: the three split task accounts ----
+    # The plan's Target table, as (apiGroup, resource, verbs, resourceNames) per namespace the account is bound in. Anything
+    # a chart change binds beyond this fails the test; widening a right is a deliberate edit of this table.
+    CLUSTER_REGISTRY = ("", "configmaps", ("get",), ("cluster-registry",))
+    TARGET = {   # OWN = the application's own -cicd namespace
+        "release-record-writer": {OWN: {("", "configmaps", ("create", "get", "list", "patch"), ()),
+                                        ("tekton.dev", "pipelineruns", ("get",), ())}},   # get: open-release-pr reads its own run's lineage annotations
+        "clearance-gate": {OWN: {("tekton.dev", "pipelineruns", ("get",), ()), ("", "configmaps", ("create", "get", "patch"), ())}},
+        "test-runner": {OWN: {("tekton.dev", "pipelineruns", ("get", "list", "watch"), ()),
+                             ("tekton.dev", "taskruns", ("get", "list", "watch"), ()),
+                             ("", "pods", ("get", "list", "watch"), ()), ("", "pods/log", ("get", "list", "watch"), ()),
+                             ("", "events", ("get", "list", "watch"), ()), ("", "persistentvolumeclaims", ("get", "list", "watch"), ()),
+                             ("", "secrets", ("get",), ("app-secrets", "dex-check-ride-credentials"))}},
+    }
+    FORBIDDEN = (("tekton.dev", "pipelineruns", "create"), ("tekton.dev", "taskruns", "create"), ("tekton.dev", "pipelineruns", "delete"),
+                 ("", "pods", "create"), ("", "pods/exec", "create"), ("", "serviceaccounts/token", "create"),
+                 ("", "serviceaccounts", "impersonate"), ("", "configmaps", "delete"), ("", "configmaps", "update"),
+                 ("", "secrets", "list"), ("", "secrets", "create"), ("", "secrets", "patch"), ("", "secrets", "update"),
+                 ("rbac.authorization.k8s.io", "rolebindings", "create"), ("", "*", "*"))
+
+    @staticmethod
+    def per_namespace(docs, sa):
+        """{namespace: set of (group, resource, verbs, resourceNames)} the account is granted, over every binding in the render."""
+        roles = {(d["kind"], d["metadata"]["name"], d["metadata"].get("namespace", "")): d.get("rules", [])
+                 for d in docs if d["kind"] in ("Role", "ClusterRole")}
+        out = {}
+        for b in docs:
+            if b["kind"] not in ("RoleBinding", "ClusterRoleBinding"):
+                continue
+            for s in b.get("subjects") or []:
+                hit = (s.get("kind") == "ServiceAccount" and s.get("name") == sa) or \
+                      (s.get("kind") == "Group" and s.get("name", "").startswith("system:") and "serviceaccounts" in s.get("name", "") or s.get("name") == "system:authenticated")
+                if not hit:
+                    continue
+                ref = b["roleRef"]
+                ns = b["metadata"].get("namespace", "(cluster)")
+                rules = roles.get((ref["kind"], ref["name"], b["metadata"].get("namespace", "") if ref["kind"] == "Role" else ""))
+                if rules is None:
+                    # a Role of another chart (the control-plane's shared testkube-testworkflow-runner): recorded by name, so a
+                    # binding to some other foreign role would still change the compared set
+                    out.setdefault(ns, set()).add(("(role of another chart)", ref["name"], (), ()))
+                    continue
+                for r in rules:
+                    for g in r.get("apiGroups", [""]):
+                        for res in r.get("resources", []):
+                            out.setdefault(ns, set()).add((g, res, tuple(sorted(r.get("verbs", []))), tuple(sorted(r.get("resourceNames", [])))))
+        return out
+
+    def test_split_accounts_hold_exactly_the_target_table(self):
+        mapped = {**CICD, "deploy": {"environments": [{"name": "dev", "tier": "ground"}, {"name": "prod", "tier": "flight", "cluster": "example-prod"}]}}
+        for label, docs in (("default fixture", self.docs), ("cluster-mapped Flight env", app_docs(mapped))):
+            for sa, want in self.TARGET.items():
+                own = [d for d in docs if d["kind"] == "ServiceAccount" and d["metadata"]["name"] == sa][0]["metadata"]["namespace"]
+                got = {(OWN if ns == own else ns): r for ns, r in self.per_namespace(docs, sa).items()}
+                self.assertTrue(got.get(OWN), "%s: %s has no rules in its own namespace: the comparison would be vacuous" % (label, sa))
+                expected = {ns: set(r) for ns, r in want.items()}
+                if sa == "release-record-writer" and label != "default fixture":
+                    expected["platform-system"] = {self.CLUSTER_REGISTRY}
+                if sa == "test-runner":
+                    # the Testkube grants (templates/testkube/rbac-and-secret.yaml), as a FIXED set: the app's own placeholder Secret
+                    # (get, update, patch, by name; never create) and the control-plane chart's shared TestWorkflow role, bound by name
+                    self.assertEqual(set(got) - {OWN}, {"testkube"}, "%s: %s" % (label, sa))
+                    expected["testkube"] = {("", "secrets", ("get", "patch", "update"), (TESTKUBE_SECRET,)),
+                                            ("(role of another chart)", "testkube-testworkflow-runner", (), ())}
+                self.assertEqual(got, expected, "%s: %s binds a right other than the plan's Target table" % (label, sa))
+
+    def test_split_accounts_can_not_create_runs_pods_or_tokens_or_delete(self):
+        for sa in self.TARGET:
+            rules = rules_for(self.docs, sa)
+            self.assertTrue(rules, sa)
+            for group, res, verb in self.FORBIDDEN:
+                self.assertFalse(allows(rules, group, res, verb), "%s: %s %s/%s" % (sa, verb, group, res))
+            # and never a wildcard anywhere in what is granted to it, in any namespace
+            for ns, granted in self.per_namespace(self.docs, sa).items():
+                for g, res, verbs, names in granted:
+                    self.assertNotIn("*", (g, res) + verbs, (sa, ns))
+        # a record writer reads no Secret at all; the Clearance-token account reads none and writes nothing but ConfigMaps
+        self.assertFalse(allows(rules_for(self.docs, "release-record-writer"), "", "secrets", "get", "app-secrets"))
+        self.assertFalse(allows(rules_for(self.docs, "clearance-gate"), "", "secrets", "get", "app-secrets"))
+        self.assertFalse(allows(rules_for(self.docs, "test-runner"), "", "configmaps", "get"))
+        self.assertFalse(allows(rules_for(self.docs, "test-runner"), "", "configmaps", "patch"))
+
+    def test_split_accounts_are_plain_task_accounts_with_the_pull_secret(self):
+        for sa in self.TARGET:
+            self.assertEqual(self.sas[sa].get("imagePullSecrets"), [{"name": "registry-credentials"}], sa)
+        self.assertEqual(({"pipeline-runner", "source-runner", "image-pusher", "pipeline-trigger"} | set(self.TARGET)) - set(self.sas), set())
+
+    def test_the_split_accounts_are_named_only_by_a_runs_taskrunspecs(self):
+        # step 3 maps tasks with taskRunSpecs (TaskMapping below checks which). No workload runs as a split account, and no
+        # run-wide taskRunTemplate does: a split account is a per-task choice, so a task nobody maps stays on pipeline-runner.
+        for d in self.docs:
+            if d["kind"] in ("Job", "Deployment", "CronJob", "StatefulSet"):
+                text = yaml.safe_dump(d)
+                for sa in self.TARGET:
+                    self.assertNotIn("serviceAccountName: " + sa, text, d["metadata"]["name"])
+            if d["kind"] == "TriggerTemplate":
+                for r in d["spec"]["resourcetemplates"]:
+                    if r.get("kind") == "PipelineRun":
+                        self.assertNotIn(r["spec"]["taskRunTemplate"]["serviceAccountName"], self.TARGET, d["metadata"]["name"])
+
+    def test_pipeline_runner_keeps_its_rights_until_step_6(self):
+        # R1 (whole-namespace configmaps incl. delete), R4 and R9 are still on pipeline-runner: the split is additive, and a
+        # task not yet mapped must keep working. Step 6 removes them and edits this test with it.
+        rules = rules_for(self.docs, "pipeline-runner")
+        for verb in ("get", "list", "create", "patch", "delete"):
+            self.assertTrue(allows(rules, "", "configmaps", verb), verb)
+        self.assertTrue(allows(rules, "", "secrets", "get", "app-secrets"))
+        self.assertTrue(allows(rules, "", "secrets", "get", "dex-check-ride-credentials"))
+        testkube = self.per_namespace(self.docs, "pipeline-runner").get("testkube", set())
+        self.assertIn(("", "secrets", ("get", "patch", "update"), (TESTKUBE_SECRET,)), testkube)
+
+    def test_glidepath_api_may_only_patch_configmaps_here(self):
+        # W-8: glidepath-api writes the gate ledger itself (POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict). Its only grant
+        # from this chart is configmaps patch in the app's own -cicd namespace (no create, update, delete, no other resource);
+        # the control plane's gate-ledger-writes policy limits the patch to the ledger keys of a release record.
+        own = self.sas["pipeline-runner"]["metadata"]["namespace"]
+        bindings = [b for b in self.docs if b["kind"] in ("RoleBinding", "ClusterRoleBinding")
+                    and any(s.get("kind") == "ServiceAccount" and s.get("name") == "glidepath-api" for s in b.get("subjects") or [])]
+        self.assertEqual([(b["kind"], b["metadata"]["name"], b["metadata"]["namespace"]) for b in bindings],
+                         [("RoleBinding", "glidepath-api-gate-ledger", own)])
+        self.assertEqual([s.get("namespace") for s in bindings[0]["subjects"]], ["platform-system"])
+        self.assertEqual(self.per_namespace(self.docs, "glidepath-api"), {own: {("", "configmaps", ("patch",), ())}})
+
     def test_pipeline_trigger_creates_runs_and_nothing_else(self):
         self.assertIs(self.sas["pipeline-trigger"].get("automountServiceAccountToken"), False)
         rules = rules_for(self.docs, "pipeline-trigger")
@@ -201,7 +332,8 @@ class Identities(unittest.TestCase):
                 stage = d["metadata"]["labels"].get("hangar.io/stage")
                 # build is never chained, so only the test stage names source-runner here
                 if stage == "test":
-                    self.assertEqual(specs, [[{"pipelineTaskName": "run-integration-script", "serviceAccountName": "source-runner"}]])
+                    self.assertEqual(specs, [[{"pipelineTaskName": "run-integration-script", "serviceAccountName": "source-runner"},
+                                              {"pipelineTaskName": "run-testworkflow", "serviceAccountName": "test-runner"}]])
                 else:
                     self.assertNotIn("source-runner", str(specs), d["metadata"]["name"])
 
@@ -311,7 +443,105 @@ class SourceTasks(unittest.TestCase):
         script = "\n".join(s.get("script", "") for s in self.tasks["deliver-onboarding-files"]["spec"]["steps"])
         m = re.search(r'if \[\[ "\$\{root_stage\}" == "test" \]\]; then(.*?)\n\s+fi', script, re.S)
         self.assertIsNotNone(m)
-        self.assertEqual(re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: ([^\s\"]+)", m.group(1)), [("run-integration-script", "source-runner")])
+        self.assertEqual(re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: ([^\s\"]+)", m.group(1)),
+                         [("run-integration-script", "source-runner"), ("run-testworkflow", "test-runner")])
+
+    def test_generated_release_run_hands_open_release_pr_to_the_record_writer(self):
+        script = "\n".join(s.get("script", "") for s in self.tasks["deliver-onboarding-files"]["spec"]["steps"])
+        m = re.search(r'if \[\[ "\$\{root_stage\}" == "release" \]\]; then(.*?)\n\s+fi', script, re.S)
+        self.assertIsNotNone(m, "the release taskRunSpecs block is missing from deliver-onboarding-files")
+        self.assertEqual(re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: ([^\s\"]+)", m.group(1)), [("open-release-pr", "release-record-writer")])
+
+
+# ---- pipeline trust T4, step 3: every run the platform starts maps each writer and gate task to its account ----
+#   (catalog Task name -> the account it runs as); the Pipeline's own task names come from the rendered catalog.
+ACCOUNT_OF_TASK = {
+    "open-release-pr": "release-record-writer", "mark-release-merged": "release-record-writer", "itsm-change": "release-record-writer",
+    "itsm-gate": "release-record-writer", "join-release": "release-record-writer",
+    "clearance-gate": "clearance-gate", "agent-gates": "clearance-gate", "agent-definitions": "clearance-gate", "agent-release": "clearance-gate",
+    "run-testworkflow": "test-runner",
+}
+SPLIT_ACCOUNTS = {"release-record-writer", "clearance-gate", "test-runner"}
+
+
+def catalog_split_tasks(docs):
+    """{Pipeline: {pipeline task name: account}} for every task of every catalog Pipeline that must run as a split account (tasks and finally)."""
+    out = {}
+    for d in docs:
+        if d["kind"] != "Pipeline":
+            continue
+        for t in d["spec"].get("tasks", []) + d["spec"].get("finally", []):
+            ref = [p["value"] for p in t.get("taskRef", {}).get("params", []) if p["name"] == "name"]
+            if ref and ref[0] in ACCOUNT_OF_TASK:
+                out.setdefault(d["metadata"]["name"], {})[t["name"]] = ACCOUNT_OF_TASK[ref[0]]
+    return out
+
+
+def catalog_task_names(docs):
+    return {d["metadata"]["name"]: {t["name"] for t in d["spec"].get("tasks", []) + d["spec"].get("finally", [])} for d in docs if d["kind"] == "Pipeline"}
+
+
+def split_mapping(run_spec):
+    return {e["pipelineTaskName"]: e["serviceAccountName"] for e in run_spec.get("taskRunSpecs") or [] if e["serviceAccountName"] in SPLIT_ACCOUNTS}
+
+
+class TaskMapping(unittest.TestCase):
+    """Every PipelineRun a Trigger template starts maps the catalog's record-writer, Clearance-token and test tasks to their accounts, and only
+    those, and names only tasks its Pipeline has (Tekton refuses a taskRunSpecs entry for a task the Pipeline lacks)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.catalog = {
+            "itsm": helm(CATALOG, "-f", os.path.join(CATALOG, "tests", "values.example.yaml"), "--set", "itsm.provider=webhook"),
+            "no itsm": helm(CATALOG, "-f", os.path.join(CATALOG, "tests", "values.example.yaml")),
+        }
+        # a cluster-mapped Flight environment renders the release-outcome and rollback Triggers (hasClusterMappedUpperEnv)
+        cicd = {**CICD, "deploy": {"environments": [{"name": "dev", "tier": "ground"}, {"name": "prod", "tier": "flight", "cluster": "example-prod"}]}}
+        cls.apps = {"itsm": app_docs(cicd, "--set", "itsm.enabled=true"), "no itsm": app_docs(cicd)}
+
+    def runs(self, variant):
+        for d in self.apps[variant]:
+            if d["kind"] == "TriggerTemplate":
+                for r in d["spec"]["resourcetemplates"]:
+                    if r.get("kind") == "PipelineRun":
+                        pipeline = [p["value"] for p in r["spec"]["pipelineRef"]["params"] if p["name"] == "name"][0]
+                        yield d["metadata"]["name"], pipeline, r["spec"]
+
+    def test_every_trigger_run_maps_exactly_the_writer_and_gate_tasks_its_pipeline_has(self):
+        seen = {}
+        for variant in self.apps:
+            want = catalog_split_tasks(self.catalog[variant])
+            have = catalog_task_names(self.catalog[variant])
+            n = 0
+            for name, pipeline, spec in self.runs(variant):
+                n += 1
+                seen.setdefault(variant, set()).add(pipeline)
+                self.assertEqual(split_mapping(spec), want.get(pipeline, {}), "%s (%s): %s" % (name, variant, pipeline))
+                for e in spec.get("taskRunSpecs") or []:
+                    self.assertIn(e["pipelineTaskName"], have[pipeline], "%s (%s): taskRunSpecs names a task %s does not have" % (name, variant, pipeline))
+                    self.assertEqual(sorted(e), ["pipelineTaskName", "serviceAccountName"], name)
+                self.assertEqual(spec["taskRunTemplate"]["serviceAccountName"], "pipeline-runner", name)
+            self.assertGreaterEqual(n, 7, "too few runs rendered: the comparison would be vacuous (%s)" % variant)
+        # the runs the platform starts that hold a writer task are all there, in the variant that has the task
+        self.assertLessEqual({"release", "test", "release-outcome-notify", "release-rollback-notify"}, seen["itsm"])
+        want = {p: m for p, m in catalog_split_tasks(self.catalog["itsm"]).items() if p in ("release", "test", "release-outcome-notify", "release-rollback-notify")}
+        self.assertEqual(want, {"release": {"open-release-pr": "release-record-writer"},
+                                "test": {"run-testworkflow": "test-runner"},
+                                "release-outcome-notify": {"itsm-close": "release-record-writer"},
+                                "release-rollback-notify": {"itsm-close-rolled-back": "release-record-writer"}})
+        # without a provider the itsm close tasks do not exist, so no entry may name them
+        self.assertNotIn("itsm-close", str([spec for _, _, spec in self.runs("no itsm")]))
+
+    def test_the_mapping_is_in_the_run_itself(self):
+        # The T5 rule: a glidepath-api rerun copies the original run's taskRunSpecs (security.md, "What is not closed", item 6), so the per-task
+        # accounts must be in the run itself, not added by anything that runs later. That the rerun really copies them is tested where the
+        # rerun is implemented: glidepath/api/internal/pipelineruns (TestRerunKeepsTaskRunSpecs). The PaC-started runs (onboarding templates)
+        # are checked the same way in the control plane's cicd_run_admission_test.py, against the admission lists.
+        n = 0
+        for variant in self.apps:
+            for name, pipeline, spec in self.runs(variant):
+                n += bool(split_mapping(spec))
+        self.assertGreaterEqual(n, 8, "too few mapped runs: the comparison would be vacuous")
 
 
 if __name__ == "__main__":

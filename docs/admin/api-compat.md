@@ -43,6 +43,11 @@ the release log as `api_compat_*`). Its fields: `version`, `verdict`, `env`, `ca
 `usage {source, window, callers}`, `override {by, at, reason}` or null, and `notes`. A very long list is cut to keep
 the comment under GitHub's size limit; `breakingTotal` keeps the real count.
 
+The report is too big for a Task result, so the gate hands it to the `comment-pr` task beside it: as a ConfigMap
+`gate-report-<run>` owned by the run (catalog `gateReports.transport: configmap`, the default), or, with `log`, as
+`glidepath:gate-report` lines at the end of its own `check` step's log, which `comment-pr` reads back from that pod. `log` writes
+no ConfigMap, so `pipeline-runner` needs no ConfigMap write for it (docs/admin/security.md, "Pipeline identities").
+
 ## "In use"
 
 An operation is in use when the target environment's service (`<app>-<env>`) served it in the last

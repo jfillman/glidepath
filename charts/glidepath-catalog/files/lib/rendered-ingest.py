@@ -6,7 +6,7 @@
 # and nothing else; it never executes, sources or evals any of it, never follows a symlink in it, and never prints any of
 # it: a log line carries an environment's id (checked against a strict pattern first) and counts, nothing from a file.
 #
-#   /work/plan.txt       the environments, from the trusted fetch step (cluster|env|chart[|protected])
+#   /work/plan.txt       the environments, from the trusted fetch step (cluster|env|chart[|register])
 #   /rendered/           the render task's output, mounted read-only:
 #                          MANIFEST                  "<sha256>  <environment id>/<file>" per file, written last
 #                          <cluster>__<env>/status   ok | render-failed
@@ -232,7 +232,8 @@ def main():
             continue
         eid = cluster + "__" + env
         if protected != "true":
-            print("%s: not a protected environment (no production: true): skipped" % label)
+            # Only on a cluster with no Clearance: with one, the fetch step registers every environment (files/lib/protection.sh)
+            print("%s: no Clearance on this cluster and cicd.yaml does not say production: true: skipped" % label)
             actions.append((eid, b"skipped\n", None, None, label))
             continue
         if os.path.exists("%s/observability/%s.yaml.unreadable" % (WORK, cluster)):

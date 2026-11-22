@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Glidepath API
-  version: 0.13.0
+  version: 0.14.0
   description: |
     Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
     contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec are reads (tier T0); phase 3
@@ -26,6 +26,9 @@ info:
     not that rulesets say so. The answer carries the evidence (commits, pull requests, openers, mergers, approvers); the
     ruleset and branch protection reads are an informational `configuration`; `unprotected` and `unavailable` are gone,
     `unreviewed` is new, and `bypass`, `notes` and `protectedBy` moved into `configuration`.
+    0.14.0 adds POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict: a gate run's verdict recorded in the release record's
+    gate ledger by glidepath-api itself (pipeline trust T4, W-8). Only the gate run's own comment-pr task may call it, with a
+    projected token for audience `glidepath-gate-verdict`; the verdict is derived from the run, never taken from the request.
 
     Every /v1 call needs a bearer token the cluster's TokenReview accepts, in `Authorization`, or in
     `X-Glidepath-Authorization` when the call comes through the API server's service proxy (which
@@ -615,6 +618,42 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/pipelineruns/{name}/gate-verdict:
+    post:
+      operationId: recordGateVerdict
+      summary: Record a gate run's verdict in the release record's gate ledger (the gate's own comment-pr task only)
+      description: >-
+        Not for people or agents: the promotion-ready step of comment-pr-check-result (every gate Pipeline's finally task) calls it,
+        and nothing else can. Authentication is a projected ServiceAccount token for audience `glidepath-gate-verdict`, checked by a
+        TokenReview for that audience (the pod's default token is refused, 401). The caller must be one of the chart's
+        `api.gateVerdict.serviceAccounts` (default pipeline-runner) of the app's own namespace, and the token's pod must be the
+        comment-pr pod (labels tekton.dev/pipelineTask comment-pr, tekton.dev/task comment-pr-check-result, tekton.dev/memberOf
+        finally) of the run `{name}`, whose TaskRun that run owns (403 GP-GV-403 otherwise). No X-Glidepath-On-Behalf-Of. The
+        request body is not read. glidepath-api derives everything from the cluster: the pull request (label
+        pipelinesascode.tekton.dev/pull-request), the commit (annotation pipelinesascode.tekton.dev/sha), the pull request URL (its
+        repo-url annotation), the gate (the gate-name parameter of the caller's comment-pr TaskRun), and the verdict (success when
+        every task of the run's resolved Pipeline is done and the only failed ones are -advisory tasks; a success past the run's
+        tasks timeout is failure, and within 60 s of it nothing is recorded: `deferred`). A run without a pull request or commit,
+        or not of a gitops-<app> repository: 422 GP-GV-422. It then patches `gate.<sha12>.<gate>` and `gateRun.<sha12>.<gate>`
+        (`<created> <run> <uid>`) into the release record whose prUrl is that pull request, with the record's resourceVersion (retried on
+        a conflict), as glidepath-api's own account: once per run (`already-recorded` after that), and never over the entry of a
+        run created later (`superseded`). No record: `no-record`. `ledger` is this commit's `gate.<sha12>.*` entries after the call.
+        With `dryRun=true` nothing is written.
+      x-glidepath-tier: T1
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { $ref: "#/components/parameters/RunName" }
+        - { $ref: "#/components/parameters/DryRun" }
+        - { $ref: "#/components/parameters/DryRunHeader" }
+      responses:
+        "200": { description: What was recorded, content: { application/json: { schema: { $ref: "#/components/schemas/GateVerdict" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/apps/{app}/previews:
     get:
       operationId: listPreviews
@@ -1128,6 +1167,21 @@ components:
         status: { type: string, enum: [cancelled, already-cancelled, already-finished] }
         dryRun: { type: boolean }
         patch: { type: object, description: "Dry run only, when a patch would be sent: the JSON merge patch" }
+    GateVerdict:
+      type: object
+      required: [outcome, gate, sha, pullRequest, prUrl, key, ledger]
+      properties:
+        outcome: { type: string, enum: [recorded, already-recorded, superseded, deferred, no-record] }
+        gate: { type: string }
+        sha: { type: string }
+        pullRequest: { type: integer }
+        prUrl: { type: string }
+        verdict: { type: string, enum: [success, failure], description: "The verdict recorded (already-recorded: the one recorded before); absent when deferred" }
+        record: { type: string, description: The release record's ConfigMap name }
+        key: { type: string, description: "gate.<sha12>.<gate>" }
+        reason: { type: string }
+        dryRun: { type: boolean }
+        ledger: { type: object, additionalProperties: { type: string }, description: "This commit's gate.<sha12>.* entries: of the record after the call (recorded, already-recorded, superseded); with dryRun, what the record would hold (nothing is written); {} for deferred and no-record" }
     ReleasePlan:
       type: object
       required: [order, orderSource, lower, upper]

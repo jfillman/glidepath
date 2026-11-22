@@ -260,6 +260,15 @@ clusterTaxonomy: {}
 cloudIdentity:
   awsAccountId: ""
 
+# Pipeline trust T4 (specs/plans/pipeline-trust-t4-split-runner.md, step 3). Set true where the catalog has a change-management
+# provider (the catalog's itsm.provider: servicenow or webhook). Then its outcome and rollback Pipelines have the itsm-close and
+# itsm-close-rolled-back tasks, which update the release's change record, and the runs this chart starts for those Pipelines map
+# them to release-record-writer. Tekton refuses a run whose taskRunSpecs names a task its Pipeline lacks, so this must say what
+# the catalog renders: unset where the catalog has a provider leaves those two tasks on pipeline-runner (they still work until
+# plan step 6 takes the record write from it); set where it has none fails every outcome and rollback notification run.
+itsm:
+  enabled: false
+
 # The fallback default chart for an install that passes no defaultChart (above). repoUrl has no default: the fleet's
 # Airframe repo is input (the cluster repo's cluster-defaults.yaml, forwarded as defaultChart), so a render with
 # neither fails rather than pointing at someone else's repo.
@@ -340,6 +349,11 @@ pipelinesAsCode:
   concurrencyLimit: null
   appRepoConcurrencyLimit: null
   gitopsRepoConcurrencyLimit: null
+  # Where Pipelines-as-Code reads the gitops-<app> repository's .tekton files from (its Repository's settings.pipelinerun_provenance):
+  # default_branch = the default branch, so a pull request cannot change the pipeline that judges it and a release pull request opened
+  # before a resync is judged by the current files; source = the pull request's head. unset = today's behaviour (source). The app
+  # repository and extraGitopsRepos are never changed. The control plane forwards the cluster's setting (apron: glidepath.gitopsPipelineProvenance).
+  gitopsRepoProvenance: null
 
 # Placeholder only - a real install MUST override every field here via
 # `-f platform-identity.yaml`. Left empty rather than a fake example so an accidental

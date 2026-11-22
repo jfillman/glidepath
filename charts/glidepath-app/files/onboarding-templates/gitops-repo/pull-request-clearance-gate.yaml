@@ -42,9 +42,18 @@ spec:
           resources:
             requests:
               storage: 1Gi
+  # Pipeline trust T4 (step 3): the Tasks that present the Clearance token (fetch, and the register task) run as clearance-gate,
+  # the one account Clearance trusts as a verifier; join-release writes the change's id into the release record as
+  # release-record-writer; the comment and everything else stay on pipeline-runner. The register task is `register`, or
+  # `register-advisory` and `render-check` where the gate is not required; the onboarding task fills in <CLEARANCE_REGISTER_TASK>
+  # and keeps or drops the `# <IF_...>` lines from what the catalog renders, because Tekton refuses a name the Pipeline lacks.
   taskRunSpecs:
     - pipelineTaskName: render
       serviceAccountName: source-runner
+    - { pipelineTaskName: fetch, serviceAccountName: clearance-gate }
+    - { pipelineTaskName: <CLEARANCE_REGISTER_TASK>, serviceAccountName: clearance-gate }
+    - { pipelineTaskName: render-check, serviceAccountName: clearance-gate } # <IF_CLEARANCE_ADVISORY>
+    - { pipelineTaskName: join-release, serviceAccountName: release-record-writer }
   taskRunTemplate:
     serviceAccountName: pipeline-runner
   timeouts:

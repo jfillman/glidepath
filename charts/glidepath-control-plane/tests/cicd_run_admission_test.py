@@ -158,20 +158,51 @@ SUBST = {"{{ repo_url }}": REPO, "{{ revision }}": SHA, "{{ pull_request_number 
          "<GITOPS_REPO_URL>": "https://github.com/o/gitops-sample"}
 
 
-def delivered_templates():
-    """(path, PipelineRun with the placeholders PaC and the onboarding task fill in, the event PaC would record)"""
+# The catalog renderings the onboarding task's task_names filter (the <CLEARANCE_REGISTER_TASK>, <ITSM_GATE_TASK> and <IF_...> markers of the
+# templates' taskRunSpecs, pipeline trust T4 step 3) is run against: what is rendered decides which tasks the Pipelines have.
+#   (name, helm args)
+CATALOG_VARIANTS = [
+    ("itsm, clearance advisory", ["--set", "itsm.provider=webhook"]),
+    ("itsm advisory, clearance required", ["--set", "itsm.provider=webhook", "--set", "releaseGuardrailOverrides.clearance-gate.required=true",
+                                          "--set", "releaseGuardrailOverrides.itsm.required=false"]),
+    ("no change-management provider", []),
+]
+
+
+def task_names_filter(extra):
+    """The task_names function deliver-onboarding-files renders for this catalog (a sed filter), as a callable text -> text."""
+    docs = render_catalog_itsm(*extra) if extra else render_catalog()
+    task = [d for d in docs if d["kind"] == "Task" and d["metadata"]["name"] == "deliver-onboarding-files"][0]
+    fns = set()
+    for s in task["spec"]["steps"]:
+        fns |= set(re.findall(r"^task_names\(\) \{.*?^\}$", s.get("script", ""), re.S | re.M))
+    assert len(fns) == 1, "both steps of deliver-onboarding-files must render the same task_names function: %s" % fns
+
+    def apply(text):
+        r = subprocess.run(["bash", "-c", fns.copy().pop() + "\ntask_names"], input=text, capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        return r.stdout
+    return apply
+
+
+def delivered_templates(variants=None):
+    """(path, PipelineRun with the placeholders PaC and the onboarding task fill in, the event PaC would record), once per catalog variant"""
     out = []
-    for path in sorted(glob.glob(os.path.join(TEMPLATES, "*", "*.yaml"))):
-        with open(path) as f:
-            text = f.read()
-        for k, v in SUBST.items():
-            text = text.replace(k, v)
-        for d in yaml.safe_load_all(text):
-            if d and d.get("kind") == "PipelineRun":
-                base = os.path.basename(path)
-                event = "pull_request" if base.startswith("pull-request-") and base != "pull-request-merged.yaml" else "push"
-                d["metadata"] = dict(meta(event, "main"), generateName=d["metadata"].get("generateName", "x-"))
-                out.append((path, d))
+    for _name, extra in (variants if variants is not None else CATALOG_VARIANTS):
+        names = task_names_filter(extra)
+        for path in sorted(glob.glob(os.path.join(TEMPLATES, "*", "*.yaml"))):
+            with open(path) as f:
+                text = f.read()
+            for k, v in SUBST.items():
+                text = text.replace(k, v)
+            if os.path.basename(os.path.dirname(path)) == "gitops-repo":
+                text = names(text)   # the gitops templates are the ones the onboarding task runs through task_names
+            for d in yaml.safe_load_all(text):
+                if d and d.get("kind") == "PipelineRun":
+                    base = os.path.basename(path)
+                    event = "pull_request" if base.startswith("pull-request-") and base != "pull-request-merged.yaml" else "push"
+                    d["metadata"] = dict(meta(event, "main"), generateName=d["metadata"].get("generateName", "x-"))
+                    out.append((path, d))
     return out
 
 
@@ -199,6 +230,21 @@ def render_catalog():
         assert r.returncode == 0, r.stderr
         _CATALOG.extend(d for d in yaml.safe_load_all(r.stdout) if d)
     return _CATALOG
+
+
+_CATALOG_ITSM = {}
+
+
+def render_catalog_itsm(*extra):
+    """The catalog with a change-management provider set (the itsm tasks of the Pipelines render only then); `extra` are more helm args."""
+    key = tuple(extra)
+    if key not in _CATALOG_ITSM:
+        r = subprocess.run(["helm", "template", "c", os.path.join(ROOT, "charts", "glidepath-catalog"), "--set", "itsm.provider=webhook", *extra, "-f",
+                            os.path.join(ROOT, "charts", "glidepath-catalog", "tests", "values.example.yaml")],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        _CATALOG_ITSM[key] = [d for d in yaml.safe_load_all(r.stdout) if d]
+    return _CATALOG_ITSM[key]
 
 
 def repo_code(task):
@@ -260,7 +306,8 @@ class CicdRunAdmission(unittest.TestCase):
                 "cicd-run-no-taskruns": ("noTaskRunsActions", "CicdRunNoTaskRunsNotEnforcing")}
 
     def bindings_of(self, docs):
-        return {d["metadata"]["name"]: d for d in docs if d["kind"] == "ValidatingAdmissionPolicyBinding"}
+        # the cicd-run-* family only: release-record-writes and gate-report-writes are Audit by default (tests/record_policies_test.py)
+        return {d["metadata"]["name"]: d for d in docs if d["kind"] == "ValidatingAdmissionPolicyBinding" and d["metadata"]["name"].startswith("cicd-run-")}
 
     def alerts_of(self, docs):
         return [r["alert"] for d in docs if d["kind"] == "PrometheusRule" and d["metadata"]["name"] == "cicd-run-admission-not-enforcing"
@@ -312,6 +359,20 @@ class CicdRunAdmission(unittest.TestCase):
                     ("buildPullCredential.remoteKey=x", "buildPullCredential.secretName=registry-credentials")):
             r = subprocess.run(["helm", "template", "cp", CHART, "-f", VALUES] + [a for v in bad for a in ("--set", v)], capture_output=True, text=True)
             self.assertNotEqual(r.returncode, 0, bad)
+
+    def test_itsm_enabled_reaches_the_tenant_onboarding_applicationset(self):
+        # Pipeline trust T4 step 3: the platform's itsm.enabled is forwarded to every app's glidepath-app valuesObject, true or false
+        def forwarded(*extra):
+            extra = extra + ("--set", "tenantsRepoUrl=https://github.com/o/tenants")
+            sets = [d for d in render(*extra) if d["kind"] == "ApplicationSet" and d["metadata"]["name"] == "glidepath-tenant-onboarding"]
+            self.assertEqual(len(sets), 1, "the tenant-onboarding ApplicationSet must render: the comparison would be vacuous")
+            srcs = [s for s in sets[0]["spec"]["template"]["spec"]["sources"] if "valuesObject" in s.get("helm", {})]
+            self.assertEqual(len(srcs), 1)
+            return srcs[0]["helm"]["valuesObject"]
+        # and always, true or false: a tenant's cicd.yaml must not be able to enable it where the platform has no provider
+        self.assertEqual(forwarded()["itsm"], {"enabled": False})
+        self.assertEqual(forwarded("--set", "itsm.enabled=false")["itsm"], {"enabled": False})
+        self.assertEqual(forwarded("--set", "itsm.enabled=true")["itsm"], {"enabled": True})
 
     def test_off_renders_nothing(self):
         pols, binds = policies("--set", "cicdRunAdmission.enabled=false")
@@ -645,7 +706,7 @@ class CicdRunAdmission(unittest.TestCase):
         self.refused(bad, msg="protected branch")
 
     def test_every_template_is_admitted_in_every_event_shape_pac_can_record_for_it(self):
-        found = delivered_templates()
+        found = delivered_templates(CATALOG_VARIANTS[:1])
         self.assertGreater(len(found), 15, "vacuous")
         shapes_seen = 0
         for path, d in found:
@@ -866,6 +927,114 @@ class CicdRunAdmission(unittest.TestCase):
         # the generator hands exactly those tasks to image-pusher
         _, gen = generator_params()
         self.assertEqual(re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: image-pusher", gen), self.values["pusherTasks"]["build"])
+
+    # ---- pipeline trust T4, step 2: the three split task accounts (specs/plans/pipeline-trust-t4-split-runner.md) ----
+    SPLIT = {"release-record-writer": "recordWriterTasks", "clearance-gate": "clearanceTasks", "test-runner": "testRunnerTasks"}
+    # the Tasks (by catalog name) each account is for, in the plan's Target table
+    SPLIT_CATALOG_TASKS = {"release-record-writer": {"open-release-pr", "mark-release-merged", "itsm-change", "itsm-gate", "join-release"},
+                           "clearance-gate": {"clearance-gate", "agent-gates", "agent-definitions", "agent-release"},
+                           "test-runner": {"run-testworkflow"}}
+
+    # Pipelines the platform's Triggers start (a .tekton file cannot): their writer tasks are listed in recordWriterTasks only so a
+    # glidepath-api rerun's copied taskRunSpecs are allowed by the cluster policy; cicd-run-shape never sees them (PaC-only)
+    PLATFORM_STARTED = {"release-outcome-notify": ["itsm-close"], "release-rollback-notify": ["itsm-close-rolled-back"]}
+
+    def may_run_as(self, pipeline, task, account):
+        """True when the shape policy has no 'may run as' objection to this per-task account (other messages are not this question)."""
+        specs = [{"pipelineTaskName": task, "serviceAccountName": account}]
+        out = evaluate(self.shape, run(pipeline, metadata=meta("push", "main"), taskRunSpecs=specs, params=list(BUILD_PARAMS) + prm(env="dev")))
+        return not any("may run as" in m for m in out)
+
+    def test_split_accounts_are_allowed_exactly_on_their_listed_tasks(self):
+        for account, value in self.SPLIT.items():
+            listed = self.values[value]
+            self.assertTrue(listed, value)
+            for pipeline, tasks in listed.items():
+                self.assertTrue(pipeline in self.values["pipelines"] or pipeline in self.PLATFORM_STARTED,
+                                "%s names %s, which neither a .tekton file nor a platform Trigger starts" % (value, pipeline))
+                for t in tasks:
+                    self.assertTrue(self.may_run_as(pipeline, t, account), (account, pipeline, t))
+                    # ... and no other account of the three takes that task, and a task of the same Pipeline that is not listed is refused
+                    for other in set(self.SPLIT) - {account}:
+                        self.assertFalse(self.may_run_as(pipeline, t, other) and t not in self.values[self.SPLIT[other]].get(pipeline, []),
+                                         (other, pipeline, t))
+                self.assertFalse(self.may_run_as(pipeline, "not-a-listed-task", account), (account, pipeline))
+            # another Pipeline's task name is not allowed here
+            self.assertFalse(self.may_run_as("build", "build-source", account), account)
+
+    def test_split_accounts_are_derived_from_the_catalog(self):
+        # Both catalog renderings: the clearance-gate guardrail required (the Pipeline task is `register`) and advisory
+        # (`register-advisory` and `render-check`); the itsm gate likewise (`verify-change` / `verify-change-advisory`).
+        renderings = [render_catalog_itsm(),
+                      render_catalog_itsm("--set", "releaseGuardrailOverrides.clearance-gate.required=true",
+                                          "--set", "releaseGuardrailOverrides.itsm.required=false")]
+        seen = set()
+        for docs in renderings:
+            for d in docs:
+                if d["kind"] == "Pipeline" and d["metadata"]["name"] == "clearance-gate-check":
+                    seen |= {t["name"] for t in d["spec"]["tasks"]}
+        self.assertLessEqual({"register", "register-advisory", "render-check"}, seen, "the two renderings must differ, or the check is vacuous")
+        for account, value in self.SPLIT.items():
+            want = {}
+            for docs in renderings:
+                pipelines = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Pipeline"}
+                for pname in list(self.values["pipelines"]) + list(self.PLATFORM_STARTED):
+                    for t in pipelines[pname]["spec"].get("tasks", []) + pipelines[pname]["spec"].get("finally", []):
+                        ref = [p["value"] for p in t.get("taskRef", {}).get("params", []) if p["name"] == "name"]
+                        if ref and ref[0] in self.SPLIT_CATALOG_TASKS[account]:
+                            want.setdefault(pname, set()).add(t["name"])
+            self.assertEqual({k: sorted(v) for k, v in self.values[value].items()}, {k: sorted(v) for k, v in want.items()}, value)
+
+    def test_every_delivered_template_maps_the_writer_and_gate_tasks_of_its_pipeline_exactly(self):
+        # Pipeline trust T4, step 3: each .tekton template the platform delivers hands every record-writer, Clearance-token and test task of
+        # its Pipeline to the plan's account, and nothing else to a split account; and names only tasks its Pipeline has in this catalog
+        # (Tekton refuses a taskRunSpecs entry for a task the Pipeline lacks, so a gate's variant names, and a task only a provider-ful
+        # catalog has, are decided by task_names). Both gate variants and with and without a provider are checked.
+        account_of = {t: a for a, ts in self.SPLIT_CATALOG_TASKS.items() for t in ts}
+        mapped_tasks = set()
+        for name, extra in CATALOG_VARIANTS:
+            docs = render_catalog_itsm(*extra) if extra else render_catalog()
+            pipelines = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Pipeline"}
+            found = delivered_templates([(name, extra)])
+            self.assertGreater(len(found), 15, name)
+            for path, d in found:
+                pname = template_pipeline(d)
+                tasks = {}
+                for t in pipelines[pname]["spec"].get("tasks", []) + pipelines[pname]["spec"].get("finally", []):
+                    ref = [p["value"] for p in t.get("taskRef", {}).get("params", []) if p["name"] == "name"]
+                    tasks[t["name"]] = ref[0] if ref else None
+                want = {k: account_of[v] for k, v in tasks.items() if v in account_of}
+                got = {e["pipelineTaskName"]: e["serviceAccountName"] for e in d["spec"].get("taskRunSpecs", []) if e["serviceAccountName"] in self.SPLIT}
+                self.assertEqual(got, want, "%s (%s): %s" % (os.path.basename(path), name, pname))
+                for e in d["spec"].get("taskRunSpecs", []):
+                    self.assertIn(e["pipelineTaskName"], tasks, "%s (%s): names a task %s does not have" % (os.path.basename(path), name, pname))
+                # the run-wide account is still pipeline-runner, and a glidepath-api rerun copies the entries unchanged (T5)
+                self.assertEqual(d["spec"]["taskRunTemplate"]["serviceAccountName"], "pipeline-runner")
+                for task, account in got.items():
+                    self.assertIn(task, self.values[self.SPLIT[account]].get(pname, []), (path, pname, task, account))
+                    mapped_tasks.add((pname, task, account))
+        # nothing the templates map is missing from the admission lists, and the lists name nothing no template maps (each is a PaC-started Pipeline task)
+        # (the release and test Pipelines are started by a generated flow file, not a template: its generator maps open-release-pr and run-testworkflow)
+        _, gen = generator_params()
+        generated = set()
+        for stage, task, account in (("release", "open-release-pr", "release-record-writer"), ("test", "run-testworkflow", "test-runner")):
+            m = re.search(r'if \[\[ "\$\{root_stage\}" == "%s" \]\]; then(.*?)\n\s+fi' % stage, gen, re.S)
+            self.assertIsNotNone(m, stage)
+            self.assertIn((task, account), re.findall(r"pipelineTaskName: (\S+)\s+serviceAccountName: ([^\s\"]+)", m.group(1)), stage)
+            generated.add((stage, task, account))
+        listed = {(p, t, a) for a, v in self.SPLIT.items() for p, ts in self.values[v].items() for t in ts}
+        platform = {(p, t, "release-record-writer") for p, ts in self.PLATFORM_STARTED.items() for t in ts}
+        self.assertEqual(mapped_tasks | generated | platform, listed)
+        # the platform-started Pipelines are not PaC-startable, so the entries cannot widen what a .tekton file may start
+        self.assertFalse(set(self.PLATFORM_STARTED) & set(self.values["pipelines"]))
+
+    def test_split_accounts_do_not_change_the_run_wide_account_or_who_else_is_allowed(self):
+        for account in self.SPLIT:
+            self.refused(run(taskRunTemplate={"serviceAccountName": account}), msg="pipeline-runner")
+        # an unlisted account stays refused, and the PR build cannot attach a split account to a source task
+        self.refused(run(taskRunSpecs=[{"pipelineTaskName": "build-source", "serviceAccountName": "release-record-writer"}]), msg="may run as")
+        # defaults must not refuse: every binding is still Deny only through its own value, and no new binding or policy appeared
+        self.assertEqual(sorted(n for n in self.binds if n.startswith("cicd-run-")), ["cicd-run-no-taskruns", "cicd-run-shape", "cicd-run-source-isolation"])
 
     def test_not_this_policys_concern(self):
         hostile = run(pipelineSpec={"tasks": []}, taskRunTemplate={"serviceAccountName": "default"})

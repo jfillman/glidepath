@@ -21,8 +21,8 @@ BASE = {
 }
 
 
-def render(steps):
-    cfg = dict(BASE, pipelines={"ci": {"trigger": {"source": "git", "event": "push", "branch": "main"}, "steps": steps}})
+def render(steps, base=None):
+    cfg = dict(base or BASE, pipelines={"ci": {"trigger": {"source": "git", "event": "push", "branch": "main"}, "steps": steps}})
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
         yaml.safe_dump(cfg, f)
         path = f.name
@@ -65,8 +65,30 @@ class Refused(unittest.TestCase):
         self.refuses([{"stage": "build"}, {"stage": "test", "env": "dev", "role": "smoke"}],
                      "is not one of execute, test, check-ride")
 
+    def test_two_release_steps_in_one_flow(self):
+        # I-1 interim guard: one release record per chain, so a second release step would overwrite the first's.
+        cfg = dict(BASE, deploy={"environments": [{"name": "dev", "tier": "ground"},
+                                                  {"name": "staging", "tier": "flight"},
+                                                  {"name": "prod", "tier": "flight"}]})
+        steps = [{"stage": "build"}, {"stage": "release", "env": "staging"}, {"stage": "release", "env": "prod"}]
+        code, _, err = render(steps, cfg)
+        self.assertNotEqual(code, 0, "expected the chart to refuse this flow")
+        self.assertIn("Flow 'ci': steps 2 (env 'staging') and 3 (env 'prod') are both release steps", err)
+        self.assertIn("Multi-release flows are not supported yet", err)
+
+    def test_two_release_steps_same_env_also_refused(self):
+        cfg = dict(BASE, deploy={"environments": [{"name": "prod", "tier": "flight"}]})
+        code, _, err = render([{"stage": "build"}, {"stage": "release", "env": "prod"}, {"stage": "release", "env": "prod"}], cfg)
+        self.assertNotEqual(code, 0)
+        self.assertIn("are both release steps", err)
+
 
 class Accepted(unittest.TestCase):
+    def test_one_release_step_per_flow_still_renders(self):
+        cfg = dict(BASE, deploy={"environments": [{"name": "dev", "tier": "ground"}, {"name": "prod", "tier": "flight"}]})
+        code, _, err = render([{"stage": "build"}, {"stage": "deploy", "env": "dev"}, {"stage": "release", "env": "prod"}], cfg)
+        self.assertEqual(code, 0, err)
+
     def test_trigger_carries_role_required_timeout(self):
         code, out, err = render([
             {"stage": "build"},

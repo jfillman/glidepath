@@ -737,6 +737,35 @@ GitHub endpoints used, all with the one token of the request: `GET /repos/{o}/{r
 The count per check is in security.md ("Calls per check"). `ref` may not contain empty, `.` or `..` segments or encoded characters (400); the all-zero sha and a sha
 that is not a commit (an annotated tag object) are refused (400 / `unverifiable`).
 
+## Gate verdicts
+
+`POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict` (tier T1, API 0.14.0) records the verdict of the gate run `{name}` for its commit in
+the release record's **gate ledger** (`gate.<sha12>.<gate>`), the promotion fan-in's record that lets two gates finishing together see each
+other (registries.md). It is pipeline trust T4's home for that write (W-8; hangar `specs/plans/w8-gate-verdict-record-service.md`): with
+the catalog's `promotion.gateLedger.writer: api`, the `promotion-ready` step of `comment-pr-check-result` calls it instead of patching the
+record, so no task account needs a ConfigMap write for the ledger. It is not for people or agents.
+
+- **Who.** A projected ServiceAccount token for audience `glidepath-gate-verdict` (the Task mounts it, 600 s), checked by a TokenReview
+  that names that audience: the pod's default token, or a token for any other audience, is 401. The user must be one of
+  `api.gateVerdict.serviceAccounts` (default `pipeline-runner`) of the app's own namespace, and the token's pod (TokenReview's
+  `authentication.kubernetes.io/pod-name` and `pod-uid`) must be the `comment-pr` finally pod of `{name}`: labels `tekton.dev/pipelineRun`,
+  `tekton.dev/pipelineTask=comment-pr`, `tekton.dev/task=comment-pr-check-result`, `tekton.dev/memberOf=finally`, and a TaskRun that run owns.
+  Anything else is 403 `GP-GV-403`. No SubjectAccessReview (no virtual resource to grant), no `X-Glidepath-On-Behalf-Of`.
+- **What.** The body is not read. From the cluster: the pull request (label `pipelinesascode.tekton.dev/pull-request`), the commit
+  (annotation `pipelinesascode.tekton.dev/sha`), the pull request URL (its `repo-url` annotation, a `gitops-<app>` repository), the gate
+  (the caller's comment-pr TaskRun's `gate-name`), and the verdict: `success` when every task of the run's resolved Pipeline
+  (`status.pipelineSpec.tasks`) is done (or skipped by a `when` expression, directly or through a parent; a task skipped because the run was cancelled, stopped or timed out is not done) and the only failed ones are `-advisory` tasks, otherwise `failure`. Only TaskRuns owned by this run (its uid) count. A success past
+  `startTime` + `timeouts.tasks` (else `timeouts.pipeline`) is `failure`; within 60 s of it nothing is recorded (`deferred`). A run without a
+  pull request or commit, or not of a gitops repository: 422 `GP-GV-422`.
+- **Write.** A merge patch of `gate.<sha12>.<gate>` and `gateRun.<sha12>.<gate>` (`<created> <run> <uid>`) into the release record whose `prUrl` is
+  that pull request, carrying the record's `resourceVersion`, retried up to 5 times on a conflict, as glidepath-api's own account
+  (glidepath-app's Role `glidepath-api-gate-ledger`: `configmaps` `patch` in the app's namespace; the control plane's `gate-ledger-writes`
+  policy, Deny, admits only those keys of an existing release record and nothing else of it: labels, annotations, owners, finalizers,
+  `immutable` and `binaryData` stay as they were). Once per run: a second call is `already-recorded`; a run created
+  before the one that last wrote is `superseded`. No record: `no-record`. `?dryRun=true` writes nothing.
+- **Answer.** `{outcome, gate, sha, pullRequest, prUrl, verdict, record, key, reason, ledger}`, `ledger` being this commit's
+  `gate.<sha12>.*` entries after the call.
+
 ## Live and archived reads
 
 A PipelineRun lives in the cluster while it runs and for about an hour after it finishes, until Tekton deletes it;
@@ -1049,6 +1078,8 @@ Every refusal or failure is JSON with a stable `rule` and, where there is one, a
 | `GP-API-404` | 404 | No such app, run, PipelineRun, release record, or test report |
 | `GP-API-409` | 409 | The name a write's key derives is held by something that isn't that write's run; send a new key |
 | `GP-API-422` | 422 | The write can't be done as asked: out of order, a Ground target, an ineligible rollback target, nothing recorded to promote, no TriggerTemplate, or the cluster refused it (an admission policy or glidepath-api's RBAC). The `hint` says what would work; don't retry as is |
+| `GP-GV-403` | 403 | Gate verdicts: the caller is not the comment-pr pod of that run, as an allowed task account of the app's namespace |
+| `GP-GV-422` | 422 | Gate verdicts: the run is not a gate run of a pull request (no pull request or commit recorded, not a gitops repository, no gate name) |
 | `GP-LIVE-404` | 404 | The live TaskRun or its pod is gone (Tekton deleted the finished run), or the TaskRun has no pod yet; read the archived log |
 | `GP-LOG-404` | 404 | The run exists, but Results archived no log for that TaskRun ([tekton-results.md](tekton-results.md#when-a-runs-logs-are-missing)) |
 | `GP-API-503` | 503 | This replica already serves its maximum number of event streams (retry, or read `GET /v1/events/recent`) or live streams (poll `GET /v1/apps/{app}/live`) |

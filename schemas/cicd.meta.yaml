@@ -180,3 +180,9 @@ knownFailures:
     hint: >-
       The image has HIGH or CRITICAL vulnerabilities. Rebuild on a patched base image or update the listed packages;
       the scan step's log lists each CVE. Don't turn the scan off.
+  - id: ImageScanExceptionsRefused
+    match: 'image-scan: exceptions file refused'
+    hint: >-
+      The gitops repo's .trivyignore.yaml on its default branch is invalid: every entry needs an id, a statement (the reason)
+      and an expired_at (an unquoted date) no more than the configured maximum ahead (90 days by default). The check's comment
+      names the entry. Fix it with a reviewed change to the default branch (a release PR's own copy is never read), then re-run the check.
