@@ -366,8 +366,8 @@ spec:
         # that source (files/lib/release-source.sh; docs/admin/clearance-gate.md, "Who proposed a release"). A release PR's
         # own author is the pipeline's GitHub App and says nothing about the change. Nothing here is read from the PR's text:
         # the pipeline's release record names the source, and the PR must be exactly what the record says it wrote.
-        # cicd.yaml's environments and release file, the same answer the plan above used for protection: which commits are the
-        # platform's own release-file commits of an unprotected environment (release-source.sh step 3b).
+        # cicd.yaml's environments and release file: which paths are release files, so which commits are the platform's own
+        # release-file commits of an environment other than the released one (release-source.sh step 3b).
         release_cfg="$(echo "${cicd}" | yq -o json -I0 '{"environments": (.deploy.environments // null), "releaseFile": (.deploy.releaseFile // "")}' 2>/dev/null || true)"
         release_source_resolve "${owner}" "${repo}" "${PR_NUMBER}" "${files}" /work/repo /work/base "${author}" "$(jq -r '.user.type // ""' <<<"${pr}")" "${release_cfg}" > /work/source.json \
           || { echo "FAIL: could not tell whether this is a pipeline release PR (the release records are unreadable)"; exit 1; }
@@ -826,7 +826,7 @@ spec:
                 + "\n- Openers of the source PRs: \([.authors[] | "`\(.login)` (\(.prs))"] | join(", ")); mergers: \([.mergers[] | "`\(.login)` (\(.prs))"] | join(", ")). **An owner other than the proposer must clear; the other openers and the mergers are recorded in the change'"'"'s `sourceAuthors` and `sourceMergers` checks but are not yet excluded** (Clearance takes one proposer). Identity is the PR'"'"'s opener and merger, never a commit'"'"'s author (a pusher chooses that)."
                 + "\n- Source pull requests: \([.prs[] | "#\(.number) by `\(.author)` merged by `\(.merger)`: \(.identity)\(if .agent != "" then " (agent \(.agent))" else "" end)"] | join("; ")). The release is only as attested as its weakest source PR (unknown, then unattested, then not-agent, then confirmed)."
                 + (if (.noPr | length) > 0 then "\n- **No merged pull request contains " + ([.noPr[] | "`" + . + "`"] | join(", ")) + ":** a direct push, or a merge commit made outside a PR. Nobody can vouch for it, so provenance is `unknown` and Clearance does not clear the release by policy while it is in the range. It stays in the range of every later release until an owner decides how to baseline it." else "" end)
-                + (if ((.platformCommits // []) | length) > 0 then "\n- platform release-file commits, not counted: " + ([.platformCommits[] | "`" + .[0:7] + "`"] | join(", ")) + " (signed by GitHub for the pipeline'"'"'s App, changing only an unprotected environment'"'"'s release file)." else "" end)
+                + (if ((.platformCommits // []) | length) > 0 then "\n- platform release-file commits, not counted: " + ([.platformCommits[] | "`" + .[0:7] + "`"] | join(", ")) + " (signed by GitHub for the pipeline'"'"'s App, changing only the release file of an environment other than this one)." else "" end)
               else
                 "- **Source unresolved: registered as proposer unknown, which Clearance denies.** \(.reason)"
               end

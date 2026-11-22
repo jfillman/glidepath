@@ -58,22 +58,41 @@ _rs_pages() { # <token> <url without paging> <jq filter turning a page into an a
   return 3
 }
 
-# _rs_release_paths <release config json> <released environment>: {"<path>": {env, protected}} for every environment cicd.yaml
-# lists, at its resolved release-file path (deploy.releaseFile with {env}, default glidepath/envs/{env}.release.yaml). Only the
-# path deploy-manifests can write (glidepath/envs/<env>.release.yaml) is listed. protected is false only for an environment
-# listed once, with production absent or false, that is not the released one; anything else is unknown, so protected.
+# _rs_release_paths <release config json> <released environment>: {"<path>": {env, counts}} for every environment cicd.yaml
+# lists, at its resolved release-file path: deploy.releaseFile with {env} replaced by the environment's name (default
+# glidepath/envs/{env}.release.yaml), the same substitution deploy-manifests makes. Only the path deploy-manifests can write
+# (glidepath/envs/<env>.release.yaml, <env> a plain name) is listed, so a path names exactly one environment. counts is
+# true when a commit changing that file must stay counted for this release (_rs_release_file_counts); an environment listed
+# more than once is ambiguous and always counts.
 _rs_release_paths() {
-  local cfg="$1"
+  local cfg="$1" m out='{}' p e dup c
   [[ -n "${cfg}" ]] || cfg='{}'
   cfg="$(jq -c 'if type == "object" then . else {} end' <<<"${cfg}" 2>/dev/null)" || cfg='{}'
   [[ -n "${cfg}" ]] || cfg='{}'
-  jq -c --arg r "$2" '
+  m="$(jq -c '
     (.environments // null) as $e | ((.releaseFile // "") | if type == "string" and . != "" then . else "glidepath/envs/{env}.release.yaml" end) as $t
     | if ($e | type) != "array" then {} else
         [$e[] | select(type == "object" and ((.name // null) | type) == "string" and (.name | test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")))] as $named
         | [$named[] | .name as $n | ($t | split("{env}") | join($n)) as $p | select($p == "glidepath/envs/" + $n + ".release.yaml")
-            | {key: $p, value: {env: $n, protected: ((($named | map(select(.name == $n)) | length) != 1) or (.production != null and .production != false) or $n == $r)}}]
-        | from_entries end' <<<"${cfg}" 2>/dev/null || echo '{}'
+            | {key: $p, value: {env: $n, dup: (($named | map(select(.name == $n)) | length) != 1)}}]
+        | from_entries end' <<<"${cfg}" 2>/dev/null)" || m='{}'
+  [[ -n "${m}" ]] || m='{}'
+  while IFS=$'\t' read -r p e dup; do
+    [[ -n "${p}" ]] || continue
+    c=true
+    [[ "${dup}" == false ]] && c="$(_rs_release_file_counts "${e}" "$2")"
+    out="$(jq -c --arg p "${p}" --arg e "${e}" --arg c "${c}" '. + {($p): {env: $e, counts: ($c != "false")}}' <<<"${out}")"
+  done < <(jq -r 'to_entries[] | [.key, .value.env, (.value.dup | tostring)] | @tsv' <<<"${m}")
+  printf '%s\n' "${out}"
+}
+# _rs_release_file_counts <environment of the release file> <released environment>: condition 4 of step 3b, in one place.
+# Prints false when a platform commit that changes only that environment's release file cannot change what the released
+# environment runs, true otherwise. A release file says which image its own environment runs; the released environment's
+# image is built from source that never reads another environment's release file (the assumption the rule rests on), and it
+# renders from its own release file. So a commit changing only another environment's release file is not part of this
+# release, and one changing the released environment's own file is: it stays counted.
+_rs_release_file_counts() {
+  [[ -n "$1" && -n "$2" && "$1" != "$2" ]] && echo false || echo true
 }
 # _rs_platform_commit <token> <owner/repo> <sha> <app logins json> <release paths json>: prints nothing when the commit is a
 # platform release-file commit (all four conditions of step 3b hold), else one line saying which does not.
@@ -93,8 +112,8 @@ _rs_platform_commit() {
   [[ -n "${files}" && "${files}" != null ]] || { echo "its diff against its first parent could not be read in full"; return 0; }
   bad="$(jq -r --argjson m "$5" '[.[] | select($m[.] == null)] | join(", ")' <<<"${files}")"
   [[ -z "${bad}" ]] || { echo "it changes files that are not release files: ${bad}"; return 0; }
-  bad="$(jq -r --argjson m "$5" '[.[] | select($m[.].protected != false) | "\(.) (\($m[.].env))"] | join(", ")' <<<"${files}")"
-  [[ -z "${bad}" ]] || { echo "it changes the release file of an environment that is protected or not known to be unprotected: ${bad}"; return 0; }
+  bad="$(jq -r --argjson m "$5" '[.[] | select($m[.].counts != false) | "\(.) (\($m[.].env))"] | join(", ")' <<<"${files}")"
+  [[ -z "${bad}" ]] || { echo "it changes the release file of the environment being released: ${bad}"; return 0; }
 }
 
 release_source_resolve() {
@@ -327,9 +346,9 @@ release_source_resolve() {
   #         the PR is exactly what the pipeline's record says it wrote). A bot cannot hold a signing key, so a verified commit
   #         naming the bot as committer was made through GitHub with the App's own token;
   #      3. every file of its full diff against its first parent (a merge commit's too) is a resolved release-file path;
-  #      4. every one of those paths belongs to an environment that is not protected: listed once in cicd.yaml's
-  #         deploy.environments, production absent or false, and not the environment this PR releases to. Anything else,
-  #         an environment cicd.yaml does not list included, is unknown and counts as protected.
+  #      4. none of those paths is the release file of the environment this PR releases to (_rs_release_file_counts):
+  #         the commit can only change what another environment runs. A commit that touches the released environment's
+  #         own file, alone or with another environment's, stays counted.
   #    Assumes a build never reads another environment's release file (the file only says which image that environment runs).
   local platform='[]' applogins rpaths why kept='[]'
   if [[ "$(jq 'length' <<<"${nopr}")" -gt 0 ]]; then

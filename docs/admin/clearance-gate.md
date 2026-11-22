@@ -203,7 +203,7 @@ becomes `proposerKind: unknown`, which Clearance **denies** (`DG-PROVENANCE`); `
 | Several openers or mergers | none dropped: all in `checks.sourceAuthors` / `checks.sourceMergers` and the comment. **Until Clearance excludes them, only the proposer is kept from clearing the change**: another opener or a merger of a source PR can still clear it as owner |
 | Merge methods | merge commit: the merge commit is the PR's `merge_commit_sha`, its commits are in the PR. Squash: the one commit on the branch is `merge_commit_sha`. **Rebase merge**: GitHub documents `merge_commit_sha` as the resulting tip commit only; the earlier rebased commits have new shas that cannot be tied to the PR, so they count as no PR (fail closed: a multi-commit rebase-merged PR makes the release `unknown`) |
 | First release to an environment | the single released commit, resolved through its merged PR like any other (the earlier history was never released here) |
-| A commit no merged PR contains (a direct push, or a merge commit made outside a PR) | provenance `unknown` (Clearance denies); the comment names each such commit in full. It stays in the range of **every later release** (previous release `..` next), so that environment cannot advance until an owner decides how to baseline it: this is deliberately not designed here. A login Clearance cannot record as a principal is unresolved, never altered |
+| A commit no merged PR contains (a direct push, or a merge commit made outside a PR) | provenance `unknown` (Clearance does not clear it by policy); the comment names each such commit in full, and a `DG-PROVENANCE` denial's note says this is the cause. The one exception is the platform's own release-file commit of another environment ([below](#platform-release-file-commits)). It stays in the range of **every later release** (previous release `..` next), so that environment cannot advance until an owner decides how to baseline it: this is deliberately not designed here. A login Clearance cannot record as a principal is unresolved, never altered |
 | Source cannot be resolved (record swept, first release to the environment, over 250 commits, an author with no GitHub account, GitHub unreadable) | proposer `user:<PR author>`, kind **`unknown`** (never `person`), provenance `unknown`; `checks.sourceUnresolved` and the comment say why. Clearance denies it: fix the cause and `/retest`, or release again |
 | Rollback (`kind: rollback`, or the image is older than the one the environment runs) | the restored commit alone: its author and its PR's provenance (what is restored was released, and cleared, before) |
 | Same commit released again | that commit alone |
@@ -223,6 +223,63 @@ started rather than a person. Clearance has no field for it, so the gate names i
 Clearance would need a `promoter` on the change request, stored with the change like `proposer`, and the "not the
 proposer" rule (`DG-PROPOSER`, tier 2 and 3 approvers) refusing the proposer, **every** source author and the promoter,
 with `sourceAuthors` and `sourceMergers` as real lists.
+
+## Platform release-file commits
+
+**What it does.** Every Ground deploy writes the image to the app repo's `glidepath/envs/<env>.release.yaml` with a commit
+straight to main (`deploy-manifests`). No pull request contains that commit, so it used to count as a direct push: the
+next production release's range carried it, provenance became `unknown`, and every prod release of an app with an
+in-repo release file was stopped by its own dev deploys. The gate now leaves such a commit out of `noPr` when it can
+prove the commit is the platform's and cannot change what the released environment runs. The comment still lists it,
+on its own line: "platform release-file commits, not counted: ...".
+
+**The rule: all four must hold, or the commit stays counted** (`files/lib/release-source.sh`, step 3b):
+
+1. **GitHub reports it verified** (`commit.verification.verified` is `true`). `deploy-manifests` no longer pushes. It
+   creates the commit through GitHub's Git Data API with the App's installation token and no author, committer or
+   signature, so GitHub signs it for the App.
+2. **Its committer is the pipeline's GitHub App.** That is the committer's GitHub login (`committer.login`) from
+   `clearanceGate.pipelineLogins`. When that setting is empty, it is the login of this release PR's author, if GitHub
+   types that account `Bot`. The PR was opened with the same App, and the gate has already checked that the PR is
+   exactly what the pipeline's release record says it wrote. No login is hard-coded. A bot account cannot register a
+   signing key, so a commit GitHub verifies that names the App's bot as committer was made through GitHub with the
+   App's own token. An unsigned commit that only claims the bot's name stays counted.
+3. **It changes release files only.** Its full diff against its first parent, a merge commit's included, has only
+   resolved release-file paths. A path is resolved from cicd.yaml's `deploy.releaseFile` (default
+   `glidepath/envs/{env}.release.yaml`) with `{env}` replaced by a name in `deploy.environments`, which is the same
+   substitution `deploy-manifests` makes. Only `glidepath/envs/<env>.release.yaml` counts, because it is the one path
+   `deploy-manifests` will write. So each path names exactly one environment, by its name. A merge that brings in any
+   other file stays counted. So do a human env file (the one-time move onto the split), an environment cicd.yaml does
+   not list or lists twice, a compare GitHub may have cut off (300 files), and a commit whose first parent is not its
+   ancestor.
+4. **None of those files belongs to the environment being released.** The environment being released is the release
+   record's `env`, and its file is the resolved path for that same name. When an environment is itself released,
+   commits to its own release file stay counted, whether alone or together with another environment's file. A dev
+   deploy commit is not counted in a prod release, but it is counted in a release of dev.
+
+Anything the gate cannot read (the commit, its diff) keeps the commit counted. The step log says why each kept commit
+was kept. A range made only of platform commits still has no source PR, so it is unresolved, as before.
+
+**The assumption it rests on: a build never reads another environment's release file.** A release file says which image
+its own environment runs, and the environment renders from its own file. The released environment's image is built
+from source that never reads `glidepath/envs/<other>.release.yaml`. So a commit that changes only another environment's
+release file cannot change what the released environment runs. A build script that read another environment's release
+file would break this assumption. Keep it that way.
+
+This rule does not use the protection answer ([above](#which-environments-are-protected)). Clearance answers that only
+for the environments a PR registers, and it needs no answer here.
+
+**Upgrade.** Deploy commits pushed before this version are unsigned (`glidepath deploy automation`, with no GitHub
+account), so they stay counted. An app whose next production release range still holds them, for example flight-api's
+`1913d04`, `4f47dd2`, `b1a9bc8` and `dad4ff3`, stays `unknown` until an owner baselines those commits. Only deploys made
+after this version are left out. Not verified live: GitHub's signing of an App's API commit is taken from GitHub's
+documentation, and the first deploy after the merge shows it (`verification.verified` and `committer.login` on that
+commit).
+
+**Other writers of the release file.** The onboarding mechanism seeds a new Ground environment's release file inside its
+resync PR, so a merged PR contains it and it was never `noPr`. Tower's Ground promote writes the release file from Tower,
+not from Glidepath. Its commits are skipped only when they meet the same four conditions, and they stay counted
+otherwise.
 
 ## Required or advisory
 
@@ -298,6 +355,10 @@ When every environment is read it stops there. The required copy has no second t
   `policy-validation-gate.yaml`; `tests/clearance_gate_admission_test.sh` (render, admission, register against the
   policy-validation fixtures with the real Kyverno CLI); `tests/clearance_gate_parity_test.sh` (the render equals
   Clearance's Argo CD plugin's, against the plugin's recorded gate-api prod fixture in `tests/fixtures/clearance-parity`)
+- `charts/glidepath-catalog/files/lib/release-source.sh`: who proposed a release and the platform release-file commits it
+  leaves out; `tests/clearance_gate_release_source_test.sh` (section 15: each of the four conditions);
+  `tests/release_file_commits_test.sh` (`deploy-manifests`' API commit against a stand-in GitHub, and the comment's lines)
+- `charts/glidepath-catalog/templates/tasks/deploy-manifests.yaml`: the Ground release-file commit, through GitHub's API
 - `charts/glidepath-catalog/files/lib/protection.sh`: which environments are registered and the warnings when cicd.yaml
   and Clearance disagree ([above](#which-environments-are-protected)); `tests/clearance_gate_protection_test.sh` (the
   decision matrix, the fetch step's plan loop on gitops-flight-api#48's cicd.yaml, and #48 end to end)

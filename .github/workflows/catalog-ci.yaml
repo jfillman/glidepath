@@ -288,6 +288,9 @@ jobs:
       - run: charts/glidepath-catalog/tests/clearance_gate_parity_test.sh
       # clearance-gate registers a pipeline release PR with its SOURCE change's author(s) and provenance (docs/admin/clearance-gate.md).
       - run: charts/glidepath-catalog/tests/clearance_gate_release_source_test.sh
+      # deploy-manifests commits the release file through GitHub's API (signed for the App); the gate's comment names the
+      # platform release-file commits it did not count (docs/admin/clearance-gate.md, "Platform release-file commits").
+      - run: charts/glidepath-catalog/tests/release_file_commits_test.sh
       # clearance-gate registers every environment and Clearance decides protection; cicd.yaml's production flag is a declaration (I-53).
       - run: charts/glidepath-catalog/tests/clearance_gate_protection_test.sh
 

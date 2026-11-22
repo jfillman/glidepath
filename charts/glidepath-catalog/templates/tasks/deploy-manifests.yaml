@@ -19,7 +19,8 @@
 # philosophy. This Task is just automating the same commit a developer would make by
 # hand. Contrast with catalog/tasks/open-release-pr.yaml, which promotes to an upper
 # env via a real PR against a SEPARATE gitops-<app-name> repo - dev has no gitops repo
-# involved at all.
+# involved at all. The commit is made through GitHub's Git Data API, not `git push`, so GitHub signs it for the App
+# (clearance-gate then recognises it as the platform's: docs/admin/clearance-gate.md, "Platform release-file commits").
 #
 # Same GitHub App installation-token broker pattern as open-release-pr.yaml/
 # deliver-onboarding-files.yaml (catalog/lib/github-app.sh) - a fresh,
@@ -131,9 +132,11 @@ spec:
         # connection failure and a 5xx; every call below is safe to repeat (a tree or commit object nothing points at is inert, and
         # the ref update names the commit it moves to).
         gh_api() {
+          local body=()
+          [[ -n "${3:-}" ]] && body=(-H "Content-Type: application/json" --data "@$3")
           curl --silent --show-error --max-time 30 --retry 3 --retry-connrefused -w '\n%{http_code}' -X "$1" \
             -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
-            ${3:+-H "Content-Type: application/json" --data @"$3"} "$2" || printf '\n000'
+            ${body[@]+"${body[@]}"} "$2" || printf '\n000'
         }
 
         # stage_release: in the fresh clone (cwd), writes the image into the release file and stages every change of this
