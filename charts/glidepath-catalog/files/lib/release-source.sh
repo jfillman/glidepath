@@ -5,7 +5,11 @@
 # change being released. The change was written in the app repo. This resolves who wrote it and what Clearance's
 # provenance says about it, from what the pipeline recorded and can verify, never from text the PR carries:
 #
-#   release_source_resolve <owner> <repo> <pr> <files json> <head dir> <base dir> <PR author login> <PR author account type>     prints one JSON object
+#   release_source_resolve <owner> <repo> <pr> <files json> <head dir> <base dir> <PR author login> <PR author account type> [<release config json>]     prints one JSON object
+#
+# <release config json> is {environments, releaseFile}: the app cicd.yaml's deploy.environments and deploy.releaseFile, as the
+# fetch step read them for its own protection decision. It only decides which commits are platform release-file commits
+# (step 3b); empty or unreadable, none is.
 #
 # Reads: the release record (release-tracking-<chainId> in this namespace, written by open-release-pr; only the
 # pipeline's ServiceAccount can write it), the PR's commit count, the manifest at base and head (checked out), the
@@ -54,8 +58,47 @@ _rs_pages() { # <token> <url without paging> <jq filter turning a page into an a
   return 3
 }
 
+# _rs_release_paths <release config json> <released environment>: {"<path>": {env, protected}} for every environment cicd.yaml
+# lists, at its resolved release-file path (deploy.releaseFile with {env}, default glidepath/envs/{env}.release.yaml). Only the
+# path deploy-manifests can write (glidepath/envs/<env>.release.yaml) is listed. protected is false only for an environment
+# listed once, with production absent or false, that is not the released one; anything else is unknown, so protected.
+_rs_release_paths() {
+  local cfg="$1"
+  [[ -n "${cfg}" ]] || cfg='{}'
+  cfg="$(jq -c 'if type == "object" then . else {} end' <<<"${cfg}" 2>/dev/null)" || cfg='{}'
+  [[ -n "${cfg}" ]] || cfg='{}'
+  jq -c --arg r "$2" '
+    (.environments // null) as $e | ((.releaseFile // "") | if type == "string" and . != "" then . else "glidepath/envs/{env}.release.yaml" end) as $t
+    | if ($e | type) != "array" then {} else
+        [$e[] | select(type == "object" and ((.name // null) | type) == "string" and (.name | test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")))] as $named
+        | [$named[] | .name as $n | ($t | split("{env}") | join($n)) as $p | select($p == "glidepath/envs/" + $n + ".release.yaml")
+            | {key: $p, value: {env: $n, protected: ((($named | map(select(.name == $n)) | length) != 1) or (.production != null and .production != false) or $n == $r)}}]
+        | from_entries end' <<<"${cfg}" 2>/dev/null || echo '{}'
+}
+# _rs_platform_commit <token> <owner/repo> <sha> <app logins json> <release paths json>: prints nothing when the commit is a
+# platform release-file commit (all four conditions of step 3b hold), else one line saying which does not.
+_rs_platform_commit() {
+  local c p1 cmp files bad
+  [[ "$(jq 'length' <<<"$4")" -gt 0 ]] || { echo "the pipeline's GitHub App login is unknown (clearanceGate.pipelineLogins is empty and the release PR's author is not a Bot)"; return 0; }
+  c="$(_rs_api "$1" "https://api.github.com/repos/$2/commits/$3")" || { echo "could not read the commit"; return 0; }
+  [[ "$(jq -r '.commit.verification.verified == true' <<<"${c}" 2>/dev/null)" == true ]] || { echo "GitHub does not report it verified"; return 0; }
+  [[ "$(jq -r --argjson l "$4" '(.committer.login // "" | ascii_downcase) as $c | $c != "" and ($l | index($c) != null)' <<<"${c}")" == true ]] \
+    || { echo "its committer ($(jq -r '.committer.login // "no GitHub account"' <<<"${c}")) is not the pipeline's GitHub App"; return 0; }
+  p1="$(jq -r '.parents[0].sha // ""' <<<"${c}")"
+  [[ "${p1}" =~ ^[0-9a-f]{40}$ ]] || { echo "it has no parent to compare with"; return 0; }
+  cmp="$(_rs_api "$1" "https://api.github.com/repos/$2/compare/${p1}...$3?per_page=1")" || { echo "could not read its diff"; return 0; }
+  # GitHub lists at most 300 files of a compare: a full list is not provably complete.
+  files="$(jq -c 'if .status == "ahead" and (.files | type) == "array" and (.files | length) > 0 and (.files | length) < 300
+                  then [.files[] | .filename, (.previous_filename // empty)] | unique else null end' <<<"${cmp}" 2>/dev/null)" || files=null
+  [[ -n "${files}" && "${files}" != null ]] || { echo "its diff against its first parent could not be read in full"; return 0; }
+  bad="$(jq -r --argjson m "$5" '[.[] | select($m[.] == null)] | join(", ")' <<<"${files}")"
+  [[ -z "${bad}" ]] || { echo "it changes files that are not release files: ${bad}"; return 0; }
+  bad="$(jq -r --argjson m "$5" '[.[] | select($m[.].protected != false) | "\(.) (\($m[.].env))"] | join(", ")' <<<"${files}")"
+  [[ -z "${bad}" ]] || { echo "it changes the release file of an environment that is protected or not known to be unprotected: ${bad}"; return 0; }
+}
+
 release_source_resolve() {
-  local owner="$1" repo="$2" prn="$3" files="$4" hdir="$5" bdir="$6" pr_author="${7:-}" pr_author_type="${8:-}"
+  local owner="$1" repo="$2" prn="$3" files="$4" hdir="$5" bdir="$6" pr_author="${7:-}" pr_author_type="${8:-}" rcfg="${9:-}"
   local pr_url="https://github.com/${owner}/${repo}/pull/${prn}" records rec tok n
   records="$(kubectl get configmap -n "${NAMESPACE}" -l "hangar.io/subcomponent=release-tracking,hangar.io/app=${APP_NAME}" -o json)" \
     || { echo "could not read the release records in ${NAMESPACE}: cannot tell whether ${pr_url} is a pipeline release" >&2; return 1; }
@@ -273,6 +316,39 @@ release_source_resolve() {
     done
     jq -e --arg s "${sha}" 'index($s) != null' <<<"${covered}" >/dev/null || nopr="$(jq -c --arg s "${sha}" '. + [$s]' <<<"${nopr}")"
   done < <(jq -r '.[].sha' <<<"${commits}")
+  # 3b. Platform release-file commits (docs/admin/clearance-gate.md, "Platform release-file commits"). deploy-manifests writes a
+  #    Ground environment's image to <folder>/envs/<env>.release.yaml with a commit straight to main on every deploy: no PR
+  #    contains it, so it would be "no PR" and make every later release of the app `unknown`. Such a commit is dropped from
+  #    noPr only if ALL of these hold, and kept otherwise (any read error keeps it too):
+  #      1. GitHub reports it verified (commit.verification.verified): deploy-manifests creates it through GitHub's API with
+  #         the App's installation token and no author or committer, so GitHub signs it;
+  #      2. its committer is the pipeline's GitHub App: a login in clearanceGate.pipelineLogins, or, when that is empty, the
+  #         author of this release PR when GitHub types it Bot (the pipeline opened the PR with the same App: step 1 checked
+  #         the PR is exactly what the pipeline's record says it wrote). A bot cannot hold a signing key, so a verified commit
+  #         naming the bot as committer was made through GitHub with the App's own token;
+  #      3. every file of its full diff against its first parent (a merge commit's too) is a resolved release-file path;
+  #      4. every one of those paths belongs to an environment that is not protected: listed once in cicd.yaml's
+  #         deploy.environments, production absent or false, and not the environment this PR releases to. Anything else,
+  #         an environment cicd.yaml does not list included, is unknown and counts as protected.
+  #    Assumes a build never reads another environment's release file (the file only says which image that environment runs).
+  local platform='[]' applogins rpaths why kept='[]'
+  if [[ "$(jq 'length' <<<"${nopr}")" -gt 0 ]]; then
+    applogins="$(jq -nc --arg s "${PIPELINE_LOGINS:-}" --arg a "${pr_author}" --arg t "${pr_author_type}" '
+      ($s | ascii_downcase | split(",") | map(select(. != ""))) as $l
+      | if ($l | length) > 0 then $l elif $t == "Bot" and ($a | ascii_downcase | endswith("[bot]")) then [$a | ascii_downcase] else [] end')"
+    rpaths="$(_rs_release_paths "${rcfg}" "${renv}")"
+    while IFS= read -r sha; do
+      [[ -n "${sha}" ]] || continue
+      why="$(_rs_platform_commit "${stok}" "${sowner}/${srepo}" "${sha}" "${applogins}" "${rpaths}")"
+      if [[ -z "${why}" ]]; then
+        platform="$(jq -c --arg s "${sha}" '. + [$s]' <<<"${platform}")"
+      else
+        kept="$(jq -c --arg s "${sha}" '. + [$s]' <<<"${kept}")"
+        echo "release source: ${sha:0:7} stays a commit no merged PR contains: ${why}" >&2
+      fi
+    done < <(jq -r '.[]' <<<"${nopr}")
+    nopr="${kept}"
+  fi
   if [[ "$(jq 'length' <<<"${prs}")" == 0 ]]; then
     _rs_fail "no commit of the range maps to a merged pull request (commits: $(jq -r 'map(.[0:7]) | join(", ")' <<<"${nopr}")), so its author cannot be named" ; return 0
   fi
@@ -290,7 +366,7 @@ release_source_resolve() {
   local pl
   pl="$(jq -nc --arg s "${PIPELINE_LOGINS:-}" '$s | ascii_downcase | split(",") | map(select(. != ""))')"
   jq -nc --argjson base "${base_info}" --arg mode "${mode}" --arg repo "${sowner}/${srepo}" --arg prev "${prev}" --arg head "${rrev}" \
-    --slurpfile commitsf <(_rs_json "${commits}") --slurpfile prsf <(_rs_json "${prs}") --slurpfile noprf <(_rs_json "${nopr}") --argjson pl "${pl}" '
+    --slurpfile commitsf <(_rs_json "${commits}") --slurpfile prsf <(_rs_json "${prs}") --slurpfile noprf <(_rs_json "${nopr}") --argjson pl "${pl}" --argjson platform "${platform}" '
     $commitsf[0] as $commits | $prsf[0] as $prs | $noprf[0] as $nopr |
     def rank: {"unknown": 0, "unattested": 1, "not-agent": 2, "confirmed": 3}[.];
     def tally(f): group_by(f) | map({login: (.[0] | f), prs: length}) | sort_by(.login);
@@ -303,7 +379,7 @@ release_source_resolve() {
        elif $byMerger != null then {who: $byMerger.merger, rule: "human merger of the newest source PR (every opener is a bot)"}
        else {who: ($prs | sort_by(.mergedAt, .number) | last | .author), rule: "none: no human opened or merged any source PR"} end) as $pick
     | $base + {applicable: true, resolved: true, mode: $mode, sourceRepo: $repo, previousCommit: $prev, releasedCommit: $head,
-        commits: ($commits | length), authors: ($prs | tally(.author)), mergers: ($prs | tally(.merger)), prs: $prs, noPr: $nopr,
+        commits: ($commits | length), authors: ($prs | tally(.author)), mergers: ($prs | tally(.merger)), prs: $prs, noPr: $nopr, platformCommits: $platform,
         provenance: $prov, agents: $agents, proposerRule: $pick.rule,
         proposerKind: (if $pick.rule | startswith("none") then "unknown" elif $prov == "confirmed" then "agent" elif $prov == "unknown" then "unknown" else "person" end)}
     | .proposer = (if .proposerKind == "agent" and ($agents | length) > 0 then "autopilot-runs/" + $agents[0] else "user:" + $pick.who end)

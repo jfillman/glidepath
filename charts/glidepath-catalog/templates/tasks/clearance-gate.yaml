@@ -352,7 +352,10 @@ spec:
         # that source (files/lib/release-source.sh; docs/admin/clearance-gate.md, "Who proposed a release"). A release PR's
         # own author is the pipeline's GitHub App and says nothing about the change. Nothing here is read from the PR's text:
         # the pipeline's release record names the source, and the PR must be exactly what the record says it wrote.
-        release_source_resolve "${owner}" "${repo}" "${PR_NUMBER}" "${files}" /work/repo /work/base "${author}" "$(jq -r '.user.type // ""' <<<"${pr}")" > /work/source.json \
+        # cicd.yaml's environments and release file, the same answer the plan above used for protection: which commits are the
+        # platform's own release-file commits of an unprotected environment (release-source.sh step 3b).
+        release_cfg="$(echo "${cicd}" | yq -o json -I0 '{"environments": (.deploy.environments // null), "releaseFile": (.deploy.releaseFile // "")}' 2>/dev/null || true)"
+        release_source_resolve "${owner}" "${repo}" "${PR_NUMBER}" "${files}" /work/repo /work/base "${author}" "$(jq -r '.user.type // ""' <<<"${pr}")" "${release_cfg}" > /work/source.json \
           || { echo "FAIL: could not tell whether this is a pipeline release PR (the release records are unreadable)"; exit 1; }
         if [[ "$(jq -r .applicable /work/source.json)" == true ]]; then
           echo "release source: $(jq -r 'if .resolved then "\(.mode) \(.sourceRepo)@\(.releasedCommit[0:7]) (\(.commits) commit(s)), proposer \(.proposer), openers \([.authors[] | .login] | join(", ")), provenance \(.provenance)" else "UNRESOLVED: \(.reason)" end' /work/source.json)"
@@ -788,7 +791,8 @@ spec:
                 "- Registered with Clearance as proposer `\(.proposer)` (\(.proposerKind)), provenance `\(.provenance)`: the \(.proposerRule). Released: `\(.sourceRepo)` \(if .mode == "range" then "`\(.previousCommit[0:7])`..`\(.releasedCommit[0:7])`, \(.commits) commit(s)" elif .mode == "rollback" then "`\(.releasedCommit[0:7])` alone (a rollback restores one earlier commit)" elif .mode == "first" then "`\(.releasedCommit[0:7])` alone (the first release to this environment)" else "`\(.releasedCommit[0:7])` alone (the same commit as the release it replaces)" end)."
                 + "\n- Openers of the source PRs: \([.authors[] | "`\(.login)` (\(.prs))"] | join(", ")); mergers: \([.mergers[] | "`\(.login)` (\(.prs))"] | join(", ")). **An owner other than the proposer must clear; the other openers and the mergers are recorded in the change'"'"'s `sourceAuthors` and `sourceMergers` checks but are not yet excluded** (Clearance takes one proposer). Identity is the PR'"'"'s opener and merger, never a commit'"'"'s author (a pusher chooses that)."
                 + "\n- Source pull requests: \([.prs[] | "#\(.number) by `\(.author)` merged by `\(.merger)`: \(.identity)\(if .agent != "" then " (agent \(.agent))" else "" end)"] | join("; ")). The release is only as attested as its weakest source PR (unknown, then unattested, then not-agent, then confirmed)."
-                + (if (.noPr | length) > 0 then "\n- **No merged pull request contains " + ([.noPr[] | "`" + . + "`"] | join(", ")) + ":** a direct push, or a merge commit made outside a PR. Nobody can vouch for it, so provenance is `unknown` and Clearance denies the release while it is in the range. It stays in the range of every later release until an owner decides how to baseline it." else "" end)
+                + (if (.noPr | length) > 0 then "\n- **No merged pull request contains " + ([.noPr[] | "`" + . + "`"] | join(", ")) + ":** a direct push, or a merge commit made outside a PR. Nobody can vouch for it, so provenance is `unknown` and Clearance does not clear the release by policy while it is in the range. It stays in the range of every later release until an owner decides how to baseline it." else "" end)
+                + (if ((.platformCommits // []) | length) > 0 then "\n- platform release-file commits, not counted: " + ([.platformCommits[] | "`" + .[0:7] + "`"] | join(", ")) + " (signed by GitHub for the pipeline'"'"'s App, changing only an unprotected environment'"'"'s release file)." else "" end)
               else
                 "- **Source unresolved: registered as proposer unknown, which Clearance denies.** \(.reason)"
               end
@@ -799,8 +803,17 @@ spec:
             echo "**Holding:** someone the requirement names clears it in Tower${links:+ (${links})}, then comment \`/retest clearance-gate-\` here: the same head is re-registered and found cleared. A new push is a new change. A holding change expires after the gate's TTL (7 days by default)."
           fi
           if (( denied > 0 )); then
+            # What DG-PROVENANCE (provenance could not be vouched for) means here, from what this check registered: a release's
+            # source names its own cause; only a person's PR with no source behind it is the agent case.
+            prov_why="the PR looks like an agent's and Clearance has no record of opening it"
+            if [[ -s /work/source.json && "$(jq -r '.applicable // false' /work/source.json)" == true ]]; then
+              prov_why="$(jq -r 'if (.resolved | not) then "the source of this release could not be established (above)"
+                elif ((.noPr // []) | length) > 0 then "provenance is unknown because the release carries \((.noPr | length)) commit(s) no merged pull request contains (above)"
+                elif .provenance == "unknown" then "provenance is unknown because Clearance could not vouch for a source pull request (above)"
+                else "Clearance could not vouch for the source of this release (provenance \(.provenance))" end' /work/source.json)"
+            fi
             echo
-            echo "**Denied:** the reason is in the row. A \`DG-PROVENANCE\` denial means the PR looks like an agent's and Clearance has no record of opening it; \`DG-POLICY\` means the repo's \`clearance.yaml\` tried to loosen the platform baseline. A person's denial names them and their reason."
+            echo "**Denied:** the reason is in the row. A \`DG-PROVENANCE\` denial here means ${prov_why}; \`DG-POLICY\` means the repo's \`clearance.yaml\` tried to loosen the platform baseline. A person's denial names them and their reason."
           fi
           echo
           echo "Clearance ids: \`${ids:-none}\`. Design: clearance docs/gate.md; the record is in Clearance's evidence (\`deploy.*\`, boundary \`deployment\`)."
