@@ -845,7 +845,7 @@ Pipeline's `verify-ref-protection` verifies *that* ref and sha through glidepath
 whose origin sha is not the revision it was started for, or whose origin is not protected. A build of a side branch therefore cannot start a
 chain that runs: the next stage asks about the side branch and is refused. The admission policy refuses any `glidepath.io/` annotation on a run a
 `.tekton` file creates, so a file cannot stamp an origin. Nothing chains off a refused `test` run either: a guard failure makes the run Failed, its
-`testcaserun.finished` carries outcome Failed, and the from-test Trigger requires `Succeeded` (chart tests check the Trigger filter, the
+`testcaserun.finished` carries outcome Failed, and the from-test Trigger requires `Succeeded` or `Completed` (chart tests check the Trigger filter, the
 stamp and the debrief). Events emitted by a run started before this release have no origin: their chained stage is refused, so drain in-flight
 chains before enabling `required`.
 

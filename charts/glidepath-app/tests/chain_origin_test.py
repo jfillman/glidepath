@@ -2,7 +2,7 @@
 """Pipeline trust T3, chained stages: every Trigger that chains a stage stamps the originating ref and sha on the run it creates
 (glidepath.io/origin-ref and origin-sha, from the verified event), so the chained Pipeline's verify-ref-protection verifies the
 origin instead of trusting that "the first stage was checked". And nothing chains off a test run that did not succeed (a refused
-test run's testcaserun.finished carries outcome Failed, and the from-test Trigger requires Succeeded).
+test run's testcaserun.finished carries outcome Failed, and the from-test Trigger requires Succeeded or Completed; Tekton reports Completed when a task was skipped by a when-expression).
 
 Run:  python3 charts/glidepath-app/tests/chain_origin_test.py     (needs helm, pyyaml)
 """
@@ -65,7 +65,18 @@ class ChainOrigin(unittest.TestCase):
         after_test = [t for n, t in triggers.items() if "testcaserun.finished" in yaml.safe_dump(t)]
         self.assertTrue(after_test, "no trigger chains off testcaserun.finished")
         for t in after_test:
-            self.assertIn("body.subject.content.outcome == 'Succeeded'", yaml.safe_dump(t))
+            # Succeeded AND Completed (Tekton's $(tasks.status) when a when-expression skipped a task) chain; Failed does not
+            self.assertIn("body.subject.content.outcome in ['Succeeded', 'Completed']", yaml.safe_dump(t))
+
+    def test_a_failed_test_outcome_still_does_not_chain(self):
+        triggers = BY("Trigger")
+        after_test = [t for t in triggers.values() if "testcaserun.finished" in yaml.safe_dump(t)]
+        self.assertTrue(after_test, "no trigger chains off testcaserun.finished")
+        for t in after_test:
+            dump = yaml.safe_dump(t)
+            # the only outcome the filter names are the two success values; nothing admits Failed or an unconditional match
+            self.assertEqual(re.findall(r"outcome (?:==|in) (\[[^\]]*\]|'[^']*')", dump), ["['Succeeded', 'Completed']"])
+            self.assertNotIn("Failed", dump.split("body.subject.content.outcome")[1].split("&&")[0])
 
 
 if __name__ == "__main__":

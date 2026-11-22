@@ -98,9 +98,14 @@ unconditionally (pass or fail) by design. build/deploy/release's events are alre
 gated at the source by `when: tasks.status in [Succeeded, Completed]`, so their mere
 existence implies success. Keyed off $prevStage, not the current stage, since any
 stage can now follow any other.
+The test event's outcome is Tekton's $(tasks.status), which is "Completed" (not
+"Succeeded") when any task was skipped by a when-expression - e.g. run-integration-script
+when the repository has a TestWorkflow. Both mean success, so both chain; a failed run
+sends "Failed" and does not. Matching only 'Succeeded' stopped the release stage from
+ever starting after a test run that skipped a task.
 */ -}}
 {{- if eq $prevStage "test" -}}
-  {{- $celFilter = printf "%s && body.subject.content.outcome == 'Succeeded'" $celFilter -}}
+  {{- $celFilter = printf "%s && body.subject.content.outcome in ['Succeeded', 'Completed']" $celFilter -}}
 {{- end -}}
 
 {{- /* CDEvents vocabulary differs by subject type: build/test/release events use
