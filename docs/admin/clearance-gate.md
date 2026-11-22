@@ -169,6 +169,7 @@ gate now registers **the source change's** author and provenance instead
 | The **release record** (`release-tracking-<chainId>`, the one whose `prUrl` is this PR; two records for one PR are trusted as neither): image, `imageRepository`, `imageSource` and `imageDigest` (the last two only when the release pins a digest), `gitUrl` and `gitRevision` (the source commit), `kind`, `initiator` | written by `open-release-pr`; a release PR's author cannot write it, but code run by the app's own build and test tasks can (see the caveat above) |
 | The **previous release's record** (same app, environment and cluster, merged, whose image is what the base manifest runs) | same |
 | The app repo's **merged pull requests** (which PR contains each commit, who opened it, who merged it), read with the GitHub App's token. A PR covers a commit only if it was **merged into the released branch of the source repository itself** (the source repo's default branch, from GitHub: the pipeline records no branch, and the PR's own claim is never used) and the commit is that PR's `merge_commit_sha` or one of its commits | authenticated GitHub account facts. A **commit's author or committer is never used**: GitHub derives a commit's author login from the author email, which whoever pushes the commit chooses |
+| GitHub's **repository activity** for the released branch (`GET /repos/{owner}/{repo}/activity`: which account pushed each new tip), only to tell a platform release-file commit from a person's direct push ([below](#platform-release-file-commits)) | the actor is the account that authenticated the ref update; a commit's author or committer is never used for it |
 | **Clearance's provenance verdict** per source PR (`POST /v1/provenance`) | Clearance's own receipts decide `confirmed`; nothing here reimplements it |
 
 Not trusted for anything: the release PR's author, title, body, branch name or commit message, and any text in it. The
@@ -238,12 +239,24 @@ on its own line: "platform release-file commits, not counted: ...".
 1. **GitHub reports it verified** (`commit.verification.verified` is `true`). `deploy-manifests` no longer pushes. It
    creates the commit through GitHub's Git Data API with the App's installation token and no author, committer or
    signature, so GitHub signs it for the App.
-2. **Its committer is the pipeline's GitHub App.** That is the committer's GitHub login (`committer.login`) from
-   `clearanceGate.pipelineLogins`. When that setting is empty, it is the login of this release PR's author, if GitHub
-   types that account `Bot`. The PR was opened with the same App, and the gate has already checked that the PR is
-   exactly what the pipeline's release record says it wrote. No login is hard-coded. A bot account cannot register a
-   signing key, so a commit GitHub verifies that names the App's bot as committer was made through GitHub with the
-   App's own token. An unsigned commit that only claims the bot's name stays counted.
+2. **The pipeline's GitHub App pushed it.** GitHub's own record of who moved the branch says so: the repository activity
+   API (`GET /repos/{owner}/{repo}/activity`) lists a `push` to `refs/heads/<released branch>` whose new tip (`after`) is
+   this commit and whose old tip (`before`) is its first parent, and whose `actor` is the App (a login GitHub types `Bot`).
+   The App is a login from `clearanceGate.pipelineLogins`. When that setting is empty, it is the login of this release PR's
+   author, if GitHub types that account `Bot`. The PR was opened with the same App, and the gate has already checked that
+   the PR is exactly what the pipeline's release record says it wrote. No login is hard-coded. The actor is the account
+   that authenticated the ref update, so a person with write access cannot make it the App: only a holder of the App's
+   installation token can. The gate reads at most 10 pages of 100 of the App's pushes, newest first; a commit older than
+   that, a force push, a push to another branch, a push that brought several commits, or a log the gate cannot read keeps
+   the commit counted.
+
+   **Not the commit's committer or author (W-48).** GitHub signs an App's API commit only when the request names no
+   author or committer, and then records the App's bot as author and **GitHub (`web-flow`) as committer**: flight-api
+   `ce1f7f7`, the first deploy after this rule shipped, is `verified`, author `cicd-pac[bot]`, committer `web-flow`. So the
+   committer can never be the App. The author proves nothing either: anyone with write access can create a
+   web-flow-signed commit through the API with the App's bot email as its author, and GitHub then names the bot as
+   author. Such a commit is verified, changes only a release file, and still stays counted, because the push that put it
+   on the branch was the person's.
 3. **It changes release files only.** Its full diff against its first parent, a merge commit's included, has only
    resolved release-file paths. A path is resolved from cicd.yaml's `deploy.releaseFile` (default
    `glidepath/envs/{env}.release.yaml`) with `{env}` replaced by a name in `deploy.environments`, which is the same
@@ -272,9 +285,11 @@ for the environments a PR registers, and it needs no answer here.
 **Upgrade.** Deploy commits pushed before this version are unsigned (`glidepath deploy automation`, with no GitHub
 account), so they stay counted. An app whose next production release range still holds them, for example flight-api's
 `1913d04`, `4f47dd2`, `b1a9bc8` and `dad4ff3`, stays `unknown` until an owner baselines those commits. Only deploys made
-after this version are left out. Not verified live: GitHub's signing of an App's API commit is taken from GitHub's
-documentation, and the first deploy after the merge shows it (`verification.verified` and `committer.login` on that
-commit).
+after this version are left out. Verified live on 2026-11-22 (flight-api `ce1f7f7`): GitHub signs the App's API commit
+(`verification.verified`, reason `valid`), its committer is `web-flow`, and the activity log shows `cicd-pac[bot]` (type
+`Bot`) pushing it to `main` from its parent `482fdd3`. The first version of this rule checked the committer and so kept
+that commit counted (W-48). Not yet verified live: a production release whose range holds a deploy commit made after
+the fix, skipped.
 
 **Other writers of the release file.** The onboarding mechanism seeds a new Ground environment's release file inside its
 resync PR, so a merged PR contains it and it was never `noPr`. Tower's Ground promote writes the release file from Tower,

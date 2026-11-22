@@ -13,7 +13,7 @@
 #
 # Reads: the release record (release-tracking-<chainId> in this namespace, written by open-release-pr; only the
 # pipeline's ServiceAccount can write it), the PR's commit count, the manifest at base and head (checked out), the
-# app repo's compare, commit and pull-request APIs (the GitHub App's installation token), and Clearance's
+# app repo's compare, commit, pull-request and repository activity APIs (the GitHub App's installation token), and Clearance's
 # POST /v1/provenance. Needs github_app_installation_token (lib/github-app.sh), kubectl, curl, jq, yq; CLEARANCE_URL
 # and the token at /var/run/secrets/clearance when Clearance is configured; APP_NAME and NAMESPACE.
 #
@@ -33,9 +33,9 @@
 # (one commit, one manifest file, only the image and release-tracking fields, each equal to the record's); anything
 # else is unresolved. Safe choice when the record has no digest: the PR must carry none either.
 
-_rs_api() { # <token> <url>
+_rs_api() { # <token> <url> [<extra curl args>...]
   curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
-    -H "Authorization: Bearer $1" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$2"
+    -H "Authorization: Bearer $1" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "${@:3}" "$2"
 }
 # A JSON value as a file jq reads (--slurpfile, one element): a value goes to jq or curl through a pipe, never in argv, which
 # Linux caps at 128 KiB per argument.
@@ -94,17 +94,60 @@ _rs_release_paths() {
 _rs_release_file_counts() {
   [[ -n "$1" && -n "$2" && "$1" != "$2" ]] && echo false || echo true
 }
-# _rs_platform_commit <token> <owner/repo> <sha> <app logins json> <release paths json>: prints nothing when the commit is a
-# platform release-file commit (all four conditions of step 3b hold), else one line saying which does not.
+# _rs_app_pushes <token> <owner/repo> <branch> <app logins json> <{"<sha>": "<first parent>"} json>: condition 2 of step 3b, read from GitHub's own
+# record of who moved the branch (the repository activity API, GET /repos/{owner}/{repo}/activity). Prints a JSON object
+# {"<sha>": ["<before>", ...]} with every sha asked for that GitHub records as the new tip (`after`) of a `push` to
+# refs/heads/<branch> whose actor is one of <app logins> (an account GitHub types Bot); each <before> is a tip such a push moved
+# from (every one read is kept: a branch reset and pushed again records the same tip twice). The actor is the
+# account that authenticated the ref update, so a person with write access cannot make it the App: only a holder of the App's
+# installation token can. The query filters (ref, actor, activity_type) only narrow the listing; every field is checked here.
+# Reads at most RS_ACTIVITY_PAGES pages of 100 per login (default 10), newest first, and stops early only once every sha has a
+# push from the first parent given for it (a push from anywhere else never stops the search); a push past that is not found
+# (kept counted). Follows only a next link on https://api.github.com/. Returns 1 on any read or parse
+# error: then nothing is found.
+_rs_app_pushes() {
+  local tok="$1" repo="$2" ref="refs/heads/$3" logins="$4" want="$5" found='{}' login url body hdr page next
+  hdr="$(mktemp)" || return 1
+  for login in $(jq -r '.[]' <<<"${logins}"); do
+    url="https://api.github.com/repos/${repo}/activity?ref=$(jq -rn --arg v "${ref}" '$v | @uri')&actor=$(jq -rn --arg v "${login}" '$v | @uri')&activity_type=push&per_page=100"
+    page=1
+    while [[ -n "${url}" ]] && (( page <= ${RS_ACTIVITY_PAGES:-10} )); do
+      : > "${hdr}"
+      body="$(_rs_api "${tok}" "${url}" -D "${hdr}")" || { rm -f "${hdr}"; return 1; }
+      found="$(jq -c --argjson f "${found}" --argjson w "${want}" --argjson l "${logins}" --arg ref "${ref}" '
+        if type != "array" then error("not a list") else . end
+        | ([.[] | select(type == "object" and .activity_type == "push" and .ref == $ref and (.actor.type // "") == "Bot"
+                   and (((.actor.login // "") | ascii_downcase) as $a | $a != "" and ($l | index($a)) != null)
+                   and ((.after // "") as $s | $w | has($s)))
+                 | {after, before: (.before // "")}]
+                 | reduce .[] as $p ({}; .[$p.after] += [$p.before]))
+          | reduce to_entries[] as $e ($f; .[$e.key] = ((.[$e.key] // []) + $e.value | unique))' <<<"${body}")" || { rm -f "${hdr}"; return 1; }
+      [[ "$(jq --argjson w "${want}" '. as $f | [$w | to_entries[] | .key as $k | .value as $v | select($v == "" or (($f[$k] // []) | index($v)) == null)] | length' <<<"${found}")" == 0 ]] && { rm -f "${hdr}"; printf '%s\n' "${found}"; return 0; }
+      next="$(tr -d '\r' < "${hdr}" | grep -i '^link:' | tr ',' '\n' | sed -nE 's/.*<([^>]+)>; *rel="next".*/\1/p' | head -n 1)"
+      [[ -z "${next}" || "${next}" == https://api.github.com/* ]] || next=""
+      url="${next}"; page=$((page + 1))
+    done
+  done
+  rm -f "${hdr}"
+  printf '%s\n' "${found}"
+}
+# _rs_platform_commit <token> <owner/repo> <sha> <app logins json> <release paths json> <app pushes json or null>: prints nothing
+# when the commit is a platform release-file commit (all four conditions of step 3b hold), else one line saying which does not.
+# <app pushes> is _rs_app_pushes' answer (null: it could not be read).
 _rs_platform_commit() {
   local c p1 cmp files bad
   [[ "$(jq 'length' <<<"$4")" -gt 0 ]] || { echo "the pipeline's GitHub App login is unknown (clearanceGate.pipelineLogins is empty and the release PR's author is not a Bot)"; return 0; }
   c="$(_rs_api "$1" "https://api.github.com/repos/$2/commits/$3")" || { echo "could not read the commit"; return 0; }
   [[ "$(jq -r '.commit.verification.verified == true' <<<"${c}" 2>/dev/null)" == true ]] || { echo "GitHub does not report it verified"; return 0; }
-  [[ "$(jq -r --argjson l "$4" '(.committer.login // "" | ascii_downcase) as $c | $c != "" and ($l | index($c) != null)' <<<"${c}")" == true ]] \
-    || { echo "its committer ($(jq -r '.committer.login // "no GitHub account"' <<<"${c}")) is not the pipeline's GitHub App"; return 0; }
   p1="$(jq -r '.parents[0].sha // ""' <<<"${c}")"
   [[ "${p1}" =~ ^[0-9a-f]{40}$ ]] || { echo "it has no parent to compare with"; return 0; }
+  # 2. GitHub's activity log, not the commit: an App's signed API commit always has GitHub (web-flow) as committer, and its
+  #    author is an email anyone can write into a web-flow-signed commit of their own.
+  [[ "${6:-null}" != null ]] || { echo "GitHub's activity log (who pushed it) could not be read"; return 0; }
+  [[ "$(jq -r --arg s "$3" 'has($s)' <<<"$6" 2>/dev/null)" == true ]] \
+    || { echo "GitHub's activity log does not show the pipeline's GitHub App pushing it to the released branch"; return 0; }
+  [[ "$(jq -r --arg s "$3" --arg p "${p1}" '.[$s] | index($p) != null' <<<"$6")" == true ]] \
+    || { echo "the App's push that made it the branch tip did not move the branch from its first parent"; return 0; }
   cmp="$(_rs_api "$1" "https://api.github.com/repos/$2/compare/${p1}...$3?per_page=1")" || { echo "could not read its diff"; return 0; }
   # GitHub lists at most 300 files of a compare: a full list is not provably complete.
   files="$(jq -c 'if .status == "ahead" and (.files | type) == "array" and (.files | length) > 0 and (.files | length) < 300
@@ -341,10 +384,13 @@ release_source_resolve() {
   #    noPr only if ALL of these hold, and kept otherwise (any read error keeps it too):
   #      1. GitHub reports it verified (commit.verification.verified): deploy-manifests creates it through GitHub's API with
   #         the App's installation token and no author or committer, so GitHub signs it;
-  #      2. its committer is the pipeline's GitHub App: a login in clearanceGate.pipelineLogins, or, when that is empty, the
-  #         author of this release PR when GitHub types it Bot (the pipeline opened the PR with the same App: step 1 checked
-  #         the PR is exactly what the pipeline's record says it wrote). A bot cannot hold a signing key, so a verified commit
-  #         naming the bot as committer was made through GitHub with the App's own token;
+  #      2. the pipeline's GitHub App pushed it: GitHub's repository activity records a `push` to the released branch whose new
+  #         tip is this commit, moved from its first parent, by the App (_rs_app_pushes). The App is a login in
+  #         clearanceGate.pipelineLogins, or, when that is empty, the author of this release PR when GitHub types it Bot (the
+  #         pipeline opened the PR with the same App: step 1 checked the PR is exactly what the pipeline's record says it
+  #         wrote). The commit's own committer and author prove nothing (W-48): GitHub signs an App's API commit with GitHub
+  #         (web-flow) as committer, and anyone with write access can create a web-flow-signed commit naming the App's bot as
+  #         author. The activity's actor is whoever authenticated the ref update, which only the App's token can make the App;
   #      3. every file of its full diff against its first parent (a merge commit's too) is a resolved release-file path;
   #      4. none of those paths is the release file of the environment this PR releases to (_rs_release_file_counts):
   #         the commit can only change what another environment runs. A commit that touches the released environment's
@@ -356,9 +402,22 @@ release_source_resolve() {
       ($s | ascii_downcase | split(",") | map(select(. != ""))) as $l
       | if ($l | length) > 0 then $l elif $t == "Bot" and ($a | ascii_downcase | endswith("[bot]")) then [$a | ascii_downcase] else [] end')"
     rpaths="$(_rs_release_paths "${rcfg}" "${renv}")"
+    local pushes=null
+    if [[ "$(jq 'length' <<<"${applogins}")" -gt 0 ]]; then
+      # Each commit's first parent, so the activity search stops only once every one has a push from it ("" when unreadable:
+      # that commit then never stops the search, and _rs_platform_commit keeps it counted on its own read).
+      local want='{}' wsha wpar
+      while IFS= read -r wsha; do
+        [[ -n "${wsha}" ]] || continue
+        wpar="$(_rs_api "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/commits/${wsha}" | jq -r '.parents[0].sha // ""' 2>/dev/null)" || wpar=""
+        want="$(jq -c --arg s "${wsha}" --arg p "${wpar}" '. + {($s): $p}' <<<"${want}")"
+      done < <(jq -r '.[]' <<<"${nopr}")
+      pushes="$(_rs_app_pushes "${stok}" "${sowner}/${srepo}" "${rbranch}" "${applogins}" "${want}")" || pushes=null
+      [[ -n "${pushes}" ]] || pushes=null
+    fi
     while IFS= read -r sha; do
       [[ -n "${sha}" ]] || continue
-      why="$(_rs_platform_commit "${stok}" "${sowner}/${srepo}" "${sha}" "${applogins}" "${rpaths}")"
+      why="$(_rs_platform_commit "${stok}" "${sowner}/${srepo}" "${sha}" "${applogins}" "${rpaths}" "${pushes}")"
       if [[ -z "${why}" ]]; then
         platform="$(jq -c --arg s "${sha}" '. + [$s]' <<<"${platform}")"
       else
