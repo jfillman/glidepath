@@ -24,7 +24,8 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
 - Pipeline **`clearance-gate-check`**, Task **`clearance-gate`** (`platform-catalog`), five steps:
   1. `fetch` (toolbox): the PR's base, head, author, changed files and line counts; the environments it changes
      (`<cluster>/<env>/values|release.yaml`, or a cluster's `base.yaml` = every environment on it); each environment's
-     chart; whether it is registered (every one, on a cluster with a Clearance: [Clearance decides which are protected](#which-environments-are-protected))
+     chart (the validator image's copy only for the default chart at `defaultChart.targetRevision`; any other chart or revision is
+     fetched and rendered at that revision); whether it is registered (every one, on a cluster with a Clearance: [Clearance decides which are protected](#which-environments-are-protected))
      and what `cicd.yaml` declares about it (`deploy.environments[].production`); the repo's
      `clearance.yaml` and the commit that last changed it; the agent gates' verdict on who proposed the PR
      (`POST /v1/provenance`; `confirmed` is an agent's change, `not-agent` and `unattested` a person's, anything else

@@ -45,7 +45,7 @@ spec:
       description: PaC's body.pull_request.number - the changed files are those between the PR's base and revision. Empty means "just this commit".
     - name: validator-image
       type: string
-      default: {{ .Values.valuesValidatorImage | default (printf "%s:%s" (required "valuesValidatorRepository (or valuesValidatorImage) must be set" .Values.valuesValidatorRepository) (required "defaultChart.targetRevision must be set" .Values.defaultChart.targetRevision)) | quote }}
+      default: {{ include "glidepath-catalog.validatorImage" . | quote }}
       description: The validator image. Must provide `validate-values [--app NAME] FILE...` on its PATH.
     - name: app-name
       type: string
@@ -108,6 +108,10 @@ spec:
           value: {{ .Values.defaultChart.repoURL | quote }}
         - name: DEFAULT_CHART_PATH
           value: {{ .Values.defaultChart.path | quote }}
+        # The default chart's revision: the one the validator image bakes (glidepath-catalog.validatorImage). An environment is on the
+        # default chart, rendered with the baked chart, only at this revision; any other is an own chart.
+        - name: DEFAULT_CHART_REVISION
+          value: {{ .Values.defaultChart.targetRevision | quote }}
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -189,14 +193,16 @@ spec:
             # A cluster's shared base.yaml has no environment, so it resolves to the app's chart. On an own chart it
             # is not a whole values file to render alone: the environments it brought in are rendered with it
             # layered underneath (step own-chart), so it is dropped here.
-            resolved="$(echo "${cicd}" | ENV_NAME="${env}" yq -o json '{"app": (.deploy.chart // {}), "env": ((.deploy.environments // [])[] | select(.name == strenv(ENV_NAME)) | .chart // {}), "target": (.deploy.target // "k8s-rollout")}' 2>/dev/null \
-              | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" '
+            # An environment deploy.environments does not list (and base.yaml) gets deploy.chart: the selector used to yield nothing for it, so the
+            # default chart. The default chart is the cluster default at DEFAULT_CHART_REVISION: another revision is an own chart.
+            resolved="$(echo "${cicd}" | ENV_NAME="${env}" yq -o json '{"app": (.deploy.chart // {}), "env": ([(.deploy.environments // [])[] | select(.name == strenv(ENV_NAME)) | .chart // {}] | .[0] // {}), "target": (.deploy.target // "k8s-rollout")}' 2>/dev/null \
+              | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" --arg v "${DEFAULT_CHART_REVISION}" '
                   def over($b; $o): if ($o.repoURL // "") != "" then $o
                     else $b + ($o | with_entries(select(.value != null and .value != "")))
                       | (if ($o.path // "") != "" then del(.chart) elif ($o.chart // "") != "" then del(.path) else . end) end;
-                  over(over({repoURL: $r, path: $p}; .app); .env) + {target}' 2>/dev/null || true)"
-            if [[ -n "${resolved}" && "$(echo "${resolved}" | jq -r --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" \
-                 '.target == "k8s-rollout" and (.repoURL != $r or (.chart // "") != "" or .path != $p)')" == "true" ]]; then
+                  over(over({repoURL: $r, path: $p, targetRevision: $v}; .app); .env) + {target}' 2>/dev/null || true)"
+            if [[ -n "${resolved}" && "$(echo "${resolved}" | jq -r --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" --arg v "${DEFAULT_CHART_REVISION}" \
+                 '.target == "k8s-rollout" and (.repoURL != $r or (.chart // "") != "" or .path != $p or (.targetRevision // "") != $v)')" == "true" ]]; then
               [[ "${env}" == "base.yaml" ]] || echo "${f}|${cluster}|${env}|${resolved}" >> /work/own.txt
             else
               keep+=("${f}")

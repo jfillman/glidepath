@@ -338,6 +338,17 @@ mean: the image is `valuesValidatorImage` in the catalog values, and it must pro
 (strict keys, component XRD specs, `helm template`), so Glidepath stays installable without Airframe: use another
 image, or never register the gate.
 
+The image also carries the cluster's default chart (`/opt/airframe/charts`), and the values, policy-validation and
+clearance gates render with that copy only an environment on the **default chart at its pinned revision**: the
+repository, path and `targetRevision` of `defaultChart`. An environment that pins the same chart at another
+`targetRevision` (a canary of a newer Airframe chart) is an own chart: it is fetched at that revision and rendered
+with it, like a chart from another repository. So the copy must be exactly `defaultChart.targetRevision`, and one
+value sets both: the image defaults to `<valuesValidatorRepository>:<defaultChart.targetRevision>`, and the gates
+compare against the same value. An override `valuesValidatorImage` cannot be checked that way (its tag need not be
+the chart's), so it needs `valuesValidatorChartRevision`, the revision it bakes, and the catalog does not render
+unless that equals `defaultChart.targetRevision`. Move both with every chart bump. The render failing is the
+fail-closed choice: guessing would render an unknown chart as the default one.
+
 Pieces: Task `validate-values`, Pipeline `values-check`, onboarding template
 `gitops-repo/pull-request-values.yaml` (runs on every PR to `main` that touches a `values.yaml`).
 

@@ -503,6 +503,29 @@ chart_safe() {
 {{- end -}}
 
 {{- /*
+glidepath-catalog.validatorImage: the values gate's validator image (the Task param validator-image of validate-values, policy-validation-gate,
+clearance-gate and render-manifests). It carries the cluster's default chart under /opt/airframe/charts, and the gates render with that baked
+chart only an environment whose chart is the cluster default at defaultChart.targetRevision (DEFAULT_CHART_REVISION in their fetch steps): any
+other revision is an own chart, fetched and rendered like any other. So the image must bake exactly defaultChart.targetRevision, and that value
+is the one source of truth for both. Without valuesValidatorImage the image is <valuesValidatorRepository>:<defaultChart.targetRevision>
+(Airframe's airframe-validate-image publishes one per release tag, carrying that tag's chart). An override image's tag says nothing about
+the chart inside it, so its baked revision must be declared (valuesValidatorChartRevision) and equal defaultChart.targetRevision, or the
+render fails: an unknown or different baked chart would be rendered as the default one.
+*/ -}}
+{{- define "glidepath-catalog.validatorImage" -}}
+{{- $rev := toString (required "defaultChart.targetRevision must be set" .Values.defaultChart.targetRevision) -}}
+{{- if .Values.valuesValidatorImage -}}
+{{- $baked := toString (required "valuesValidatorChartRevision must be set with valuesValidatorImage: the default chart revision baked into that image (it must equal defaultChart.targetRevision)" .Values.valuesValidatorChartRevision) -}}
+{{- if ne $baked $rev -}}
+{{- fail (printf "valuesValidatorChartRevision (%s) is not defaultChart.targetRevision (%s): valuesValidatorImage must carry the cluster's default chart at its pinned revision" $baked $rev) -}}
+{{- end -}}
+{{- .Values.valuesValidatorImage -}}
+{{- else -}}
+{{- printf "%s:%s" (required "valuesValidatorRepository (or valuesValidatorImage) must be set" .Values.valuesValidatorRepository) $rev -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
 glidepath-catalog.inputGuards: bash for a credentialed step that takes names and a chart source from the repository (a directory name in the
 gitops repository, a chart repoURL in cicd.yaml). valid_name: the platform's own name rule, checked BEFORE a name is used anywhere (a path
 component is otherwise any string without a slash). valid_chart_source: a chart is fetched only from a host the platform names

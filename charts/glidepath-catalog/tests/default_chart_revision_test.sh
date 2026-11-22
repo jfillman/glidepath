@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# The default chart is the cluster's default chart AT ITS PINNED REVISION (W-49; glidepath#289 review). The gates render an environment
+# on the default chart with the chart baked into the validator image (/opt/airframe/charts), so an environment that names the default
+# repository and path at another targetRevision is an own chart: fetched at that revision and rendered with it, like any other.
+#   1. one source of truth: the validator image's tag and the gates' DEFAULT_CHART_REVISION are both defaultChart.targetRevision;
+#      an override image (valuesValidatorImage) must declare the revision it bakes (valuesValidatorChartRevision), equal to it
+#   2. clearance-gate and policy-validation-gate: the fetch step's plan loop (cut from the rendered Task) per chart spec
+#   3. validate-values: the same spec decides whether a values file is validated by the image or rendered with its own chart
+# Needs helm, yq (mikefarah), jq and python3. Usage: charts/glidepath-catalog/tests/default_chart_revision_test.sh
+set -u
+here="$(cd "$(dirname "$0")" && pwd)"
+cd "$here/../../.."
+fail=0
+d="$(mktemp -d)"
+trap '[[ -n "${KEEP:-}" ]] || rm -rf "$d"' EXIT
+vals=charts/glidepath-catalog/tests/values.example.yaml
+REPO="$(yq '.defaultChart.repoURL' "${vals}")"; CPATH="$(yq '.defaultChart.path' "${vals}")"; REV="$(yq '.defaultChart.targetRevision' "${vals}")"
+PROTECTION_LIB="$(cat charts/glidepath-catalog/files/lib/protection.sh)"; export PROTECTION_LIB
+
+expect() { # <name> <got> <want>
+  if [[ "$2" == "$3" ]]; then echo "ok   $1"; else echo "FAIL $1: got '$2', want '$3'"; fail=1; fi
+}
+render() { # <out> <task> [helm args...]
+  local out="$1" task="$2"; shift 2
+  helm template t charts/glidepath-catalog -f "${vals}" "$@" --show-only "templates/tasks/${task}.yaml" > "${out}" 2> "${out}.err"
+}
+
+# --- 1. one source of truth -------------------------------------------------------------------------------------------------
+for t in clearance-gate policy-validation-gate validate-values render-manifests; do
+  render "$d/${t}.yaml" "${t}" || { echo "FAIL render ${t}: $(cat "$d/${t}.yaml.err")"; exit 1; }
+  img="$(yq '.spec.params[] | select(.name == "validator-image") | .default' "$d/${t}.yaml")"
+  expect "${t}: the validator image is tagged with defaultChart.targetRevision" "${img}" "$(yq '.valuesValidatorRepository' "${vals}"):${REV}"
+  [[ "${t}" == render-manifests ]] && continue
+  expect "${t}: the fetch step compares against the same revision" \
+    "$(yq '[.spec.steps[].env[]? | select(.name == "DEFAULT_CHART_REVISION") | .value] | unique | .[]' "$d/${t}.yaml")" "${REV}"
+done
+render "$d/o1.yaml" clearance-gate --set valuesValidatorImage=registry.example/own-validator:fips
+expect "override image without a declared revision: the render fails" "$?" 1
+grep -q 'valuesValidatorChartRevision must be set with valuesValidatorImage' "$d/o1.yaml.err" && echo "ok   ... and says what to declare" \
+  || { echo "FAIL override undeclared: $(cat "$d/o1.yaml.err")"; fail=1; }
+render "$d/o2.yaml" clearance-gate --set valuesValidatorImage=registry.example/own-validator:fips --set valuesValidatorChartRevision=v9.9.9
+expect "override image baking another revision: the render fails" "$?" 1
+grep -q "valuesValidatorChartRevision (v9.9.9) is not defaultChart.targetRevision (${REV})" "$d/o2.yaml.err" && echo "ok   ... and names both revisions" \
+  || { echo "FAIL override mismatch: $(cat "$d/o2.yaml.err")"; fail=1; }
+render "$d/o3.yaml" clearance-gate --set valuesValidatorImage=registry.example/own-validator:fips --set valuesValidatorChartRevision="${REV}"
+expect "override image declaring the default revision: renders" "$?" 0
+expect "... with the override image" "$(yq '.spec.params[] | select(.name == "validator-image") | .default' "$d/o3.yaml")" registry.example/own-validator:fips
+
+# --- 2. the gates' plan loops -------------------------------------------------------------------------------------------------
+yq '.spec.steps[] | select(.name == "fetch") | .script' "$d/clearance-gate.yaml" | awk '/^mkdir -p \/work\/charts$/,/^done < \/work\/envs.txt$/' > "$d/cg-loop.sh"
+yq '.spec.steps[] | select(.name == "fetch") | .script' "$d/policy-validation-gate.yaml" | awk '/^mkdir -p \/work\/charts \/work\/policies$/,/^done < \/work\/envs.txt$/' > "$d/pv-loop.sh"
+[[ -s "$d/cg-loop.sh" && -s "$d/pv-loop.sh" ]] || { echo "FAIL: a plan loop was not found in a fetch step"; exit 1; }
+plan() { # <loop> <scenario> <cicd.yaml text>: runs the loop for hangar-prod/prod and hangar-prod/qa; prints "<env>=<chart>[@<fetched rev>]"
+  local loop="$1" W="$d/$2"
+  mkdir -p "${W}"; printf '%s\n' "$3" > "${W}/cicd.yaml"; printf 'hangar-prod|prod\nhangar-prod|qa\n' > "${W}/envs.txt"; : > "${W}/plan.txt"; : > "${W}/fetched"
+  sed "s#/work#${W}#g" "${loop}" > "${W}/loop.sh"
+  ( cd "${W}" && cicd="$(cat cicd.yaml)" CLEARANCE_URL=http://clearance DEFAULT_CHART_REPO_URL="${REPO}" DEFAULT_CHART_PATH="${CPATH}" DEFAULT_CHART_REVISION="${REV}" \
+      FETCHED="${W}/fetched" bash -c 'set -euo pipefail; eval "${PROTECTION_LIB}"; envs_json="$(echo "${cicd}" | yq -o json ".deploy.environments // []")"
+        valid_chart_source() { return 0; }; fetch_repo() { mkdir -p "$3"; echo "$1@$2" >> "${FETCHED}"; }  # no network: a fetch is recorded
+        source "$1"' _ "${W}/loop.sh" ) > "${W}/plan.log" 2>&1 || { echo "FAIL $2: the loop failed: $(cat "${W}/plan.log")"; fail=1; }
+  cut -d'|' -f2,3 "${W}/plan.txt" | sed "s#${W}/charts/#own:#; s#|#=#" | paste -sd ' ' -
+  [[ -s "${W}/fetched" ]] && echo "fetched $(paste -sd ' ' "${W}/fetched")"
+}
+for loop in cg pv; do
+  expect "${loop}: no chart spec: the default chart" "$(plan "$d/${loop}-loop.sh" "${loop}-none" 'deploy: {}')" "prod=default qa=default"
+  expect "${loop}: the default revision named: the default chart" \
+    "$(plan "$d/${loop}-loop.sh" "${loop}-same" "deploy: {chart: {targetRevision: ${REV}}}")" "prod=default qa=default"
+  expect "${loop}: default repo, path and revision named in full: the default chart" \
+    "$(plan "$d/${loop}-loop.sh" "${loop}-full" "deploy: {chart: {repoURL: ${REPO}, path: ${CPATH}, targetRevision: ${REV}}}")" "prod=default qa=default"
+  expect "${loop}: another revision of the default chart: an own chart, fetched at that revision" \
+    "$(plan "$d/${loop}-loop.sh" "${loop}-rev" 'deploy: {chart: {targetRevision: v0.1.0}}')" \
+    "prod=own:1/${CPATH} qa=own:2/${CPATH}
+fetched ${REPO}@v0.1.0 ${REPO}@v0.1.0"
+  expect "${loop}: default repo and path at another revision, named in full: an own chart" \
+    "$(plan "$d/${loop}-loop.sh" "${loop}-fullrev" "deploy: {chart: {repoURL: ${REPO}, path: ${CPATH}, targetRevision: v0.1.0}}")" \
+    "prod=own:1/${CPATH} qa=own:2/${CPATH}
+fetched ${REPO}@v0.1.0 ${REPO}@v0.1.0"
+  expect "${loop}: one environment's canary revision: only that environment is an own chart" \
+    "$(plan "$d/${loop}-loop.sh" "${loop}-canary" $'deploy:\n  environments:\n    - name: qa\n      chart: {targetRevision: v0.1.0}')" \
+    "prod=default qa=own:1/${CPATH}
+fetched ${REPO}@v0.1.0"
+  expect "${loop}: another path in the default repository inherits the default revision (not main)" \
+    "$(plan "$d/${loop}-loop.sh" "${loop}-path" 'deploy: {chart: {path: charts/other}}')" \
+    "prod=own:1/charts/other qa=own:2/charts/other
+fetched ${REPO}@${REV} ${REPO}@${REV}"
+done
+
+# --- 3. validate-values: validated by the image, or rendered as an own chart --------------------------------------------------
+yq '.spec.steps[] | select(.name == "clone-and-list") | .script' "$d/validate-values.yaml" > "$d/vv.sh"
+awk '/^# BEGIN input-guards$/,/^# END input-guards$/' "$d/vv.sh" > "$d/vv-guards.sh"
+awk '/^if \[\[ -n "\$\{cicd\}" && -s \/work\/files.txt \]\]; then$/{p=1} p{print} p && /^fi$/{exit}' "$d/vv.sh" > "$d/vv-loop.sh"
+[[ -s "$d/vv-guards.sh" && -s "$d/vv-loop.sh" ]] || { echo "FAIL: the validate-values file loop was not found"; exit 1; }
+vv() { # <scenario> <cicd.yaml text>: one changed file, hangar-prod/prod/values.yaml; prints "kept" or "own <targetRevision>"
+  local W="$d/$1"
+  mkdir -p "${W}"; printf '%s\n' "$2" > "${W}/cicd.yaml"; echo hangar-prod/prod/values.yaml > "${W}/files.txt"
+  sed "s#/work#${W}#g" "$d/vv-loop.sh" > "${W}/loop.sh"
+  ( cd "${W}" && cicd="$(cat cicd.yaml)" DEFAULT_CHART_REPO_URL="${REPO}" DEFAULT_CHART_PATH="${CPATH}" DEFAULT_CHART_REVISION="${REV}" \
+      bash -c 'set -euo pipefail; source "$1"; source "$2"' _ "$d/vv-guards.sh" "${W}/loop.sh" ) > "${W}/loop.log" 2>&1 \
+    || { echo "FAIL $1: the loop failed: $(cat "${W}/loop.log")"; fail=1; }
+  if [[ -s "${W}/own.txt" ]]; then echo "own $(cut -d'|' -f4- "${W}/own.txt" | jq -r .targetRevision)"; else [[ -s "${W}/files.txt" ]] && echo kept; fi
+}
+expect "values: the default revision: validated by the image" "$(vv vv-same "deploy: {chart: {targetRevision: ${REV}}}")" kept
+expect "values: another revision of the default chart: rendered with its own chart" "$(vv vv-rev 'deploy: {chart: {targetRevision: v0.1.0}}')" "own v0.1.0"
+expect "values: no chart spec: validated by the image" "$(vv vv-none $'deploy:\n  environments:\n    - name: prod')" kept
+
+if (( fail )); then echo "FAILED${KEEP:+ (kept $d)}"; exit 1; fi
+echo "PASS default_chart_revision_test"

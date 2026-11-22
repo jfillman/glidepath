@@ -770,7 +770,8 @@ deploy:
 ```
 
 Precedence, highest first: the environment's `chart`, then `deploy.chart`, then the cluster
-default. Pinning a newer Airframe chart is just `targetRevision`. A chart from another source
+default. Pinning a newer Airframe chart is just `targetRevision`; the release gates then render that environment
+with the chart at that revision, not the platform's copy of the default. A chart from another source
 needs `repoURL`, `targetRevision`, and `path` (git) or `chart` (registry), never both (it inherits nothing from the default), and must meet the
 [chart contract](../admin/chart-contract.md). Only a Kubernetes app (`target: k8s-rollout`) has a
 chart. Design: [ADR-0023](../admin/adr/0023-per-app-chart-deploy-chart.md). The field is accepted
