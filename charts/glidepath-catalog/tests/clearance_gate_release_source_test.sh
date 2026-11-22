@@ -398,6 +398,10 @@ rfc not-a-list true "" '["glidepath/envs/dev.release.yaml"]'; act '{"message": "
 out="$(rel)"; expect "2 fails: the activity answer is not a list: kept" "$(q "$platform_q")" "unknown|$C2|"
 rfc repeated-tip true "" '["glidepath/envs/dev.release.yaml"]'; act "[$(push "cicd-pac[bot]" Bot "$C2" "$P1"),$(push "cicd-pac[bot]" Bot "$C2" "$(sha 951)")]"
 out="$(rel)"; expect "the same tip pushed twice by the App (once from its parent, once from elsewhere): every before is kept, skipped" "$(q "$platform_q")" "unattested||$C2"
+rfc split-tip true "" '["glidepath/envs/dev.release.yaml"]'; act "[$(push "cicd-pac[bot]" Bot "$C2" "$(sha 951)")]"
+act "[$(push "cicd-pac[bot]" Bot "$C2" "$P1")]" CUR2
+printf 'HTTP/2 200\r\nLink: <https://api.github.com/repos/%s>; rel="next"\r\n' "$(act_url "cicd-pac[bot]" CUR2)" > "$FIX/gh/$(sed -E 's#[^A-Za-z0-9]#_#g' <<<"$(act_url "cicd-pac[bot]")").headers"
+out="$(rel)"; expect "the App's push of the tip from elsewhere on page 1 does not stop the search: its push from the parent on page 2 is found, skipped" "$(q "$platform_q")" "unattested||$C2"
 # paging: the App's push is on the second page, reached through the Link header
 rfc page-2 true "" '["glidepath/envs/dev.release.yaml"]'; act "[$(push "cicd-pac[bot]" Bot "$(sha 950)" "$(sha 951)")]"
 act "[$(push "cicd-pac[bot]" Bot "$C2" "$P1")]" CUR2

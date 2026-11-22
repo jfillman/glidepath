@@ -94,15 +94,16 @@ _rs_release_paths() {
 _rs_release_file_counts() {
   [[ -n "$1" && -n "$2" && "$1" != "$2" ]] && echo false || echo true
 }
-# _rs_app_pushes <token> <owner/repo> <branch> <app logins json> <shas json>: condition 2 of step 3b, read from GitHub's own
+# _rs_app_pushes <token> <owner/repo> <branch> <app logins json> <{"<sha>": "<first parent>"} json>: condition 2 of step 3b, read from GitHub's own
 # record of who moved the branch (the repository activity API, GET /repos/{owner}/{repo}/activity). Prints a JSON object
-# {"<sha>": ["<before>", ...]} with every sha of <shas> that GitHub records as the new tip (`after`) of a `push` to
+# {"<sha>": ["<before>", ...]} with every sha asked for that GitHub records as the new tip (`after`) of a `push` to
 # refs/heads/<branch> whose actor is one of <app logins> (an account GitHub types Bot); each <before> is a tip such a push moved
 # from (every one read is kept: a branch reset and pushed again records the same tip twice). The actor is the
 # account that authenticated the ref update, so a person with write access cannot make it the App: only a holder of the App's
 # installation token can. The query filters (ref, actor, activity_type) only narrow the listing; every field is checked here.
-# Reads at most RS_ACTIVITY_PAGES pages of 100 per login (default 10), newest first, and stops once every sha is found; a sha
-# past that is not found (kept counted). Follows only a next link on https://api.github.com/. Returns 1 on any read or parse
+# Reads at most RS_ACTIVITY_PAGES pages of 100 per login (default 10), newest first, and stops early only once every sha has a
+# push from the first parent given for it (a push from anywhere else never stops the search); a push past that is not found
+# (kept counted). Follows only a next link on https://api.github.com/. Returns 1 on any read or parse
 # error: then nothing is found.
 _rs_app_pushes() {
   local tok="$1" repo="$2" ref="refs/heads/$3" logins="$4" want="$5" found='{}' login url body hdr page next
@@ -117,11 +118,11 @@ _rs_app_pushes() {
         if type != "array" then error("not a list") else . end
         | ([.[] | select(type == "object" and .activity_type == "push" and .ref == $ref and (.actor.type // "") == "Bot"
                    and (((.actor.login // "") | ascii_downcase) as $a | $a != "" and ($l | index($a)) != null)
-                   and ((.after // "") as $s | $w | index($s)) != null)
+                   and ((.after // "") as $s | $w | has($s)))
                  | {after, before: (.before // "")}]
                  | reduce .[] as $p ({}; .[$p.after] += [$p.before]))
           | reduce to_entries[] as $e ($f; .[$e.key] = ((.[$e.key] // []) + $e.value | unique))' <<<"${body}")" || { rm -f "${hdr}"; return 1; }
-      [[ "$(jq --argjson w "${want}" '. as $f | [$w[] | select(. as $s | $f | has($s) | not)] | length' <<<"${found}")" == 0 ]] && { rm -f "${hdr}"; printf '%s\n' "${found}"; return 0; }
+      [[ "$(jq --argjson w "${want}" '. as $f | [$w | to_entries[] | .key as $k | .value as $v | select($v == "" or (($f[$k] // []) | index($v)) == null)] | length' <<<"${found}")" == 0 ]] && { rm -f "${hdr}"; printf '%s\n' "${found}"; return 0; }
       next="$(tr -d '\r' < "${hdr}" | grep -i '^link:' | tr ',' '\n' | sed -nE 's/.*<([^>]+)>; *rel="next".*/\1/p' | head -n 1)"
       [[ -z "${next}" || "${next}" == https://api.github.com/* ]] || next=""
       url="${next}"; page=$((page + 1))
@@ -403,7 +404,15 @@ release_source_resolve() {
     rpaths="$(_rs_release_paths "${rcfg}" "${renv}")"
     local pushes=null
     if [[ "$(jq 'length' <<<"${applogins}")" -gt 0 ]]; then
-      pushes="$(_rs_app_pushes "${stok}" "${sowner}/${srepo}" "${rbranch}" "${applogins}" "${nopr}")" || pushes=null
+      # Each commit's first parent, so the activity search stops only once every one has a push from it ("" when unreadable:
+      # that commit then never stops the search, and _rs_platform_commit keeps it counted on its own read).
+      local want='{}' wsha wpar
+      while IFS= read -r wsha; do
+        [[ -n "${wsha}" ]] || continue
+        wpar="$(_rs_api "${stok}" "https://api.github.com/repos/${sowner}/${srepo}/commits/${wsha}" | jq -r '.parents[0].sha // ""' 2>/dev/null)" || wpar=""
+        want="$(jq -c --arg s "${wsha}" --arg p "${wpar}" '. + {($s): $p}' <<<"${want}")"
+      done < <(jq -r '.[]' <<<"${nopr}")
+      pushes="$(_rs_app_pushes "${stok}" "${sowner}/${srepo}" "${rbranch}" "${applogins}" "${want}")" || pushes=null
       [[ -n "${pushes}" ]] || pushes=null
     fi
     while IFS= read -r sha; do
