@@ -54,10 +54,12 @@ plan() { # <loop> <scenario> <cicd.yaml text>: runs the loop for hangar-prod/pro
   local loop="$1" W="$d/$2"
   mkdir -p "${W}"; printf '%s\n' "$3" > "${W}/cicd.yaml"; printf 'hangar-prod|prod\nhangar-prod|qa\n' > "${W}/envs.txt"; : > "${W}/plan.txt"; : > "${W}/fetched"
   sed "s#/work#${W}#g" "${loop}" > "${W}/loop.sh"
-  ( cd "${W}" && cicd="$(cat cicd.yaml)" CLEARANCE_URL=http://clearance DEFAULT_CHART_REPO_URL="${REPO}" DEFAULT_CHART_PATH="${CPATH}" DEFAULT_CHART_REVISION="${REV}" \
-      FETCHED="${W}/fetched" bash -c 'set -euo pipefail; eval "${PROTECTION_LIB}"; envs_json="$(echo "${cicd}" | yq -o json ".deploy.environments // []")"
+  ( cd "${W}" && cicd="$(cat cicd.yaml)" CLEARANCE_URL=http://clearance DEFAULT_CHART_REPO_URL="${REPO}" DEFAULT_CHART_PATH="${CPATH}" DEFAULT_CHART_REVISION="${REVOVR-${REV}}" \
+      FETCHED="${W}/fetched" bash -c 'set -euo pipefail; eval "${PROTECTION_LIB}"; envs_json="$(echo "${cicd}" | yq -o json ".deploy.environments // []" 2>/dev/null || true)"
         valid_chart_source() { return 0; }; fetch_repo() { mkdir -p "$3"; echo "$1@$2" >> "${FETCHED}"; }  # no network: a fetch is recorded
-        source "$1"' _ "${W}/loop.sh" ) > "${W}/plan.log" 2>&1 || { echo "FAIL $2: the loop failed: $(cat "${W}/plan.log")"; fail=1; }
+        source "$1"' _ "${W}/loop.sh" ) > "${W}/plan.log" 2>&1; local rc=$?
+  echo "${rc}" > "${W}/rc"
+  if (( rc != 0 )) && [[ -z "${EXPECT_FAIL:-}" ]]; then echo "FAIL $2: the loop failed: $(cat "${W}/plan.log")"; fail=1; fi
   cut -d'|' -f2,3 "${W}/plan.txt" | sed "s#${W}/charts/#own:#; s#|#=#" | paste -sd ' ' -
   [[ -s "${W}/fetched" ]] && echo "fetched $(paste -sd ' ' "${W}/fetched")"
 }
@@ -94,14 +96,40 @@ vv() { # <scenario> <cicd.yaml text>: one changed file, hangar-prod/prod/values.
   local W="$d/$1"
   mkdir -p "${W}"; printf '%s\n' "$2" > "${W}/cicd.yaml"; echo hangar-prod/prod/values.yaml > "${W}/files.txt"
   sed "s#/work#${W}#g" "$d/vv-loop.sh" > "${W}/loop.sh"
-  ( cd "${W}" && cicd="$(cat cicd.yaml)" DEFAULT_CHART_REPO_URL="${REPO}" DEFAULT_CHART_PATH="${CPATH}" DEFAULT_CHART_REVISION="${REV}" \
-      bash -c 'set -euo pipefail; source "$1"; source "$2"' _ "$d/vv-guards.sh" "${W}/loop.sh" ) > "${W}/loop.log" 2>&1 \
-    || { echo "FAIL $1: the loop failed: $(cat "${W}/loop.log")"; fail=1; }
+  ( cd "${W}" && cicd="$(cat cicd.yaml)" DEFAULT_CHART_REPO_URL="${REPO}" DEFAULT_CHART_PATH="${CPATH}" DEFAULT_CHART_REVISION="${REVOVR-${REV}}" \
+      bash -c 'set -euo pipefail; source "$1"; source "$2"' _ "$d/vv-guards.sh" "${W}/loop.sh" ) > "${W}/loop.log" 2>&1; local rc=$?
+  echo "${rc}" > "${W}/rc"
+  if (( rc != 0 )) && [[ -z "${EXPECT_FAIL:-}" ]]; then echo "FAIL $1: the loop failed: $(cat "${W}/loop.log")"; fail=1; fi
   if [[ -s "${W}/own.txt" ]]; then echo "own $(cut -d'|' -f4- "${W}/own.txt" | jq -r .targetRevision)"; else [[ -s "${W}/files.txt" ]] && echo kept; fi
 }
 expect "values: the default revision: validated by the image" "$(vv vv-same "deploy: {chart: {targetRevision: ${REV}}}")" kept
 expect "values: another revision of the default chart: rendered with its own chart" "$(vv vv-rev 'deploy: {chart: {targetRevision: v0.1.0}}')" "own v0.1.0"
 expect "values: no chart spec: validated by the image" "$(vv vv-none $'deploy:\n  environments:\n    - name: prod')" kept
+
+# --- 4. the chart lookup fails closed (I-57) ---------------------------------------------------------------------------------------
+# A lookup error, or an unset input, fails the task and names what is at fault; it is never the default chart. An environment whose
+# cicd.yaml names no chart (above) is the one legitimate default and is unchanged.
+failed_naming() { # <name> <rc file> <log file> <text the message must contain>
+  local rc; rc="$(cat "$2")"
+  if [[ "${rc}" != 0 ]] && grep -q -- "$4" "$3"; then echo "ok   $1"; else echo "FAIL $1: rc=${rc}, log: $(cat "$3")"; fail=1; fi
+}
+for loop in cg pv; do
+  EXPECT_FAIL=1 plan "$d/${loop}-loop.sh" "${loop}-err" 'deploy: [unclosed' > /dev/null
+  failed_naming "${loop}: a lookup error (unreadable cicd.yaml): the task fails, naming the chart lookup" "$d/${loop}-err/rc" "$d/${loop}-err/plan.log" 'chart lookup'
+  [[ ! -s "$d/${loop}-err/plan.txt" ]] && echo "ok   ... and plans no default chart" || { echo "FAIL ${loop}: a lookup error still planned a chart"; fail=1; }
+  for var in DEFAULT_CHART_REVISION DEFAULT_CHART_REPO_URL DEFAULT_CHART_PATH; do
+    REVOVR="" EXPECT_FAIL=1 plan "$d/${loop}-loop.sh" "${loop}-unset" 'deploy: {}' > /dev/null  # the revision input empty
+    break
+  done
+  failed_naming "${loop}: an unset DEFAULT_CHART_REVISION: the task fails, naming the input" "$d/${loop}-unset/rc" "$d/${loop}-unset/plan.log" 'DEFAULT_CHART_REVISION is not set'
+  [[ ! -s "$d/${loop}-unset/plan.txt" ]] && echo "ok   ... and plans no default chart" || { echo "FAIL ${loop}: an unset input still planned a chart"; fail=1; }
+  expect "${loop}: a valid 'no chart' (cicd.yaml names none) is still the default chart" "$(plan "$d/${loop}-loop.sh" "${loop}-nochart" $'deploy:\n  environments:\n    - name: prod')" "prod=default qa=default"
+done
+EXPECT_FAIL=1 vv vv-err 'deploy: [unclosed' > /dev/null
+failed_naming "values: a lookup error: the task fails, naming the chart lookup" "$d/vv-err/rc" "$d/vv-err/loop.log" 'chart lookup'
+REVOVR="" EXPECT_FAIL=1 vv vv-unset 'deploy: {}' > /dev/null
+failed_naming "values: an unset DEFAULT_CHART_REVISION: the task fails, naming the input" "$d/vv-unset/rc" "$d/vv-unset/loop.log" 'DEFAULT_CHART_REVISION is not set'
+expect "values: a valid 'no chart' is still validated by the image" "$(vv vv-nochart 'deploy: {}')" kept
 
 if (( fail )); then echo "FAILED${KEEP:+ (kept $d)}"; exit 1; fi
 echo "PASS default_chart_revision_test"

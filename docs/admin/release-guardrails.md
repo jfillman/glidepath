@@ -349,6 +349,11 @@ the chart's), so it needs `valuesValidatorChartRevision`, the revision it bakes,
 unless that equals `defaultChart.targetRevision`. Move both with every chart bump. The render failing is the
 fail-closed choice: guessing would render an unknown chart as the default one.
 
+The chart lookup fails closed as well. If `cicd.yaml` cannot be read for the lookup, the lookup returns nothing, or one of the
+`DEFAULT_CHART_*` inputs is unset, the task fails with a message naming the input or setting at fault. It never falls
+back to the default chart. An environment whose `cicd.yaml` names no chart is still the default chart: that is a valid
+answer, and it is told apart from a failed lookup.
+
 Pieces: Task `validate-values`, Pipeline `values-check`, onboarding template
 `gitops-repo/pull-request-values.yaml` (runs on every PR to `main` that touches a `values.yaml`).
 
