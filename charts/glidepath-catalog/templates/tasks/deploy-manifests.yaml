@@ -206,9 +206,11 @@ spec:
         }
 
         # api_commit <parent sha> <message>: the staged change as ONE commit on main, made through GitHub's Git Data API with the
-        # App's installation token and NO author or committer: GitHub then signs it (verification.verified) and names the App's
-        # bot as author and committer. A `git push` of a local commit is unsigned, and clearance-gate's release source cannot
-        # tell it from anyone's direct push (docs/admin/clearance-gate.md, "Platform release-file commits"). Returns 2 when main
+        # App's installation token and NO author or committer: GitHub then signs it (verification.verified), names the App's
+        # bot as author and GitHub (web-flow) as committer (any custom author or committer and GitHub would not sign it), and
+        # records the App as the actor of the push that moves main (GET /repos/{owner}/{repo}/activity). That push record, not
+        # the commit's author, is what clearance-gate's release source trusts (docs/admin/clearance-gate.md, "Platform
+        # release-file commits"): the PATCH below must stay the App's, one commit moving main from its first parent. Returns 2 when main
         # is no longer <parent sha> (the ref update is not a fast-forward), 1 on any other failure.
         api_commit() {
           local parent="$1" msg="$2" out code base_tree entries p mode tree commit

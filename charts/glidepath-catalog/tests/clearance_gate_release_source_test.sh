@@ -30,10 +30,11 @@ STUB
 # fixture is an HTTP error (curl --fail). Clearance: POST .../v1/provenance answers ${FIX}/verdicts.json[<pr>] (absent: 503).
 cat > "$d/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-url=""; data=""
+url=""; data=""; hdrf=""
 while (( $# )); do
   case "$1" in
     --data) data="$2"; [[ "${data}" == "@-" ]] && data="$(cat)"; shift ;;
+    -D) hdrf="$2"; shift ;;
     http*) url="$1" ;;
   esac
   shift
@@ -46,6 +47,8 @@ if [[ "${url}" == */v1/provenance ]]; then
 fi
 f="${FIX}/gh/$(sed -E 's#^https://api.github.com/repos/##; s#[^A-Za-z0-9]#_#g' <<<"${url}")"
 [[ -f "${f}" ]] || { echo "stub: no fixture for ${url}" >&2; exit 22; }
+# -D: the response headers (a Link header for paging) from <fixture>.headers, when there is one
+[[ -n "${hdrf}" ]] && { if [[ -f "${f}.headers" ]]; then cat "${f}.headers" > "${hdrf}"; else printf 'HTTP/2 200\r\n' > "${hdrf}"; fi; }
 cat "${f}"
 STUB
 chmod +x "$d/bin/"*
@@ -329,22 +332,37 @@ out="$(PIPELINE_LOGINS="" PRAUTHORTYPE=Bot resolve)"; expect "empty pipelineLogi
 out="$(PIPELINE_LOGINS="" PRAUTHORTYPE=User resolve)"; expect "no warning for a person" "$(q '.warning // "none"')" none
 
 # 15. Platform release-file commits (docs/admin/clearance-gate.md, "Platform release-file commits"): deploy-manifests' commit
-#     straight to main is dropped from noPr only when ALL four hold: GitHub verified it, its committer is the pipeline's App,
-#     its full diff vs its first parent is only release files, and none of them is the released environment's (prod here).
-#     C2 is the direct push of each case; P1 its first parent.
+#     straight to main is dropped from noPr only when ALL four hold: GitHub verified it, GitHub's activity log shows the
+#     pipeline's App pushing it to the released branch (from its first parent), its full diff vs its first parent is only
+#     release files, and none of them is the released environment's (prod here). C2 is the direct push of each case; P1 its
+#     first parent. The commit is shaped like GitHub's real answer for an App's signed API commit (flight-api ce1f7f7,
+#     2026-11-22): author the App's bot, committer web-flow ("GitHub"), verified.
 P1="$(sha 900)"
 unset PIPELINE_LOGINS PRAUTHOR PRAUTHORTYPE   # case 6 leaves them set in this shell (a line of assignments only)
 CFG='{"environments":[{"name":"dev","tier":"ground"},{"name":"perf","tier":"ground"},{"name":"prod","tier":"flight","production":true}],"releaseFile":"glidepath/envs/{env}.release.yaml"}'
-rfc() { # <name> <verified> <committer login or ""> <json array of changed files> [<parents>] [<compare status>]: C2 pushed straight to main
+act_url() { # <actor login> [<cursor>]: the activity query the lib makes for that login
+  printf 'o/shop/activity?ref=refs%%2Fheads%%2Fmain&actor=%s&activity_type=push&per_page=100%s' "$(jq -rn --arg v "$1" '$v | @uri')" "${2:+&after=$2}"
+}
+act() { # <json array of activity entries> [<cursor>]: what GitHub lists, for every login the cases query (the server's filters are not relied on)
+  local l; for l in "cicd-pac[bot]" "other[bot]"; do gh "$(act_url "$l" "${2:-}")" "$1"; done
+}
+push() { # <actor login> <actor type> <after> <before> [<ref>] [<activity type>]: one activity entry
+  jq -nc --arg l "$1" --arg t "$2" --arg a "$3" --arg b "$4" --arg r "${5:-refs/heads/main}" --arg k "${6:-push}" \
+    '{before: $b, after: $a, ref: $r, activity_type: $k, actor: {login: $l, type: $t}}'
+}
+rfc() { # <name> <verified> <pusher login or ""> <json array of changed files> [<parents>] [<compare status>]: C2 pushed straight to main
   scenario "$1"; cpulls "$C2" '[]'; prpages 282 dana "$C2" "[{\"sha\":\"$(sha 777)\"}]" "Co-Authored-By: Claude <noreply@anthropic.com>" "$M2"
-  gh "o/shop/commits/$C2" "$(jq -nc --arg s "$C2" --arg p "$P1" --argjson v "$2" --arg l "$3" --argjson n "${5:-1}" \
-    '{sha: $s, parents: ([range($n)] | map({sha: $p})), committer: (if $l == "" then null else {login: $l, type: "Bot"} end), commit: {verification: {verified: $v, reason: (if $v then "valid" else "unsigned" end)}}}')"
+  gh "o/shop/commits/$C2" "$(jq -nc --arg s "$C2" --arg p "$P1" --argjson v "$2" --argjson n "${5:-1}" \
+    '{sha: $s, parents: ([range($n)] | map({sha: $p})), author: {login: "cicd-pac[bot]", type: "Bot"}, committer: {login: "web-flow", type: "User"},
+      commit: {author: {name: "cicd-pac[bot]", email: "312015858+cicd-pac[bot]@users.noreply.github.com"}, committer: {name: "GitHub", email: "noreply@github.com"},
+               verification: {verified: $v, reason: (if $v then "valid" else "unsigned" end)}}}')"
   gh "o/shop/compare/$P1...$C2?per_page=1" "$(jq -nc --argjson f "$4" --arg st "${6:-ahead}" '{status: $st, files: [$f[] | if type == "string" then {filename: .} else . end]}')"
+  if [[ -n "$3" ]]; then act "[$(push "$3" Bot "$(sha 950)" "$(sha 951)"),$(push "$3" Bot "$C2" "$P1")]"; else act '[]'; fi
 }
 rel() { RCFG="${RCFG-$CFG}" PIPELINE_LOGINS="${PIPELINE_LOGINS-}" resolve; }
 platform_q='[.provenance, (.noPr | join(",")), ((.platformCommits // []) | join(","))] | join("|")'
 rfc all-hold true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'
-out="$(rel)"; expect "all four hold (another environment's release file, verified, the App's bot): not counted, provenance from the PRs" "$(q "$platform_q")" "unattested||$C2"
+out="$(rel)"; expect "all four hold (another environment's release file, verified, pushed by the App, web-flow committer): not counted, provenance from the PRs" "$(q "$platform_q")" "unattested||$C2"
 expect "the skipped commit is reported apart" "$(q '.platformCommits | length')" 1
 out="$(PIPELINE_LOGINS="CICD-PAC[bot]" PRAUTHOR=someone PRAUTHORTYPE=User rel)"; expect "the App's login from clearanceGate.pipelineLogins (any case): skipped" "$(q "$platform_q")" "unattested||$C2"
 out="$(PIPELINE_LOGINS="other[bot]" rel)"; expect "pipelineLogins set to another login: the configured list wins over the PR author, kept" "$(q "$platform_q")" "unknown|$C2|"
@@ -353,14 +371,42 @@ rfc rename true "cicd-pac[bot]" '[{"filename":"glidepath/envs/perf.release.yaml"
 out="$(rel)"; expect "a rename between two other environments' release files: skipped" "$(q "$platform_q")" "unattested||$C2"
 # condition 1: verified
 rfc unverified false "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'
-out="$(rel)"; expect "1 fails: an unverified commit naming the App's bot as committer (anyone can push that name): kept" "$(q "$platform_q")" "unknown|$C2|"
+out="$(rel)"; expect "1 fails: an unverified commit, even one the App pushed: kept" "$(q "$platform_q")" "unknown|$C2|"
 rfc verified-string '"true"' "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'
 out="$(rel)"; expect "1 fails: verified must be the boolean true" "$(q "$platform_q")" "unknown|$C2|"
-# condition 2: committer
+# condition 2: the App pushed it, per GitHub's activity log (W-48: never the commit's author or committer)
+rfc forged true "" '["glidepath/envs/dev.release.yaml"]'
+act "[$(push "cicd-pac[bot]" Bot "$(sha 950)" "$(sha 951)"),$(push dana User "$C2" "$P1")]"
+out="$(rel)"; expect "2 fails: a person's web-flow-signed API commit naming the App's bot as author, pushed by the person: kept" "$(q "$platform_q")" "unknown|$C2|"
+expect "why it was kept is in the step log" "$(grep -c "stays a commit no merged PR contains: GitHub's activity log does not show the pipeline's GitHub App pushing it" "$FIX/stderr")" 1
 rfc other-bot true "renovate[bot]" '["glidepath/envs/dev.release.yaml"]'
-out="$(rel)"; expect "2 fails: verified, but another bot committed it: kept" "$(q "$platform_q")" "unknown|$C2|"
-rfc web-flow true "" '["glidepath/envs/dev.release.yaml"]'
-out="$(rel)"; expect "2 fails: a web-UI commit (verified, committer not a GitHub account here): kept" "$(q "$platform_q")" "unknown|$C2|"
+out="$(rel)"; expect "2 fails: verified, but another bot pushed it: kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc no-push true "" '["glidepath/envs/dev.release.yaml"]'
+out="$(rel)"; expect "2 fails: no push of it in GitHub's activity log (a web-UI commit, or one that arrived inside another push): kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc user-type true "" '["glidepath/envs/dev.release.yaml"]'; act "[$(push "cicd-pac[bot]" User "$C2" "$P1")]"
+out="$(rel)"; expect "2 fails: the actor has the App's login but GitHub does not type it Bot: kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc other-ref true "" '["glidepath/envs/dev.release.yaml"]'; act "[$(push "cicd-pac[bot]" Bot "$C2" "$P1" refs/heads/side)]"
+out="$(rel)"; expect "2 fails: the App pushed it to another branch: kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc force-push true "" '["glidepath/envs/dev.release.yaml"]'; act "[$(push "cicd-pac[bot]" Bot "$C2" "$P1" refs/heads/main force_push)]"
+out="$(rel)"; expect "2 fails: a force push is not deploy-manifests' push: kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc other-before true "" '["glidepath/envs/dev.release.yaml"]'; act "[$(push "cicd-pac[bot]" Bot "$C2" "$(sha 951)")]"
+out="$(rel)"; expect "2 fails: the App's push did not move the branch from the commit's first parent: kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc no-activity true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'; rm "$FIX/gh/$(sed -E 's#[^A-Za-z0-9]#_#g' <<<"$(act_url "cicd-pac[bot]")")"
+out="$(rel)"; expect "2 fails: the activity log cannot be read: kept" "$(q "$platform_q")" "unknown|$C2|"
+expect "the step log says the log could not be read" "$(grep -c "GitHub's activity log (who pushed it) could not be read" "$FIX/stderr")" 1
+rfc not-a-list true "" '["glidepath/envs/dev.release.yaml"]'; act '{"message": "x"}'
+out="$(rel)"; expect "2 fails: the activity answer is not a list: kept" "$(q "$platform_q")" "unknown|$C2|"
+# paging: the App's push is on the second page, reached through the Link header
+rfc page-2 true "" '["glidepath/envs/dev.release.yaml"]'; act "[$(push "cicd-pac[bot]" Bot "$(sha 950)" "$(sha 951)")]"
+act "[$(push "cicd-pac[bot]" Bot "$C2" "$P1")]" CUR2
+printf 'HTTP/2 200\r\nLink: <https://api.github.com/repos/%s>; rel="next"\r\n' "$(act_url "cicd-pac[bot]" CUR2)" > "$FIX/gh/$(sed -E 's#[^A-Za-z0-9]#_#g' <<<"$(act_url "cicd-pac[bot]")").headers"
+out="$(rel)"; expect "the App's push on the second page: found through the next link, skipped" "$(q "$platform_q")" "unattested||$C2"
+out="$(RS_ACTIVITY_PAGES=1 rel)"; expect "past the page cap: not found, kept" "$(q "$platform_q")" "unknown|$C2|"
+printf 'HTTP/2 200\r\nLink: <https://evil.example/repos/%s>; rel="next"\r\n' "$(act_url "cicd-pac[bot]" CUR2)" > "$FIX/gh/$(sed -E 's#[^A-Za-z0-9]#_#g' <<<"$(act_url "cicd-pac[bot]")").headers"
+out="$(rel)"; expect "a next link off api.github.com is not followed (the token never leaves): kept" "$(q "$platform_q")" "unknown|$C2|"
+rfc page-1-stop true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'
+printf 'HTTP/2 200\r\nLink: <https://api.github.com/repos/%s>; rel="next"\r\n' "$(act_url "cicd-pac[bot]" NOPE)" > "$FIX/gh/$(sed -E 's#[^A-Za-z0-9]#_#g' <<<"$(act_url "cicd-pac[bot]")").headers"
+out="$(rel)"; expect "every commit found on the first page: the next page (no fixture: a read error) is never read, skipped" "$(q "$platform_q")" "unattested||$C2"
 # condition 3: only release files
 rfc extra-file true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml","src/a.ts"]'
 out="$(rel)"; expect "3 fails: a source file beside the release file: kept" "$(q "$platform_q")" "unknown|$C2|"
