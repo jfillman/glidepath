@@ -451,6 +451,15 @@ glidepath-catalog.releaseSourceLib: files/lib/release-source.sh (release_source_
 {{- end -}}
 
 {{- /*
+glidepath-catalog.protectionLib: files/lib/protection.sh, as text for a step's environment (like releaseSourceLib). clearance-gate's
+fetch step evals it to decide which environments to register, and its register step evals it to compare cicd.yaml's production flag
+with Clearance's answer (docs/admin/clearance-gate.md, "Which environments are protected").
+*/ -}}
+{{- define "glidepath-catalog.protectionLib" -}}
+{{ .Files.Get "files/lib/protection.sh" }}
+{{- end -}}
+
+{{- /*
 glidepath-catalog.policyEvalLib: files/lib/policy-eval.sh (policy_bundle_fetch, policy_eval_env, kyverno_engine,
 policy_bundle_ref), to splice into a step script. glidepath-catalog.policyEvalPrepare: files/lib/policy-eval-prepare.py,
 to splice between `python3 - <<'PY'` and `PY`. The policy-validation-gate and clearance-gate Tasks both use them, so

@@ -24,7 +24,8 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
 - Pipeline **`clearance-gate-check`**, Task **`clearance-gate`** (`platform-catalog`), five steps:
   1. `fetch` (toolbox): the PR's base, head, author, changed files and line counts; the environments it changes
      (`<cluster>/<env>/values|release.yaml`, or a cluster's `base.yaml` = every environment on it); each environment's
-     chart and whether it is **protected** (`cicd.yaml` `deploy.environments[].production: true`); the repo's
+     chart; whether it is registered (every one, on a cluster with a Clearance: [Clearance decides which are protected](#which-environments-are-protected))
+     and what `cicd.yaml` declares about it (`deploy.environments[].production`); the repo's
      `clearance.yaml` and the commit that last changed it; the agent gates' verdict on who proposed the PR
      (`POST /v1/provenance`; `confirmed` is an agent's change, `not-agent` and `unattested` a person's, anything else
      `unknown` - `unattested` is AI-co-authored work outside Clearance, a warning there, and Clearance's gate counts it
@@ -59,6 +60,43 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
   5. `report`: exits 1 unless every environment is **cleared**.
 - An environment that is not protected is skipped (phase 1 gates protected environments only); a PR that changes
   none is `skipped` and passes.
+
+## Which environments are protected
+
+The platform decides, never the app. An app team that leaves `production: true` off an environment does not turn the
+gate off for it. Until 2026-11, the fetch step registered only the environments `cicd.yaml` marked
+`production: true` and skipped the rest as "not a protected environment". gitops-flight-api#48, a release to
+`hangar-prod/prod`, was skipped that way because flight-api's `cicd.yaml` lacked the line, although the platform gates
+that namespace at sync.
+
+Now (`files/lib/protection.sh`):
+
+- **On a cluster with a Clearance** (`agentGates.clearanceUrl` set), every environment the PR changes is rendered and
+  registered. Clearance's core decides protection for each change it is sent (Clearance C-6): an environment is protected
+  when the core's `CLEARANCE_PROTECTED_ENVIRONMENTS` names it, or when a cluster's Argo CD agent reported the app and
+  environment as protected. The core's list is rendered from the core cluster's `cluster.yaml`
+  (`clearance.protectedEnvironments`), which no app team or pipeline account can write; an empty list protects every
+  environment. A change anywhere else is cleared at tier 0 with the reason `unprotected`, and recorded. The core always
+  overrides the request's `protected` (it refuses `false`), so the pipeline holds no protection decision to get wrong.
+- **Unknown is protected.** Before Clearance answers, nothing is known, so nothing is skipped. When Clearance does not
+  answer (any status but 200), the environment's row is an error and the check fails.
+- **`production: true` is a declaration.** It is compared with Clearance's answer, and every disagreement is a
+  **Warning** under the table in the PR comment and is counted in the check's headline:
+  - Clearance protects the environment, and `cicd.yaml` says `production: false` or nothing: the change is gated anyway.
+    Add the flag so the two agree.
+  - `cicd.yaml` says `production: true` and Clearance does not protect it: cleared at tier 0. An app cannot protect an
+    environment by itself; a platform admin adds it to `clearance.protectedEnvironments`. (A tighten-only way for a
+    repository to protect one of its own environments would be a Clearance product feature; nothing in Clearance today
+    takes one for gitops environments, only `clearance.yaml` `workspaces.protected` for Terraform.)
+  - `production: true` keeps every other meaning it has in Glidepath (ADR-0024: an upper-cluster Flight environment).
+- **On a cluster with no Clearance**, no platform answer exists and no sync-time gate can either, so the declaration
+  still decides, as before: a `production: true` environment fails the check ("no Clearance"), and any other is skipped.
+
+The core's list can be wider than a destination cluster's sync-time gate. hangar-dev's core protects `hangar-prod/*`,
+while hangar-prod's Argo CD gate covers `hangar-prod/prod` for its `gate.apps`. The check follows the core, because the
+core is what it registers with and what records the decision. A staging release on hangar-prod is therefore registered and
+classified: an image bump clears at tier 1 by policy, and a runtime-shape change holds for the owners. To protect less,
+narrow the core's `clearance.protectedEnvironments`, a platform setting, never `cicd.yaml`.
 
 ## Green, red, and holding
 
@@ -229,8 +267,9 @@ What a required check does:
 
 - **Held:** the check is red until the change is cleared in Tower, then `/retest clearance-gate-` re-registers the
   same head and finds it cleared (tested: nothing about the required copy changes this).
-- **A release to an environment that is not `production: true`** (staging) is not registered and the check passes as
-  `skipped`, so requiring it does not stop an unprotected release. Test: `clearance_gate_parity_test.sh`.
+- **A release to an environment Clearance does not protect** is registered and cleared at tier 0 (`unprotected`), so
+  requiring the check does not stop it. Only a cluster with no Clearance still skips an environment that is not
+  `production: true` (`skipped`). Tests: `clearance_gate_protection_test.sh`, `clearance_gate_parity_test.sh`.
 - **Not a release PR on a `release-*` branch** (a replicas change, say): the check is unaffected, but the other
   release gates run on it and fail for want of a changed image. That is a separate known gap, not changed here.
 
@@ -257,6 +296,9 @@ When every environment is read it stops there. The required copy has no second t
   `policy-validation-gate.yaml`; `tests/clearance_gate_admission_test.sh` (render, admission, register against the
   policy-validation fixtures with the real Kyverno CLI); `tests/clearance_gate_parity_test.sh` (the render equals
   Clearance's Argo CD plugin's, against the plugin's recorded gate-api prod fixture in `tests/fixtures/clearance-parity`)
+- `charts/glidepath-catalog/files/lib/protection.sh`: which environments are registered and the warnings when cicd.yaml
+  and Clearance disagree ([above](#which-environments-are-protected)); `tests/clearance_gate_protection_test.sh` (the
+  decision matrix, the fetch step's plan loop on gitops-flight-api#48's cicd.yaml, and #48 end to end)
 - `charts/glidepath-app/templates/identity/observability-values.yaml`: the `glidepath-observability` ConfigMap the render reads (cluster, runtime, this cluster's block); `glidepath/broker/cmd/token-review-interceptor/policybundle.go` returns each cluster's own `observability`
 - `charts/glidepath-app/files/onboarding-templates/gitops-repo/pull-request-clearance-gate.yaml`
 - `charts/glidepath-catalog/values.yaml`: the `clearance-gate` guardrail; `clearanceGate.towerUrl`; Clearance's URL

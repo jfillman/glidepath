@@ -8,6 +8,8 @@
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 cd "$here/../../.."
+# The register step evals the protection library from its environment (files/lib/protection.sh).
+PROTECTION_LIB="$(cat charts/glidepath-catalog/files/lib/protection.sh)"; export PROTECTION_LIB
 command -v kyverno >/dev/null || { echo "FAIL: kyverno not on PATH"; exit 1; }
 fx="$(pwd)/charts/glidepath-catalog/tests/fixtures/policy-validation"
 fail=0
