@@ -199,11 +199,13 @@ expect "a core that knows it: one request, with the reason and the commits" "$(j
 expect "the hold row says why (unvouched commits, tier 3)" "$(grep -c '^| ⏳ | hangar-prod/prod | 3 | holding |.*unvouched-commits (1 commit no merged pull request contains)' <<<"$out")" 1
 expect "the source section says why it holds for two people" "$(grep -c 'Why it holds for two people:.*provenanceReason: unvouched-commits' <<<"$out")" 1
 expect "no fallback note" "$(grep -c 'does not take `provenanceReason` yet' <<<"$out")" 0
+expect "held: the no-PR line says who clears it, not that it is stuck until a baseline" "$(grep -c 'the release is held for two people (below)' <<<"$out"),$(grep -c 'baseline it' <<<"$out")" "1,0"
 out="$(CORE=old comment "$usrc" "$ufields")"
 expect "a core before clearance#213: the refused request, then the same change without the two fields" \
   "$(jq -sc 'map(has("provenanceReason") or has("unvouchedCommits"))' "${REQS}")" '[true,false]'
 expect "... is registered (denied, as before: fails closed), not an error" "$(grep -c '^| ❌ | hangar-prod/prod | 1 | denied |' <<<"$out"),$(cat "$r/outcome")" "1,denied"
 expect "... and the comment says the field was not taken" "$(grep -c 'does not take `provenanceReason` yet' <<<"$out")" 1
+expect "... and, denied, keeps the baseline wording and claims no hold" "$(grep -c 'until an owner decides how to baseline it' <<<"$out"),$(grep -c 'Why it holds' <<<"$out")" "1,0"
 out="$(CORE=old comment "$src" '{}')"
 expect "nothing to send: one request, no note" "$(wc -l < "${REQS}" | tr -d ' '),$(grep -c 'does not take' <<<"$out")" "1,0"
 
