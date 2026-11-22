@@ -4,6 +4,13 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### The default chart is the cluster default at its pinned revision (W-49)
+
+- `clearance-gate`, `policy-validation-gate` and `validate-values` treated an environment whose chart names the default chart's repository and path as the default chart whatever its `targetRevision`, and rendered or validated it with the chart baked into the validator image (glidepath#289, CodeRabbit). It failed closed (the rendered tree does not match at sync), but the check was wrong. The default chart is now the default repository, path **and** `defaultChart.targetRevision` (as `glidepath-app.isDefaultChart` already compares); another revision is an own chart, fetched at that revision and rendered with it, as any own chart is. A chart spec that changes only `path` now inherits the default revision instead of fetching `main`, as Argo CD renders it.
+- One source of truth: the fetch steps get `DEFAULT_CHART_REVISION` from `defaultChart.targetRevision`, the value the validator image's tag is made from (`glidepath-catalog.validatorImage`, now the one definition of the four Tasks' `validator-image` default). With `valuesValidatorImage` set, its tag says nothing about the chart inside it: new value `valuesValidatorChartRevision` must declare the revision it bakes, equal to `defaultChart.targetRevision`, or the catalog render fails. No cluster sets `valuesValidatorImage` today.
+- `policy-validation-gate` and `validate-values`: an environment `deploy.environments` does not list now gets `deploy.chart`. Their chart selector yielded nothing for it, so the default chart (clearance-gate was fixed in #289).
+- docs/admin/release-guardrails.md, "The values gate". Test: `charts/glidepath-catalog/tests/default_chart_revision_test.sh` (new, in catalog-ci `policy-validation`).
+
 ### Platform release-file commits no longer block a production release
 
 - `deploy-manifests` now commits a Ground environment's release file through GitHub's Git Data API with the App's installation token, and no author or committer. GitHub signs that commit, and its committer is the App's bot. It no longer runs `git push`. It still retries, and when main moves between the clone and the ref update (a 422, not a fast-forward) it re-clones and commits again, at most 3 attempts. The Argo CD refresh and the wait are unchanged.

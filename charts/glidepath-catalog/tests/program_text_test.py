@@ -335,7 +335,7 @@ class ValuesCheckPathShapes(unittest.TestCase):
             os.makedirs(os.path.join(tmp, "w"))
             open(os.path.join(tmp, "w", "files.txt"), "w").write("\n".join(files) + "\n")
             cicd = "deploy:\n  environments:\n    - name: prod\n"
-            script = ("set -euo pipefail\n%s\ncicd=%s\nDEFAULT_CHART_REPO_URL=https://github.com/o/c DEFAULT_CHART_PATH=charts/x\n%s\ncat %s/w/files.txt\n"
+            script = ("set -euo pipefail\n%s\ncicd=%s\nDEFAULT_CHART_REPO_URL=https://github.com/o/c DEFAULT_CHART_PATH=charts/x DEFAULT_CHART_REVISION=v1\n%s\ncat %s/w/files.txt\n"
                       % (text[text.index("# BEGIN input-guards"):text.index("# END input-guards")], "$" + repr(cicd), text[a:b].replace("/work", os.path.join(tmp, "w")), tmp))
             p = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
             return p.returncode, p.stdout.split(), p.stdout + p.stderr

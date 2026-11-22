@@ -104,7 +104,7 @@ plan() { # <scenario dir> <cicd.yaml> <clearance url> <cluster|env>...: runs the
   rm -rf "${W}"; mkdir -p "${W}"; export FETCHED="${W}/fetched"; : > "${FETCHED}"
   printf '%s\n' "$@" > "${W}/envs.txt"; : > "${W}/plan.txt"; : > "${W}/declared.txt"
   sed "s#/work#${W}#g" "$d/plan-loop.sh" > "${W}/loop.sh"
-  ( cd "${W}" && cicd="$(cat "${f}")" CLEARANCE_URL="${url}" DEFAULT_CHART_REPO_URL=https://github.com/acme/airframe DEFAULT_CHART_PATH=charts/airframe-application \
+  ( cd "${W}" && cicd="$(cat "${f}")" CLEARANCE_URL="${url}" DEFAULT_CHART_REPO_URL=https://github.com/acme/airframe DEFAULT_CHART_PATH=charts/airframe-application DEFAULT_CHART_REVISION=v0.0.0 \
       bash -c 'set -euo pipefail; eval "${PROTECTION_LIB}"; envs_json="$(echo "${cicd}" | yq -o json ".deploy.environments // []")"
         valid_chart_source() { return 0; }; fetch_repo() { mkdir -p "$3"; echo "fetched $1@$2" >> "${FETCHED}"; }  # no network: a chart fetch is recorded
         source "$1"' _ "${W}/loop.sh" ) > "${W}/plan.log" 2>&1

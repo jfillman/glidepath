@@ -19,7 +19,8 @@ release PR on gitops-<app>          broker (platform-system)               Kyver
 1. **Environments.** Every `<cluster>/<env>/values.yaml` or `release.yaml` the PR changes, and every environment under
    a changed `<cluster>/base.yaml`. None: the check passes as `skipped`.
 2. **Render.** The values gate's renderer: the validator image (`valuesValidatorRepository` at the cluster's
-   default-chart tag), or the environment's own chart (`deploy.chart` / `environments[].chart`), with the values the
+   default-chart tag) for an environment on the default chart at `defaultChart.targetRevision`, or the environment's own chart
+   (`deploy.chart` / `environments[].chart`, including the default chart at another `targetRevision`, fetched at that revision), with the values the
    Flight ApplicationSet injects and its value files, into namespace `<type>-<app>-<env>`. It runs in the **`render-manifests`
    task as `source-runner`** (no token, no Secret), not in the gate's own pod; the gate's `ingest` step then reads the result as data,
    bounded and verified ([security.md](security.md#rendering-is-not-done-where-the-credentials-are)). The Pipeline is `fetch`,

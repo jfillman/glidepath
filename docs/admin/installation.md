@@ -46,6 +46,7 @@ the required ones fails with a message naming the value.
 | `glidepath-control-plane` | `backstageBaseUrl`, `backstageHostAliasIP` | no | only for a Backstage hostname a pod cannot resolve |
 | `glidepath-catalog` | `defaultChart.repoURL`, `defaultChart.targetRevision` | yes | `cluster-defaults.yaml` as a value file |
 | `glidepath-catalog` | `valuesValidatorRepository` (or `valuesValidatorImage`) | yes | where the fleet's Airframe publishes `airframe-validate` |
+| `glidepath-catalog` | `valuesValidatorChartRevision` | with `valuesValidatorImage` only | the default chart revision that image bakes; must equal `defaultChart.targetRevision` ([release-guardrails.md](release-guardrails.md#the-values-gate-values-registered-2026-09-27)) |
 | `glidepath-catalog` | `backstageBaseUrl`, `backstageHostAliasIP` | no | same values as the control plane's |
 | `glidepath-catalog` | `pipelinesAsCode.applicationName` | no (default `Glidepath`) | must equal the cluster's PaC ConfigMap `application-name`: the first half of every gate's check name ([github-app.md](github-app.md)) |
 

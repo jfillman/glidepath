@@ -114,8 +114,14 @@ renderManifests:
 # validator that does not follow the chart tag. Public, like the toolbox image. No default: the validator image is
 # Airframe's published artifact, so where it lives follows the fleet's Airframe (set it beside defaultChart, e.g.
 # ghcr.io/<owner>/airframe-validate). The render fails when both this and valuesValidatorImage are empty.
+# The gates render an environment with the chart baked into this image only when its chart is the default chart at
+# defaultChart.targetRevision; another revision of the same chart is fetched and rendered as an own chart. So the image
+# must bake exactly that revision: the default tag does by construction (glidepath-catalog.validatorImage). An override
+# image's tag says nothing about the chart inside it, so valuesValidatorChartRevision must declare the revision it bakes,
+# and the render fails unless it equals defaultChart.targetRevision (move both together on a chart bump).
 valuesValidatorRepository: ""
 valuesValidatorImage: ""
+valuesValidatorChartRevision: ""
 
 # Base URL of the Backstage backend that notify-backstage.yaml POSTs to. One Backstage
 # instance platform-wide (not one per cluster, not one per Application), so this is a
