@@ -400,10 +400,30 @@ out="$(rel)"; expect "4 fails: the same dev commit, judged in a release of dev i
   expect "_rs_release_paths: each environment at its own path, only the released one counts" \
     "$(_rs_release_paths "$CFG" prod | jq -c 'to_entries | map("\(.key)=\(.value.env):\(.value.counts)") | join(" ")' | tr -d '"')" \
     "glidepath/envs/dev.release.yaml=dev:false glidepath/envs/perf.release.yaml=perf:false glidepath/envs/prod.release.yaml=prod:true"
+  [[ "${fail}" == 0 ]]   # the subshell's own flag: hand a failed assertion out
 ) || fail=1
 # a release whose range is only platform commits still names no source PR: unresolved, as before
 rfc only-platform true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'; for c in "$C1" "$M1" "$M2"; do cpulls "$c" '[]'; done
 out="$(rel)"; expect "only platform commits and direct pushes: still unresolved (no source PR)" "$(q '[.resolved, (.reason | test("no commit of the range"))] | join(",")')" "false,true"
+
+# 16. Why the proposer is unknown, for Clearance (provenanceReason, clearance#213): unvouched-commits (held for two people)
+#     only when the one cause is commits no merged PR contains; unrecorded-agent when a source PR is unknown; else nothing.
+why_q='[.proposerKind, (.provenanceReason // "none"), ((.unvouchedCommits // []) | join(","))] | join("|")'
+scenario why-unvouched; cpulls "$C2" '[]'; prpages 282 dana "$C2" "[{\"sha\":\"$(sha 777)\"}]" "" "$M2"
+out="$(resolve)"; expect "only unvouched commits (every source PR vouched, a human named): unvouched-commits with the remaining noPr" "$(q "$why_q")" "unknown|unvouched-commits|$C2"
+echo '{"281":{"identity":{"status":"modified"}},"282":{"identity":{"status":"not-agent"}}}' > "$FIX/verdicts.json"
+out="$(resolve)"; expect "unvouched commits AND a modified agent PR: unrecorded-agent (denied)" "$(q "$why_q")" "unknown|unrecorded-agent|"
+echo '{"282":{"identity":{"status":"not-agent"}}}' > "$FIX/verdicts.json"
+out="$(resolve)"; expect "unvouched commits AND a PR Clearance could not answer for: unrecorded-agent" "$(q "$why_q")" "unknown|unrecorded-agent|"
+scenario why-agent; echo '{"281":{"identity":{"status":"unrecorded"}},"282":{"identity":{"status":"not-agent"}}}' > "$FIX/verdicts.json"
+out="$(resolve)"; expect "no unvouched commit, a forged-trailer PR: unrecorded-agent" "$(q "$why_q")" "unknown|unrecorded-agent|"
+scenario why-nohuman; cpulls "$C2" '[]'; prpages 282 "b[bot]" "$C2" "[{\"sha\":\"$(sha 777)\"}]" "" "$M2" "n[bot]"; prpages 281 "a[bot]" "$C1" "[{\"sha\":\"$C1\"}]" "" "$M1" "m[bot]"
+out="$(resolve)"; expect "unvouched commits but no human at all (proposerRule none): nothing sent" "$(q "$why_q")" "unknown|none|"
+scenario why-person; out="$(resolve)"; expect "a person's release (kind person): nothing sent" "$(q "$why_q")" "person|none|"
+rfc why-platform true "cicd-pac[bot]" '["glidepath/envs/dev.release.yaml"]'
+out="$(rel)"; expect "the only direct push is a platform release-file commit: not unknown, nothing sent" "$(q "$why_q")" "person|none|"
+rfc why-mixed true "renovate[bot]" '["glidepath/envs/dev.release.yaml"]'
+out="$(rel)"; expect "the unvouched list is what remains after the platform skip" "$(q "$why_q")" "unknown|unvouched-commits|$C2"
 
 # 10. The mapping into the change request: the real publish -> render-manifests -> ingest chain (tests/lib/gate_chain.sh, real helm, the
 # policy-validation fixture's stand-in chart), with the fetch step's /work laid out the way it leaves it, source.json included.
@@ -436,5 +456,15 @@ expect "register: not a release PR: unchanged (the PR author, per the agent gate
   "$(change_for plain '{"applicable":false}' '{"identity":{"status":"not-agent"}}')" "user:cicd-pac[bot]|person|none|not-agent|-|-|-"
 expect "register: no source.json at all (an older fetch): unchanged" \
   "$(change_for none '' '{"identity":{"status":"not-agent"}}')" "user:cicd-pac[bot]|person|none|not-agent|-|-|-"
+
+why_of() { jq -c '[(.provenanceReason // "none"), ((.unvouchedCommits // []) | join(","))] | join("|")' "$d/chain-$1/eval/hangar-prod__prod/change.json" | tr -d '"'; }
+change_for why-u "$(jq -c --arg c "$C2" '.proposerKind = "unknown" | .provenance = "unknown" | .noPr = [$c] | .provenanceReason = "unvouched-commits" | .unvouchedCommits = [$c]' <<<"$good")" >/dev/null
+expect "register: unvouched-commits rides in the change request with its commits" "$(why_of why-u)" "unvouched-commits|$C2"
+change_for why-a "$(jq -c '.proposerKind = "unknown" | .provenance = "unknown" | .provenanceReason = "unrecorded-agent"' <<<"$good")" >/dev/null
+expect "register: unrecorded-agent rides alone" "$(why_of why-a)" "unrecorded-agent|"
+change_for why-p "$(jq -c '.provenanceReason = "unvouched-commits" | .unvouchedCommits = ["x"]' <<<"$good")" >/dev/null
+expect "register: never with a proposer kind other than unknown" "$(why_of why-p)" "none|"
+change_for why-r '{"applicable":true,"resolved":false,"reason":"r","provenanceReason":"unvouched-commits","unvouchedCommits":["a"]}' >/dev/null
+expect "register: an unresolved source sends no reason" "$(why_of why-r)" "none|"
 
 [[ "${fail}" == 0 ]] && echo "all passed" || { echo "FAILED"; exit 1; }

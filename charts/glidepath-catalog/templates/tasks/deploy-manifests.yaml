@@ -131,12 +131,16 @@ spec:
         # gh_api <method> <url> [<json body file>]: prints the body, then the HTTP status on its own last line. curl retries a
         # connection failure and a 5xx; every call below is safe to repeat (a tree or commit object nothing points at is inert, and
         # the ref update names the commit it moves to).
+        # The body goes to a regular file (--output), which curl truncates before each retry, so only the final attempt's body
+        # is read: on stdout a failed attempt's body would stay in front of the answer.
         gh_api() {
-          local body=()
+          local body=() code
           [[ -n "${3:-}" ]] && body=(-H "Content-Type: application/json" --data "@$3")
-          curl --silent --show-error --max-time 30 --retry 3 --retry-connrefused -w '\n%{http_code}' -X "$1" \
+          : > "${workdir}/response"
+          code="$(curl --silent --show-error --max-time 30 --retry 3 --retry-connrefused --output "${workdir}/response" -w '%{http_code}' -X "$1" \
             -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
-            ${body[@]+"${body[@]}"} "$2" || printf '\n000'
+            ${body[@]+"${body[@]}"} "$2")" || code=000
+          cat "${workdir}/response"; printf '\n%s' "${code:-000}"
         }
 
         # stage_release: in the fresh clone (cwd), writes the image into the release file and stages every change of this
@@ -236,8 +240,11 @@ spec:
             echo "committed ${commit:0:7} to main through GitHub's API (signed by GitHub for the App)"
             return 0
           fi
-          # 422 "Update is not a fast forward": someone else's commit landed on main after the clone.
-          [[ "${code}" == 422 ]] && return 2
+          # 422 "Update is not a fast forward": someone else's commit landed on main after the clone. GitHub answers other
+          # validation failures with 422 too: only that message means main moved.
+          if [[ "${code}" == 422 ]] && jq -e '(.message // "") | ascii_downcase | contains("not a fast forward")' <<<"${out%$'\n'*}" >/dev/null 2>&1; then
+            return 2
+          fi
           echo "error: GitHub refused to move main to ${commit:0:7} (HTTP ${code}): $(head -c 300 <<<"${out%$'\n'*}")" >&2
           return 1
         }

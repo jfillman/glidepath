@@ -41,17 +41,19 @@ STUB
 # curl: GitHub's Git Data API over ${ORIGIN}. Prints the body, then the status (the script's -w '\n%{http_code}').
 cat > "$d/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-method=GET; data=""; url=""; ct=""
+method=GET; data=""; url=""; ct=""; outf=""
 while (( $# )); do
-  case "$1" in -X) method="$2"; shift ;; --data) data="${2#@}"; shift ;; -H) [[ "$2" == "Content-Type: application/json" ]] && ct=json; shift ;; http*) url="$1" ;; esac; shift
+  case "$1" in -X) method="$2"; shift ;; --data) data="${2#@}"; shift ;; --output) outf="$2"; shift ;; -H) [[ "$2" == "Content-Type: application/json" ]] && ct=json; shift ;; http*) url="$1" ;; esac; shift
 done
+# like curl --output F -w '%{http_code}': the body to F, the status to stdout
+reply() { [[ -n "${outf}" ]] || { echo "stub: no --output" >&2; exit 2; }; printf '%s' "$1" > "${outf}"; printf '%s' "$2"; }
 g() { "${REAL_GIT}" -C "${ORIGIN}" "$@"; }
 path="${url#https://api.github.com/repos/o/shop/}"
 echo "${method} ${path} ${ct:-none} ${data:+body}" >> "${LOG}/calls"
 case "${method} ${path}" in
   "GET git/commits/"*)
-    s="${path#git/commits/}"; t="$(g rev-parse "${s}^{tree}" 2>/dev/null)" || { printf '{}\n404'; exit 0; }
-    printf '%s\n200' "$(jq -nc --arg s "$s" --arg t "$t" '{sha: $s, tree: {sha: $t}}')" ;;
+    s="${path#git/commits/}"; t="$(g rev-parse "${s}^{tree}" 2>/dev/null)" || { reply '{}' 404; exit 0; }
+    reply "$(jq -nc --arg s "$s" --arg t "$t" '{sha: $s, tree: {sha: $t}}')" 200 ;;
   "POST git/trees")
     cp "${data}" "${LOG}/tree.json"
     export GIT_INDEX_FILE="${LOG}/index.$$"; rm -f "${GIT_INDEX_FILE}"
@@ -65,12 +67,12 @@ case "${method} ${path}" in
         b="$(jq -j ".tree[$i].content" "${data}" | g hash-object -w --stdin)"; g update-index --add --cacheinfo "$m,$b,$p"
       fi
     done
-    printf '%s\n201' "$(jq -nc --arg t "$(g write-tree)" '{sha: $t}')" ;;
+    reply "$(jq -nc --arg t "$(g write-tree)" '{sha: $t}')" 201 ;;
   "POST git/commits")
     cp "${data}" "${LOG}/commit.json"
     c="$(GIT_AUTHOR_NAME='cicd-pac[bot]' GIT_AUTHOR_EMAIL=bot@x GIT_COMMITTER_NAME='cicd-pac[bot]' GIT_COMMITTER_EMAIL=bot@x \
          g commit-tree "$(jq -r .tree "${data}")" -p "$(jq -r '.parents[0]' "${data}")" -m "$(jq -r .message "${data}")")"
-    printf '%s\n201' "$(jq -nc --arg c "$c" '{sha: $c}')" ;;
+    reply "$(jq -nc --arg c "$c" '{sha: $c}')" 201 ;;
   "PATCH git/refs/heads/main")
     cp "${data}" "${LOG}/ref.json"
     if [[ -f "${RACE:-/nonexistent}" ]]; then   # someone else's commit lands on main first
@@ -79,10 +81,11 @@ case "${method} ${path}" in
       echo "x$RANDOM" >> "$w/c/README.md"; "${REAL_GIT}" -C "$w/c" -c user.name=dana -c user.email=d@x commit -qam "dana's change"
       "${REAL_GIT}" -C "$w/c" push -q origin HEAD:main
     fi
+    [[ -n "${REF422:-}" ]] && { reply '{"message":"Reference update failed: validation"}' 422; exit 0; }
     new="$(jq -r .sha "${data}")"
-    if g merge-base --is-ancestor "$(g rev-parse main)" "${new}"; then g update-ref refs/heads/main "${new}"; printf '{}\n200'
-    else printf '{"message":"Update is not a fast forward"}\n422'; fi ;;
-  *) printf '{}\n404' ;;
+    if g merge-base --is-ancestor "$(g rev-parse main)" "${new}"; then g update-ref refs/heads/main "${new}"; reply '{}' 200
+    else reply '{"message":"Update is not a fast forward"}' 422; fi ;;
+  *) reply '{}' 404 ;;
 esac
 STUB
 cat > "$d/bin/kubectl" <<'STUB'
@@ -133,6 +136,9 @@ origin $'envName: dev\n'; export RACE="${LOG}/race" RACE_ALWAYS=1; : > "${RACE}"
 deploy ghcr.io/o/shop:1.4-aaa; rc=$?
 expect "main keeps moving: fails after 3 attempts, the deploy is not written" "$rc,$(grep -c 'gave up after 3 attempts' "${LOG}/out"),$(o log --format=%s main | grep -c '^Deploy')" "1,1,0"
 unset RACE RACE_ALWAYS
+origin $'envName: dev\n'
+REF422=1 deploy ghcr.io/o/shop:1.4-ccc; rc=$?
+expect "a 422 that is not 'not a fast forward': no retry, the error is reported" "$rc,$(grep -c 'main moved since the clone' "${LOG}/out"),$(grep -c 'GitHub refused to move main' "${LOG}/out")" "1,0,1"
 
 # the one-time move onto the split: the env file's image goes in the same commit, both paths in the one tree
 origin $'envName: dev\nrelease:\n  image:\n    tag: old\n'
@@ -145,14 +151,28 @@ r="$d/reg"; mkdir -p "$r/w/eval/hangar-prod-prod" "$r/secret" "$r/bin"; echo tok
 step clearance-gate register \
   | sed -e "s|/work|$r/w|g" -e "s|\$(results.outcome.path)|$r/outcome|" -e "s|\$(results.findings-summary.path)|$r/summary|" \
         -e "s|\$(results.change-ids.path)|$r/ids|" -e "s|\$(results.joins.path)|$r/joins|" -e "s|/var/run/secrets/clearance|$r/secret|" > "$r/register.sh"
+# Clearance: CORE=old refuses provenanceReason/unvouchedCommits as unknown fields (a core before clearance#213, strict
+# decoding); otherwise unvouched-commits holds at tier 3 for two people and anything else is denied DG-PROVENANCE.
 cat > "$r/bin/curl" <<'STUB'
 #!/usr/bin/env bash
+f=""; while (( $# )); do [[ "$1" == --data ]] && f="${2#@}"; shift; done
+jq -c . "$f" >> "${REQS}"
+if [[ "${CORE:-new}" == old ]] && jq -e 'has("provenanceReason") or has("unvouchedCommits")' "$f" >/dev/null; then
+  printf '%s\n400' "{\"error\":\"DG-REQUEST\",\"detail\":\"unknown field 'provenanceReason'\"}"; exit 0
+fi
+if [[ "${CORE:-new}" == new ]] && [[ "$(jq -r '.provenanceReason // ""' "$f")" == unvouched-commits ]]; then
+  printf '%s\n200' '{"id":"chg-9","state":"holding","tier":3,"protected":true,"reasons":[{"tier":3,"rule":"unvouched-commits","subject":"1 commit no merged pull request contains"}],"requirement":{"owner":1,"ownerGroup":"group:default/shop","outside":1,"outsideGroups":["group:default/admins"]},"approvals":[],"cleared_by":null,"deny_reason":null,"expires_at":null}'
+  exit 0
+fi
 printf '%s\n200' '{"id":"chg-9","state":"denied","tier":1,"protected":true,"reasons":[],"requirement":null,"approvals":[],"cleared_by":null,"deny_reason":"DG-PROVENANCE: provenance unknown","expires_at":null}'
 STUB
 printf '#!/usr/bin/env bash\nexit 0\n' > "$r/bin/kubectl"; chmod +x "$r/bin/"*
-comment() { # <source.json content or ""> -> the report
+export REQS="$r/reqs"
+comment() { # <source.json content or ""> [<change.json extra fields>] -> the report; the requests sent are in $REQS
   echo "hangar-prod|prod|default|true" > "$r/w/plan.txt"; echo "hangar-prod|prod|true" > "$r/w/declared.txt"
-  echo '{"cluster":"hangar-prod","env":"prod","pr":7,"treeDigest":"sha256:feed"}' > "$r/w/eval/hangar-prod-prod/change.json"
+  local x="${2:-}"; [[ -n "$x" ]] || x='{}'
+  : > "${REQS}"
+  jq -nc --argjson x "$x" '{cluster: "hangar-prod", env: "prod", pr: 7, treeDigest: "sha256:feed", proposerKind: "unknown"} + $x' > "$r/w/eval/hangar-prod-prod/change.json"
   rm -f "$r/w/source.json"; [[ -n "$1" ]] && printf '%s' "$1" > "$r/w/source.json"
   PATH="$r/bin:$PATH" APP_NAME=shop CLEARANCE_URL=http://clearance TOWER_URL= PIPELINE_RUN= REPO_URL=u NAMESPACE=n bash "$r/register.sh" >/dev/null 2>&1
   cat "$r/w/report.md"
@@ -169,5 +189,22 @@ out="$(comment '{"applicable":true,"resolved":false,"reason":"no release record 
 expect "an unresolved source: DG-PROVENANCE says so" "$(grep -c 'denial here means the source of this release could not be established' <<<"$out")" 1
 out="$(comment '')"
 expect "a person's PR (no source): the agent case, as before" "$(grep -c 'denial here means the PR looks like an agent' <<<"$out")" 1
+
+# provenanceReason (clearance#213): the hold row says why; a core that refuses the field gets the change without it.
+U=3333333333333333333333333333333333333333
+usrc="$(jq -c --arg u "$U" '.noPr = [$u] | .provenanceReason = "unvouched-commits" | .unvouchedCommits = [$u]' <<<"$src")"
+ufields="$(jq -nc --arg u "$U" '{provenanceReason: "unvouched-commits", unvouchedCommits: [$u]}')"
+out="$(CORE=new comment "$usrc" "$ufields")"
+expect "a core that knows it: one request, with the reason and the commits" "$(jq -sc 'map([.provenanceReason, (.unvouchedCommits | length)])' "${REQS}")" '[["unvouched-commits",1]]'
+expect "the hold row says why (unvouched commits, tier 3)" "$(grep -c '^| ⏳ | hangar-prod/prod | 3 | holding |.*unvouched-commits (1 commit no merged pull request contains)' <<<"$out")" 1
+expect "the source section says why it holds for two people" "$(grep -c 'Why it holds for two people:.*provenanceReason: unvouched-commits' <<<"$out")" 1
+expect "no fallback note" "$(grep -c 'does not take `provenanceReason` yet' <<<"$out")" 0
+out="$(CORE=old comment "$usrc" "$ufields")"
+expect "a core before clearance#213: the refused request, then the same change without the two fields" \
+  "$(jq -sc 'map(has("provenanceReason") or has("unvouchedCommits"))' "${REQS}")" '[true,false]'
+expect "... is registered (denied, as before: fails closed), not an error" "$(grep -c '^| ❌ | hangar-prod/prod | 1 | denied |' <<<"$out"),$(cat "$r/outcome")" "1,denied"
+expect "... and the comment says the field was not taken" "$(grep -c 'does not take `provenanceReason` yet' <<<"$out")" 1
+out="$(CORE=old comment "$src" '{}')"
+expect "nothing to send: one request, no note" "$(wc -l < "${REQS}" | tr -d ' '),$(grep -c 'does not take' <<<"$out")" "1,0"
 
 [[ "${fail}" == 0 ]] && echo "all passed" || { echo "FAILED"; exit 1; }

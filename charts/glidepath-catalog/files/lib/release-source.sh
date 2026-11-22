@@ -402,5 +402,17 @@ release_source_resolve() {
         provenance: $prov, agents: $agents, proposerRule: $pick.rule,
         proposerKind: (if $pick.rule | startswith("none") then "unknown" elif $prov == "confirmed" then "agent" elif $prov == "unknown" then "unknown" else "person" end)}
     | .proposer = (if .proposerKind == "agent" and ($agents | length) > 0 then "autopilot-runs/" + $agents[0] else "user:" + $pick.who end)
+    # Why the proposer is unknown, for Clearance (POST /v1/clearances provenanceReason, clearance docs/gate.md "Unvouched
+    # commits"): `unvouched-commits` (held at tier 3 for two people) only when the one cause is commits no merged PR
+    # contains: some remain, every source PR is vouched for (confirmed, not-agent or unattested) and a human was named;
+    # `unrecorded-agent` (denied) when a source PR itself is unknown (a forged trailer, a modified or unrecorded agent PR,
+    # no answer from Clearance); nothing otherwise (no human at all), which Clearance also denies.
+    | (if .proposerKind != "unknown" then {}
+       elif ($nopr | length) > 0 and all($prs[]; .identity == "confirmed" or .identity == "not-agent" or .identity == "unattested")
+            and ($pick.rule | startswith("none") | not)
+         then {provenanceReason: "unvouched-commits", unvouchedCommits: ($nopr | unique)}
+       elif any($prs[]; .identity == "unknown") then {provenanceReason: "unrecorded-agent"}
+       else {} end) as $why
+    | . + $why
     | .agent = (if .proposerKind == "agent" and ($agents | length) > 0 then $agents[0] else null end)'
 }
