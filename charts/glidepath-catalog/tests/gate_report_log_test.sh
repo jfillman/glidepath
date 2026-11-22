@@ -204,14 +204,16 @@ fx none; run api-compat Succeeded "$RENDER_TR"
 expect "none: the plain headline" "$(tail -n +2 "$FX/posted")" '### ✅ `api-compat` passed'
 expect "none: no ConfigMap read" "$(grep -c '^get configmap' "$FX/kubectl-calls")" 0
 
-# A block: the failure text, its log excerpt without report lines, then the report.
+# A block: the failure headline, recommendation and retry line, then the report whole and last; the report replaces the log excerpt,
+# so no excerpt block, and no report line of the log, is in the comment.
 BLOCK_TR="$(taskrun tr-gate api-compat-gate compare-api pod-gate False 2026-11-20T10:00:05Z "$REAL")"
 fx block; logs pod-gate step-check "$work/gate.log"; logs pod-gate all "$work/gate.log"
 run api-compat Failed "$BLOCK_TR"
 expect "block: the failure headline" "$(sed -n 2p "$FX/posted")" '### ❌ `api-compat` failed'
-awk '/^```/{n++; next} n == 1' "$FX/posted" > "$FX/excerpt"
-expect "block: the excerpt shows the step's own last lines" "$(tail -1 "$FX/excerpt")" "verdict=warn"
-expect "block: no report line in the excerpt" "$(grep -c '^glidepath:gate-report ' "$FX/excerpt")" 0
+expect "block: no log excerpt, the report replaces it" "$(grep -c 'What happened' "$FX/posted")" 0
+# (the report's own text may quote such a line; what the comment holds besides the report has none)
+expect "block: no report line of the log outside the report" "$(sed -n "1,$(( $(wc -l < "$FX/posted") - $(wc -l < "$work/real.md") ))p" "$FX/posted" | grep -c '^glidepath:gate-report ')" 0
+expect "block: the recommendation and retry line stay" "$(grep -c '^\*\*Recommendation:\*\*\|^\*\*To retry:\*\*' "$FX/posted")" 2
 expect "block: the report follows, whole" "$(tail -n "$(wc -l < "$work/real.md")" "$FX/posted" | cmp -s - "$work/real.md" && echo same)" same
 
 # policy-validation: two TaskRuns of its Task (fetch, then evaluate); the report is in the evaluate step's log of the second.
