@@ -116,7 +116,7 @@ Each stage's own domain event, keyed by whatever stage the current one is chaine
 `charts/glidepath-app/templates/triggers/flow-triggers.yaml`'s `$eventTypeMap`):
 
 - `dev.cdevents.artifact.published.0.3.0` (from `build`) -> fires whatever's next
-- `dev.cdevents.testcaserun.finished.0.3.0`, `outcome=Succeeded` (from `test`) -> fires
+- `dev.cdevents.testcaserun.finished.0.3.0`, `outcome` `Succeeded` or `Completed` (from `test`; Tekton reports `Completed` when a task was skipped by a `when`) -> fires
   whatever's next (`test` is the one stage whose domain event fires unconditionally,
   pass or fail, so this is the only chain transition that actually needs the outcome
   check - see that file's own comment)
