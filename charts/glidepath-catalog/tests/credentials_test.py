@@ -147,11 +147,21 @@ class Redaction(unittest.TestCase):
             name = t["metadata"]["name"]
             for s in t["spec"].get("steps", []) + [t["spec"]]:
                 text = s.get("script", "")
-                for m in re.finditer(r"kubectl logs[^\n]*", text):
+                # The whole pipeline statement (backslash continuations joined): redaction must come first, and nothing
+                # before it may cut bytes (a cut could split a secret so redact_secrets no longer matches it).
+                for m in re.finditer(r"kubectl logs[^\n]*(?:\\\n[^\n]*)*", text):
                     n += 1
-                    self.assertRegex(m.group(0), r"redact_secrets \| tail -c", (name, m.group(0)[:100]))
+                    stmt = m.group(0).replace("\\\n", " ")
+                    self.assertIn("redact_secrets", stmt, (name, stmt[:100]))
+                    before, after = stmt.split("redact_secrets", 1)
+                    self.assertNotRegex(before, r"tail -c|head -c|cut |substr|log_tail", (name, "truncated before redaction", stmt[:100]))
                     self.assertIn("# BEGIN redact-secrets", text, name)
-        self.assertGreaterEqual(n, 4)
+                # log_tail (comment-pr-check-result) only ever receives a pod name and reads the log itself, redacted;
+                # nothing may feed it raw text, and no other function may cut a log by bytes.
+                self.assertNotRegex(text, r"\|\s*log_tail", (name, "log_tail fed by a pipe"))
+                for m in re.finditer(r"log_tail\(\) \{.*?\n        \}", text, re.S):
+                    self.assertEqual(len(re.findall(r"kubectl logs", m.group(0))), 1, name)
+        self.assertGreaterEqual(n, 3)
 
 
 if __name__ == "__main__":
