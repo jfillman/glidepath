@@ -131,6 +131,13 @@ gitops-backstage#159: every task and `comment-pr` succeeded, message "tasks fail
 policy-validation), 19m/4m/23m (image-scan), 17m/4m/21m (provenance), 12m/4m/16m (values), each the
 old `tasks` plus 4m for `finally` plus 2m for a loaded cluster.
 
+**App-repo checks follow the same rule (I-85, 2026-11-23).** `cicd-validate` ran `PipelineRunTimeout` (red) with its
+check succeeded: `comment-pr` took 3m21s on a loaded cluster and ended past the old 5m `tasks`. cicd-validate is now
+9m/4m/13m (check ~2.5m, rounded to 3m, + finally 4m + 2m headroom); agent-definitions and both agent-gates templates
+are 11m/4m/15m (their old 5m check budget + 4m + 2m). `charts/glidepath-app/tests/onboarding_timeouts_test.py`
+(app-chart-ci) fails if any onboarding template whose Pipeline has a `finally` omits one of the three or breaks
+`tasks >= finally` and `pipeline >= tasks + finally`. Repos get the change by an onboarding resync.
+
 A new gate's onboarding template must set all three, not just `pipeline` - copy the
 pattern from `pull-request-sast.yaml` or, if the real check genuinely needs more room (see
 `pull-request-image-scan.yaml` for why Trivy scans got more), size `tasks` to what the check

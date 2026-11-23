@@ -35,6 +35,8 @@ spec:
   taskRunTemplate:
     serviceAccountName: pipeline-runner
   timeouts:
-    tasks: "5m"
+    # Tekton counts `finally` against `tasks` (release-guardrails.md "Timeouts: always split tasks/finally", I-85).
+    # tasks = the old 5m check budget + finally 4m + 2m headroom; pipeline = tasks + finally.
+    tasks: "11m"
     finally: "4m"
-    pipeline: "10m"
+    pipeline: "15m"
