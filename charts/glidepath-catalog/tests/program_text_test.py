@@ -195,7 +195,7 @@ class Guards(unittest.TestCase):
             open(cicd, "w").write("deploy:\n  chart: {repoURL: 'https://github.com/o/c', path: x}\n  environments:\n    - name: prod\n      chart: {path: y}\n")
             for task, step in GATE_FETCH.items():
                 text = [s for s in TASKS[task]["spec"]["steps"] if s["name"] == step][0]["script"]
-                m = re.search(r"ENV_NAME=\"\$\{env\}\" yq -o json '(.*?)' 2>/dev/null", text, re.S)
+                m = re.search(r"ENV_NAME=\"\$\{env\}\" yq -o json '(.*?)'\)\"", text, re.S)
                 self.assertIsNotNone(m, task)
                 env = dict(os.environ, ENV_NAME=exploit, X=secret)
                 p = subprocess.run(["yq", "-o", "json", m.group(1), cicd], capture_output=True, text=True, env=env)

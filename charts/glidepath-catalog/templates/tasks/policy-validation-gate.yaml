@@ -241,9 +241,16 @@ spec:
         if [[ -f cicd.yaml ]]; then
           cicd="$(cat cicd.yaml)"
         else
-          app_token="$(github_app_installation_token "${owner}" "${APP_NAME}" 2>/dev/null || true)"
-          cicd="$(curl -fsSL -H "Authorization: Bearer ${app_token}" -H "Accept: application/vnd.github.raw" \
-            "https://api.github.com/repos/${owner}/${APP_NAME}/contents/cicd.yaml" 2>/dev/null || true)"
+          app_token="$(github_app_installation_token "${owner}" "${APP_NAME}")" \
+            || { echo "FAIL: cannot mint a read token for ${APP_NAME}; without it a private cicd.yaml reads as 404, so the chart lookup cannot run"; exit 1; }
+          # 200 = read; 404 = the app has no cicd.yaml (no chart named: the default chart); anything else (network, auth, 5xx) fails the task
+          http_code="$(curl -sSL -o /work/cicd.fetched -w '%{http_code}' -H "Authorization: Bearer ${app_token}" -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/${owner}/${APP_NAME}/contents/cicd.yaml")" || http_code=000
+          case "${http_code}" in
+            200) cicd="$(cat /work/cicd.fetched)" ;;
+            404) cicd="" ;;
+            *) echo "FAIL: reading cicd.yaml of ${APP_NAME} failed (HTTP ${http_code}); the chart lookup cannot tell the default chart from an unreadable one"; exit 1 ;;
+          esac
         fi
         target="$(echo "${cicd}" | yq '.deploy.target // ""' 2>/dev/null || true)"
         [[ -z "${target}" || "${target}" == null ]] && target=k8s-rollout
@@ -259,19 +266,26 @@ spec:
         # environment's chart over deploy.chart over the catalog default. "default" = the chart baked into the
         # validator image at the default chart's pinned revision.
         mkdir -p /work/charts /work/policies
+        # the default chart comes from these inputs: an unset one fails the task, it is never read as "the default chart"
+        for v in DEFAULT_CHART_REPO_URL DEFAULT_CHART_PATH DEFAULT_CHART_REVISION; do
+          [[ -n "${!v:-}" ]] || { echo "FAIL: ${v} is not set (catalog values defaultChart.*): the default chart is unknown, so the gate will not guess which chart is rendered"; exit 1; }
+        done
         : > /work/plan.txt
         n=0
         while IFS='|' read -r cluster env; do
           [[ -n "${cluster}" ]] || continue
           chart_dir=default
           # An environment deploy.environments does not list gets deploy.chart (the selector used to yield nothing for it, so the default chart).
-          resolved="$(echo "${cicd}" | ENV_NAME="${env}" yq -o json '{"app": (.deploy.chart // {}), "env": ([(.deploy.environments // [])[] | select(.name == strenv(ENV_NAME)) | .chart // {}] | .[0] // {})}' 2>/dev/null \
-            | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" --arg v "${DEFAULT_CHART_REVISION}" '
+          spec="$(echo "${cicd}" | ENV_NAME="${env}" yq -o json '{"app": (.deploy.chart // {}), "env": ([(.deploy.environments // [])[] | select(.name == strenv(ENV_NAME)) | .chart // {}] | .[0] // {})}')" \
+            || { echo "FAIL: cicd.yaml could not be read for the chart lookup of environment ${env} (deploy.chart / deploy.environments[].chart); a failed lookup is not the default chart"; exit 1; }
+          resolved="$(echo "${spec}" | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" --arg v "${DEFAULT_CHART_REVISION}" '
                 def over($b; $o): if ($o.repoURL // "") != "" then $o
                   else $b + ($o | with_entries(select(.value != null and .value != "")))
                     | (if ($o.path // "") != "" then del(.chart) elif ($o.chart // "") != "" then del(.path) else . end) end;
-                over(over({repoURL: $r, path: $p, targetRevision: $v}; .app); .env)' 2>/dev/null || true)"
-          if [[ -n "${resolved}" && "$(echo "${resolved}" | jq -r --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" --arg v "${DEFAULT_CHART_REVISION}" \
+                over(over({repoURL: $r, path: $p, targetRevision: $v}; .app); .env)')" \
+            || { echo "FAIL: the chart lookup for environment ${env} failed (deploy.chart / deploy.environments[].chart, or the DEFAULT_CHART_* inputs); a failed lookup is not the default chart"; exit 1; }
+          [[ -n "${resolved}" ]] || { echo "FAIL: the chart lookup for ${env} returned nothing (cicd.yaml deploy.chart / deploy.environments[].chart, or the DEFAULT_CHART_* inputs); a failed lookup is not the default chart"; exit 1; }
+          if [[ "$(echo "${resolved}" | jq -r --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" --arg v "${DEFAULT_CHART_REVISION}" \
                '.repoURL != $r or (.chart // "") != "" or .path != $p or (.targetRevision // "") != $v')" == "true" ]]; then
             n=$((n + 1))
             repo_url="$(echo "${resolved}" | jq -r .repoURL)"; rev="$(echo "${resolved}" | jq -r '.targetRevision // "main"')"

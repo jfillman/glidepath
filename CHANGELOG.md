@@ -4,6 +4,11 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### The gates' chart lookup fails closed (I-57)
+
+- `clearance-gate`, `policy-validation-gate` and `validate-values` discarded the chart lookup's output and errors (`2>/dev/null || true`) and read an empty result as "the default chart" (the W-49 builder hit it in a test, glidepath#291). A lookup error, an empty result, or an empty `DEFAULT_CHART_REPO_URL`/`DEFAULT_CHART_PATH`/`DEFAULT_CHART_REVISION` input now fails the task with a message naming the input or setting at fault. The app's `cicd.yaml` read feeding the lookup is fail-closed too (CodeRabbit): HTTP 200 is read, 404 is an app without a `cicd.yaml` (the default chart, as before), and any other failure (network, auth, 5xx) fails the task. So does a read token that cannot be minted (CodeRabbit): without one a private `cicd.yaml` answers 404, which would read as absent. The token broker can flake under hangar-dev load (I-54); that now fails the gate closed, and `/retest` recovers it instead of reading as an empty `cicd.yaml`. An environment whose `cicd.yaml` names no chart is unchanged: it is the default chart. The real Tasks always set these inputs, so nothing changes today.
+- docs/admin/release-guardrails.md, "The values gate". Test: `default_chart_revision_test.sh` section 4 (lookup error, unset input, valid "no chart").
+
 ### The default chart is the cluster default at its pinned revision (W-49)
 
 - `clearance-gate`, `policy-validation-gate` and `validate-values` treated an environment whose chart names the default chart's repository and path as the default chart whatever its `targetRevision`, and rendered or validated it with the chart baked into the validator image (glidepath#289, CodeRabbit). It failed closed (the rendered tree does not match at sync), but the check was wrong. The default chart is now the default repository, path **and** `defaultChart.targetRevision` (as `glidepath-app.isDefaultChart` already compares); another revision is an own chart, fetched at that revision and rendered with it, as any own chart is. A chart spec that changes only `path` now inherits the default revision instead of fetching `main`, as Argo CD renders it.
