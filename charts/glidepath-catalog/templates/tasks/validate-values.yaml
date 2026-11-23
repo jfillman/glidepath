@@ -167,7 +167,8 @@ spec:
         if [[ -f cicd.yaml ]]; then
           cicd="$(cat cicd.yaml)"
         elif [[ -n "${APP_NAME}" ]]; then
-          app_token="$(github_app_installation_token "${owner}" "${APP_NAME}" 2>/dev/null || true)"
+          app_token="$(github_app_installation_token "${owner}" "${APP_NAME}")" \
+            || { echo "FAIL: cannot mint a read token for ${APP_NAME}; without it a private cicd.yaml reads as 404, so the chart lookup cannot run"; exit 1; }
           # 200 = read; 404 = the app has no cicd.yaml (no chart named: the default chart); anything else (network, auth, 5xx) fails the task
           http_code="$(curl -sSL -o /work/cicd.fetched -w '%{http_code}' -H "Authorization: Bearer ${app_token}" -H "Accept: application/vnd.github.raw" \
             "https://api.github.com/repos/${owner}/${APP_NAME}/contents/cicd.yaml")" || http_code=000

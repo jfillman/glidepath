@@ -131,5 +131,29 @@ REVOVR="" EXPECT_FAIL=1 vv vv-unset 'deploy: {}' > /dev/null
 failed_naming "values: an unset DEFAULT_CHART_REVISION: the task fails, naming the input" "$d/vv-unset/rc" "$d/vv-unset/loop.log" 'DEFAULT_CHART_REVISION is not set'
 expect "values: a valid 'no chart' is still validated by the image" "$(vv vv-nochart 'deploy: {}')" kept
 
+# --- 5. the cicd.yaml read: a token that cannot be minted fails the task (CodeRabbit); 404 only ever means "no cicd.yaml" -------------
+# The read as each Task carries it, from the rendered script, with the token helper and curl stubbed (no network).
+for t in clearance-gate policy-validation-gate validate-values; do
+  case "${t}" in clearance-gate) step=fetch ;; policy-validation-gate) step=fetch ;; validate-values) step=clone-and-list ;; esac
+  yq ".spec.steps[] | select(.name == \"${step}\") | .script" "$d/${t}.yaml" | awk '/app_token="\$\(github_app_installation_token/{p=1} p{print} p && /^ *esac$/{exit}' > "$d/${t}-read.sh"
+  [[ -s "$d/${t}-read.sh" ]] || { echo "FAIL ${t}: the cicd.yaml read was not found"; fail=1; continue; }
+  sed 's#/work/#'"$d/${t}"'-w/#g' "$d/${t}-read.sh" > "$d/${t}-read2.sh"; mkdir -p "$d/${t}-w"
+  run_read() { # <mint rc> <http code>: prints "rc=<rc> cicd=<value>"; the curl stub records that it ran
+    ( cd "$d" && owner=o APP_NAME=app cicd=x CURLED="$d/${t}-curled"; rm -f "${CURLED}"
+      export owner APP_NAME CURLED MINT_RC="$1" CODE="$2"
+      bash -c 'set -euo pipefail
+        github_app_installation_token() { [[ "${MINT_RC}" == 0 ]] && echo tok; }
+        curl() { echo ran > "${CURLED}"; local o=""; while [[ $# -gt 0 ]]; do [[ "$1" == -o ]] && o="$2"; shift; done; : > "${o}"; echo "${CODE}"; }
+        source "$1"; echo "cicd=[${cicd}]"' _ "$d/${t}-read2.sh" ) 2>&1 | tr '\n' ' '
+  }
+  out="$(run_read 1 200)"
+  [[ "${out}" == *"cannot mint a read token"* && "${out}" != *"cicd=["* && ! -e "$d/${t}-curled" ]] && echo "ok   ${t}: a token that cannot be minted fails the task, before any request" \
+    || { echo "FAIL ${t}: mint failure: ${out}"; fail=1; }
+  out="$(run_read 0 404)"
+  expect "${t}: a 404 with a token is no cicd.yaml (the default chart)" "${out}" "cicd=[] "
+  out="$(run_read 0 503)"
+  [[ "${out}" == *"HTTP 503"* && "${out}" != *"cicd=["* ]] && echo "ok   ${t}: a 5xx fails the task" || { echo "FAIL ${t}: 503: ${out}"; fail=1; }
+done
+
 if (( fail )); then echo "FAILED${KEEP:+ (kept $d)}"; exit 1; fi
 echo "PASS default_chart_revision_test"
