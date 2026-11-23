@@ -101,7 +101,7 @@ check delivered "exit 0" eq "$(cat "$FX/rc")" 0
 check delivered "one send" eq "$(count "$FX/sends")" 1
 check delivered "one next-stage run" eq "$(count "$FX/prs")" 1
 check delivered "logs the confirmation" grep -q "delivery confirmed: next stage app-flight-api-cicd/ci-3-release-" "$FX/out"
-check delivered "every Kubernetes read has a request timeout" bash -c '[[ -s "$1" ]] && ! grep -v -- "--request-timeout=" "$1"' _ "$FX/kubectl"
+check delivered "every Kubernetes read has a bounded request timeout" bash -c '[[ -s "$1" ]] && ! grep -v -E -- "--request-timeout=([1-9]|10)s" "$1"' _ "$FX/kubectl"
 
 # 2. The I-68 failure: the first two deliveries reach no Trigger. Re-sent until the run exists, exactly one run.
 new_fx lost; echo 2 > "$FX/lose"; run_case lost true Completed '{"outcome":"Completed"}'

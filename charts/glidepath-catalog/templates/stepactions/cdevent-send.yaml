@@ -248,8 +248,8 @@ spec:
     resends="${CONFIRM_RESENDS}"; [[ "${resends}" =~ ^[0-9]+$ ]] || resends=3
     poll="${CONFIRM_POLL_SECONDS:-3}"
 
-    find_successor() {
-      kubectl get pipelinerun --request-timeout=10s -n "${NAMESPACE}" -l "hangar.io/flow=${successor_flow},hangar.io/step-index=${successor_index}" \
+    find_successor() {   # find_successor <request-timeout-seconds>
+      kubectl get pipelinerun --request-timeout="${1}s" -n "${NAMESPACE}" -l "hangar.io/flow=${successor_flow},hangar.io/step-index=${successor_index}" \
         -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
         | while IFS= read -r n; do
             if [[ "${n}" == "${want_prefix}"*"${want_suffix}" ]]; then echo "${n}"; break; fi
@@ -267,24 +267,26 @@ spec:
       fi
       [[ "${sends}" -eq 1 ]] && echo "  content: ${content}"
       window=$(( wait_s * sends ))
-      # The window ends on whichever comes first: the sleeps counted, or wall-clock time (bash's SECONDS), so slow
-      # Kubernetes reads (up to their 10s request timeout each) cannot stretch the total past the documented 5 minutes.
+      # Every read and sleep is capped at the time left in this window, measured as the larger of the sleeps counted and
+      # wall-clock time (bash's SECONDS), so slow Kubernetes reads cannot stretch the total past the documented 5 minutes.
       waited=0
       window_start="${SECONDS}"
-      while (( waited < window && SECONDS - window_start < window )); do
-        found="$(find_successor)"
+      while :; do
+        elapsed=$(( SECONDS - window_start )); (( waited > elapsed )) && elapsed="${waited}"
+        left=$(( window - elapsed ))
+        (( left > 0 )) || break
+        found="$(find_successor "$(( left < 10 ? left : 10 ))")"
         if [[ -n "${found}" ]]; then
           echo "delivery confirmed: next stage ${NAMESPACE}/${found} exists (after ${sends} send(s))"
           exit 0
         fi
-        sleep "${poll}"
-        waited=$(( waited + poll ))
+        elapsed=$(( SECONDS - window_start )); (( waited > elapsed )) && elapsed="${waited}"
+        left=$(( window - elapsed ))
+        (( left > 0 )) || break
+        nap=$(( left < poll ? left : poll ))
+        sleep "${nap}"
+        waited=$(( waited + nap ))
       done
-      found="$(find_successor)"
-      if [[ -n "${found}" ]]; then
-        echo "delivery confirmed: next stage ${NAMESPACE}/${found} exists (after ${sends} send(s))"
-        exit 0
-      fi
       if (( sends > resends )); then
         echo "next stage never started: no PipelineRun ${want_prefix}<stage>${want_suffix} in ${NAMESPACE} (flow ${successor_flow}, step ${successor_index}) after ${sends} sends of ${EVENT_TYPE} id ${event_id} - the chain is broken here. Search the log of the EventListener el-cdevents-broker (namespace platform-system) for this event id, then re-run this stage." >&2
         exit 1
