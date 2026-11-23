@@ -19,7 +19,7 @@ CDEvent therefore either creates the PipelineRun once or hits a harmless
 `AlreadyExists`. This detector covers the opposite failure: a stage finishing and
 **nothing** happening next.
 
-**Since I-68 the sending stage confirms delivery itself.** stage-debrief's `domain-event` step waits for the next PipelineRun, re-sends the same event while it is missing, and fails the stage when it never appears (see [chaining.md](chaining.md), "Delivery confirmation"). This detector remains the backstop for a stage whose debrief never ran.
+**Since I-68 the sending stage confirms delivery itself.** stage-debrief's `domain-event` step waits for the next PipelineRun, re-sends the same event while it is missing, and fails the stage when it never appears (see [chaining.md](chaining.md), "Delivery confirmation"). This detector remains the backstop for a stage whose debrief never ran, and for a send that fell back to fire-and-forget: when the step cannot read its own PipelineRun it sends once without confirming, so a lost event can still leave a successful stage with no successor.
 
 **Queued runs are covered by a second rule**, below ("Queue stalls"). The chain rule above only reads PipelineRuns that
 succeeded with a completion time, so it never flags a queued run and never cancels anything.

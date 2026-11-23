@@ -1397,7 +1397,7 @@
     {
       "id": "ChainNextStageMissing",
       "match": "next stage never started: no PipelineRun",
-      "hint": "The stage's own work succeeded, but the flow's next stage was never created, even after its event was re-sent with the same id (stage-debrief's domain-event step). The broker or its interceptors dropped every delivery. Search the broker's log for the event id the step names (kubectl logs -n platform-system deploy/el-cdevents-broker), fix what it shows, then re-run this stage. Nothing in cicd.yaml causes this."
+      "hint": "The stage's own work succeeded, but the flow's next stage was never created, even after its event was re-sent with the same id (stage-debrief's domain-event step). The broker or its interceptors dropped every delivery. Search the log of the EventListener el-cdevents-broker (namespace platform-system) for the event id the step names, fix what it shows, then re-run this stage. Nothing in cicd.yaml causes this."
     }
   ],
   "api": {

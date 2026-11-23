@@ -112,7 +112,7 @@ event type (`sha256(<run>:<type>)[:8]`), so every send from one run carries the 
 TriggerTemplate gives the PipelineRun a fixed `metadata.name`, never `generateName`. The name comes from that id and
 the chain slug, so a second delivery's create is refused by the API server with `AlreadyExists`, whether it is a
 re-send or a slow first delivery racing one. The other consumers of these four event types are also idempotent:
-glidepath-api's events tap dedupes by `context.source` + `context.id`, and no other Trigger matches them.
+glidepath-api's events tap dedupes by `context.source` + `context.id`, and no other Trigger matches them. The refusal holds while the first run exists. Runs are kept at least an hour after they finish (Tekton Results' grace period on hangar-dev), and re-sends stop after 5 minutes. A delivery that arrived after the run was deleted could create it again. None is expected, since the sink finishes with an event within its 30s timeout handler.
 `charts/glidepath-catalog/tests/chain_delivery_test.sh` runs the StepAction against a fake broker that loses, delays
 and refuses deliveries, and checks this.
 
@@ -123,7 +123,8 @@ Triggers v0.37 has no per-interceptor timeout or retry setting. The sink's HTTP-
 that the Tekton operator owns, outside this repo, and longer timeouts would only lower the rate.
 
 The stalled-pipeline detector stays. It covers what this step cannot see: a debrief that never ran (pod evicted, node
-lost), and older catalog runs.
+lost), a send that fell back to fire-and-forget because the step could not read its own PipelineRun, and older catalog
+runs. Every Kubernetes read in the step has `--request-timeout=10s`, so a stalled API connection cannot block the send.
 
 ## Why an Application is (at least) two namespaces, not one
 

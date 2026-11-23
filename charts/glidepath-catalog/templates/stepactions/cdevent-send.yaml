@@ -190,6 +190,8 @@ spec:
       content="$(jq -c --arg o "${outcome}" '. + {outcome: $o}' <<<"${content}")"
     fi
 
+    # Every Kubernetes read below has --request-timeout: kubectl has no deadline by default, and a stalled API
+    # connection must neither block the first send nor stop the re-sends and the final verdict.
     # Is a next stage expected to start from this event? Only asked when confirm-successor is "true". The answer comes
     # from this run itself (its flow labels and is-flow-terminal spec param, the same facts the stalled-pipeline detector
     # reads), never from a parameter. Anything that cannot be read leaves "no", which is the old fire-and-forget send.
@@ -198,7 +200,7 @@ spec:
       outcome_in_content="$(jq -r '.outcome // ""' <<<"${content}" 2>/dev/null || true)"
       run_json=""
       for _ in 1 2 3; do
-        run_json="$(kubectl get pipelinerun -n "${NAMESPACE}" "${TEKTON_PIPELINE_RUN}" -o json 2>/dev/null)" && break
+        run_json="$(kubectl get pipelinerun --request-timeout=10s -n "${NAMESPACE}" "${TEKTON_PIPELINE_RUN}" -o json 2>/dev/null)" && break
         run_json=""
         sleep 2
       done
@@ -247,7 +249,7 @@ spec:
     poll="${CONFIRM_POLL_SECONDS:-3}"
 
     find_successor() {
-      kubectl get pipelinerun -n "${NAMESPACE}" -l "hangar.io/flow=${successor_flow},hangar.io/step-index=${successor_index}" \
+      kubectl get pipelinerun --request-timeout=10s -n "${NAMESPACE}" -l "hangar.io/flow=${successor_flow},hangar.io/step-index=${successor_index}" \
         -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
         | while IFS= read -r n; do
             if [[ "${n}" == "${want_prefix}"*"${want_suffix}" ]]; then echo "${n}"; break; fi
@@ -281,7 +283,7 @@ spec:
         exit 0
       fi
       if (( sends > resends )); then
-        echo "next stage never started: no PipelineRun ${want_prefix}<stage>${want_suffix} in ${NAMESPACE} (flow ${successor_flow}, step ${successor_index}) after ${sends} sends of ${EVENT_TYPE} id ${event_id} - the chain is broken here. Check the broker (kubectl logs -n platform-system deploy/el-cdevents-broker) for this event id, then re-run this stage." >&2
+        echo "next stage never started: no PipelineRun ${want_prefix}<stage>${want_suffix} in ${NAMESPACE} (flow ${successor_flow}, step ${successor_index}) after ${sends} sends of ${EVENT_TYPE} id ${event_id} - the chain is broken here. Search the log of the EventListener el-cdevents-broker (namespace platform-system) for this event id, then re-run this stage." >&2
         exit 1
       fi
       echo "next stage ${want_prefix}<stage>${want_suffix} not seen after ${window}s - re-sending the same event (same id, so a duplicate run is impossible)"
