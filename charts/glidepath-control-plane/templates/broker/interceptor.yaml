@@ -149,8 +149,29 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
+          # Requests/limit (I-69): with no requests the pod was BestEffort on a loaded single-node
+          # lab. A memory limit only (the chart's convention, as glidepath-api); never a CPU limit,
+          # which would throttle the handler's TokenReview/GitHub calls.
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          # Probes (I-69). /healthz is trivial; the failures were node-wide stalls (the default
+          # 1s timeout lost to scheduling pauses), and each liveness kill made the Tekton
+          # EventListener's interceptor calls time out (dropped stage-chaining events, I-68).
+          # Liveness: 5s timeout x 6 failures at 20s = a wedged process is restarted after ~2
+          # minutes, a stall of seconds is ridden out. Readiness is quicker (3s, 3 x 10s) and only
+          # takes the pod out of the Service; it never restarts it. The old Deployment had none.
+          # No startupProbe: the binary listens within milliseconds, nothing to wait for.
           livenessProbe:
             httpGet: { path: /healthz, port: http, scheme: HTTP }
+            timeoutSeconds: 5
+            periodSeconds: 20
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: { path: /healthz, port: http, scheme: HTTP }
+            timeoutSeconds: 3
+            periodSeconds: 10
+            failureThreshold: 3
           volumeMounts:
             - name: github-app-creds
               mountPath: /etc/github-app
