@@ -102,6 +102,24 @@ spec:
       type: string
       default: ""
       description: The calling Pipeline's $(tasks.status). Only read when only-on-success is "true".
+    - name: confirm-successor
+      type: string
+      default: "false"
+      description: >-
+        "true" makes delivery at-least-once (docs/admin/chaining.md, "Delivery confirmation"): after the send, when this
+        run's flow has a next step (labels hangar.io/flow and hangar.io/step-index, spec param is-flow-terminal not "true",
+        status Succeeded or Completed), wait for that step's PipelineRun and re-send the SAME event (same context.id) if it
+        does not appear. The next step's Trigger names its PipelineRun from the event id, so a re-send can never start a
+        second run. Exits non-zero when the next step never appears, so the stage reports the broken chain. Only
+        stage-debrief's domain-event step sets it.
+    - name: confirm-wait-seconds
+      type: string
+      default: "30"
+      description: How long each attempt waits for the next step's PipelineRun before re-sending. Attempt n waits n times this.
+    - name: confirm-resends
+      type: string
+      default: "3"
+      description: How many times the event is re-sent before the step gives up and fails.
     - name: token-volume
       type: string
       description: Name of the calling Task's projected-ServiceAccount-token volume (audience cdevents-broker, path broker-token) - a StepAction volumeMount must name a param, the Task owns the volume. send-cdevent.yaml/stage-debrief.yaml both declare it as `broker-token`.
@@ -142,6 +160,12 @@ spec:
       value: $(params.subject-content-json-b64)
     - name: PLATFORM_CONFIG_JSON_B64
       value: $(params.config-json-b64)
+    - name: CONFIRM_SUCCESSOR
+      value: $(params.confirm-successor)
+    - name: CONFIRM_WAIT_SECONDS
+      value: $(params.confirm-wait-seconds)
+    - name: CONFIRM_RESENDS
+      value: $(params.confirm-resends)
   script: |
     #!/usr/bin/env bash
     set -euo pipefail
@@ -166,6 +190,113 @@ spec:
       content="$(jq -c --arg o "${outcome}" '. + {outcome: $o}' <<<"${content}")"
     fi
 
-    broker_ack="$(cdevent_send "${EVENT_TYPE}" "${SUBJECT_TYPE}" "${TEKTON_PIPELINE_RUN}" "${content}")"
-    echo "CDEvent sent: ${EVENT_TYPE} (subject ${SUBJECT_TYPE}) for ${TEKTON_PIPELINE_RUN} - broker ack $(jq -r '.eventID // "ok"' <<<"${broker_ack}" 2>/dev/null || echo ok)"
-    echo "  content: ${content}"
+    # Every Kubernetes read below has --request-timeout: kubectl has no deadline by default, and a stalled API
+    # connection must neither block the first send nor stop the re-sends and the final verdict.
+    # Is a next stage expected to start from this event? Only asked when confirm-successor is "true". The answer comes
+    # from this run itself (its flow labels and is-flow-terminal spec param, the same facts the stalled-pipeline detector
+    # reads), never from a parameter. Anything that cannot be read leaves "no", which is the old fire-and-forget send.
+    successor_flow="" successor_index=""
+    if [[ "${CONFIRM_SUCCESSOR}" == "true" ]]; then
+      outcome_in_content="$(jq -r '.outcome // ""' <<<"${content}" 2>/dev/null || true)"
+      run_json=""
+      for _ in 1 2 3; do
+        run_json="$(kubectl get pipelinerun --request-timeout=10s -n "${NAMESPACE}" "${TEKTON_PIPELINE_RUN}" -o json 2>/dev/null)" && break
+        run_json=""
+        sleep 2
+      done
+      flow="" index="" terminal=""
+      if [[ -n "${run_json}" ]]; then
+        flow="$(jq -r '.metadata.labels["hangar.io/flow"] // ""' <<<"${run_json}")"
+        index="$(jq -r '.metadata.labels["hangar.io/step-index"] // ""' <<<"${run_json}")"
+        terminal="$(jq -r '[(.spec.params // [])[] | select(.name == "is-flow-terminal") | .value][0] // "false"' <<<"${run_json}")"
+      fi
+      if [[ -z "${run_json}" ]]; then
+        echo "delivery confirmation: could not read PipelineRun ${TEKTON_PIPELINE_RUN} - sending without confirmation" >&2
+      elif [[ -z "${flow}" || ! "${index}" =~ ^[0-9]+$ ]]; then
+        echo "delivery confirmation: ${TEKTON_PIPELINE_RUN} is not a step of a flow (no hangar.io/flow and step-index labels) - no next stage to confirm"
+      elif [[ "${terminal}" == "true" ]]; then
+        echo "delivery confirmation: ${TEKTON_PIPELINE_RUN} is its flow's last step - no next stage to confirm"
+      elif [[ "${PIPELINE_STATUS}" != "Succeeded" && "${PIPELINE_STATUS}" != "Completed" ]]; then
+        echo "delivery confirmation: stage status is '${PIPELINE_STATUS}' - the next stage does not start, nothing to confirm"
+      elif [[ -n "${outcome_in_content}" && "${outcome_in_content}" != "Succeeded" && "${outcome_in_content}" != "Completed" ]]; then
+        echo "delivery confirmation: the event's outcome is '${outcome_in_content}' - the next stage does not start, nothing to confirm"
+      else
+        successor_flow="${flow}"
+        successor_index="$(( index + 1 ))"
+      fi
+    fi
+
+    if [[ -z "${successor_flow}" ]]; then
+      broker_ack="$(cdevent_send "${EVENT_TYPE}" "${SUBJECT_TYPE}" "${TEKTON_PIPELINE_RUN}" "${content}")"
+      echo "CDEvent sent: ${EVENT_TYPE} (subject ${SUBJECT_TYPE}) for ${TEKTON_PIPELINE_RUN} - broker ack $(jq -r '.eventID // "ok"' <<<"${broker_ack}" 2>/dev/null || echo ok)"
+      echo "  content: ${content}"
+      exit 0
+    fi
+
+    # At-least-once delivery (I-68). The broker answers 202 before any Trigger runs, so its ack proves nothing: under load
+    # an interceptor call can time out and the next stage is silently never created. So wait for the next step's
+    # PipelineRun and re-send while it is missing. Every send carries the same context.id (cdevents.sh derives it from
+    # this run's name and the event type), and the next step's Trigger names its PipelineRun
+    # <flow>-<index>-<stage>-<chain_slug>-<context.id> (flow-triggers.yaml), so a re-send that races a slow first delivery
+    # is refused by the API server as AlreadyExists: at most one next-stage run, however many sends land.
+    # Must stay the same expression as cdevents.sh's event_id (tested by chain_delivery_test.sh).
+    event_id="$(printf '%s' "${TEKTON_PIPELINE_RUN}:${EVENT_TYPE}" | sha256sum | cut -d' ' -f1 | cut -c1-8)"
+    slug="$(chain_id_to_slug "${PLATFORM_CHAIN_ID}")"
+    want_prefix="${successor_flow}-${successor_index}-"
+    want_suffix="-${slug}-${event_id}"
+    wait_s="${CONFIRM_WAIT_SECONDS}"; [[ "${wait_s}" =~ ^[0-9]+$ && "${wait_s}" -gt 0 ]] || wait_s=30
+    resends="${CONFIRM_RESENDS}"; [[ "${resends}" =~ ^[0-9]+$ ]] || resends=3
+    poll="${CONFIRM_POLL_SECONDS:-3}"
+
+    find_successor() {   # find_successor <request-timeout-seconds>
+      kubectl get pipelinerun --request-timeout="${1}s" -n "${NAMESPACE}" -l "hangar.io/flow=${successor_flow},hangar.io/step-index=${successor_index}" \
+        -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+        | while IFS= read -r n; do
+            if [[ "${n}" == "${want_prefix}"*"${want_suffix}" ]]; then echo "${n}"; break; fi
+          done || true
+      return 0
+    }
+
+    sends=0
+    while :; do
+      sends=$(( sends + 1 ))
+      if broker_ack="$(cdevent_send "${EVENT_TYPE}" "${SUBJECT_TYPE}" "${TEKTON_PIPELINE_RUN}" "${content}")"; then
+        echo "CDEvent sent (send ${sends}): ${EVENT_TYPE} (subject ${SUBJECT_TYPE}, id ${event_id}) for ${TEKTON_PIPELINE_RUN} - broker ack $(jq -r '.eventID // "ok"' <<<"${broker_ack}" 2>/dev/null || echo ok)"
+      else
+        echo "CDEvent send ${sends} of ${EVENT_TYPE} (id ${event_id}) failed at the broker - will check for the next stage and re-send" >&2
+      fi
+      [[ "${sends}" -eq 1 ]] && echo "  content: ${content}"
+      window=$(( wait_s * sends ))
+      # Every read and sleep is capped at the time left in this window, measured as the larger of the sleeps counted and
+      # wall-clock time (bash's SECONDS), so slow Kubernetes reads cannot stretch the total past the documented 5 minutes.
+      waited=0
+      window_start="${SECONDS}"
+      while :; do
+        elapsed=$(( SECONDS - window_start )); (( waited > elapsed )) && elapsed="${waited}"
+        left=$(( window - elapsed ))
+        (( left > 0 )) || break
+        found="$(find_successor "$(( left < 10 ? left : 10 ))")"
+        if [[ -n "${found}" ]]; then
+          echo "delivery confirmed: next stage ${NAMESPACE}/${found} exists (after ${sends} send(s))"
+          exit 0
+        fi
+        elapsed=$(( SECONDS - window_start )); (( waited > elapsed )) && elapsed="${waited}"
+        left=$(( window - elapsed ))
+        (( left > 0 )) || break
+        nap=$(( left < poll ? left : poll ))
+        sleep "${nap}"
+        waited=$(( waited + nap ))
+      done
+      if (( sends > resends )); then
+        # One last short read before declaring the chain broken: the window can end on a sleep, and the next run may
+        # have been created during it. Adds at most 2s to the budget.
+        found="$(find_successor 2)"
+        if [[ -n "${found}" ]]; then
+          echo "delivery confirmed: next stage ${NAMESPACE}/${found} exists (after ${sends} send(s))"
+          exit 0
+        fi
+        echo "next stage never started: no PipelineRun ${want_prefix}<stage>${want_suffix} in ${NAMESPACE} (flow ${successor_flow}, step ${successor_index}) after ${sends} sends of ${EVENT_TYPE} id ${event_id} - the chain is broken here. Search the log of the EventListener el-cdevents-broker (namespace platform-system) for this event id, then re-run this stage." >&2
+        exit 1
+      fi
+      echo "next stage ${want_prefix}<stage>${want_suffix} not seen after ${window}s - re-sending the same event (same id, so a duplicate run is impossible)"
+    done

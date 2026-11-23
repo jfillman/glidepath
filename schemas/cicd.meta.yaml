@@ -186,3 +186,10 @@ knownFailures:
       The gitops repo's .trivyignore.yaml on its default branch is invalid: every entry needs an id, a statement (the reason)
       and an expired_at (an unquoted date) no more than the configured maximum ahead (90 days by default). The check's comment
       names the entry. Fix it with a reviewed change to the default branch (a release PR's own copy is never read), then re-run the check.
+  - id: ChainNextStageMissing
+    match: 'next stage never started: no PipelineRun'
+    hint: >-
+      The stage's own work succeeded, but the flow's next stage was never created, even after its event was re-sent with
+      the same id (stage-debrief's domain-event step). The broker or its interceptors dropped every delivery. Search the log of
+      the EventListener el-cdevents-broker (namespace platform-system) for the event id the step names, fix what it shows,
+      then re-run this stage. Nothing in cicd.yaml causes this.

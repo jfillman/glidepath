@@ -4,6 +4,15 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### Stage chaining is at-least-once (I-68)
+
+- The broker acks a domain event (202) before any Trigger runs. Under load on hangar-dev an interceptor call timed out, and the next stage (for example flight-api's `ci-2-test` to `ci-3-release`) was never created, while the sender logged `broker ack`. stage-debrief's `domain-event` step now waits for the flow's next PipelineRun (`<flow>-<i+1>-<stage>-<chain_slug>-<context.id>`, selected by `hangar.io/flow` and `hangar.io/step-index`). While it is missing, the step re-sends the same event, up to 3 times, with waits of 30s, 60s, 90s and 120s (5 minutes in all).
+- No duplicate run. Every send carries the same `context.id`, and the next step's Trigger names its PipelineRun from that id, so a second create is refused with `AlreadyExists` while the first run exists. Completed runs are kept at least an hour (Tekton Results' 1h grace on hangar-dev), and re-sends stop after 5 minutes. A delivery arriving after that run was deleted could create it again; none is expected, since the sink handles an event within its 30s timeout.
+- When the next stage never starts, the step fails, and with it the stage. `explain` reports this as the new known failure `ChainNextStageMissing`.
+- No wait happens for a flow's last step, a failed or cancelled stage, or a run outside a flow.
+- New `cdevent-send` params: `confirm-successor` (default `"false"`; stage-debrief sets `"true"` for the domain event only), `confirm-wait-seconds`, and `confirm-resends`. No toolbox image change and no new RBAC: `pipeline-runner` already lists PipelineRuns.
+- Test: `charts/glidepath-catalog/tests/chain_delivery_test.sh` (catalog-ci `chain-delivery`). Docs: `docs/admin/chaining.md` "Delivery confirmation", known-gaps #46.
+
 ### cdevents-broker-auth: tolerant probes and resource requests (I-69)
 
 - The broker Deployment restarted 15-17 times on hangar-dev: its liveness probe (default 1s timeout) lost to node-wide stalls, and each restart made the Tekton EventListener's interceptor calls time out, dropping stage-chaining events (I-68). Liveness is now `timeoutSeconds: 5`, `periodSeconds: 20`, `failureThreshold: 6` (a wedged process is still restarted, after about 2 minutes). A readiness probe is new (3s timeout, 10s period, 3 failures). Requests are `cpu: 20m, memory: 32Mi`, with a `128Mi` memory limit and no CPU limit. The vendored `tekton-triggers-core-interceptors` is not patched by this repo and is unchanged.
