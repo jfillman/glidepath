@@ -5,7 +5,14 @@
 # never the proposer). The check is green once cleared; while the change holds it is red and the comment names who
 # may clear it (then `/retest clearance-gate-`). An environment that is not protected is skipped.
 #
-# Release branches only, like every release gate. Delivered only to apps whose deploy.target is k8s-rollout (the
+# Every pull request to main that changes deployable content runs it, not only release branches (owner decision I-84
+# option (a), 2026-11-23: a hand PR from any other branch, e.g. a staging replicas change, skipped the gate). Deployable
+# is decided by file name and errs on the side of running: any values*/release*/base*/kustomization* YAML anywhere, a
+# Kustomization file, or any YAML/JSON two directories deep (a manifest under <cluster>/<env>/), but nothing under
+# .tekton/ or releases/ (the onboarding boilerplate and the release ledger, which no cluster runs). A release-* branch
+# runs it whatever it changes, as before; release-record-* never does. A PR that changes no environment is green with
+# "nothing to register". The other release gates (sast, sbom, image-scan, ...) stay release-branch-only: they read the
+# release's image. Delivered only to apps whose deploy.target is k8s-rollout (the
 # registry entry's `targets`). app-name picks the app repo's cicd.yaml (the environment's chart, which environments
 # are protected) and the namespace each environment renders into.
 apiVersion: tekton.dev/v1
@@ -15,9 +22,9 @@ metadata:
   labels:
     hangar.io/app: "<APP_NAME>"
   annotations:
-    # See pull-request-sast.yaml for why this is on-cel-expression (release-branch-only)
-    # and why has() guards the pull_request field.
-    pipelinesascode.tekton.dev/on-cel-expression: 'event == "pull_request" && target_branch == "main" && source_branch.startsWith("release-") && !source_branch.startsWith("release-record-")'
+    # See pull-request-sast.yaml for why this is on-cel-expression. `files.all` is PaC's changed-file list (as in
+    # pull-request-values.yaml); tested in hack/ci/build-exemption-cel.
+    pipelinesascode.tekton.dev/on-cel-expression: 'event == "pull_request" && target_branch == "main" && !source_branch.startsWith("release-record-") && (source_branch.startsWith("release-") || files.all.exists(f, !f.startsWith(".tekton/") && !f.startsWith("releases/") && (f.matches("(values|release|base|kustomization)[^/]*\\.ya?ml$") || f.endsWith("Kustomization") || f.matches("^[^/]+/[^/]+/.+\\.(ya?ml|json)$"))))'
     pipelinesascode.tekton.dev/max-keep-runs: "5"
 spec:
   pipelineRef:

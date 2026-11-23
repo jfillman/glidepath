@@ -20,7 +20,19 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
 ## How it runs
 
 - **`.tekton/pull-request-clearance-gate.yaml`** in every gitops repo (delivered by onboarding, `targets: [k8s-rollout]`),
-  on release branches only (`release-*`, not `release-record-*`), like every release gate.
+  on **every pull request to `main` that changes deployable content**, whatever its branch (owner decision I-84 option (a),
+  2026-11-23: a hand PR from a branch not named `release-*`, such as a staging replicas change, used to skip the gate).
+  Deployable is decided by file name and errs on the side of running: any `values*`, `release*`, `base*` or
+  `kustomization*` YAML file anywhere, a `Kustomization` file, or any YAML or JSON file two directories deep (a manifest
+  under `<cluster>/<env>/`); never a file under `.tekton/` or `releases/`. A `release-*` PR runs it whatever it changes, as
+  before; a `release-record-*` PR never does. A PR whose files match but change no environment the fetch step recognises
+  is green with "nothing to register". The other release gates (sast, sbom, image-scan, provenance, ...) stay
+  release-branch-only: they read the release's image. The trigger is tested with cel-go in `hack/ci/build-exemption-cel`.
+- **A PR that is not a release** (a person's or an agent's hand edit): there is no release record for it, so the proposer is
+  the PR's author and its provenance is the agent gates' verdict on the PR (as for any PR); the tier comes from the rendered
+  diff exactly as for a release (a `replicas` change to the Rollout is tier 2, held for one owner who is not the author; a
+  comment-only values edit renders nothing new and is tier 0). The finally task `join-release` finds no release record
+  for it and writes nothing.
 - Pipeline **`clearance-gate-check`**, Task **`clearance-gate`** (`platform-catalog`), five steps:
   1. `fetch` (toolbox): the PR's base, head, author, changed files and line counts; the environments it changes
      (`<cluster>/<env>/values|release.yaml`, or a cluster's `base.yaml` = every environment on it); each environment's
