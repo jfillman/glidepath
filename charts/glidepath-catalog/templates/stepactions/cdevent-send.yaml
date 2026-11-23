@@ -267,8 +267,11 @@ spec:
       fi
       [[ "${sends}" -eq 1 ]] && echo "  content: ${content}"
       window=$(( wait_s * sends ))
+      # The window ends on whichever comes first: the sleeps counted, or wall-clock time (bash's SECONDS), so slow
+      # Kubernetes reads (up to their 10s request timeout each) cannot stretch the total past the documented 5 minutes.
       waited=0
-      while (( waited < window )); do
+      window_start="${SECONDS}"
+      while (( waited < window && SECONDS - window_start < window )); do
         found="$(find_successor)"
         if [[ -n "${found}" ]]; then
           echo "delivery confirmed: next stage ${NAMESPACE}/${found} exists (after ${sends} send(s))"
