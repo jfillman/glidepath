@@ -154,6 +154,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
       - run: charts/glidepath-catalog/tests/chain_delivery_test.sh
+      # A cancelled or stopped test run sends outcome Cancelled and never chains; a when-skipped pass still does (I-71).
+      - run: charts/glidepath-catalog/tests/cancelled_test_no_chain_test.sh
 
   post-comment:
     runs-on: ubuntu-latest

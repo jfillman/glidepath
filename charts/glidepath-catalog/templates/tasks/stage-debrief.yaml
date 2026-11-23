@@ -201,7 +201,7 @@ spec:
         case "${REQUESTED}" in
           Cancelled|CancelledRunFinally|StoppedRunFinally)
             STATUS="Cancelled"
-            echo "status: Tekton reports ${PIPELINE_STATUS}, but the run was ${REQUESTED} - reporting Cancelled (no domain event, so nothing chains)"
+            echo "status: Tekton reports ${PIPELINE_STATUS}, but the run was ${REQUESTED} - reporting Cancelled (nothing chains: no domain event, or for test an outcome of Cancelled)"
             ;;
           *) echo "status: ${STATUS}" ;;
         esac
@@ -258,6 +258,14 @@ spec:
                 else {"origin-ref": "", "origin-sha": ""} end)
             else {"origin-ref": ($a["glidepath.io/origin-ref"] // ""), "origin-sha": ($a["glidepath.io/origin-sha"] // "")} end' <<<"${RUN_JSON}" 2>/dev/null || echo '{"origin-ref":"","origin-sha":""}')"
         CONTENT="$(jq -c --argjson o "${ORIGIN}" '. + $o' <<<"${CONTENT}" 2>/dev/null || echo "${CONTENT}")"
+
+        # test's domain event fires pass or fail (domain-event-on-success-only "false"), so the skip above does not stop
+        # it: its content's outcome is the caller's $(tasks.status), Completed for a cancelled run, and the from-test
+        # Trigger chains on Completed (a passed run with a when-skipped task, I-52). So a cancelled run started the next
+        # stage (I-71). The content's outcome follows the real status too.
+        if [[ "${STATUS}" == "Cancelled" ]]; then
+          CONTENT="$(jq -c 'if has("outcome") then .outcome = "Cancelled" else . end' <<<"${CONTENT}" 2>/dev/null || echo "${CONTENT}")"
+        fi
 
         echo "domain event content: ${CONTENT}"
         printf '%s' "${IMAGE_REF}" > "$(step.results.image-ref.path)"
