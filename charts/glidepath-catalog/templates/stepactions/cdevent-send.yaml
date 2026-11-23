@@ -288,6 +288,13 @@ spec:
         waited=$(( waited + nap ))
       done
       if (( sends > resends )); then
+        # One last short read before declaring the chain broken: the window can end on a sleep, and the next run may
+        # have been created during it. Adds at most 2s to the budget.
+        found="$(find_successor 2)"
+        if [[ -n "${found}" ]]; then
+          echo "delivery confirmed: next stage ${NAMESPACE}/${found} exists (after ${sends} send(s))"
+          exit 0
+        fi
         echo "next stage never started: no PipelineRun ${want_prefix}<stage>${want_suffix} in ${NAMESPACE} (flow ${successor_flow}, step ${successor_index}) after ${sends} sends of ${EVENT_TYPE} id ${event_id} - the chain is broken here. Search the log of the EventListener el-cdevents-broker (namespace platform-system) for this event id, then re-run this stage." >&2
         exit 1
       fi

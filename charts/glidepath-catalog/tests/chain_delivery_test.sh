@@ -57,7 +57,12 @@ cat > "$work/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$FX/kubectl"
 case " $* " in
-  *" -l "*) cat "$FX/prs" "$FX/other" 2>/dev/null; exit 0 ;;
+  *" -l "*)
+    cat "$FX/prs" "$FX/other" 2>/dev/null
+    if [[ -f "$FX/appear-after-lists" ]] && (( $(grep -c -- ' -l ' "$FX/kubectl") >= $(cat "$FX/appear-after-lists") )); then
+      p="$(tail -1 "$FX/sends")"; echo "$(cat "$FX/next-prefix")-$(jq -r '.customData.platform.chain_slug' <<<"$p")-$(jq -r '.context.id' <<<"$p")"
+    fi
+    exit 0 ;;
   *" -o json"*) cat "$FX/run.json"; exit 0 ;;
 esac
 exit 1
@@ -130,6 +135,12 @@ new_fx broker; echo 1 > "$FX/broker-down"; run_case broker true Succeeded "$OK_C
 check broker "exit 0" eq "$(cat "$FX/rc")" 0
 check broker "two sends" eq "$(count "$FX/sends")" 2
 check broker "one run" eq "$(count "$FX/prs")" 1
+
+# 5b. The next run appears during the last window's final sleep: the closing read finds it instead of failing the stage.
+# 2+4+6+8 reads in the four windows (6s, 12s, 18s, 24s at a 3s poll), so the 21st is the closing read.
+new_fx lastread; echo 99 > "$FX/lose"; echo 21 > "$FX/appear-after-lists"; run_case lastread true Succeeded "$OK_CONTENT"
+check lastread "exit 0 on the closing read" eq "$(cat "$FX/rc")" 0
+check lastread "four sends" eq "$(count "$FX/sends")" 4
 
 # 6. Another chain's next-step run in the same flow and step is not this event's successor.
 new_fx other; echo 99 > "$FX/lose"; echo "ci-3-release-calm-otter-deadbeef" > "$FX/other"; run_case other true Succeeded "$OK_CONTENT"
