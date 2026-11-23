@@ -132,8 +132,20 @@ failed_naming "values: a lookup error: the task fails, naming the chart lookup" 
 REVOVR="" EXPECT_FAIL=1 vv vv-unset 'deploy: {}' > /dev/null
 failed_naming "values: an unset DEFAULT_CHART_REVISION: the task fails, naming the input" "$d/vv-unset/rc" "$d/vv-unset/loop.log" 'DEFAULT_CHART_REVISION is not set'
 # the input check does not depend on cicd.yaml being present (CodeRabbit): an absent (empty) cicd.yaml with an unset input still fails
-out="$(env DEFAULT_CHART_REPO_URL="${REPO}" DEFAULT_CHART_PATH="${CPATH}" DEFAULT_CHART_REVISION= bash -c 'set -euo pipefail; source "$1"; echo passed' _ "$d/vv-inputs.sh" 2>&1)"
-[[ "${out}" == *"DEFAULT_CHART_REVISION is not set"* && "${out}" != *passed* ]] && echo "ok   values: an unset input fails with no cicd.yaml at all" || { echo "FAIL values: input check: ${out}"; fail=1; }
+# the production block around the check, run with cicd="" (no cicd.yaml): from the input check to the end of the file loop. It fails if the
+# check is moved back inside the non-empty-cicd condition.
+awk '/^for v in DEFAULT_CHART_REPO_URL/{p=1} p{print} p && /^fi$/{exit}' "$d/vv.sh" > "$d/vv-block.sh"
+run_block() { # <repo> <path> <revision>: prints "failed: <message>" or "passed"
+  ( cd "$d" && mkdir -p vv-block-w && cd vv-block-w && : > files.txt && sed 's#/work#'"$d/vv-block-w"'#g' "$d/vv-block.sh" > block.sh
+    out="$(DEFAULT_CHART_REPO_URL="$1" DEFAULT_CHART_PATH="$2" DEFAULT_CHART_REVISION="$3" cicd="" bash -c 'set -euo pipefail; source "$1"; source "$2"; echo passed' _ "$d/vv-guards.sh" block.sh 2>&1)" && echo "${out}" || echo "failed: ${out}" )
+}
+out="$(run_block "${REPO}" "${CPATH}" "")"
+[[ "${out}" == "failed:"*"DEFAULT_CHART_REVISION is not set"* ]] && echo "ok   values: an unset input fails with no cicd.yaml at all (the production block, cicd empty)" || { echo "FAIL values: block, empty revision: ${out}"; fail=1; }
+out="$(run_block "" "${CPATH}" "${REV}")"
+[[ "${out}" == "failed:"*"DEFAULT_CHART_REPO_URL is not set"* ]] && echo "ok   ... an empty repository fails" || { echo "FAIL values: block, empty repo: ${out}"; fail=1; }
+out="$(run_block "${REPO}" "" "${REV}")"
+[[ "${out}" == "failed:"*"DEFAULT_CHART_PATH is not set"* ]] && echo "ok   ... an empty path fails" || { echo "FAIL values: block, empty path: ${out}"; fail=1; }
+expect "values: all three inputs set and no cicd.yaml: passes" "$(run_block "${REPO}" "${CPATH}" "${REV}")" "passed"
 expect "values: a valid 'no chart' is still validated by the image" "$(vv vv-nochart 'deploy: {}')" kept
 
 # --- 5. the cicd.yaml read: a token that cannot be minted fails the task (CodeRabbit); 404 only ever means "no cicd.yaml" -------------
