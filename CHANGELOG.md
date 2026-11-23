@@ -4,6 +4,11 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### App-repo checks no longer time out in `finally` (I-85)
+
+- `Glidepath / cicd-validate-` went red with `PipelineRunTimeout` ("tasks failed to finish within 5m0s") although the check succeeded: Tekton counts `finally` (`comment-pr`, 3m21s on a loaded cluster) against `timeouts.tasks`. The app-repo `cicd-validate` template now sets tasks 9m / finally 4m / pipeline 13m (was 5m/4m/10m); the app-repo `agent-definitions` and `agent-gates` templates and the gitops-repo `agent-gates` template, with the same flaw, are 11m/4m/15m (was 5m/4m/10m). The rule is `docs/admin/release-guardrails.md` "Timeouts: always split tasks/finally".
+- Test: `charts/glidepath-app/tests/onboarding_timeouts_test.py` (app-chart-ci). Existing repos get the files by an onboarding resync (`docs/admin/onboarding-mechanics.md`).
+
 ### The clearance-gate runs on every PR that changes deployable content (I-84 option (a))
 
 - A gitops repo's `.tekton/pull-request-clearance-gate.yaml` started only for `release-*` branches, so a hand PR from any other branch (a staging replicas change from a `<user>-patch-1` branch) ran no Clearance gate. It now starts for every PR to `main` that is not `release-record-*` and either comes from a `release-*` branch (unchanged) or changes deployable content: any `values*`, `release*`, `base*` or `kustomization*` YAML file, a `Kustomization` file, or any YAML or JSON file two directories deep, never under `.tekton/` or `releases/`. The filter errs on the side of running; a PR that changes no environment is green with "nothing to register".
