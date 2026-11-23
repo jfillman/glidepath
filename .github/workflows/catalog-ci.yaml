@@ -19,6 +19,8 @@ on:
       - ".github/workflows/catalog-ci.yaml"
       - "schemas/**"
       - "catalog/lib/chain-slug.sh"
+      - "catalog/lib/cdevents.sh"
+      - "charts/glidepath-app/templates/triggers/flow-triggers.yaml"
       - "hack/ci/chain_slug_test.sh"
       - "hack/ci/build-exemption-cel/**"
       - "hack/apply-guardrail-ruleset.sh"
@@ -31,6 +33,8 @@ on:
       - ".github/workflows/catalog-ci.yaml"
       - "schemas/**"
       - "catalog/lib/chain-slug.sh"
+      - "catalog/lib/cdevents.sh"
+      - "charts/glidepath-app/templates/triggers/flow-triggers.yaml"
       - "hack/ci/chain_slug_test.sh"
       - "hack/ci/build-exemption-cel/**"
       - "hack/apply-guardrail-ruleset.sh"
@@ -142,6 +146,15 @@ jobs:
       - run: charts/glidepath-catalog/tests/promotion_fan_in_test.sh
 
   # comment-pr-check-result's post-comment: "false" records the verdict for the fan-in and posts nothing (agent-gates).
+  # At-least-once stage chaining (I-68): cdevent-send's delivery confirmation re-sends a lost domain event with the same id
+  # until the next stage's PipelineRun exists, never makes a second one, and fails the stage when the chain is broken.
+  chain-delivery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: charts/glidepath-catalog/tests/chain_delivery_test.sh
+
   post-comment:
     runs-on: ubuntu-latest
     steps:

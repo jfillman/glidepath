@@ -81,6 +81,50 @@ which meant `extensions.app_namespace == '<namespace>'` silently never matched, 
 Application, until the binary actually got rebuilt - see [installation.md](installation.md)
 for the fix and why nothing catches this drift automatically.
 
+## Delivery confirmation: at-least-once chaining (I-68)
+
+The EventListener answers `202 Accepted` before any Trigger runs. Its interceptors (`cdevents-broker-auth`'s
+TokenReview, then `cel`) and the PipelineRun create happen afterwards, and Tekton Triggers (v0.37) retries none of them:
+an interceptor call that times out (`--httpclient-responseheadertimeout`, 10s on hangar-dev) drops that Trigger for that
+event. So the `broker ack` a stage logs proves only that the broker received the event. On 2026-11-23 at 00:35Z,
+hangar-dev, one `testcaserun.finished` failed in 31 Triggers this way (11 timeouts to `cdevents-broker-auth`, 20 to
+`core-interceptors /cel`). No release PipelineRun was created, and nothing noticed.
+
+The domain event is now delivered at least once. stage-debrief's `domain-event` step (the `cdevent-send` StepAction
+with `confirm-successor: "true"`) does the following:
+
+1. It decides from the run itself whether a next stage is expected. It reads the run's `hangar.io/flow` and
+   `hangar.io/step-index` labels and its `is-flow-terminal` spec param, the same facts the
+   [stalled-pipeline detector](stalled-pipeline-detector.md) reads. A next stage is expected when the run belongs to a
+   flow, is not its last step, its status is `Succeeded` or `Completed`, and (for `test`) its event's `outcome` is
+   too. Otherwise the event is sent once, as before, and the step does not wait.
+2. It sends the event, then looks for the next step's PipelineRun:
+   `<flow>-<index+1>-<stage>-<chain_slug>-<context.id>`, selected by `hangar.io/flow` and `hangar.io/step-index`.
+3. When that run has not appeared within `confirm-wait-seconds` (30s; the n-th wait is n times as long), the step
+   re-sends the **same** event, with the same `context.id`. It re-sends up to `confirm-resends` (3) times. A send the
+   broker refuses outright is handled the same way.
+4. When the next run still does not exist after that (waits of 30, 60, 90 and 120 seconds, 5 minutes in all), the step fails with `next stage never
+   started: no PipelineRun ...`. stage-debrief's `verdict` then fails the stage, and `explain` reports it as
+   `ChainNextStageMissing`. The chain is broken visibly, not silently.
+
+**A re-send can never start a second run.** `cdevents.sh` derives `context.id` from the emitting run's name and the
+event type (`sha256(<run>:<type>)[:8]`), so every send from one run carries the same id. Each flow Trigger's
+TriggerTemplate gives the PipelineRun a fixed `metadata.name`, never `generateName`. The name comes from that id and
+the chain slug, so a second delivery's create is refused by the API server with `AlreadyExists`, whether it is a
+re-send or a slow first delivery racing one. The other consumers of these four event types are also idempotent:
+glidepath-api's events tap dedupes by `context.source` + `context.id`, and no other Trigger matches them.
+`charts/glidepath-catalog/tests/chain_delivery_test.sh` runs the StepAction against a fake broker that loses, delays
+and refuses deliveries, and checks this.
+
+What it costs: nothing when the first delivery works, since the run is normally found on the first or second look.
+Each re-send runs every Trigger in the cluster again for that one event, at most three times, and only while the next
+stage is missing. Interceptor timeouts and retries in the EventListener (option (c) in I-68) are not available.
+Triggers v0.37 has no per-interceptor timeout or retry setting. The sink's HTTP-client timeouts are controller flags
+that the Tekton operator owns, outside this repo, and longer timeouts would only lower the rate.
+
+The stalled-pipeline detector stays. It covers what this step cannot see: a debrief that never ran (pod evicted, node
+lost), and older catalog runs.
+
 ## Why an Application is (at least) two namespaces, not one
 
 Every namespace an Application gets follows the same flat `<type>-<app-name>-<env>`

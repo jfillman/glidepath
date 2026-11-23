@@ -378,6 +378,11 @@ spec:
         - { name: only-on-success, value: $(params.domain-event-on-success-only) }
         - { name: status, value: $(steps.resolve.results.status) }
         - { name: token-volume, value: broker-token }
+        # At-least-once delivery (I-68): the broker's 202 is sent before any Trigger runs, so a lost event used to
+        # leave the chain silently stopped. The step now waits for the flow's next PipelineRun and re-sends the same
+        # event (same id, so the Trigger's deterministic run name rules out a duplicate) until it appears, and fails
+        # this stage if it never does. docs/admin/chaining.md, "Delivery confirmation".
+        - { name: confirm-successor, value: "true" }
 
     # Generic completion signal, deliberately NOT gated on success like the domain event
     # above: "the pipeline finished" is true whether it succeeded or failed (Phase 3
