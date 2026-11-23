@@ -315,8 +315,14 @@ spec:
           cicd="$(cat cicd.yaml)"
         else
           app_token="$(github_app_installation_token "${owner}" "${APP_NAME}" 2>/dev/null || true)"
-          cicd="$(curl -fsSL -H "Authorization: Bearer ${app_token}" -H "Accept: application/vnd.github.raw" \
-            "https://api.github.com/repos/${owner}/${APP_NAME}/contents/cicd.yaml" 2>/dev/null || true)"
+          # 200 = read; 404 = the app has no cicd.yaml (no chart named: the default chart); anything else (network, auth, 5xx) fails the task
+          http_code="$(curl -sSL -o /work/cicd.fetched -w '%{http_code}' -H "Authorization: Bearer ${app_token}" -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/${owner}/${APP_NAME}/contents/cicd.yaml")" || http_code=000
+          case "${http_code}" in
+            200) cicd="$(cat /work/cicd.fetched)" ;;
+            404) cicd="" ;;
+            *) echo "FAIL: reading cicd.yaml of ${APP_NAME} failed (HTTP ${http_code}); the chart lookup cannot tell the default chart from an unreadable one"; exit 1 ;;
+          esac
         fi
         target="$(echo "${cicd}" | yq '.deploy.target // ""' 2>/dev/null || true)"
         [[ -z "${target}" || "${target}" == null ]] && target=k8s-rollout

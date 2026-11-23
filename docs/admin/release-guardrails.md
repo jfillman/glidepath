@@ -351,7 +351,7 @@ fail-closed choice: guessing would render an unknown chart as the default one.
 
 The chart lookup fails closed as well. If `cicd.yaml` cannot be read for the lookup, the lookup returns nothing, or one of the
 `DEFAULT_CHART_*` inputs is unset, the task fails with a message naming the input or setting at fault. It never falls
-back to the default chart. An environment whose `cicd.yaml` names no chart is still the default chart: that is a valid
+back to the default chart. The read of the app's `cicd.yaml` from GitHub is part of the lookup: a 404 means the app has none (the default chart), and any other failure fails the task. An environment whose `cicd.yaml` names no chart is still the default chart: that is a valid
 answer, and it is told apart from a failed lookup.
 
 Pieces: Task `validate-values`, Pipeline `values-check`, onboarding template
