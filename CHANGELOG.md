@@ -4,6 +4,12 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### The clearance-gate runs on every PR that changes deployable content (I-84 option (a))
+
+- A gitops repo's `.tekton/pull-request-clearance-gate.yaml` started only for `release-*` branches, so a hand PR from any other branch (a staging replicas change from a `<user>-patch-1` branch) ran no Clearance gate. It now starts for every PR to `main` that is not `release-record-*` and either comes from a `release-*` branch (unchanged) or changes deployable content: any `values*`, `release*`, `base*` or `kustomization*` YAML file, a `Kustomization` file, or any YAML or JSON file two directories deep, never under `.tekton/` or `releases/`. The filter errs on the side of running; a PR that changes no environment is green with "nothing to register".
+- The other release gates stay release-branch-only. The gate itself needed no change: a PR with no release record is registered with its author as the proposer, and the tier comes from the rendered diff.
+- Test: `hack/ci/build-exemption-cel` now also evaluates the template's trigger with cel-go against 20 PR events. Docs: `docs/admin/clearance-gate.md` "How it runs". Existing gitops repos get the file by an onboarding resync (`docs/admin/onboarding-mechanics.md`).
+
 ### A cancelled test run no longer chains (I-71)
 
 - test's `testcaserun.finished` is sent pass or fail, with `outcome` from the content template's `$(tasks.status)`. Tekton reports `Completed` for a run cancelled (`CancelledRunFinally`) or stopped (`StoppedRunFinally`) before any task failed, and the from-test Trigger accepts `Completed` (a passed run with a when-skipped task, I-52), so a cancelled test run started the release stage. The 2026-10-12 fix (stage-debrief's resolve step reports `Cancelled`) skipped the domain event of every other stage, but test's is never skipped.
