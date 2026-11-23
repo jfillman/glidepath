@@ -5,13 +5,15 @@ docs/admin/release-guardrails.md "Timeouts: always split tasks/finally"). A temp
 `finally` must still set timeouts.pipeline."""
 import glob, os, re, sys
 
+import yaml
+
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
 TPL = os.path.join(ROOT, "charts/glidepath-app/files/onboarding-templates")
 PIPES = os.path.join(ROOT, "charts/glidepath-catalog/templates/pipelines")
 
 
 def minutes(v):
-    m = re.fullmatch(r"(\d+)(m|h)", v.strip().strip('"'))
+    m = re.fullmatch(r"([0-9]+)(m|h)", v)
     if not m:
         raise ValueError(f"unparseable duration {v!r}")
     return int(m.group(1)) * (60 if m.group(2) == "h" else 1)
@@ -29,11 +31,15 @@ for f in sorted(glob.glob(TPL + "/*/*.yaml")):
     n += 1
     text = open(f).read()
     rel = os.path.relpath(f, TPL)
-    blk = re.search(r"^  timeouts:\n((?:    .*\n)+)", text, re.M)
-    if not blk:
-        errors.append(f"{rel}: no timeouts block")
+    try:
+        t = yaml.safe_load(text)["spec"]["timeouts"]
+    except (KeyError, TypeError) as e:
+        errors.append(f"{rel}: no spec.timeouts ({e!r})")
         continue
-    t = dict(re.findall(r'^    (tasks|finally|pipeline):\s*"?([0-9]+[mh])"?', blk.group(1), re.M))
+    bad = [k for k, v in t.items() if not isinstance(v, str) or not re.fullmatch(r"[0-9]+[mh]", v)]
+    if bad or set(t) - {"tasks", "finally", "pipeline"}:
+        errors.append(f"{rel}: timeouts must be whole minute/hour values (Nm or Nh) for tasks/finally/pipeline: {t}")
+        continue
     if "pipeline" not in t:
         errors.append(f"{rel}: timeouts.pipeline missing")
         continue
