@@ -178,14 +178,14 @@ spec:
             *) echo "FAIL: reading cicd.yaml of ${APP_NAME} failed (HTTP ${http_code}); the chart lookup cannot tell the default chart from an unreadable one"; exit 1 ;;
           esac
         fi
+        # the default chart comes from these inputs: an unset one fails the task, it is never read as "the default chart"
+        for v in DEFAULT_CHART_REPO_URL DEFAULT_CHART_PATH DEFAULT_CHART_REVISION; do
+          [[ -n "${!v:-}" ]] || { echo "FAIL: ${v} is not set (catalog values defaultChart.*): the default chart is unknown, so the gate will not guess which chart is rendered"; exit 1; }
+        done
         # fail closed on a chart spec the resolver below cannot read: it would fall back to the default chart
         if [[ -n "${cicd}" ]]; then echo "${cicd}" | yq -o json '.' 2>/dev/null | chart_specs_ok || { echo "FAIL: cicd.yaml's deploy.chart or an environment's chart is not a mapping; the gate will not guess which chart is rendered"; exit 1; }; fi
         if [[ -n "${cicd}" && -s /work/files.txt ]]; then
           keep=()
-          # the default chart comes from these inputs: an unset one fails the task, it is never read as "the default chart"
-          for v in DEFAULT_CHART_REPO_URL DEFAULT_CHART_PATH DEFAULT_CHART_REVISION; do
-            [[ -n "${!v:-}" ]] || { echo "FAIL: ${v} is not set (catalog values defaultChart.*): the default chart is unknown, so the gate will not guess which chart is rendered"; exit 1; }
-          done
           while read -r f; do
             # Only a path of the environment shape is an environment: <cluster>/<env>/values.yaml, or <cluster>/base.yaml, under a cluster directory
             # that is a plain name. Any other changed values file (a root values.yaml, x/values.yaml, a deeper path, a directory that is not a name)
