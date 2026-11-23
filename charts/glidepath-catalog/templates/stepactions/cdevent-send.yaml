@@ -101,7 +101,10 @@ spec:
     - name: status
       type: string
       default: ""
-      description: The calling Pipeline's $(tasks.status). Only read when only-on-success is "true".
+      description: >-
+        The stage's status (stage-debrief passes its resolve step's, Cancelled for a cancelled or stopped run). With
+        only-on-success "true" a status other than Succeeded or Completed skips the send; with "false" it replaces a
+        content outcome of Succeeded or Completed, so the event never claims more than the status (I-71).
     - name: confirm-successor
       type: string
       default: "false"
@@ -184,6 +187,17 @@ spec:
     content="${SUBJECT_CONTENT_JSON}"
     if [[ -n "${SUBJECT_CONTENT_JSON_B64}" ]]; then
       content="$(base64 -d <<<"${SUBJECT_CONTENT_JSON_B64}")"
+    fi
+    # An event sent whatever the status (only-on-success "false": test's testcaserun.finished) never claims more than the
+    # stage's real status: a content outcome of Succeeded or Completed under a status that is neither (stage-debrief's
+    # Cancelled for a cancelled or stopped run) is replaced by that status, so the from-test Trigger does not chain (I-71).
+    # Second guard behind stage-debrief's resolve step, which already writes it.
+    if [[ "${ONLY_ON_SUCCESS}" != "true" && -n "${PIPELINE_STATUS}" && "${PIPELINE_STATUS}" != "Succeeded" && "${PIPELINE_STATUS}" != "Completed" ]]; then
+      claimed="$(jq -r '.outcome // ""' <<<"${content}" 2>/dev/null || true)"
+      if [[ "${claimed}" == "Succeeded" || "${claimed}" == "Completed" ]]; then
+        content="$(jq -c --arg s "${PIPELINE_STATUS}" '.outcome = $s' <<<"${content}")"
+        echo "outcome: the content says ${claimed} but the stage status is ${PIPELINE_STATUS} - sending outcome ${PIPELINE_STATUS}"
+      fi
     fi
     if [[ -n "${TEKTON_STATUS}" ]]; then
       outcome="$(cdevents_map_outcome "${TEKTON_STATUS}")"

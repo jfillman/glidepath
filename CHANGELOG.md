@@ -4,6 +4,12 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### A cancelled test run no longer chains (I-71)
+
+- test's `testcaserun.finished` is sent pass or fail, with `outcome` from the content template's `$(tasks.status)`. Tekton reports `Completed` for a run cancelled (`CancelledRunFinally`) or stopped (`StoppedRunFinally`) before any task failed, and the from-test Trigger accepts `Completed` (a passed run with a when-skipped task, I-52), so a cancelled test run started the release stage. The 2026-10-12 fix (stage-debrief's resolve step reports `Cancelled`) skipped the domain event of every other stage, but test's is never skipped.
+- stage-debrief's resolve step now sets the content's `outcome` to `Cancelled` too, and `cdevent-send` replaces a content `outcome` of `Succeeded` or `Completed` with the stage status whenever that status is neither (a second guard). The Trigger is unchanged: it chains on `Succeeded` or `Completed` only, so a when-skipped pass still chains and `Failed` and `Cancelled` do not. With I-68's delivery confirmation nothing changes: a cancelled stage already waited for no next run.
+- Test: `charts/glidepath-catalog/tests/cancelled_test_no_chain_test.sh` (catalog-ci `chain-delivery`): cancelled, stopped, when-skipped pass, pass, failed, and the `cdevent-send` guard alone. Docs: `docs/admin/chaining.md`.
+
 ### Stage chaining is at-least-once (I-68)
 
 - The broker acks a domain event (202) before any Trigger runs. Under load on hangar-dev an interceptor call timed out, and the next stage (for example flight-api's `ci-2-test` to `ci-3-release`) was never created, while the sender logged `broker ack`. stage-debrief's `domain-event` step now waits for the flow's next PipelineRun (`<flow>-<i+1>-<stage>-<chain_slug>-<context.id>`, selected by `hangar.io/flow` and `hangar.io/step-index`). While it is missing, the step re-sends the same event, up to 3 times, with waits of 30s, 60s, 90s and 120s (5 minutes in all).

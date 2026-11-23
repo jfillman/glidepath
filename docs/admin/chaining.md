@@ -161,7 +161,7 @@ Each stage's own domain event, keyed by whatever stage the current one is chaine
 `charts/glidepath-app/templates/triggers/flow-triggers.yaml`'s `$eventTypeMap`):
 
 - `dev.cdevents.artifact.published.0.3.0` (from `build`) -> fires whatever's next
-- `dev.cdevents.testcaserun.finished.0.3.0`, `outcome` `Succeeded` or `Completed` (from `test`; Tekton reports `Completed` when a task was skipped by a `when`) -> fires
+- `dev.cdevents.testcaserun.finished.0.3.0`, `outcome` `Succeeded` or `Completed` (from `test`; Tekton reports `Completed` when a task was skipped by a `when`; a cancelled or stopped run sends `Cancelled`) -> fires
   whatever's next (`test` is the one stage whose domain event fires unconditionally,
   pass or fail, so this is the only chain transition that actually needs the outcome
   check - see that file's own comment)
@@ -329,7 +329,13 @@ before any task failed reports `Completed`, because the tasks that never started
 skipped. The success gate then passed and the broker started the next stage off a cancelled
 run (sky-marshall build -> deploy). stage-debrief's `resolve` step now reads the run's own
 `spec.status`. When it is a cancel or stop, every later step gets `Cancelled` instead:
-- the domain event is skipped, so nothing chains;
+- the domain event is skipped, so nothing chains. `test`'s `testcaserun.finished` is the
+  exception: it is sent pass or fail, so it is sent with `outcome: Cancelled` instead, which the
+  from-test Trigger does not chain on (I-71, 2026-11-22). Until then its outcome was the
+  template's `$(tasks.status)`, `Completed`, which the Trigger accepts for a passed run with a
+  when-skipped task (I-52), so a cancelled test run started the next stage. `cdevent-send` also
+  refuses to send a `Succeeded` or `Completed` outcome under any other stage status, as a second
+  guard (test: `charts/glidepath-catalog/tests/cancelled_test_no_chain_test.sh`);
 - `pipelinerun.finished` carries `outcome: cancel`;
 - the spans are errors;
 - Slack and Backstage say cancelled.
