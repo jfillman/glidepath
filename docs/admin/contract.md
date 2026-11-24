@@ -13,7 +13,7 @@ Airframe's contract set.
 |---|---|---|
 | `cicd.fields` | Every `cicd.yaml` field: type, enum, default, description, plus `owner`, `risk` and `agentScope` | [`schemas/cicd.schema.json`](../../schemas/cicd.schema.json) + [`schemas/cicd.meta.yaml`](../../schemas/cicd.meta.yaml) |
 | `scope` | The rules an agent's change is checked against (below) | `schemas/cicd.meta.yaml` |
-| `gates` | Each release gate: what it checks, `required` or advisory, `real` or `stub` | `releaseGuardrails` in [`charts/glidepath-catalog/values.yaml`](../../charts/glidepath-catalog/values.yaml) ([release-guardrails.md](release-guardrails.md)) |
+| `gates` | Each release gate: what it checks, `required` or advisory, `real` or `stub`, and `kinds`: run, advisory or n/a for each change kind (image-release, rollback, config, no-op; [release-guardrails.md](release-guardrails.md#change-kinds-cg-2-2026-11-23)) | `releaseGuardrails` in [`charts/glidepath-catalog/values.yaml`](../../charts/glidepath-catalog/values.yaml) ([release-guardrails.md](release-guardrails.md)) |
 | `states` | The run states and the release states, with their meanings | `schemas/cicd.meta.yaml` ([release-state.md](release-state.md)) |
 | `knownFailures` | Failures with a stable id, the log line they match, a hint and, when there is one, the field to change | `schemas/cicd.meta.yaml` |
 | `api` | Every API operation and its tier, once the API exists | `api/openapi.yaml` |

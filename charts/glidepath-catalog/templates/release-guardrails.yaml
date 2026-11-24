@@ -1,0 +1,47 @@
+# templates/release-guardrails.yaml (docs/admin/release-guardrails.md, "Change kinds"; hangar
+# specs/plans/change-aware-release-gates.md section 6, CG-2)
+#
+# The effective release-guardrail registry with its class x kind matrix, as one JSON document
+# (_helpers.tpl glidepath-catalog.guardrailMatrix): the same resolution every gate Pipeline, the
+# bypass detectors and the release log render from, published so glidepath-api (the gate-verdict
+# n/a check, CG-4) and Tower (n/a display) read the table the Pipelines were rendered from instead
+# of restating it. Nothing reads it to decide what a gate runs until CG-3.
+#
+# Readable by rbac.readOnlyGroup (default system:serviceaccounts: every ServiceAccount), like release-signing-policy: it names gates
+# and admin-owned per-app exceptions, nothing secret. Nothing binds write here: the only writer is
+# Argo CD syncing this chart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-guardrails
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+data:
+  matrix.json: {{ include "glidepath-catalog.guardrailMatrix" . | quote }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-guardrails-read
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["release-guardrails"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-guardrails-read
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: release-guardrails-read }
+subjects:
+  - kind: Group
+    name: {{ .Values.rbac.readOnlyGroup }}
+    apiGroup: rbac.authorization.k8s.io

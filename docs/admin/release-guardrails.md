@@ -243,6 +243,89 @@ change management sets it advisory the same way. Today `qa` and `api-compat` ([a
 ([testing.md](testing.md)); flip it once every app with a Flight environment has
 `apps/<app>/check-ride.yaml` in the check-rides repository and a `role: check-ride` test step.
 
+## Change kinds (CG-2, 2026-11-23)
+
+Every registry entry also says what the gate does for each **kind of change**: `run`, `advisory` or `n/a` (not
+applicable). glidepath-api classifies each PR head from its diff, never from the branch name or the PR text
+(`POST /v1/apps/{app}/pulls/{n}/classification`, `api/internal/changekind`), as one of:
+
+| Kind | When |
+|---|---|
+| `image-release` | an image reference in a deployable file changes (and it is not an eligible rollback); also the answer whenever the classifier is in doubt |
+| `rollback` | every image change returns a `<cluster>/<env>` release image to an eligible earlier one (ADR-0021: one of the last five healthy releases) |
+| `config` | deployable files change and no image reference does (removing or moving an image is `config`) |
+| `no-op` | nothing deployable changes (comments, key order, `.tekton/`, `releases/`, docs) |
+
+**Status: data only.** The gate Pipelines do not read the matrix yet; they behave exactly as before, on `release-*`
+branches only, until the change-aware gates (hangar `specs/plans/change-aware-release-gates.md`, CG-3) consume it.
+
+**The class sets the defaults** (`_helpers.tpl` `glidepath-catalog.kindDefaults`, in the chart so no cluster can
+redefine a class):
+
+| Class | image-release | rollback | config | no-op |
+|---|---|---|---|---|
+| `content` (judges the image) | run | advisory (ADR-0021 decision 8) | n/a: no new image | n/a |
+| `integrity`, `process`, `approval` (judge the change) | run | run | run | n/a |
+
+An entry overrides them with `kinds: { <kind>: run|advisory|n/a }`. Today `agent-gates`, `agent-identity` and
+`agent-scope` set `no-op: run` (they judge who opened the PR, and run on every PR), and the `image-promotion` entry
+the chart adds with `promotion.enabled` sets `config: n/a` (a config change promotes nothing). `required` composes on
+top as before: a gate whose row says `run` but which is `required: false` (per cluster) runs its advisory copy, so its
+**effective** value is `advisory`. A per-app advisory gate (`releaseGuardrailOverridesByApp`) is not composed into
+the matrix: it stays a runtime, per-app reading, as above.
+
+The matrix with the chart defaults (`effective`, the `release-guardrails` ConfigMap):
+
+| Gate | Class | image-release | rollback | config | no-op |
+|---|---|---|---|---|---|
+| `sast` | content | run (locked) | advisory | n/a | n/a |
+| `image-scan` | content | run | advisory | n/a | n/a |
+| `sbom` | content | run | advisory | n/a | n/a |
+| `api-compat` | content | advisory (`required: false`) | advisory | n/a | n/a |
+| `qa` | content | advisory (`required: false`) | advisory | n/a | n/a |
+| `provenance` | integrity | run (locked) | run (never n/a) | run (never n/a) | n/a |
+| `values` | integrity | run | run | run | n/a |
+| `policy-validation` | integrity | run | run | run | n/a |
+| `agent-gates` (or `agent-identity`, `agent-scope`) | integrity | run | run | run | run |
+| `itsm` | process | run | run | run | n/a |
+| `clearance-gate` | process | advisory (`required: false`) | advisory | advisory | n/a |
+| `image-promotion` (with `promotion.enabled`) | integrity | run (locked) | run | n/a | n/a |
+
+Two rows are narrower at runtime than the table can say, and the gate itself will decide them (CG-3, CG-6): `values`
+on a `config` change applies only when a values, release or base file changed, and `itsm` on a `config` change
+applies only to a protected environment (`protection.sh`; unknown counts as protected). Both read `run` here as the
+upper bound.
+
+**Locks.** The chart render fails, naming the gate, if a row would weaken an image release:
+
+- no gate may be `n/a` for `image-release`;
+- `sast`, `provenance` and `image-promotion` must be `run` (not `advisory`) for `image-release`;
+- `provenance` cannot be `n/a` for `rollback` or `config`;
+- an unknown kind, a value other than `run`, `advisory` or `n/a`, a `kinds` that is not a map, or an unknown `class`.
+
+**Who sets it.** Only the registry entry in this chart (a glidepath PR, reviewed, `gate_required_test.sh` in CI).
+`releaseGuardrailOverrides.<gate>.kinds` fails the render: a cluster changes `required`, never what a gate judges.
+
+**The `release-guardrails` ConfigMap.** The chart publishes the resolved registry as ConfigMap `release-guardrails`
+in the catalog namespace (`platform-catalog`), key `matrix.json`, so glidepath-api and Tower read the table the gate
+Pipelines were rendered from instead of restating it. The `rbac.readOnlyGroup` group (default `system:serviceaccounts`, every ServiceAccount) may `get` it, like
+`release-signing-policy`; only Argo CD writes it.
+
+```json
+{"v": 1, "kinds": ["image-release", "rollback", "config", "no-op"], "values": ["run", "advisory", "n/a"],
+ "gates": [{"name": "qa", "class": "content", "status": "real", "required": false,
+            "kinds":     {"image-release": "run",      "rollback": "advisory", "config": "n/a", "no-op": "n/a"},
+            "effective": {"image-release": "advisory", "rollback": "advisory", "config": "n/a", "no-op": "n/a"}}],
+ "advisoryByApp": {"backstage": ["image-scan"]}}
+```
+
+`kinds` is the registry row; `effective` composes `required`; `targets` and `check` appear when the entry has them.
+The gates are the cluster's effective registry (with Clearance's App, `agent-identity` and `agent-scope` replace
+`agent-gates`; with promotion, `image-promotion` is added). In templates, `glidepath-catalog.applicability` (`dict
+"root" . "gate" <gate> "kind" <kind>`) returns one effective value. The generated contract
+([contract.md](contract.md)) carries each gate's `kinds` row too, from its own copy of the class defaults, which
+`gate_required_test.sh` checks against the chart.
+
 ## Current gates
 
 | Gate | What it verifies | Status | Required |

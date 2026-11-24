@@ -1159,28 +1159,52 @@
       "description": "Static analysis (Semgrep) of the promoted commit's source",
       "status": "real",
       "class": "content",
-      "required": true
+      "required": true,
+      "kinds": {
+        "image-release": "run",
+        "rollback": "advisory",
+        "config": "n/a",
+        "no-op": "n/a"
+      }
     },
     {
       "name": "image-scan",
       "description": "Vulnerability scan (Trivy) of the promoted image",
       "status": "real",
       "class": "content",
-      "required": true
+      "required": true,
+      "kinds": {
+        "image-release": "run",
+        "rollback": "advisory",
+        "config": "n/a",
+        "no-op": "n/a"
+      }
     },
     {
       "name": "provenance",
       "description": "Commit signature (gitsign, or a GitHub PR merge by an allowed login) + SLSA provenance (Conforma)",
       "status": "real",
       "class": "integrity",
-      "required": true
+      "required": true,
+      "kinds": {
+        "image-release": "run",
+        "rollback": "run",
+        "config": "run",
+        "no-op": "n/a"
+      }
     },
     {
       "name": "sbom",
       "description": "Software bill of materials",
       "status": "real",
       "class": "content",
-      "required": true
+      "required": true,
+      "kinds": {
+        "image-release": "run",
+        "rollback": "advisory",
+        "config": "n/a",
+        "no-op": "n/a"
+      }
     },
     {
       "name": "values",
@@ -1190,28 +1214,52 @@
       "required": true,
       "targets": [
         "k8s-rollout"
-      ]
+      ],
+      "kinds": {
+        "image-release": "run",
+        "rollback": "run",
+        "config": "run",
+        "no-op": "n/a"
+      }
     },
     {
       "name": "itsm",
       "description": "An approved or scheduled change request for this release in the change tool (ServiceNow, or any tool behind the webhook adapter)",
       "status": "stub",
       "class": "process",
-      "required": true
+      "required": true,
+      "kinds": {
+        "image-release": "run",
+        "rollback": "run",
+        "config": "run",
+        "no-op": "n/a"
+      }
     },
     {
       "name": "api-compat",
       "description": "API compatibility - the promoted image's signed API spec (cicd.yaml api.spec) diffed against the spec of the image the target environment runs, with the operations each breaking change touches and whether they are in use",
       "status": "real",
       "class": "content",
-      "required": false
+      "required": false,
+      "kinds": {
+        "image-release": "run",
+        "rollback": "advisory",
+        "config": "n/a",
+        "no-op": "n/a"
+      }
     },
     {
       "name": "qa",
       "description": "A passing, recent check ride from the shared check-rides repository, attested on the promoted image",
       "status": "real",
       "class": "content",
-      "required": false
+      "required": false,
+      "kinds": {
+        "image-release": "run",
+        "rollback": "advisory",
+        "config": "n/a",
+        "no-op": "n/a"
+      }
     },
     {
       "name": "policy-validation",
@@ -1221,28 +1269,52 @@
       "required": true,
       "targets": [
         "k8s-rollout"
-      ]
+      ],
+      "kinds": {
+        "image-release": "run",
+        "rollback": "run",
+        "config": "run",
+        "no-op": "n/a"
+      }
     },
     {
       "name": "agent-gates",
       "description": "Agent identity and scope - Clearance's record of the PR its agent opened: the same head commit and trailers, and only paths that agent may change (a person's PR passes as not-agent)",
       "status": "real",
       "class": "integrity",
-      "required": true
+      "required": true,
+      "kinds": {
+        "image-release": "run",
+        "rollback": "run",
+        "config": "run",
+        "no-op": "run"
+      }
     },
     {
       "name": "agent-identity",
       "description": "Agent identity - Clearance's record of the PR its agent opened: the same head commit and trailers (a person's PR passes as not-agent); posted by the Clearance GitHub App",
       "status": "real",
       "class": "integrity",
-      "required": true
+      "required": true,
+      "kinds": {
+        "image-release": "run",
+        "rollback": "run",
+        "config": "run",
+        "no-op": "run"
+      }
     },
     {
       "name": "agent-scope",
       "description": "Agent scope - only paths the agent's commit carried and its definition still admits (a person's PR passes as not-agent); posted by the Clearance GitHub App",
       "status": "real",
       "class": "integrity",
-      "required": true
+      "required": true,
+      "kinds": {
+        "image-release": "run",
+        "rollback": "run",
+        "config": "run",
+        "no-op": "run"
+      }
     },
     {
       "name": "clearance-gate",
@@ -1252,7 +1324,13 @@
       "required": false,
       "targets": [
         "k8s-rollout"
-      ]
+      ],
+      "kinds": {
+        "image-release": "run",
+        "rollback": "run",
+        "config": "run",
+        "no-op": "n/a"
+      }
     }
   ],
   "states": {

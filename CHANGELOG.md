@@ -4,6 +4,14 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### Release gates know what each kind of change needs (CG-2, data only)
+
+- Every `releaseGuardrails` entry now resolves a `kinds` row: `run`, `advisory` or `n/a` for each change kind glidepath-api's classifier returns (`image-release`, `rollback`, `config`, `no-op`). The class sets the defaults (content: run, advisory, n/a, n/a; integrity, process and approval: run, run, run, n/a), an entry's `kinds` map overrides them (`agent-gates`, `agent-identity` and `agent-scope` run on a no-op PR; `image-promotion` is n/a on a config change), and `required: false` composes on top as advisory.
+- Locks fail the chart render: no gate n/a for `image-release`; `sast`, `provenance` and `image-promotion` must run on it; `provenance` is never n/a for `rollback` or `config`; an unknown kind, value or class, or a per-cluster `releaseGuardrailOverrides.<gate>.kinds`, is refused.
+- New ConfigMap `release-guardrails` (`matrix.json`) in the catalog namespace, readable by the `rbac.readOnlyGroup` group (default `system:serviceaccounts`, every ServiceAccount), publishes the effective matrix for glidepath-api and Tower. The generated contract's `gates` carry `kinds` too.
+- No gate behaves differently: the Pipelines and triggers do not read the matrix until CG-3. The only other rendered change is `deliver-onboarding-files`' `RELEASE_GUARDRAILS_JSON`, which now carries each gate's `kinds` (it reads only names and targets).
+- Test: `charts/glidepath-catalog/tests/gate_required_test.sh` (the matrix under the default, cluster overrides, Clearance's App, promotion and a per-app exception; every lock and refusal; the contract against the chart). Docs: `docs/admin/release-guardrails.md` "Change kinds", `docs/admin/contract.md`.
+
 ### App-repo checks no longer time out in `finally` (I-85)
 
 - `Glidepath / cicd-validate-` went red with `PipelineRunTimeout` ("tasks failed to finish within 5m0s") although the check succeeded: Tekton counts `finally` (`comment-pr`, 3m21s on a loaded cluster) against `timeouts.tasks`. The app-repo `cicd-validate` template now sets tasks 9m / finally 4m / pipeline 13m (was 5m/4m/10m); the app-repo `agent-definitions` and `agent-gates` templates and the gitops-repo `agent-gates` template, with the same flaw, are 11m/4m/15m (was 5m/4m/10m). The rule is `docs/admin/release-guardrails.md` "Timeouts: always split tasks/finally".

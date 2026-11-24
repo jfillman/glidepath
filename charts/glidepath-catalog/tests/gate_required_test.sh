@@ -4,7 +4,8 @@
 # wait-for-release-guardrails, open-release-pr and hack/apply-guardrail-ruleset.sh make of it; bash -n on every
 # rendered script that ranges over the registry; and that sast/provenance refuse required: false. 2026-10-28: the
 # per-app map (releaseGuardrailOverridesByApp) - the bypass set, the PR body table and the ruleset for one app, the
-# gate Pipelines left as they are, and its render refusals.
+# gate Pipelines left as they are, and its render refusals. CG-2: the class x kind matrix in the release-guardrails
+# ConfigMap, with the cluster overrides composed, and its render locks.
 # Needs helm, python3 (pyyaml), jq, yq. Usage: charts/glidepath-catalog/tests/gate_required_test.sh
 set -u
 cd "$(dirname "$0")/../../.."
@@ -304,6 +305,98 @@ expect "no Clearance: clearanceChecks alone keeps agent-gates" "$(grep -o 'for g
   "for gate in sast image-scan provenance sbom values itsm policy-validation agent-gates ; do"
 # a per-cluster override of the old name still renders (it just has nothing to act on once Clearance reports the checks)
 render ccold -f "${tmp}/cc-values.yaml" --set-json 'releaseGuardrailOverrides={"agent-gates":{"required":false}}'
+
+# ---- CG-2: change kinds (docs/admin/release-guardrails.md "Change kinds"). The class x kind matrix is published as the
+# release-guardrails ConfigMap; `effective` composes required on top (a gate that runs but is required: false advises).
+matrix() { # RENDERED -> "gate image-release/rollback/config/no-op" per gate, from `effective`; one line per gate
+  python3 - "$1" <<'PY'
+import sys, yaml, json
+for d in yaml.safe_load_all(open(sys.argv[1])):
+    if d and d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "release-guardrails":
+        m = json.loads(d["data"]["matrix.json"])
+        assert m["v"] == 1 and m["kinds"] == ["image-release", "rollback", "config", "no-op"], m["kinds"]
+        assert m["values"] == ["run", "advisory", "n/a"], m["values"]
+        for g in m["gates"]:
+            print(g["name"] + " " + "/".join(g["effective"][k] for k in m["kinds"]))
+PY
+}
+expect "release-guardrails matrix, chart default" "$(matrix "${tmp}/default.yaml" | tr '\n' ' ')" \
+  "sast run/advisory/n/a/n/a image-scan run/advisory/n/a/n/a provenance run/run/run/n/a sbom run/advisory/n/a/n/a values run/run/run/n/a itsm run/run/run/n/a api-compat advisory/advisory/n/a/n/a qa advisory/advisory/n/a/n/a policy-validation run/run/run/n/a agent-gates run/run/run/run clearance-gate advisory/advisory/advisory/n/a "
+expect "release-guardrails matrix, cluster overrides compose (qa, api-compat required; sbom, values advisory)" "$(matrix "${tmp}/override.yaml" | tr '\n' ' ')" \
+  "sast run/advisory/n/a/n/a image-scan run/advisory/n/a/n/a provenance run/run/run/n/a sbom advisory/advisory/n/a/n/a values advisory/advisory/advisory/n/a itsm run/run/run/n/a api-compat run/advisory/n/a/n/a qa run/advisory/n/a/n/a policy-validation advisory/advisory/advisory/n/a agent-gates run/run/run/run clearance-gate advisory/advisory/advisory/n/a "
+expect "release-guardrails matrix, clearance-gate required" "$(matrix "${tmp}/cgreq.yaml" | grep '^clearance-gate ')" "clearance-gate run/run/run/n/a"
+expect "release-guardrails matrix, Clearance App checks run on a no-op PR" "$(matrix "${tmp}/cc.yaml" | grep '^agent-' | tr '\n' ' ')" \
+  "agent-identity run/run/run/run agent-scope run/run/run/run "
+render promo -f "${tmp}/promotion-values.yaml" --set registries.flight.namespace=riley-roooo
+expect "release-guardrails matrix, image-promotion with promotion on" "$(matrix "${tmp}/promo.yaml" | grep '^image-promotion ')" "image-promotion run/run/n/a/n/a"
+expect "release-guardrails matrix, per-app advisory is listed, not composed" \
+  "$(python3 -c 'import sys,yaml,json; [print(json.dumps(json.loads(d["data"]["matrix.json"])["advisoryByApp"])) for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind")=="ConfigMap" and d["metadata"]["name"]=="release-guardrails"]' "${tmp}/perapp.yaml")" \
+  '{"backstage": ["image-scan"]}'
+expect "release-guardrails matrix, per-app image-scan still runs in the table" "$(matrix "${tmp}/perapp.yaml" | grep '^image-scan ')" "image-scan run/advisory/n/a/n/a"
+python3 - "${tmp}/default.yaml" <<'PY' || fail=1
+import sys, yaml
+docs = {(d["kind"], d["metadata"]["name"]): d for d in yaml.safe_load_all(open(sys.argv[1])) if d}
+role = docs.get(("Role", "release-guardrails-read")); rb = docs.get(("RoleBinding", "release-guardrails-read"))
+ok = role and role["rules"] == [{"apiGroups": [""], "resources": ["configmaps"], "resourceNames": ["release-guardrails"], "verbs": ["get"]}] \
+    and rb and rb["roleRef"]["name"] == "release-guardrails-read" and rb["subjects"][0]["kind"] == "Group"
+if not ok: print("FAIL: release-guardrails read-only Role/RoleBinding"); sys.exit(1)
+PY
+
+# the generated contract (tools/gen_contract.py, its own copy of the class defaults) states the same rows the chart renders
+python3 - "${tmp}/default.yaml" "${tmp}/cc.yaml" contract/glidepath-contract.json <<'PY' || fail=1
+import sys, yaml, json
+contract = {g["name"]: g["kinds"] for g in json.load(open(sys.argv[3]))["gates"]}
+seen = set()
+for path in sys.argv[1:3]:
+    for d in yaml.safe_load_all(open(path)):
+        if d and d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "release-guardrails":
+            for g in json.loads(d["data"]["matrix.json"])["gates"]:
+                seen.add(g["name"])
+                if contract.get(g["name"]) != g["kinds"]:
+                    print("FAIL: contract kinds for %s %s, chart renders %s" % (g["name"], contract.get(g["name"]), g["kinds"])); sys.exit(1)
+if seen != set(contract):
+    print("FAIL: contract gates %s, chart gates %s" % (sorted(contract), sorted(seen))); sys.exit(1)
+PY
+
+# ---- CG-2 locks and refusals: a registry row that weakens an image release, or names an unknown kind, value or class,
+# fails the render. The registry is replaced whole here (yq on the chart default), the only way to set an entry's kinds.
+kinds_refuse() { # label want-in-message yq-expression-on-releaseGuardrails
+  yq -o yaml "{\"releaseGuardrails\": (.releaseGuardrails | $3)}" charts/glidepath-catalog/values.yaml > "${tmp}/kinds.yaml"
+  if helm template t charts/glidepath-catalog -f "${values}" -f "${tmp}/kinds.yaml" --namespace platform-catalog > /dev/null 2> "${tmp}/err"; then
+    echo "FAIL: kinds ${1} rendered"; fail=1
+  elif ! grep -qF -- "$2" "${tmp}/err"; then
+    echo "FAIL: kinds ${1} refusal has the wrong message: $(cat "${tmp}/err")"; fail=1
+  fi
+}
+kinds_refuse sast-advisory "sast must be run for image-release" '(.[] | select(.name == "sast") | .kinds) = {"image-release": "advisory"}'
+kinds_refuse provenance-advisory "provenance must be run for image-release" '(.[] | select(.name == "provenance") | .kinds) = {"image-release": "advisory"}'
+kinds_refuse provenance-rollback "provenance cannot be n/a for rollback" '(.[] | select(.name == "provenance") | .kinds) = {"rollback": "n/a"}'
+kinds_refuse provenance-config "provenance cannot be n/a for config" '(.[] | select(.name == "provenance") | .kinds) = {"config": "n/a"}'
+kinds_refuse any-gate-na "values cannot be n/a for image-release" '(.[] | select(.name == "values") | .kinds) = {"image-release": "n/a"}'
+kinds_refuse advisory-gate-na "qa cannot be n/a for image-release" '(.[] | select(.name == "qa") | .kinds) = {"image-release": "n/a"}'
+kinds_refuse unknown-kind '"hotfix" is not a change kind' '(.[] | select(.name == "sbom") | .kinds) = {"hotfix": "run"}'
+kinds_refuse unknown-value '"skip" is not one of run, advisory, n/a' '(.[] | select(.name == "sbom") | .kinds) = {"config": "skip"}'
+kinds_refuse bool-value '"true" is not one of run, advisory, n/a' '(.[] | select(.name == "sbom") | .kinds) = {"config": true}'
+kinds_refuse not-a-map "sbom.kinds must be a map" '(.[] | select(.name == "sbom") | .kinds) = ["config"]'
+kinds_refuse unknown-class 'sbom has class "contents"' '(.[] | select(.name == "sbom") | .class) = "contents"'
+refuse cluster-kinds "releaseGuardrailOverrides.sbom.kinds: a gate's change kinds are set in the registry entry" \
+  $'releaseGuardrailOverrides:\n  sbom: { kinds: { config: run } }'
+# entries and override keys this cluster leaves out are checked too: agent-identity is not in the effective registry
+# without Clearance's App, and image-promotion is not a registry entry at all (promotion off here)
+kinds_refuse excluded-entry 'agent-identity.kinds: "hotfix" is not a change kind' '(.[] | select(.name == "agent-identity") | .kinds) = {"hotfix": "run"}'
+kinds_refuse excluded-entry-lock "agent-scope cannot be n/a for image-release" '(.[] | select(.name == "agent-scope") | .kinds) = {"image-release": "n/a"}'
+refuse cluster-kinds-image-promotion "releaseGuardrailOverrides.image-promotion.kinds: a gate's change kinds are set in the registry entry" \
+  $'releaseGuardrailOverrides:\n  image-promotion: { kinds: { config: run } }'
+refuse cluster-kinds-excluded "releaseGuardrailOverrides.agent-identity.kinds: a gate's change kinds are set in the registry entry" \
+  $'releaseGuardrailOverrides:\n  agent-identity: { kinds: { no-op: n/a } }'
+# an allowed row change renders and shows: image-scan run on a config change
+yq -o yaml '{"releaseGuardrails": (.releaseGuardrails | (.[] | select(.name == "image-scan") | .kinds) = {"config": "run"})}' \
+  charts/glidepath-catalog/values.yaml > "${tmp}/kinds-ok.yaml"
+render kindsok -f "${tmp}/kinds-ok.yaml"
+expect "an entry's kinds override its class default" "$(matrix "${tmp}/kindsok.yaml" | grep '^image-scan ')" "image-scan run/advisory/run/n/a"
+# behaviour unchanged until CG-3: no gate Pipeline reads the matrix yet
+expect "image-scan-check unchanged by its kinds" "$(tasks image-scan-check "${tmp}/kindsok.yaml" | tr '\n' ' ')" \
+  "extract-promoted-image image-scan+when image-scan-advisory+continue+when advisory-reason=rollback "
 
 rm -rf "${tmp}"
 [[ ${fail} -eq 0 ]] && echo "OK: the registry's required field drives every gate, the bypass tooling and the ruleset"

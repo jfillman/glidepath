@@ -102,11 +102,27 @@ entry's status follows .Values.itsm.provider (stub while none: the gate is then 
 says). Every
 consumer of the registry ranges over this (fromJsonArray), never over .Values.releaseGuardrails directly, so the
 override map and the refusal apply everywhere at once (docs/admin/release-guardrails.md).
+Change kinds (CG-2, hangar specs/plans/change-aware-release-gates.md section 6): each entry also gets `kinds`, the
+class x kind matrix row resolved from glidepath-catalog.kindDefaults with the entry's own `kinds` map on top, and
+glidepath-catalog.kindLocks refuses a row that would weaken an image release. Nothing reads `kinds` to decide what a
+gate does yet (CG-3); the release-guardrails ConfigMap publishes it.
 */ -}}
 {{- define "glidepath-catalog.guardrails" -}}
 {{- $out := list -}}
 {{- $overrides := .Values.releaseGuardrailOverrides | default dict -}}
 {{- $cc := eq (include "glidepath-catalog.clearanceChecks" .) "true" -}}
+{{- /* Every override key and every registry entry is checked, including those this cluster leaves out (the other
+clearanceChecks form) and the image-promotion entry added below, so a bad row fails here, not on the day it applies. */ -}}
+{{- range $name, $o := $overrides -}}
+{{- if and (kindIs "map" $o) (hasKey $o "kinds") -}}
+{{- fail (printf "releaseGuardrailOverrides.%s.kinds: a gate's change kinds are set in the registry entry, not per cluster - only `required` can be overridden here (docs/admin/release-guardrails.md, \"Change kinds\")" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- range .Values.releaseGuardrails -}}
+{{- $r := deepCopy . -}}
+{{- $_ := set $r "kinds" (include "glidepath-catalog.gateKinds" $r | fromJson) -}}
+{{- include "glidepath-catalog.kindLocks" $r -}}
+{{- end -}}
 {{- range .Values.releaseGuardrails -}}
 {{- /* An entry with `clearanceChecks: true` exists only where Clearance's App reports the agent checks; one with
 `clearanceChecks: false` (the Glidepath agent-gates- fallback) only where it does not (C-7). */ -}}
@@ -116,6 +132,7 @@ override map and the refusal apply everywhere at once (docs/admin/release-guardr
 {{- if hasKey $g "required" }}{{ $required = $g.required }}{{ end -}}
 {{- $o := index $overrides $g.name -}}
 {{- if and $o (kindIs "map" $o) (hasKey $o "required") }}{{ $required = index $o "required" }}{{ end -}}
+{{- $_ := set $g "kinds" (include "glidepath-catalog.gateKinds" $g | fromJson) -}}
 {{- if and (eq $g.name "itsm") (hasKey $.Values "itsm") }}{{ $_ := set $g "status" (ternary "stub" "real" (eq ($.Values.itsm.provider | default "none") "none")) }}{{ end -}}
 {{- if eq ($g.status | default "real") "stub" }}{{ $required = true }}{{ end -}}
 {{- if and (not $required) (has $g.name (list "sast" "provenance")) -}}
@@ -129,9 +146,125 @@ override map and the refusal apply everywhere at once (docs/admin/release-guardr
 releaseGuardrails entry because nothing delivers a .tekton file for it (the fan-in starts it), and with promotion
 off no PR would ever get the check and every merge would read as a bypass. */ -}}
 {{- if .Values.promotion.enabled -}}
-{{- $out = append $out (dict "name" "image-promotion" "description" "The release image copied by digest to the Flight registry with its signatures and attestations, and a promotion attestation for this release" "status" "real" "class" "integrity" "required" true "targets" (list "k8s-rollout")) -}}
+{{- $ip := dict "name" "image-promotion" "description" "The release image copied by digest to the Flight registry with its signatures and attestations, and a promotion attestation for this release" "status" "real" "class" "integrity" "required" true "targets" (list "k8s-rollout") "kinds" (dict "config" "n/a") -}}
+{{- $_ := set $ip "kinds" (include "glidepath-catalog.gateKinds" $ip | fromJson) -}}
+{{- $out = append $out $ip -}}
 {{- end -}}
+{{- range $out }}{{ include "glidepath-catalog.kindLocks" . }}{{ end -}}
 {{- $out | toJson -}}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.changeKinds: the change kinds glidepath-api's classifier returns (api/internal/changekind), highest
+precedence first, as a JSON array. glidepath-catalog.kindValues: what a gate does for one kind.
+*/ -}}
+{{- define "glidepath-catalog.changeKinds" -}}["image-release","rollback","config","no-op"]{{- end -}}
+{{- define "glidepath-catalog.kindValues" -}}["run","advisory","n/a"]{{- end -}}
+
+{{- /*
+glidepath-catalog.kindDefaults: the class defaults of the class x kind matrix, as JSON { <class>: { <kind>: <value> } }.
+In the chart, not values: a cluster cannot change what "content" means. content judges the image, so a rollback to an
+eligible earlier image only advises (ADR-0021 decision 8) and a change with no new image is n/a; integrity, process and
+approval judge the change itself, so they run on every kind that changes something deployable. no-op changes nothing
+deployable: n/a everywhere (agent-gates and the Clearance App's checks override it, they judge who opened the PR).
+*/ -}}
+{{- define "glidepath-catalog.kindDefaults" -}}
+{{- $judgesChange := dict "image-release" "run" "rollback" "run" "config" "run" "no-op" "n/a" -}}
+{{- dict "content" (dict "image-release" "run" "rollback" "advisory" "config" "n/a" "no-op" "n/a") "integrity" $judgesChange "process" $judgesChange "approval" $judgesChange | toJson -}}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.gateKinds: one registry entry's matrix row, as JSON { <kind>: run|advisory|n/a } for every kind: its
+class's defaults with the entry's own `kinds` map on top. An unknown class, kind or value, or a `kinds` that is not a
+map, fails the render. Takes the entry.
+*/ -}}
+{{- define "glidepath-catalog.gateKinds" -}}
+{{- $defaults := include "glidepath-catalog.kindDefaults" . | fromJson -}}
+{{- $kinds := include "glidepath-catalog.changeKinds" . | fromJsonArray -}}
+{{- $values := include "glidepath-catalog.kindValues" . | fromJsonArray -}}
+{{- if not (hasKey $defaults (toString .class)) -}}
+{{- fail (printf "releaseGuardrails: %s has class %q - one of content, integrity, process, approval (docs/admin/release-guardrails.md)" .name (toString .class)) -}}
+{{- end -}}
+{{- $row := deepCopy (index $defaults .class) -}}
+{{- if hasKey . "kinds" -}}
+{{- if not (kindIs "map" .kinds) }}{{ fail (printf "releaseGuardrails: %s.kinds must be a map of <kind>: run|advisory|n/a (docs/admin/release-guardrails.md, \"Change kinds\")" .name) }}{{ end -}}
+{{- range $k, $v := .kinds -}}
+{{- if not (has $k $kinds) }}{{ fail (printf "releaseGuardrails: %s.kinds: %q is not a change kind - one of %s (docs/admin/release-guardrails.md, \"Change kinds\")" $.name $k (join ", " $kinds)) }}{{ end -}}
+{{- if not (and (kindIs "string" $v) (has $v $values)) }}{{ fail (printf "releaseGuardrails: %s.kinds.%s: %q is not one of %s (docs/admin/release-guardrails.md, \"Change kinds\")" $.name $k (toString $v) (join ", " $values)) }}{{ end -}}
+{{- $_ := set $row $k $v -}}
+{{- end -}}
+{{- end -}}
+{{- $row | toJson -}}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.kindLocks: the refusals on a resolved entry's matrix row (spec section 6, "Locks"), beside the
+required: false refusal above. An image release is judged by every gate: none may be n/a for it, and sast, provenance
+and image-promotion (the image's integrity, and the Flight copy that is the release) must run, not advise. provenance
+judges a rollback and a config change too (ADR-0021: a rollback is blocked on provenance; a config change has its own
+variant), so it is never n/a for them. Renders nothing; fails the render on a violation.
+*/ -}}
+{{- define "glidepath-catalog.kindLocks" -}}
+{{- if eq (index .kinds "image-release") "n/a" -}}
+{{- fail (printf "releaseGuardrails: %s cannot be n/a for image-release - every gate judges an image release (docs/admin/release-guardrails.md, \"Change kinds\")" .name) -}}
+{{- end -}}
+{{- if and (has .name (list "sast" "provenance" "image-promotion")) (ne (index .kinds "image-release") "run") -}}
+{{- fail (printf "releaseGuardrails: %s must be run for image-release - it verifies the image's integrity and must enforce, not advise (docs/admin/release-guardrails.md, \"Change kinds\")" .name) -}}
+{{- end -}}
+{{- if eq .name "provenance" -}}
+{{- range (list "rollback" "config") -}}
+{{- if eq (index $.kinds .) "n/a" }}{{ fail (printf "releaseGuardrails: provenance cannot be n/a for %s - the change still needs a signed or reviewed origin (docs/admin/release-guardrails.md, \"Change kinds\")" .) }}{{ end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.applicability: what one gate does for one change kind, after `required` composes on top: "run",
+"advisory" or "n/a". A gate whose row says run but whose effective entry is required: false runs its advisory copy
+(spec section 6). A gate missing from the effective registry is "n/a" (it does not exist on this cluster).
+Usage: {{ include "glidepath-catalog.applicability" (dict "root" . "gate" "sast" "kind" "config") }}
+Per-app advisory (releaseGuardrailOverridesByApp) is not composed here: it is a runtime, per-app reading, as before.
+*/ -}}
+{{- define "glidepath-catalog.applicability" -}}
+{{- if not (has .kind (include "glidepath-catalog.changeKinds" .root | fromJsonArray)) }}{{ fail (printf "glidepath-catalog.applicability: %q is not a change kind" .kind) }}{{ end -}}
+{{- $a := "n/a" -}}
+{{- range (include "glidepath-catalog.guardrails" .root | fromJsonArray) -}}
+{{- if eq .name $.gate }}{{ $a = include "glidepath-catalog.entryApplicability" (dict "entry" . "kind" $.kind) }}{{ end -}}
+{{- end -}}
+{{- $a -}}
+{{- end -}}
+
+{{- /* glidepath-catalog.entryApplicability: the same for an already-resolved entry (dict "entry" <entry> "kind" <kind>). */ -}}
+{{- define "glidepath-catalog.entryApplicability" -}}
+{{- $a := index .entry.kinds .kind -}}
+{{- ternary "advisory" $a (and (eq $a "run") (not .entry.required)) -}}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.guardrailMatrix: the document the release-guardrails ConfigMap publishes (templates/release-guardrails.yaml),
+for glidepath-api and Tower to read the table the gate Pipelines were rendered from. JSON:
+  { "v": 1, "kinds": [...], "values": [...],
+    "gates": [ { name, class, status, required, targets?, check?, kinds: {<kind>: value}, effective: {<kind>: value} } ],
+    "advisoryByApp": { <app>: [<gate>...] } }
+`kinds` is the registry row; `effective` is glidepath-catalog.applicability for every kind (required composed on top).
+advisoryByApp is releaseGuardrailOverridesByApp as gate lists (validated where the tasks render it).
+*/ -}}
+{{- define "glidepath-catalog.guardrailMatrix" -}}
+{{- $gates := list -}}
+{{- range (include "glidepath-catalog.guardrails" . | fromJsonArray) -}}
+{{- $eff := dict -}}
+{{- $e := . -}}
+{{- range $k, $_v := .kinds }}{{ $_ := set $eff $k (include "glidepath-catalog.entryApplicability" (dict "entry" $e "kind" $k)) }}{{ end -}}
+{{- $g := dict "name" .name "class" .class "status" (.status | default "real") "required" .required "kinds" .kinds "effective" $eff -}}
+{{- if .targets }}{{ $_ := set $g "targets" .targets }}{{ end -}}
+{{- if .check }}{{ $_ := set $g "check" .check }}{{ end -}}
+{{- $gates = append $gates $g -}}
+{{- end -}}
+{{- $byApp := dict -}}
+{{- range $app, $m := (.Values.releaseGuardrailOverridesByApp | default dict) -}}
+{{- if kindIs "map" $m }}{{ $_ := set $byApp $app (keys $m | sortAlpha) }}{{ end -}}
+{{- end -}}
+{{- dict "v" 1 "kinds" (include "glidepath-catalog.changeKinds" . | fromJsonArray) "values" (include "glidepath-catalog.kindValues" . | fromJsonArray) "gates" $gates "advisoryByApp" $byApp | toJson -}}
 {{- end -}}
 
 {{- /*

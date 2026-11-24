@@ -109,6 +109,17 @@ def scope_rules(meta, fields_by_pointer):
     return rules
 
 
+# The class x kind matrix's class defaults: a copy of _helpers.tpl glidepath-catalog.kindDefaults (CG-2,
+# docs/admin/release-guardrails.md "Change kinds"). charts/glidepath-catalog/tests/gate_required_test.sh checks that
+# every gate's `kinds` here equals the row the chart renders into the release-guardrails ConfigMap.
+CHANGE_KINDS = ["image-release", "rollback", "config", "no-op"]
+_JUDGES_CHANGE = {"image-release": "run", "rollback": "run", "config": "run", "no-op": "n/a"}
+KIND_DEFAULTS = {
+    "content": {"image-release": "run", "rollback": "advisory", "config": "n/a", "no-op": "n/a"},
+    "integrity": _JUDGES_CHANGE, "process": _JUDGES_CHANGE, "approval": _JUDGES_CHANGE,
+}
+
+
 def gates():
     values = yaml.safe_load(CATALOG_VALUES.read_text())
     out = []
@@ -117,6 +128,9 @@ def gates():
              "status": g.get("status"), "class": g.get("class"), "required": g.get("required", True) is not False}
         if g.get("targets"):
             e["targets"] = g["targets"]
+        row = dict(KIND_DEFAULTS[g.get("class")])
+        row.update(g.get("kinds") or {})
+        e["kinds"] = {k: row[k] for k in CHANGE_KINDS}
         out.append(e)
     return out
 
