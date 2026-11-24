@@ -35,17 +35,20 @@ spec:
         - { name: repo-url, value: $(params.repo-url) }
         - { name: revision, value: $(params.revision) }
         - { name: pr-number, value: $(params.pr-number) }
+        # CG-3: the classify step decides whether this gate runs, advises or does not apply (applicability).
+        - { name: classify-gate, value: image-scan }
+        - { name: classify-refuse-multiple-images, value: "true" }
 
-    # ADR-0021 decision 8 / phase 4: on an eligible rollback (extract-promoted-image works that out
-    # from the release records) this content gate reports without blocking: the -advisory copy
-    # below runs instead, with onError: continue, and comment-pr says what it found.
-    # The registry's `required` (values.yaml releaseGuardrails) widens that: required: false
-    # renders only the -advisory copy, on every release PR, with advisory-reason not-required.
-    {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "image-scan")) "true" }}
-    {{- if $required }}
+    # CG-3 (docs/admin/release-guardrails.md "Change kinds"): extract-promoted-image's classify step answers run, advisory or
+    # n/a for this gate from the PR head's change kind and the registry's matrix row (glidepath-catalog.gatePlan renders only
+    # the paths the row can take). A content gate runs on an image release, runs the -advisory copy (onError: continue, and
+    # comment-pr says what it found) on an eligible rollback (ADR-0021 decision 8) or everywhere when the registry says
+    # required: false (advisory-reason not-required), and is n/a on a config or no-op change: only `not-applicable` runs.
+    {{- $plan := include "glidepath-catalog.gatePlan" (dict "root" . "gate" "image-scan") | fromJson }}
+    {{- if $plan.run }}
     - name: image-scan
       when:
-        - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: notin, values: ["true"] }
+        {{- include "glidepath-catalog.applicabilityWhen" (dict "from" "extract-promoted-image" "values" (list "run")) | nindent 8 }}
       runAfter: [extract-promoted-image]
       taskRef:
         resolver: cluster
@@ -59,12 +62,11 @@ spec:
         - { name: exceptions-repo-url, value: $(params.repo-url) }
 
     {{- end }}
+    {{- if $plan.advisory }}
     - name: image-scan-advisory
       onError: continue
-      {{- if $required }}
       when:
-        - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: in, values: ["true"] }
-      {{- end }}
+        {{- include "glidepath-catalog.applicabilityWhen" (dict "from" "extract-promoted-image" "values" (list "advisory")) | nindent 8 }}
       runAfter: [extract-promoted-image]
       taskRef:
         resolver: cluster
@@ -76,6 +78,10 @@ spec:
         - { name: image-ref, value: $(tasks.extract-promoted-image.results.image-ref) }
         # Accepted findings: the repo's DEFAULT BRANCH .trivyignore.yaml, never this PR's copy (docs/admin/image-scan-exceptions.md).
         - { name: exceptions-repo-url, value: $(params.repo-url) }
+    {{- end }}
+    {{- if $plan.na }}
+    {{- include "glidepath-catalog.notApplicableTask" (dict "root" . "gate" "image-scan" "from" "extract-promoted-image") | nindent 4 }}
+    {{- end }}
 
   finally:
     - name: comment-pr
@@ -92,6 +98,6 @@ spec:
         - { name: revision, value: $(params.revision) }
         - { name: pr-number, value: $(params.pr-number) }
         - { name: gate-name, value: image-scan }
-        - { name: advisory-reason, value: {{ ternary "rollback" "not-required" $required | quote }} }
+        - { name: advisory-reason, value: {{ ternary "rollback" "not-required" $plan.required | quote }} }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
         - { name: status, value: $(tasks.status) }

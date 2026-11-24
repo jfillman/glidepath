@@ -771,7 +771,7 @@ record, so no task account needs a ConfigMap write for the ledger. It is not for
 
 ## Change classification
 
-`POST /v1/apps/{app}/pulls/{n}/classification?head=<sha>` (tier T0, API 0.15.0) says what kind of change gitops pull request
+`POST /v1/apps/{app}/pulls/{n}/classification?head=<sha>` (tier T0, API 0.15.0; `fileClasses` 0.16.0) says what kind of change gitops pull request
 `{n}` is at commit `head`, so each release gate can decide whether it runs, runs as advisory or does not apply (hangar
 `specs/plans/change-aware-release-gates.md`, CG-1). `GET` on the same path reads the stored answer. It needs `create` (POST) or
 `get` (GET) on `classifications.glidepath.hangar.io` in the app's namespace: `glidepath-app` grants both to the app's
@@ -785,11 +785,12 @@ record, so no task account needs a ConfigMap write for the ledger. It is not for
 | `no-op` | comments, whitespace or key order only, or no deployable file changed (`.tekton/`, `releases/`, docs) |
 
 ```json
-{"v": 1, "classifier": "glidepath-api/changekind 1", "repo": "acme/gitops-shop", "pr": 96, "prUrl": "https://github.com/acme/gitops-shop/pull/96",
+{"v": 1, "classifier": "glidepath-api/changekind 2", "repo": "acme/gitops-shop", "pr": 96, "prUrl": "https://github.com/acme/gitops-shop/pull/96",
  "base": "<sha>", "head": "<sha>", "kind": "config", "renderCheck": "none", "computedAt": "2026-11-24T10:00:00Z",
  "reason": "prod-1/staging: configuration changed (prod-1/staging/values.yaml: rollout.replicas); no new image reference",
  "envs": [{"cluster": "prod-1", "env": "staging", "kind": "config", "renderCheck": "none", "images": {"base": [], "head": []},
-           "files": ["prod-1/staging/values.yaml"], "changed": ["prod-1/staging/values.yaml: rollout.replicas"], "reason": "..."}],
+           "files": ["prod-1/staging/values.yaml"], "fileClasses": ["values"],
+           "changed": ["prod-1/staging/values.yaml: rollout.replicas"], "reason": "..."}],
  "outcome": "computed", "record": "release-tracking-<chain>", "recordCopy": "copied"}
 ```
 
@@ -812,6 +813,12 @@ record, so no task account needs a ConfigMap write for the ledger. It is not for
   setting under an image key (`pullPolicy`) is configuration.
 - **Rollback eligibility** is the catalog's rule unchanged, with one addition: when the returning release image pins a digest,
   the healthy release must have recorded that digest (`imageDigest`). Release records that cannot be read fail closed, unstored.
+- **`fileClasses`** (API 0.16.0, classifier `glidepath-api/changekind 2`, CG-3): the classes of each environment's changed files,
+  both paths of a renamed file included: `values` (a path ending in `values.yaml` or `release.yaml`, or in `/base.yaml`: the
+  values gate's own trigger predicate), `chart` (an own chart's template side), `kustomization` and `manifest` (any other
+  deployable file). It is the fact a gate's matrix row narrows on: the values gate is `n/a` on a config change that touches no
+  values file (glidepath-catalog's `narrow`, docs/admin/release-guardrails.md "Change kinds"). An answer stored by changekind 1
+  has no `fileClasses`, and a gate never narrows on it.
 - **`renderCheck: required`**: a chart pin (any value under `targetRevision`, `repoURL`, `chart` or `helmCharts`, in a new
   or removed subtree or file too), an own chart's template side or a remote kustomize base changed, so only a render can show whether images changed (the render backstop, CG-3).
 - **Fail closed.** A file that does not parse (a duplicate key included), a comparison of 300 files or more (GitHub lists at

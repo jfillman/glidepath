@@ -49,6 +49,12 @@ rules:
   - apiGroups: ["tekton.dev"]
     resources: ["pipelineruns"]
     verbs: ["get"]
+  # Change-aware release gates (CG-3): itsm-gate runs the itsm gate's classify step, which asks glidepath-api for the PR head's
+  # change kind (POST /v1/apps/{app}/pulls/{n}/classification, docs/admin/api.md "Change classification"). Only the string:
+  # glidepath-api checks it with a SubjectAccessReview; it reads (and on the first ask stores) a classification, nothing else.
+  - apiGroups: ["glidepath.hangar.io"]
+    resources: ["classifications"]
+    verbs: ["get", "create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -97,6 +103,10 @@ rules:
     # list: release-source.sh finds this app's release records by label (kubectl get configmap -l ...); without it
     # every prod release gate fails closed with "the release records are unreadable".
     verbs: ["get", "list", "create", "patch"]
+  # Change-aware release gates (CG-3): the clearance gate's fetch runs its classify step (as release-record-writer's grant above).
+  - apiGroups: ["glidepath.hangar.io"]
+    resources: ["classifications"]
+    verbs: ["get", "create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

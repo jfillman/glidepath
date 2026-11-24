@@ -138,7 +138,9 @@ class Structure(unittest.TestCase):
             for s in steps(name):
                 if s["name"] != "publish":
                     self.assertNotIn("/publish", s.get("script", ""), (name, s["name"]))
-            self.assertIn('[[ "${PHASE}" == fetch ]] || exit 0', steps(name)[0]["script"])
+            # the first step is the CG-3 classify step (a StepAction, no script); the fetch step follows it
+            self.assertEqual(steps(name)[0]["name"], "classify")
+            self.assertIn('[[ "${PHASE}" == fetch ]] || exit 0', steps(name)[1]["script"])
             self.assertIn('[[ "${PHASE}" == fetch ]] || exit 0', script(name, "publish"))
 
     def test_decide_tasks_bind_only_read_only_workspaces_and_render_gets_the_account_free_split(self):

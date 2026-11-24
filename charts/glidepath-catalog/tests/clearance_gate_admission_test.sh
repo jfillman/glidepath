@@ -23,7 +23,7 @@ mkdir -p "$d/bin"
 # The publish -> render-manifests -> ingest chain the Pipeline runs before this Task's admission step (tests/lib/gate_chain.sh).
 source "${here}/lib/gate_chain.sh"
 step() { # <index> <work dir>
-  yq ".spec.steps[$1].script" "$d/task.yaml" \
+  yq "[.spec.steps[] | select(.name != \"classify\")][$1].script" "$d/task.yaml" \
     | sed -e "s#/work#$2#g" -e "s#\$(results.outcome.path)#$2/outcome#g" -e "s#\$(results.findings-summary.path)#$2/summary#g" \
           -e "s#\$(results.change-ids.path)#$2/change-ids#g" -e "s#/var/run/secrets/clearance/clearance-token#$2/token#g" \
     | sed -e "s#/opt/airframe/charts/airframe-application#${fx}/chart#g" -e "s#/opt/airframe/xrds#${fx}/airframe/xrds#g" \

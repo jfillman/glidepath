@@ -70,6 +70,21 @@ func ownChartFile(f string) bool {
 	return false
 }
 
+// FileClass is the class of a deployable path (ClassValues, ClassKustomization, ClassChart or ClassManifest). The values class is
+// the values gate's trigger predicate, unchanged (pull-request-values.yaml): a path ending in values.yaml or release.yaml, or in
+// /base.yaml.
+func FileClass(f string) string {
+	switch {
+	case strings.HasSuffix(f, "values.yaml") || strings.HasSuffix(f, "release.yaml") || strings.HasSuffix(f, "/base.yaml"):
+		return ClassValues
+	case ownChartFile(f):
+		return ClassChart
+	case kustomizationFile(f):
+		return ClassKustomization
+	}
+	return ClassManifest
+}
+
 func kustomizationFile(f string) bool {
 	b := path.Base(f)
 	return strings.HasPrefix(b, "kustomization") || b == "Kustomization"
@@ -548,9 +563,15 @@ func (j *job) judge(ctx context.Context, e *envAcc) (Env, error) {
 	env := Env{Cluster: e.key.cluster, Env: e.key.env, RenderCheck: RenderNone, Images: ImageSets{Base: []string{}, Head: []string{}}}
 	baseAt, headAt := map[string]bool{}, map[string]bool{} // "<file>#<doc>:<yaml path>=<ref>": where each reference is
 	var removed []string
+	classes := map[string]bool{}
 	for _, sd := range e.sides {
 		fc := sd.fc
 		env.Files = append(env.Files, displayName(fc))
+		for _, p := range []string{fc.basePath, fc.headPath} {
+			if p != "" {
+				classes[FileClass(p)] = true
+			}
+		}
 		if sd.inBase && fc.base != nil {
 			for _, r := range fc.base.refs {
 				e.baseRefSet[r.Ref] = true
@@ -579,6 +600,7 @@ func (j *job) judge(ctx context.Context, e *envAcc) (Env, error) {
 	if len(removed) > 0 && len(e.configChange) == 0 {
 		e.configChange = append(e.configChange, "image reference removed or moved: "+strings.Join(removed, ", "))
 	}
+	env.FileClasses = sortedKeys(classes)
 	env.Images.Base, env.Images.Head = sortedKeys(e.baseRefSet), sortedKeys(e.headRefSet)
 	var fresh []located // image references at head that the base does not hold: an image new to the environment
 	for _, l := range e.headRefs {

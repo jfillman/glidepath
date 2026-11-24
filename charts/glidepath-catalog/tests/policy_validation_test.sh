@@ -24,7 +24,7 @@ source "${here}/lib/gate_chain.sh"
 # Paths the steps hardcode, the shared volume and the validator image's Airframe tree, replaced per scenario (the
 # ingest step's Python is a quoted heredoc, so a shell variable would not reach it). Used for the evaluate step.
 step() { # <index> <work dir>
-  yq ".spec.steps[$1].script" "${TASK:-$d/task.yaml}" \
+  yq "[.spec.steps[] | select(.name != \"classify\")][$1].script" "${TASK:-$d/task.yaml}" \
     | sed -e "s#/work#$2#g" -e "s#\$(results.outcome.path)#$2/outcome#g" -e "s#\$(results.findings-summary.path)#$2/summary#g" -e "s#\$(results.report-digest.path)#$2/digest#g" \
     | sed -e "s#/opt/airframe/charts/airframe-application#${fx}/chart#g" -e "s#/opt/airframe/xrds#${fx}/airframe/xrds#g" \
     > "$2/step$1.sh"  # /work first: the checkout path itself may contain "/work" (GitHub runners do)

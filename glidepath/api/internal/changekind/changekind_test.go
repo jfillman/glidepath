@@ -941,3 +941,36 @@ func TestDeployablePredicate(t *testing.T) {
 		}
 	}
 }
+
+// changekind 2 (CG-3): each environment lists the classes of its changed files, the fact a gate narrows on (the values gate runs on
+// a config change only when a values, release or base file changed).
+func TestFileClassesPerEnvironment(t *testing.T) {
+	w := newWorld(map[string]string{"prod-1/prod/manifests/worker.yaml": fmt.Sprintf(deployment, "ghcr.io/acme/worker:1"), "prod-1/staging/values.yaml": valuesBase},
+		map[string]string{"prod-1/prod/manifests/worker.yaml": strings.Replace(fmt.Sprintf(deployment, "ghcr.io/acme/worker:1"), "{name: worker}", "{name: worker, labels: {tier: batch}}", 1),
+			"prod-1/staging/values.yaml": strings.Replace(valuesBase, "replicas: 1", "replicas: 2", 1)})
+	a := classify(t, w, nil)
+	if a.Classifier != "glidepath-api/changekind 2" {
+		t.Fatalf("classifier %q", a.Classifier)
+	}
+	if got := fmt.Sprint(envOf(t, a, "prod-1", "prod").FileClasses); got != "[manifest]" {
+		t.Fatalf("prod: %s", got)
+	}
+	if got := fmt.Sprint(envOf(t, a, "prod-1", "staging").FileClasses); got != "[values]" {
+		t.Fatalf("staging: %s", got)
+	}
+	// Always present in the JSON, an empty list included.
+	raw, _ := json.Marshal(Env{})
+	if !strings.Contains(string(raw), `"fileClasses":null`) && !strings.Contains(string(raw), `"fileClasses":[]`) {
+		t.Fatalf("%s", raw)
+	}
+	for f, want := range map[string]string{
+		"prod-1/prod/values.yaml": ClassValues, "prod-1/prod/release.yaml": ClassValues, "prod-1/base.yaml": ClassValues,
+		"prod-1/prod/values-extra.yaml": ClassManifest, "prod-1/prod/prod-values.yaml": ClassValues,
+		"prod-1/prod/kustomization.yaml": ClassKustomization, "prod-1/prod/chart/templates/deploy.yaml": ClassChart,
+		"prod-1/prod/chart/Chart.yaml": ClassChart, "prod-1/prod/chart/values.yaml": ClassValues, "prod-1/prod/cm.json": ClassManifest,
+	} {
+		if got := FileClass(f); got != want {
+			t.Errorf("FileClass(%s) = %s, want %s", f, got, want)
+		}
+	}
+}

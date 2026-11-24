@@ -41,17 +41,20 @@ spec:
         - { name: repo-url, value: $(params.repo-url) }
         - { name: revision, value: $(params.revision) }
         - { name: pr-number, value: $(params.pr-number) }
+        # CG-3: the classify step decides whether this gate runs, advises or does not apply (applicability).
+        - { name: classify-gate, value: qa }
+        - { name: classify-refuse-multiple-images, value: "true" }
 
     {{- /* The registry's `required` for this gate (values.yaml releaseGuardrails, merged with
     releaseGuardrailOverrides): true runs the hard task on a normal release and the advisory
     copy on an eligible rollback; false runs only the advisory copy, always, so the gate
     reports without failing while apps get their check rides. comment-pr is told which
     reason applies (advisory-reason) so the comment says why it did not block. */}}
-    {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "qa")) "true" }}
-    {{- if $required }}
+    {{- $plan := include "glidepath-catalog.gatePlan" (dict "root" . "gate" "qa") | fromJson }}
+    {{- if $plan.run }}
     - name: verify-check-ride
       when:
-        - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: notin, values: ["true"] }
+        {{- include "glidepath-catalog.applicabilityWhen" (dict "from" "extract-promoted-image" "values" (list "run")) | nindent 8 }}
       runAfter: [extract-promoted-image]
       taskRef:
         resolver: cluster
@@ -63,12 +66,11 @@ spec:
         - { name: image-ref, value: $(tasks.extract-promoted-image.results.image-ref) }
 
     {{- end }}
+    {{- if $plan.advisory }}
     - name: verify-check-ride-advisory
       onError: continue
-      {{- if $required }}
       when:
-        - { input: $(tasks.extract-promoted-image.results.rollback-eligible), operator: in, values: ["true"] }
-      {{- end }}
+        {{- include "glidepath-catalog.applicabilityWhen" (dict "from" "extract-promoted-image" "values" (list "advisory")) | nindent 8 }}
       runAfter: [extract-promoted-image]
       taskRef:
         resolver: cluster
@@ -78,6 +80,10 @@ spec:
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
         - { name: image-ref, value: $(tasks.extract-promoted-image.results.image-ref) }
+    {{- end }}
+    {{- if $plan.na }}
+    {{- include "glidepath-catalog.notApplicableTask" (dict "root" . "gate" "qa" "from" "extract-promoted-image") | nindent 4 }}
+    {{- end }}
 
   finally:
     - name: comment-pr
@@ -94,6 +100,6 @@ spec:
         - { name: revision, value: $(params.revision) }
         - { name: pr-number, value: $(params.pr-number) }
         - { name: gate-name, value: qa }
-        - { name: advisory-reason, value: {{ ternary "rollback" "not-required" $required | quote }} }
+        - { name: advisory-reason, value: {{ ternary "rollback" "not-required" $plan.required | quote }} }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
         - { name: status, value: $(tasks.status) }

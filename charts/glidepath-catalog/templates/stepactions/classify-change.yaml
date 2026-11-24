@@ -1,0 +1,214 @@
+# catalog/stepactions/classify-change.yaml
+#
+# Change-aware release gates, CG-3 (hangar specs/plans/change-aware-release-gates.md sections 5.3 and 6.1;
+# docs/admin/release-guardrails.md "Change kinds"): the step that decides whether this gate runs, runs its advisory copy, or
+# does not apply to the PR head it was started for.
+#
+# It asks glidepath-api for the PR head's change kind (POST /v1/apps/{app}/pulls/{n}/classification?head=<sha>, docs/admin/api.md
+# "Change classification"): the first gate to ask computes it, every other gate gets the same stored answer. The kind is worked out
+# from the PR's own diff, never from the branch name, the PR text or commit trailers. It then reads this gate's row of the
+# release-guardrails matrix, rendered into this step from the same registry the gate Pipelines are rendered from
+# (glidepath-catalog.guardrailMatrix), and answers with glidepath-catalog.applicabilityJq:
+#   applicability  run | advisory | n/a for this gate (the gate Pipeline's `when`s read it)
+#   change-kind    the classification's kind (image-release, rollback, config, no-op)
+#   change-reason  one line: why, for the PR comment and the not-applicable task
+#   gate-table     every Glidepath gate's answer for this head, {gate: run|advisory|n/a[:<why>]}, for the shared "Change
+#                  classification" PR comment (comment-pr-check-result)
+#   classification-source  api, or fallback when glidepath-api did not answer
+#   rollback-applicability this gate's value for a rollback, for extract-promoted-image's fallback (below)
+#
+# It runs inside the gate's existing first Task, so it adds no pod (extract-promoted-image, the fetch phase of validate-values,
+# policy-validation-gate and clearance-gate, itsm-gate); provenance runs it as the small classify-change Task. A host Task used
+# without a gate name (gate "") gets applicability run and nothing is asked: every other use of those Tasks is unchanged.
+#
+# Fail closed. When glidepath-api cannot be asked or does not answer 200 (unreachable, an older API without the route, a
+# ServiceAccount without the classifications grant, a head that is not the PR's), the answer is image-release with
+# classification-source fallback, and the step says why in its log: every gate then runs as it does for an image release, so
+# nothing gets lighter treatment because of a doubt. extract-promoted-image keeps its own rollback-eligibility rule as the local
+# fallback for a rollback (the content gates' advisory copy, ADR-0021 decision 8). A config change whose images only a render
+# can show (renderCheck: required) is judged as an image release until the render backstop (spec section 5.4) exists.
+#
+# Content gates pass refuse-multiple-images "true" (spec Q8): where the gate runs (not advisory), a PR head that brings more
+# than one distinct new image is refused here, naming them, because the image gates judge one image per PR.
+apiVersion: tekton.dev/v1beta1
+kind: StepAction
+metadata:
+  name: classify-change
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  image: {{ .Values.toolboxImage }}
+  params:
+    - name: gate
+      type: string
+      default: ""
+      description: The gate (its releaseGuardrails name). Empty answers run without asking anything (a host Task used outside a gate's first task).
+    - name: repo-url
+      type: string
+      description: The gitops repo the PR is on - PaC's `repo_url`.
+    - name: revision
+      type: string
+      description: The PR head commit the gate was started for - PaC's `revision`.
+    - name: pr-number
+      type: string
+      default: ""
+      description: PaC's `pull_request_number`. When it arrives unsubstituted (a retest comment), the PR is found from the commit.
+    - name: namespace
+      type: string
+      description: The run's namespace, $(context.taskRun.namespace) - the app is read from it (app-<app>-cicd).
+    - name: token-volume
+      type: string
+      description: The calling Task's projected token volume for the GitHub token broker (audience github-installation-token), used only to find the PR of an unsubstituted pr-number.
+    - name: refuse-multiple-images
+      type: string
+      default: "false"
+      description: '"true" (the content gates): where this gate runs, refuse a PR head that brings more than one distinct new image (spec Q8).'
+  results:
+    - name: change-kind
+      description: image-release | rollback | config | no-op ("" when no gate was named)
+    - name: applicability
+      description: run | advisory | n/a for this gate
+    - name: change-reason
+      description: One line on why (at most 500 characters)
+    - name: gate-table
+      description: 'Every Glidepath gate''s answer for this head as compact JSON {gate: "run" | "advisory" | "n/a[:<why>]"}'
+    - name: classification-reason
+      description: The classification's own reason, the same for every gate of this head (at most 400 characters), for the shared comment
+    - name: classification-source
+      description: api | fallback | none
+    - name: rollback-applicability
+      description: This gate's value for a rollback (extract-promoted-image's fallback for an eligible rollback when glidepath-api did not answer)
+  volumeMounts:
+    - name: $(params.token-volume)
+      mountPath: /var/run/secrets/platform
+      readOnly: true
+  env:
+    - { name: GATE, value: $(params.gate) }
+    - { name: REPO_URL, value: $(params.repo-url) }
+    - { name: REVISION, value: $(params.revision) }
+    - { name: PR_NUMBER, value: $(params.pr-number) }
+    - { name: NAMESPACE, value: $(params.namespace) }
+    - { name: REFUSE_MULTIPLE_IMAGES, value: $(params.refuse-multiple-images) }
+    - { name: GLIDEPATH_API_URL, value: {{ .Values.changeClassification.apiUrl | quote }} }
+    - { name: TOKEN_PATH, value: /var/run/secrets/kubernetes.io/serviceaccount/token }
+    - name: GITHUB_TOKEN_BROKER_URL
+      value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+  script: |
+    #!/usr/bin/env bash
+    set -uo pipefail
+    finish() { # kind applicability reason table source rollback-applicability [classification-reason]
+      printf '%s' "${7:-}" | head -c 400 > "$(step.results.classification-reason.path)"
+      printf '%s' "$1" > "$(step.results.change-kind.path)"
+      printf '%s' "$2" > "$(step.results.applicability.path)"
+      printf '%s' "${3:0:500}" > "$(step.results.change-reason.path)"
+      printf '%s' "$4" > "$(step.results.gate-table.path)"
+      printf '%s' "$5" > "$(step.results.classification-source.path)"
+      printf '%s' "$6" > "$(step.results.rollback-applicability.path)"
+    }
+    if [[ -z "${GATE}" ]]; then
+      finish "" run "" "{}" none run
+      exit 0
+    fi
+
+    # The matrix every gate Pipeline was rendered from (glidepath-catalog.guardrailMatrix; also ConfigMap release-guardrails).
+    work="$(mktemp -d)"
+    cat > "${work}/matrix.json" <<'MATRIX'
+    {{ include "glidepath-catalog.guardrailMatrix" . }}
+    MATRIX
+
+    why=""
+    app=""
+    if [[ "${NAMESPACE}" =~ ^(app|infra)-([a-z0-9-]+)-cicd$ ]]; then
+      app="${BASH_REMATCH[2]}"
+      # glidepath-api classifies the app's gitops repository's pull requests (gitops-<app>, gitops-infra-<app>). A run on any
+      # other repository - a cloud app's release pin PR on its source repo (ADR-0020) - keeps the full gate set: change kinds
+      # do not cover release pins in v1 (spec Q9), and a PR number of another repository must never be classified.
+      gitops="gitops-${app}"; [[ "${BASH_REMATCH[1]}" == infra ]] && gitops="gitops-infra-${app}"
+      repo_name="$(sed -E -e 's#^https?://[^/]+/[^/]+/([^/]+)/?$#\1#' -e 's#\.git$##' <<<"${REPO_URL}")"
+      [[ "${repo_name}" == "${gitops}" ]] || why="${repo_name} is not this app's gitops repository (${gitops}): a release pin PR keeps every gate (change kinds do not cover release pins yet)"
+    else
+      why="namespace ${NAMESPACE} is not an app's -cicd namespace"
+    fi
+    [[ -n "${why}" || "${REVISION}" =~ ^[0-9a-f]{40}$ ]] || why="the revision (${REVISION:0:50}) is not a full commit sha"
+    if [[ -z "${why}" && ! "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+      # A retest comment hands over PaC's template text instead of the number: find the PR from the commit.
+      if [[ "${REPO_URL}" =~ ^https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)$ ]]; then
+        owner="${BASH_REMATCH[1]}"; repo="${BASH_REMATCH[2]%.git}"
+        source "${PLATFORM_LIB}/github-app.sh"
+        set +e  # github-app.sh sets -e; every failure here is a reason to fall back, never an exit
+        if token="$(github_app_installation_token "${owner}" "${repo}" 2>/dev/null)"; then
+          resolved="$(curl --fail --silent --show-error --max-time 20 --retry 3 --retry-connrefused \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/pulls" | jq -r '.[0].number // empty' 2>/dev/null)"
+          [[ "${resolved}" =~ ^[0-9]+$ ]] && PR_NUMBER="${resolved}"
+        fi
+      fi
+      [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] || why="no pull request number (pr-number '${PR_NUMBER:0:60}', and none found for ${REVISION:0:12})"
+    fi
+
+    classification=""
+    out="${work}/classification.json"
+    if [[ -z "${why}" ]]; then
+      code="$(curl --silent --show-error --max-time 150 --retry 1 --retry-connrefused -o "${out}" -w '%{http_code}' -X POST \
+        -H "Authorization: Bearer $(cat "${TOKEN_PATH}")" -H "Accept: application/json" \
+        "${GLIDEPATH_API_URL}/v1/apps/${app}/pulls/${PR_NUMBER}/classification?head=${REVISION}")" || code=000
+      if [[ "${code}" == 200 ]] && jq -e --arg head "${REVISION}" '.head == $head and (.kind | type) == "string"' "${out}" >/dev/null 2>&1; then
+        classification=api
+      else
+        detail="$(jq -r '.error // .message // empty' "${out}" 2>/dev/null | head -c 300)"
+        case "${code}" in
+          000) why="glidepath-api could not be reached at ${GLIDEPATH_API_URL}" ;;
+          200) why="glidepath-api's answer is not a classification of ${REVISION:0:12}" ;;
+          403) why="this run's ServiceAccount may not ask glidepath-api for the classification (HTTP 403${detail:+: ${detail}}): glidepath-app's classifications grant is older than this catalog" ;;
+          404) why="glidepath-api answered 404${detail:+ (${detail})}: an API older than 0.15.0 has no classification route" ;;
+          *) why="glidepath-api answered HTTP ${code}${detail:+: ${detail}}" ;;
+        esac
+      fi
+    fi
+    source_=api
+    if [[ -z "${classification}" ]]; then
+      source_=fallback
+      jq -nc --arg why "${why}" '{kind: "image-release", failClosed: true, renderCheck: "none", envs: [],
+        reason: ("classification unavailable (" + $why + "): judged as an image release, every gate runs")}' > "${out}"
+      echo "classify: FALLBACK - ${why}. Judged as an image release (fail closed)."
+    fi
+
+    # Files, not arguments: a classification can be far larger than one argument may be.
+    plan="$(jq -c -n --slurpfile mm "${work}/matrix.json" --slurpfile cc "${out}" --arg gate "${GATE}" '
+      {{- include "glidepath-catalog.applicabilityJq" . | nindent 6 }}
+      $mm[0] as $m | $cc[0] as $c
+      | ([$m.gates[] | select(.name == $gate)][0] // {effective: {}, narrow: {}}) as $g
+      | gate_plan($g; $c) as $p
+      | ($c.reason // "") as $why
+      | {kind: $c.kind, a: $p.a, judged: judged_kind($c), creason: $why,
+         reason: (if $p.a == "n/a" and ($p.why | startswith("kind:")) then "not applicable to a \($c.kind) change: \($why)"
+                  elif $p.a == "n/a" then "not applicable: \($m.narrowReasons[$p.why] // $p.why) (\($c.kind): \($why))"
+                  elif $p.why == "render-check" then "\($why); judged as an image release: only a render can show whether its images change"
+                  else $why end),
+         table: ([$m.gates[] | select(.check == null and .name != "image-promotion")
+                  | {key: .name, value: (gate_plan(.; $c) | if .why == "" then .a else .a + ":" + .why end)}] | from_entries),
+         rb: ($g.effective.rollback // "run"),
+         fresh: ([($c.envs // [])[] | ((.images.head // []) - (.images.base // []))[]] | unique)}')" || {
+      echo "classify: the matrix or the classification could not be read; judged as an image release (fail closed)" >&2
+      finish image-release run "classify-change could not evaluate the classification: judged as an image release" "{}" fallback run
+      exit 0
+    }
+    kind="$(jq -r '.kind' <<<"${plan}")"
+    applicability="$(jq -r '.a' <<<"${plan}")"
+    reason="$(jq -r '.reason' <<<"${plan}")"
+    table="$(jq -c '.table' <<<"${plan}")"
+    finish "${kind}" "${applicability}" "${reason}" "${table}" "${source_}" "$(jq -r '.rb' <<<"${plan}")" "$(jq -r '.creason' <<<"${plan}")"
+
+    echo "classify: PR #${PR_NUMBER:-?} at ${REVISION:0:12} is ${kind} (source: ${source_}): ${reason}"
+    echo "classify: ${GATE} -> ${applicability}"
+    jq -r '.table | to_entries[] | "  \(.key): \(.value)"' <<<"${plan}"
+
+    if [[ "${REFUSE_MULTIPLE_IMAGES}" == true && "${applicability}" == run ]]; then
+      fresh="$(jq -r '.fresh | join(", ")' <<<"${plan}")"
+      if [[ "$(jq -r '.fresh | length' <<<"${plan}")" -gt 1 ]]; then
+        echo "FAIL: this PR brings more than one distinct new image (${fresh}). The image gates judge one image per pull request: release each image in its own PR (change-aware release gates, Q8)." >&2
+        exit 1
+      fi
+    fi
+    exit 0

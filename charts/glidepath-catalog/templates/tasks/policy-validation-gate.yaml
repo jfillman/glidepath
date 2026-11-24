@@ -77,7 +77,9 @@ spec:
     - name: phase
       type: string
       description: "fetch | decide. The Pipeline runs this Task twice around the render-manifests task: `fetch` (fetch + publish; nothing else does anything) and `decide` (ingest, evaluate; fetch does nothing). The decide phase reads the rendered output read-only."
+    {{- include "glidepath-catalog.classifyParams" . | nindent 4 }}
   results:
+    {{- include "glidepath-catalog.classifyResults" . | nindent 4 }}
     - name: outcome
       description: pass | warn | fail | skipped
     - name: findings-summary
@@ -124,6 +126,7 @@ spec:
       - name: PIPELINE_RUN
         value: $(params.pipeline-run-name)
   steps:
+    {{- include "glidepath-catalog.classifyStep" . | nindent 4 }}
     - name: fetch
       image: {{ .Values.toolboxImage }}
       imagePullPolicy: IfNotPresent
@@ -132,6 +135,7 @@ spec:
         - { name: policy-bundle-token, mountPath: /var/run/secrets/policy-bundle, readOnly: true }
         - { name: work, mountPath: /work }
       env:
+        {{- include "glidepath-catalog.applicabilityEnv" . | nindent 8 }}
         - name: GITHUB_TOKEN_BROKER_URL
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
         - name: POLICY_BUNDLE_URL
@@ -154,6 +158,7 @@ spec:
           value: {{ .Values.defaultChart.targetRevision | quote }}
       script: |
         #!/usr/bin/env bash
+        {{- include "glidepath-catalog.notApplicableExit" . | nindent 8 }}
         set -euo pipefail
         {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
         [[ "${PHASE}" == fetch ]] || exit 0
@@ -317,6 +322,8 @@ spec:
       imagePullPolicy: IfNotPresent
       volumeMounts:
         - { name: work, mountPath: /work }
+      env:
+        {{- include "glidepath-catalog.applicabilityEnv" . | nindent 8 }}
       script: |
         {{- include "glidepath-catalog.gatePublish" . | nindent 8 }}
     - name: ingest

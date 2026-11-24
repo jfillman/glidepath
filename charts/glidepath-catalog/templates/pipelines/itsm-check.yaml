@@ -44,8 +44,14 @@ spec:
       params:
         - { name: gate-name, value: itsm }
     {{- else }}
-    {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "itsm")) "true" }}
-    - name: {{ ternary "verify-change" "verify-change-advisory" $required }}
+    {{- /* CG-3: the classify step runs first inside verify-change (itsm-gate); with n/a its verify step asks for no change
+    request and only `not-applicable` follows. itsm is process: it runs on an image release, a rollback and a config change
+    (the protected-environment narrowing of a config change is CG-6) and is n/a for a no-op. The loud stub above (no change
+    tool) is not classified: it judges nothing. */}}
+    {{- $plan := include "glidepath-catalog.singlePathPlan" (dict "root" . "gate" "itsm") | fromJson }}
+    {{- $required := $plan.required }}
+    {{- $first := ternary "verify-change" "verify-change-advisory" $required }}
+    - name: {{ $first }}
       {{- if not $required }}
       onError: continue
       {{- end }}
@@ -59,6 +65,10 @@ spec:
         - { name: repo-url, value: $(params.repo-url) }
         - { name: revision, value: $(params.revision) }
         - { name: pr-number, value: $(params.pr-number) }
+        - { name: classify-gate, value: itsm }
+    {{- if $plan.na }}
+    {{- include "glidepath-catalog.notApplicableTask" (dict "root" . "gate" "itsm" "from" $first) | nindent 4 }}
+    {{- end }}
     {{- end }}
   finally:
     - name: comment-pr

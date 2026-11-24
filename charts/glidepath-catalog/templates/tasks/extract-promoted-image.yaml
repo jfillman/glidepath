@@ -6,6 +6,14 @@
 # calls against the PR, anchored on the PR's base so a multi-commit release branch
 # resolves too. verify-image-provenance.yaml runs the same StepAction inline instead of
 # calling this Task, saving itself a pod.
+#
+# CG-3 (hangar specs/plans/change-aware-release-gates.md section 6.1): its first step is the gate's classify step
+# (stepactions/classify-change.yaml), so the content gates know whether they run, advise or do not apply before anything else
+# runs; with n/a the resolve and rollback steps do nothing, so a gate that does not apply can no longer go red here (the
+# advisory problem of spec section 1). The final change-kind, applicability and change-reason come from the rollback step:
+# glidepath-api's answer as it is, except when glidepath-api did not answer (classification-source fallback, judged as an
+# image release), where this Task's own rollback-eligibility rule still turns an eligible rollback into the gate's rollback
+# value (advisory for a content gate), as before change kinds.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -26,7 +34,26 @@ spec:
       type: string
       default: ""
       description: PaC's `body.pull_request.number` - anchors the changed-file list on the PR's base. Empty means "just this commit".
+    {{- include "glidepath-catalog.classifyParams" . | nindent 4 }}
   results:
+    - name: change-kind
+      description: "CG-3: the PR head's change kind (image-release, rollback, config, no-op); empty when no gate was named."
+      value: $(steps.rollback-eligibility.results.change-kind)
+    - name: applicability
+      description: "CG-3: run | advisory | n/a for this gate - the gate Pipeline's `when`s read it."
+      value: $(steps.rollback-eligibility.results.applicability)
+    - name: change-reason
+      description: "CG-3: why, in one line."
+      value: $(steps.rollback-eligibility.results.change-reason)
+    - name: gate-table
+      description: "CG-3: every Glidepath gate's answer for this head, for the shared Change classification comment."
+      value: $(steps.classify.results.gate-table)
+    - name: classification-source
+      description: "CG-3: api, fallback (glidepath-api did not answer: judged as an image release) or none."
+      value: $(steps.classify.results.classification-source)
+    - name: classification-reason
+      description: "CG-3: the classification's own reason, the same for every gate of this head."
+      value: $(steps.classify.results.classification-reason)
     - name: image-ref
       value: $(steps.resolve.results.image-ref)
     - name: manifest-path
@@ -36,8 +63,9 @@ spec:
       description: >-
         "true" when the promoted image is an eligible rollback target (ADR-0021 decision 8,
         phase 4): one of the newest five release records for this app, environment and cluster
-        that reached healthy ran this exact image. The content gates then report without
-        blocking. "false" otherwise, including any doubt.
+        that reached healthy ran this exact image. "false" otherwise, including any doubt.
+        With a gate named (CG-3) it is "true" exactly when the change kind is rollback; the gate
+        Pipelines decide on `applicability`, and this stays for older readers for one release.
       value: $(steps.rollback-eligibility.results.eligible)
     - name: rollback-note
       description: One line on why the image is or is not an eligible rollback target, for the PR comment.
@@ -51,6 +79,7 @@ spec:
               audience: github-installation-token
               expirationSeconds: 600
   steps:
+    {{- include "glidepath-catalog.classifyStep" . | nindent 4 }}
     - name: resolve
       ref:
         resolver: cluster
@@ -64,6 +93,7 @@ spec:
         - { name: revision, value: $(params.revision) }
         - { name: pr-number, value: $(params.pr-number) }
         - { name: token-volume, value: github-token-broker-token }
+        - { name: applicability, value: $(steps.classify.results.applicability) }
     # ADR-0021 phase 4: is this image an eligible rollback target? Computed from the release
     # records on this cluster (release-tracking-<chain-id> ConfigMaps in this namespace, which
     # open-release-pr writes and glidepath-relay keeps the state of), never from the PR's own
@@ -77,7 +107,15 @@ spec:
       results:
         - name: eligible
         - name: note
+        - name: change-kind
+        - name: applicability
+        - name: change-reason
       env:
+        - { name: CHANGE_KIND, value: $(steps.classify.results.change-kind) }
+        - { name: GATE_APPLICABILITY, value: $(steps.classify.results.applicability) }
+        - { name: CHANGE_REASON, value: $(steps.classify.results.change-reason) }
+        - { name: CLASSIFICATION_SOURCE, value: $(steps.classify.results.classification-source) }
+        - { name: ROLLBACK_APPLICABILITY, value: $(steps.classify.results.rollback-applicability) }
         - name: IMAGE_REF
           value: $(steps.resolve.results.image-ref)
         - name: MANIFEST
@@ -89,12 +127,36 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
+        # CG-3: the gate's final change kind, applicability and reason (the Task's results).
+        decided() {
+          printf '%s' "$1" > "$(step.results.change-kind.path)"
+          printf '%s' "$2" > "$(step.results.applicability.path)"
+          printf '%s' "${3:0:500}" > "$(step.results.change-reason.path)"
+        }
         answer() {
           printf '%s' "$1" > "$(step.results.eligible.path)"
           printf '%s' "$2" > "$(step.results.note.path)"
           echo "rollback eligibility: $1 - $2"
+          if [[ "${CLASSIFICATION_SOURCE}" == fallback && "$1" == true ]]; then
+            # glidepath-api did not answer, and this rule (the one the classifier ported) finds an eligible rollback: the
+            # gate gets its rollback value, as it did before change kinds.
+            decided rollback "${ROLLBACK_APPLICABILITY}" "${CHANGE_REASON}; locally: $2"
+            echo "classify fallback: an eligible rollback here, so ${ROLLBACK_APPLICABILITY}"
+          else
+            decided "${CHANGE_KIND}" "${GATE_APPLICABILITY}" "${CHANGE_REASON}"
+          fi
           exit 0
         }
+        if [[ "${GATE_APPLICABILITY}" == "n/a" ]]; then
+          answer false "not applicable to this change (${CHANGE_KIND})"
+        fi
+        if [[ "${CLASSIFICATION_SOURCE}" == api ]]; then
+          # glidepath-api decided rollback eligibility for this head (the same rule, frozen at the first ask): it is the answer.
+          if [[ "${CHANGE_KIND}" == rollback ]]; then
+            answer true "${CHANGE_REASON}"
+          fi
+          answer false "not a rollback: ${CHANGE_KIND}"
+        fi
         # <cluster>/<env>/release.yaml or values.yaml; a cloud release pin has its own rollback path.
         if ! [[ "${MANIFEST}" =~ ^([^/]+)/([^/]+)/(release|values)\.yaml$ ]]; then
           answer false "not a Kubernetes environment's release file (${MANIFEST})"

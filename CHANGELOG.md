@@ -4,6 +4,17 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### Release gates run, advise or report n/a by the kind of change (CG-3)
+
+- Every release gate Pipeline now runs a `classify` step first: it asks glidepath-api for the PR head's change kind (`POST /v1/apps/{app}/pulls/{n}/classification`) and reads the gate's row of the `release-guardrails` matrix. The result `applicability` (`run`, `advisory`, `n/a`) replaces the content gates' `rollback-eligible` `when`s: hard tasks run on `run`, `-advisory` copies on `advisory`, and on `n/a` only a green `not-applicable` task runs. The step runs inside each gate's existing first task (no extra pod), except provenance, which gets a small `classify-change` task.
+- n/a gates share one "Change classification" PR comment (one line per gate, upserted by a marker, written only for the current head) instead of one comment each; a gate that runs keeps its own comment. In the gate ledger an n/a run still records `success` until CG-4.
+- Narrowing: a registry entry's `narrow: { <kind>: [<reason>...] }` turns `run` into `n/a` when a fact of the classification holds. `values` narrows on a config change with no values, release or base file (`no-values-file`, from the classifier's new `envs[].fileClasses`). Refused at render: narrow on sast or provenance, for image-release, from a kind that is not `run`, an unknown reason, or per cluster.
+- Fail closed: when glidepath-api does not answer, a gate is judged as for an image release (every gate runs, as before), with extract-promoted-image's rollback rule kept as the local fallback for an eligible rollback. A config change that needs a render check is judged as an image release until the render backstop exists, and a release pin PR on an app's source repository is never classified.
+- The content gates refuse a PR head with more than one distinct new image where they run (spec Q8).
+- glidepath-api 0.16.0: the classification lists each environment's `fileClasses` (classifier `glidepath-api/changekind 2`). glidepath-app grants `classifications` get/create to the `clearance-gate` and `release-record-writer` task accounts (the clearance gate's fetch and itsm-gate run the step).
+- Triggers are unchanged (CG-8): today's release PRs (image releases and rollbacks) run exactly as before.
+- Test: `charts/glidepath-catalog/tests/change_kinds_test.sh` (catalog-ci); `gate_required_test.sh`, `rollback_eligibility_test.sh`, `itsm_test.sh`, `clearance_gate_parity_test.sh`, `tokenless_render_test.py`, `pipeline_least_privilege_test.py` and the changekind Go tests updated. Docs: `docs/admin/release-guardrails.md` "Change kinds", `docs/admin/api.md` "Change classification".
+
 ### Release gates know what each kind of change needs (CG-2, data only)
 
 - Every `releaseGuardrails` entry now resolves a `kinds` row: `run`, `advisory` or `n/a` for each change kind glidepath-api's classifier returns (`image-release`, `rollback`, `config`, `no-op`). The class sets the defaults (content: run, advisory, n/a, n/a; integrity, process and approval: run, run, run, n/a), an entry's `kinds` map overrides them (`agent-gates`, `agent-identity` and `agent-scope` run on a no-op PR; `image-promotion` is n/a on a config change), and `required: false` composes on top as advisory.

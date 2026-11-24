@@ -352,6 +352,12 @@ pipelinesAsCode:
 #   off: nothing is asked. A host plan without rulesets (the lab's GitHub Free) sets this in its own cluster values, on
 #        purpose. The task then records "ref protection: Off here" in its result and in the release record, so the gap is
 #        in the evidence. There is no plan or hostname detection: only this setting decides.
+# Change-aware release gates (CG-3, docs/admin/release-guardrails.md "Change kinds"): every gate Pipeline's classify step asks
+# glidepath-api for the PR head's change kind here (POST /v1/apps/{app}/pulls/{n}/classification). When it cannot, the gate
+# is judged as an image release (fail closed: every gate runs, as before change kinds).
+changeClassification:
+  apiUrl: http://glidepath-api.platform-system.svc.cluster.local:8080
+
 refProtection:
   mode: required
   # glidepath-api, where the verdict is read (GET /v1/apps/{app}/ref-protection).
@@ -381,7 +387,10 @@ promotionLineage:
 # `kinds: { <kind>: run|advisory|n/a }` overrides them; `required: false` still composes on top (a gate that runs,
 # runs its advisory copy). Locks fail the render: no gate n/a for image-release; sast, provenance and image-promotion
 # run (not advise) on it; provenance never n/a for rollback or config. Registry entries only, never per cluster.
-# Published as ConfigMap release-guardrails; no gate reads it to decide what to run until CG-3.
+# Published as ConfigMap release-guardrails. Each gate Pipeline reads it through its classify step (CG-3): the PR head's
+# kind from glidepath-api picks the gate's row. An entry's optional `narrow: { <kind>: [<reason>...] }` turns one of its
+# `run` kinds into n/a when a fact of the classification holds (glidepath-catalog.narrowReasons: no-values-file); never
+# for image-release, never from advisory, never for sast or provenance.
 releaseGuardrails:
   - name: sast
     description: Static analysis (Semgrep) of the promoted commit's source
@@ -411,6 +420,9 @@ releaseGuardrails:
     class: integrity
     required: true
     targets: [k8s-rollout]
+    # CG-3: on a config change it runs only when a values, release or base file changed (its trigger's own predicate, read
+    # from the classification's envs[].fileClasses); otherwise it reports n/a. glidepath-catalog.gateNarrow validates it.
+    narrow: { config: [no-values-file] }
   # `status` follows itsm.provider (stub while none, real otherwise - glidepath-catalog.guardrails); `required`
   # applies once a provider is set: false makes an unapproved change advisory (the comment says so) instead of a
   # failed check.

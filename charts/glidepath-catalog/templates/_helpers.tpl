@@ -104,8 +104,9 @@ consumer of the registry ranges over this (fromJsonArray), never over .Values.re
 override map and the refusal apply everywhere at once (docs/admin/release-guardrails.md).
 Change kinds (CG-2, hangar specs/plans/change-aware-release-gates.md section 6): each entry also gets `kinds`, the
 class x kind matrix row resolved from glidepath-catalog.kindDefaults with the entry's own `kinds` map on top, and
-glidepath-catalog.kindLocks refuses a row that would weaken an image release. Nothing reads `kinds` to decide what a
-gate does yet (CG-3); the release-guardrails ConfigMap publishes it.
+glidepath-catalog.kindLocks refuses a row that would weaken an image release. The gate Pipelines read it (CG-3,
+glidepath-catalog.gatePlan), and the release-guardrails ConfigMap publishes it. An entry's optional `narrow`
+(glidepath-catalog.gateNarrow) names the facts of a classification that turn one of its `run` kinds into n/a.
 */ -}}
 {{- define "glidepath-catalog.guardrails" -}}
 {{- $out := list -}}
@@ -114,13 +115,16 @@ gate does yet (CG-3); the release-guardrails ConfigMap publishes it.
 {{- /* Every override key and every registry entry is checked, including those this cluster leaves out (the other
 clearanceChecks form) and the image-promotion entry added below, so a bad row fails here, not on the day it applies. */ -}}
 {{- range $name, $o := $overrides -}}
-{{- if and (kindIs "map" $o) (hasKey $o "kinds") -}}
-{{- fail (printf "releaseGuardrailOverrides.%s.kinds: a gate's change kinds are set in the registry entry, not per cluster - only `required` can be overridden here (docs/admin/release-guardrails.md, \"Change kinds\")" $name) -}}
+{{- range (list "kinds" "narrow") -}}
+{{- if and (kindIs "map" $o) (hasKey $o .) -}}
+{{- fail (printf "releaseGuardrailOverrides.%s.%s: a gate's change kinds are set in the registry entry, not per cluster - only `required` can be overridden here (docs/admin/release-guardrails.md, \"Change kinds\")" $name .) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- range .Values.releaseGuardrails -}}
 {{- $r := deepCopy . -}}
 {{- $_ := set $r "kinds" (include "glidepath-catalog.gateKinds" $r | fromJson) -}}
+{{- $_ := set $r "narrow" (include "glidepath-catalog.gateNarrow" $r | fromJson) -}}
 {{- include "glidepath-catalog.kindLocks" $r -}}
 {{- end -}}
 {{- range .Values.releaseGuardrails -}}
@@ -133,6 +137,7 @@ clearanceChecks form) and the image-promotion entry added below, so a bad row fa
 {{- $o := index $overrides $g.name -}}
 {{- if and $o (kindIs "map" $o) (hasKey $o "required") }}{{ $required = index $o "required" }}{{ end -}}
 {{- $_ := set $g "kinds" (include "glidepath-catalog.gateKinds" $g | fromJson) -}}
+{{- $_ := set $g "narrow" (include "glidepath-catalog.gateNarrow" $g | fromJson) -}}
 {{- if and (eq $g.name "itsm") (hasKey $.Values "itsm") }}{{ $_ := set $g "status" (ternary "stub" "real" (eq ($.Values.itsm.provider | default "none") "none")) }}{{ end -}}
 {{- if eq ($g.status | default "real") "stub" }}{{ $required = true }}{{ end -}}
 {{- if and (not $required) (has $g.name (list "sast" "provenance")) -}}
@@ -148,6 +153,7 @@ off no PR would ever get the check and every merge would read as a bypass. */ -}
 {{- if .Values.promotion.enabled -}}
 {{- $ip := dict "name" "image-promotion" "description" "The release image copied by digest to the Flight registry with its signatures and attestations, and a promotion attestation for this release" "status" "real" "class" "integrity" "required" true "targets" (list "k8s-rollout") "kinds" (dict "config" "n/a") -}}
 {{- $_ := set $ip "kinds" (include "glidepath-catalog.gateKinds" $ip | fromJson) -}}
+{{- $_ := set $ip "narrow" dict -}}
 {{- $out = append $out $ip -}}
 {{- end -}}
 {{- range $out }}{{ include "glidepath-catalog.kindLocks" . }}{{ end -}}
@@ -160,6 +166,49 @@ precedence first, as a JSON array. glidepath-catalog.kindValues: what a gate doe
 */ -}}
 {{- define "glidepath-catalog.changeKinds" -}}["image-release","rollback","config","no-op"]{{- end -}}
 {{- define "glidepath-catalog.kindValues" -}}["run","advisory","n/a"]{{- end -}}
+
+{{- /*
+glidepath-catalog.narrowReasons (CG-3): the facts of a classification a registry entry's `narrow` may name, as a JSON object
+{ <reason>: <what it means> }. Each is evaluated by glidepath-catalog.applicabilityJq from the classification glidepath-api
+stored (never from the PR's text), and holds only when the classification carries the fact: an answer without it never
+narrows. The protected-environment fact for itsm on a config change arrives with CG-6.
+  no-values-file  no environment of the change has a values, release or base file among its changed files (the classifier's
+                  envs[].fileClasses, changekind 2): the values gate's own trigger predicate, read from the classification
+*/ -}}
+{{- define "glidepath-catalog.narrowReasons" -}}
+{{- dict "no-values-file" "no values, release or base file changed" | toJson -}}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.gateNarrow (CG-3): one registry entry's `narrow`, validated, as JSON { <kind>: [<reason>...] } ({} when it has
+none). narrow is the only way a gate goes from run to n/a on facts of the classification rather than on its kind alone (the
+values gate on a config change that touches no values file). The refusals: narrow is a map of a change kind to a non-empty list
+of known reasons (glidepath-catalog.narrowReasons); never image-release (no gate is n/a for an image release); only a kind whose
+row is `run` (narrowing goes from run to n/a, never from advisory); never sast or provenance (they verify the image's and the
+change's integrity). Takes the entry with its `kinds` row resolved.
+*/ -}}
+{{- define "glidepath-catalog.gateNarrow" -}}
+{{- $out := dict -}}
+{{- if hasKey . "narrow" -}}
+{{- $reasons := include "glidepath-catalog.narrowReasons" . | fromJson -}}
+{{- $kinds := include "glidepath-catalog.changeKinds" . | fromJsonArray -}}
+{{- if not (kindIs "map" .narrow) }}{{ fail (printf "releaseGuardrails: %s.narrow must be a map of <kind>: [<reason>...] (docs/admin/release-guardrails.md, \"Change kinds\")" .name) }}{{ end -}}
+{{- if and (gt (len .narrow) 0) (has .name (list "sast" "provenance")) -}}
+{{- fail (printf "releaseGuardrails: %s cannot narrow - it verifies integrity on every change it applies to (docs/admin/release-guardrails.md, \"Change kinds\")" .name) -}}
+{{- end -}}
+{{- range $k, $list := .narrow -}}
+{{- if not (has $k $kinds) }}{{ fail (printf "releaseGuardrails: %s.narrow: %q is not a change kind - one of %s (docs/admin/release-guardrails.md, \"Change kinds\")" $.name $k (join ", " $kinds)) }}{{ end -}}
+{{- if eq $k "image-release" }}{{ fail (printf "releaseGuardrails: %s.narrow.image-release: no gate is n/a for an image release (docs/admin/release-guardrails.md, \"Change kinds\")" $.name) }}{{ end -}}
+{{- if ne (index $.kinds $k) "run" }}{{ fail (printf "releaseGuardrails: %s.narrow.%s: narrowing turns run into n/a, and %s is %s for %s (docs/admin/release-guardrails.md, \"Change kinds\")" $.name $k $.name (index $.kinds $k) $k) }}{{ end -}}
+{{- if or (not (kindIs "slice" $list)) (eq (len $list) 0) }}{{ fail (printf "releaseGuardrails: %s.narrow.%s must be a non-empty list of reasons - one of %s (docs/admin/release-guardrails.md, \"Change kinds\")" $.name $k (join ", " (keys $reasons | sortAlpha))) }}{{ end -}}
+{{- range $list -}}
+{{- if not (and (kindIs "string" .) (hasKey $reasons .)) }}{{ fail (printf "releaseGuardrails: %s.narrow.%s: %q is not a narrowing reason - one of %s (docs/admin/release-guardrails.md, \"Change kinds\")" $.name $k (toString .) (join ", " (keys $reasons | sortAlpha))) }}{{ end -}}
+{{- end -}}
+{{- $_ := set $out $k $list -}}
+{{- end -}}
+{{- end -}}
+{{- $out | toJson -}}
+{{- end -}}
 
 {{- /*
 glidepath-catalog.kindDefaults: the class defaults of the class x kind matrix, as JSON { <class>: { <kind>: <value> } }.
@@ -244,9 +293,12 @@ Per-app advisory (releaseGuardrailOverridesByApp) is not composed here: it is a 
 glidepath-catalog.guardrailMatrix: the document the release-guardrails ConfigMap publishes (templates/release-guardrails.yaml),
 for glidepath-api and Tower to read the table the gate Pipelines were rendered from. JSON:
   { "v": 1, "kinds": [...], "values": [...],
-    "gates": [ { name, class, status, required, targets?, check?, kinds: {<kind>: value}, effective: {<kind>: value} } ],
+    "gates": [ { name, class, status, required, targets?, check?, kinds: {<kind>: value}, effective: {<kind>: value},
+                 narrow: {<kind>: [<reason>...]} } ],
+    "narrowReasons": { <reason>: <meaning> },
     "advisoryByApp": { <app>: [<gate>...] } }
-`kinds` is the registry row; `effective` is glidepath-catalog.applicability for every kind (required composed on top).
+`kinds` is the registry row; `effective` is glidepath-catalog.applicability for every kind (required composed on top);
+`narrow` the facts that turn an effective `run` into n/a at run time (glidepath-catalog.applicabilityJq).
 advisoryByApp is releaseGuardrailOverridesByApp as gate lists (validated where the tasks render it).
 */ -}}
 {{- define "glidepath-catalog.guardrailMatrix" -}}
@@ -255,7 +307,7 @@ advisoryByApp is releaseGuardrailOverridesByApp as gate lists (validated where t
 {{- $eff := dict -}}
 {{- $e := . -}}
 {{- range $k, $_v := .kinds }}{{ $_ := set $eff $k (include "glidepath-catalog.entryApplicability" (dict "entry" $e "kind" $k)) }}{{ end -}}
-{{- $g := dict "name" .name "class" .class "status" (.status | default "real") "required" .required "kinds" .kinds "effective" $eff -}}
+{{- $g := dict "name" .name "class" .class "status" (.status | default "real") "required" .required "kinds" .kinds "effective" $eff "narrow" (.narrow | default dict) -}}
 {{- if .targets }}{{ $_ := set $g "targets" .targets }}{{ end -}}
 {{- if .check }}{{ $_ := set $g "check" .check }}{{ end -}}
 {{- $gates = append $gates $g -}}
@@ -264,8 +316,71 @@ advisoryByApp is releaseGuardrailOverridesByApp as gate lists (validated where t
 {{- range $app, $m := (.Values.releaseGuardrailOverridesByApp | default dict) -}}
 {{- if kindIs "map" $m }}{{ $_ := set $byApp $app (keys $m | sortAlpha) }}{{ end -}}
 {{- end -}}
-{{- dict "v" 1 "kinds" (include "glidepath-catalog.changeKinds" . | fromJsonArray) "values" (include "glidepath-catalog.kindValues" . | fromJsonArray) "gates" $gates "advisoryByApp" $byApp | toJson -}}
+{{- dict "v" 1 "kinds" (include "glidepath-catalog.changeKinds" . | fromJsonArray) "values" (include "glidepath-catalog.kindValues" . | fromJsonArray) "gates" $gates "narrowReasons" (include "glidepath-catalog.narrowReasons" . | fromJson) "advisoryByApp" $byApp | toJson -}}
 {{- end -}}
+
+{{- /*
+glidepath-catalog.applicabilityJq (CG-3, docs/admin/release-guardrails.md "Change kinds"): jq definitions, shared by the
+classify-change StepAction and comment-pr-check-result, for what each gate does for one classification. Inputs: a gate of the
+release-guardrails matrix (glidepath-catalog.guardrailMatrix) and glidepath-api's classification of the PR head.
+  judged_kind($c)    the kind the gates judge: the classification's kind, except that an unknown kind, and a config change whose
+                     images only a render can show (renderCheck: required, a config change or a rollback), are judged as an
+                     image release (fail closed: the
+                     render backstop of spec section 5.4 is not built, so nothing gets lighter treatment on that doubt)
+  facts_hold($r; $c) whether narrowing reason $r (glidepath-catalog.narrowReasons) holds for $c; false when $c lacks the fact
+  gate_plan($g; $c)  {a: run|advisory|n/a, why}: the gate's effective value for the judged kind, then, only from run and only for
+                     the classification's own kind, n/a when one of the gate's `narrow` reasons for that kind holds. why is
+                     "kind:<kind>" (n/a by the row), a narrowing reason, "render-check" (judged as an image release) or "".
+*/ -}}
+{{- define "glidepath-catalog.applicabilityJq" -}}
+def judged_kind($c):
+  if (($c.kind // "") | IN("image-release", "rollback", "config", "no-op") | not) then "image-release"
+  elif $c.renderCheck == "required" then "image-release"
+  else $c.kind end;
+def facts_hold($r; $c):
+  ($c.envs // []) as $envs
+  | if $r == "no-values-file" then
+      ($envs | length) > 0 and all($envs[]; (.fileClasses | type) == "array")
+      and ([$envs[].fileClasses[]] | index("values") | not)
+    else false end;
+def gate_plan($g; $c):
+  judged_kind($c) as $k
+  | (($g.effective // {})[$k] // "run") as $a
+  | if $a == "run" and $k == $c.kind then
+      ([(($g.narrow // {})[$k] // [])[] | select(. as $r | facts_hold($r; $c))] | first) as $r
+      | if $r != null then {a: "n/a", why: $r} else {a: "run", why: ""} end
+    elif $a == "n/a" then {a: "n/a", why: ("kind:" + $k)}
+    else {a: $a, why: (if $k != $c.kind then "render-check" else "" end)} end;
+{{- end -}}
+
+{{- /*
+glidepath-catalog.gatePlan (CG-3): which paths one gate's Pipeline needs, from its effective matrix row, as JSON
+{ "run": bool, "advisory": bool, "na": bool, "required": bool }. run/advisory: some kind gives that value (the hard tasks, the
+-advisory copies); na: some kind is n/a or the entry narrows (the not-applicable task). A gate missing from this cluster's
+registry runs (its Pipeline exists, and the classify step answers run for it).
+Usage: {{ include "glidepath-catalog.gatePlan" (dict "root" . "gate" "sast") | fromJson }}
+*/ -}}
+{{- define "glidepath-catalog.gatePlan" -}}
+{{- $p := dict "run" true "advisory" false "na" false "required" true -}}
+{{- range (include "glidepath-catalog.guardrails" .root | fromJsonArray) -}}
+{{- if eq .name $.gate -}}
+{{- $e := . -}}
+{{- $vals := list -}}
+{{- range $k, $_v := .kinds }}{{ $vals = append $vals (include "glidepath-catalog.entryApplicability" (dict "entry" $e "kind" $k)) }}{{ end -}}
+{{- $p = dict "run" (has "run" $vals) "advisory" (has "advisory" $vals) "na" (or (has "n/a" $vals) (gt (len (.narrow | default dict)) 0)) "required" .required -}}
+{{- end -}}
+{{- end -}}
+{{- $p | toJson -}}
+{{- end -}}
+
+{{- /*
+glidepath-catalog.applicabilityWhen (CG-3): the `when` of a gate Pipeline task on its classify result. Usage:
+{{ include "glidepath-catalog.applicabilityWhen" (dict "from" "extract-promoted-image" "values" (list "run")) }}
+*/ -}}
+{{- define "glidepath-catalog.applicabilityWhen" -}}
+- { input: $(tasks.{{ .from }}.results.applicability), operator: in, values: [{{ range $i, $v := .values }}{{ if $i }}, {{ end }}{{ $v | quote }}{{ end }}] }
+{{- end -}}
+
 
 {{- /*
 glidepath-catalog.clearanceChecks (C-7): "true" when Clearance's GitHub App reports the agent-identity and agent-scope
@@ -781,6 +896,8 @@ cloned from another run, leaves nothing behind. Copies keep symlinks as symlinks
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "${PHASE}" == fetch ]] || exit 0
+# CG-3: a gate that does not apply to this change publishes nothing (its render and decide tasks are skipped).
+[[ "${GATE_APPLICABILITY:-run}" != "n/a" ]] || { echo "not applicable to this change: nothing to publish"; exit 0; }
 find /publish -mindepth 1 -delete
 mkdir -p /publish/inputs /publish/trusted /publish/rendered
 shopt -s dotglob nullglob
@@ -938,4 +1055,106 @@ gate_report_from_log() { # <gate> <task> <step>: the report, or nothing
   done <<<"${runs}"
   [[ -z "${out}" ]] || printf '%s\n' "${out}"
 }
+{{- end -}}
+
+{{- /*
+CG-3: the classify step a gate's first Task runs first (stepactions/classify-change.yaml), with the host Task's params and
+results for it. A host Task declares classifyParams under params, classifyResults under results, and classifyStep first under
+steps; every later step of the fetch side reads `$(steps.classify.results.applicability)` and does nothing on "n/a". The host
+Task's own params repo-url, revision and pr-number and the volume github-token-broker-token feed the step. classify-gate ""
+(the default, every other use of the Task) asks nothing and answers run.
+*/ -}}
+{{- define "glidepath-catalog.classifyParams" -}}
+- name: classify-gate
+  type: string
+  default: ""
+  description: "CG-3: the gate whose first task this is (its releaseGuardrails name); the classify step then asks glidepath-api for the PR head's change kind. Empty: nothing is asked, the step answers run."
+- name: classify-refuse-multiple-images
+  type: string
+  default: "false"
+  description: '"true" (the content gates): where the gate runs, refuse a PR head that brings more than one distinct new image (spec Q8).'
+{{- end -}}
+{{- define "glidepath-catalog.classifyResults" -}}
+- name: change-kind
+  description: "CG-3: the PR head's change kind (image-release, rollback, config, no-op); empty when no gate was named."
+  value: $(steps.classify.results.change-kind)
+- name: applicability
+  description: "CG-3: run | advisory | n/a for this gate - the gate Pipeline's `when`s read it."
+  value: $(steps.classify.results.applicability)
+- name: change-reason
+  description: "CG-3: why, in one line."
+  value: $(steps.classify.results.change-reason)
+- name: gate-table
+  description: "CG-3: every Glidepath gate's answer for this head, for the shared Change classification comment."
+  value: $(steps.classify.results.gate-table)
+- name: classification-source
+  description: "CG-3: api, fallback (glidepath-api did not answer: judged as an image release) or none."
+  value: $(steps.classify.results.classification-source)
+- name: classification-reason
+  description: "CG-3: the classification's own reason, the same for every gate of this head."
+  value: $(steps.classify.results.classification-reason)
+{{- end -}}
+{{- define "glidepath-catalog.classifyStep" -}}
+- name: classify
+  ref:
+    resolver: cluster
+    params:
+      - { name: kind, value: stepaction }
+      - { name: name, value: classify-change }
+      - { name: namespace, value: {{ .Release.Namespace }} }
+  imagePullPolicy: IfNotPresent
+  params:
+    - { name: gate, value: $(params.classify-gate) }
+    - { name: repo-url, value: $(params.repo-url) }
+    - { name: revision, value: $(params.revision) }
+    - { name: pr-number, value: $(params.pr-number) }
+    - { name: namespace, value: $(context.taskRun.namespace) }
+    - { name: token-volume, value: github-token-broker-token }
+    - { name: refuse-multiple-images, value: $(params.classify-refuse-multiple-images) }
+{{- end -}}
+{{- /* The first line of a later step's script on the fetch side: nothing to do when the gate is n/a (env GATE_APPLICABILITY). */ -}}
+{{- define "glidepath-catalog.notApplicableExit" -}}
+[[ "${GATE_APPLICABILITY:-run}" != "n/a" ]] || { echo "not applicable to this change (the classify step says why): nothing to do"; exit 0; }
+{{- end -}}
+{{- define "glidepath-catalog.applicabilityEnv" -}}
+- name: GATE_APPLICABILITY
+  value: $(steps.classify.results.applicability)
+{{- end -}}
+{{- /*
+glidepath-catalog.notApplicableTask (CG-3, spec section 6.2 Q2 (a)): a gate Pipeline's `not-applicable` task, run only when the
+classify result of task .from is n/a; every other task of the gate is skipped then. Usage:
+{{ include "glidepath-catalog.notApplicableTask" (dict "root" . "gate" "sast" "from" "extract-promoted-image") }}
+*/ -}}
+{{- define "glidepath-catalog.notApplicableTask" -}}
+- name: not-applicable
+  when:
+    - { input: $(tasks.{{ .from }}.results.applicability), operator: in, values: ["n/a"] }
+  runAfter: [{{ .from }}]
+  taskRef:
+    resolver: cluster
+    params:
+      - { name: kind, value: task }
+      - { name: name, value: gate-not-applicable }
+      - { name: namespace, value: {{ .root.Release.Namespace }} }
+  params:
+    - { name: gate, value: {{ .gate }} }
+    - { name: change-kind, value: $(tasks.{{ .from }}.results.change-kind) }
+    - { name: reason, value: $(tasks.{{ .from }}.results.change-reason) }
+{{- end -}}
+{{- /*
+glidepath-catalog.singlePathPlan (CG-3): glidepath-catalog.gatePlan for a gate whose Pipeline has one path for its check
+(values, policy-validation, clearance-gate, itsm, provenance): run or advisory is fixed when the Pipeline is rendered, so a matrix
+row that runs for some kinds and advises for others cannot be rendered and fails here. The content gates have both copies.
+*/ -}}
+{{- define "glidepath-catalog.singlePathPlan" -}}
+{{- $p := include "glidepath-catalog.gatePlan" . | fromJson -}}
+{{- if and $p.run $p.advisory -}}
+{{- fail (printf "releaseGuardrails: %s's row runs for some change kinds and advises for others; its Pipeline has one path for its check - make the gate required: false (advisory everywhere) or keep its kinds run|n/a (docs/admin/release-guardrails.md, \"Change kinds\")" .gate) -}}
+{{- end -}}
+{{- /* The Pipeline (and the onboarding templates' task names) pick the hard or advisory path from `required`, so a required
+gate's row must never advise, and a gate that is not required never runs (required: false makes every run advisory). */ -}}
+{{- if and $p.required $p.advisory -}}
+{{- fail (printf "releaseGuardrails: %s is required but its kinds row advises; its Pipeline picks the hard or advisory path from required - set required: false instead of advisory kinds (docs/admin/release-guardrails.md, \"Change kinds\")" .gate) -}}
+{{- end -}}
+{{- $p | toJson -}}
 {{- end -}}

@@ -243,7 +243,7 @@ change management sets it advisory the same way. Today `qa` and `api-compat` ([a
 ([testing.md](testing.md)); flip it once every app with a Flight environment has
 `apps/<app>/check-ride.yaml` in the check-rides repository and a `role: check-ride` test step.
 
-## Change kinds (CG-2, 2026-11-23)
+## Change kinds (CG-2, 2026-11-23; the gates read it since CG-3)
 
 Every registry entry also says what the gate does for each **kind of change**: `run`, `advisory` or `n/a` (not
 applicable). glidepath-api classifies each PR head from its diff, never from the branch name or the PR text
@@ -256,8 +256,46 @@ applicable). glidepath-api classifies each PR head from its diff, never from the
 | `config` | deployable files change and no image reference does (removing or moving an image is `config`) |
 | `no-op` | nothing deployable changes (comments, key order, `.tekton/`, `releases/`, docs) |
 
-**Status: data only.** The gate Pipelines do not read the matrix yet; they behave exactly as before, on `release-*`
-branches only, until the change-aware gates (hangar `specs/plans/change-aware-release-gates.md`, CG-3) consume it.
+**How a gate uses it (CG-3).** Each gate Pipeline's first task runs the `classify` step
+(`stepactions/classify-change.yaml`) before anything else: it asks glidepath-api for the PR head's classification (the first
+gate to ask computes it; every other gate gets the same stored answer) and reads the gate's row of this matrix, rendered
+into the step from the same registry the Pipelines are rendered from. Its result `applicability` (`run`, `advisory` or `n/a`)
+drives the Pipeline's `when`s:
+
+- `run`: the hard tasks run (`when: applicability in [run]`);
+- `advisory`: the `-advisory` copies run (`onError: continue`), as on an eligible rollback before (this replaces the
+  `rollback-eligible` `when`s; extract-promoted-image's `rollback-eligible` result stays one release for older readers);
+- `n/a`: every other task is skipped and only a task named `not-applicable` runs, which prints why. The run is green, and
+  PaC's task table in the check names `not-applicable` (the check keeps PaC's own `Success` title, spec Q2 (a)).
+
+Where the step runs: inside the gate's existing first task, so no extra pod (`extract-promoted-image` for sast, image-scan,
+sbom, api-compat and qa; the fetch phase of `validate-values`, `policy-validation-gate` and `clearance-gate`; `itsm-gate`).
+provenance's two checks run in parallel, so it has a small first task of its own, `classify-change` (one extra pod). The
+`itsm` stub (no change tool) is not classified: it judges nothing. `agent-gates` runs on every kind and has no step.
+
+The step **fails closed**. If glidepath-api cannot be asked or does not answer (unreachable, an API older than 0.15.0, a
+task account without the `classifications` grant, an answer for another head), the head is judged an image release
+(`classification-source: fallback`, and the step's log says why): every gate runs as it did before change kinds. For the
+content gates, extract-promoted-image's own rollback rule is the local fallback for an eligible rollback (advisory, as
+before). A change whose images only a render can show (`renderCheck: required`: a chart pin, an own chart's template, a
+remote kustomize base; a config change or a rollback) is judged as an image release too, until the render backstop of spec section 5.4
+exists. A PR on a repository that is not the app's gitops repository (a cloud app's release pin PR, ADR-0020) is never
+classified and keeps every gate (spec Q9).
+
+The content gates also refuse a PR head that brings **more than one distinct new image** where they run (not where they
+advise), naming the images (spec Q8): the image gates judge one image per pull request.
+
+**What a PR shows.** A gate that is n/a posts no comment of its own (one it posted for an earlier head is edited to say n/a).
+The n/a gates share one **Change classification** comment per PR (marker `<!-- glidepath:change-classification -->`): the
+kind, the classification's reason, the n/a gates, and one line per Glidepath gate. Every gate of the head writes it from the
+same frozen classification and the same matrix, so concurrent writers write the same text; it is written only for the PR's
+current head and only while some gate is n/a or the comment already exists (an image release gets none). A head that
+glidepath-api did not answer for marks an existing comment "unavailable at <head>", so an earlier head's answer never
+stands for it. A gate that runs
+keeps its own comment. In the gate ledger an n/a run still records `success` until CG-4 adds `n/a`.
+
+Triggers are unchanged by CG-3: the gates still fire on `release-*` branches (CG-8 widens them to every PR), and a release
+PR (an image release or a rollback) runs exactly as before.
 
 **The class sets the defaults** (`_helpers.tpl` `glidepath-catalog.kindDefaults`, in the chart so no cluster can
 redefine a class):
@@ -291,17 +329,33 @@ The matrix with the chart defaults (`effective`, the `release-guardrails` Config
 | `clearance-gate` | process | advisory (`required: false`) | advisory | advisory | n/a |
 | `image-promotion` (with `promotion.enabled`) | integrity | run (locked) | run | n/a | n/a |
 
-Two rows are narrower at runtime than the table can say, and the gate itself will decide them (CG-3, CG-6): `values`
-on a `config` change applies only when a values, release or base file changed, and `itsm` on a `config` change
-applies only to a protected environment (`protection.sh`; unknown counts as protected). Both read `run` here as the
-upper bound.
+**Narrowing (`narrow`, CG-3).** A row can be narrower at runtime than a kind alone says. An entry's optional
+`narrow: { <kind>: [<reason>...] }` turns its `run` for that kind into `n/a` when a fact of the classification holds. The
+facts come from glidepath-api's classification, never from the PR's text, and a classification without the fact never
+narrows (an answer stored by classifier `changekind 1`, before `fileClasses`, runs). The reasons
+(`glidepath-catalog.narrowReasons`):
+
+| Reason | Holds when |
+|---|---|
+| `no-values-file` | no environment of the change has a values, release or base file among its changed files (`envs[].fileClasses` has no `values`: a path ending in `values.yaml` or `release.yaml`, or in `/base.yaml`, the values gate's own trigger) |
+
+The chart default narrows one row: `values` has `narrow: { config: [no-values-file] }`, so a config change that only
+edits raw manifests reports `values` as n/a. `itsm` on a `config` change will apply only to a protected environment
+(`protection.sh`; unknown counts as protected); that fact arrives with CG-6, and until then `itsm` runs on every config
+change. Narrowing only ever goes from `run` to `n/a`: a gate that is `advisory` for the kind (`required: false`) keeps
+running its advisory copy.
 
 **Locks.** The chart render fails, naming the gate, if a row would weaken an image release:
 
 - no gate may be `n/a` for `image-release`;
 - `sast`, `provenance` and `image-promotion` must be `run` (not `advisory`) for `image-release`;
 - `provenance` cannot be `n/a` for `rollback` or `config`;
-- an unknown kind, a value other than `run`, `advisory` or `n/a`, a `kinds` that is not a map, or an unknown `class`.
+- an unknown kind, a value other than `run`, `advisory` or `n/a`, a `kinds` that is not a map, or an unknown `class`;
+- `narrow` (CG-3): on `sast` or `provenance`; for `image-release`; for a kind whose row is not `run`; an unknown reason or an
+  empty list; per cluster (`releaseGuardrailOverrides.<gate>.narrow`);
+- a gate whose Pipeline has one path for its check (values, policy-validation, clearance-gate, itsm, provenance) with a row
+  that runs for some kinds and advises for others, or that is `required` with a row that advises: run or advisory is fixed
+  from `required` when that Pipeline (and its onboarding task names) is rendered.
 
 **Who sets it.** Only the registry entry in this chart (a glidepath PR, reviewed, `gate_required_test.sh` in CI).
 `releaseGuardrailOverrides.<gate>.kinds` fails the render: a cluster changes `required`, never what a gate judges.
@@ -315,11 +369,13 @@ Pipelines were rendered from instead of restating it. The `rbac.readOnlyGroup` g
 {"v": 1, "kinds": ["image-release", "rollback", "config", "no-op"], "values": ["run", "advisory", "n/a"],
  "gates": [{"name": "qa", "class": "content", "status": "real", "required": false,
             "kinds":     {"image-release": "run",      "rollback": "advisory", "config": "n/a", "no-op": "n/a"},
-            "effective": {"image-release": "advisory", "rollback": "advisory", "config": "n/a", "no-op": "n/a"}}],
+            "effective": {"image-release": "advisory", "rollback": "advisory", "config": "n/a", "no-op": "n/a"},
+            "narrow": {}}],
+ "narrowReasons": {"no-values-file": "no values, release or base file changed"},
  "advisoryByApp": {"backstage": ["image-scan"]}}
 ```
 
-`kinds` is the registry row; `effective` composes `required`; `targets` and `check` appear when the entry has them.
+`kinds` is the registry row; `effective` composes `required`; `narrow` is the entry's narrowing (above); `targets` and `check` appear when the entry has them.
 The gates are the cluster's effective registry (with Clearance's App, `agent-identity` and `agent-scope` replace
 `agent-gates`; with promotion, `image-promotion` is added). In templates, `glidepath-catalog.applicability` (`dict
 "root" . "gate" <gate> "kind" <kind>`) returns one effective value. The generated contract
