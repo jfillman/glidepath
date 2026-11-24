@@ -13,7 +13,9 @@ t=yaml.safe_load(sys.stdin.read())
 print([s for s in t['spec']['steps'] if s['name']=='rollback-eligibility'][0]['script'])" > "$script"
 # The step writes its results to $(step.results.<name>.path); point them at files.
 out_dir="$(mktemp -d)"
-sed -i.bak -e "s#\$(step.results.eligible.path)#${out_dir}/eligible#" -e "s#\$(step.results.note.path)#${out_dir}/note#" "$script"
+sed -i.bak -e "s#\$(step.results.eligible.path)#${out_dir}/eligible#" -e "s#\$(step.results.note.path)#${out_dir}/note#" \
+  -e "s#\$(step.results.change-kind.path)#${out_dir}/kind#" -e "s#\$(step.results.applicability.path)#${out_dir}/applicability#" \
+  -e "s#\$(step.results.change-reason.path)#${out_dir}/reason#" "$script"
 
 stubdir="$(mktemp -d)"
 export ARGSLOG="${stubdir}/args"
@@ -30,7 +32,9 @@ rec() { # releaseId image healthyAt
 }
 run() { # image manifest records [nolist]
   PATH="${stubdir}:${PATH}" IMAGE_REF="$1" MANIFEST="$2" RECORDS="{\"items\":[$3]}" NOLIST="${4:-0}" \
-    REPO_URL="https://github.com/o/gitops-sky-marshall.git" NAMESPACE=app-sky-marshall-cicd bash "$script" >/dev/null 2>&1 \
+    REPO_URL="https://github.com/o/gitops-sky-marshall.git" NAMESPACE=app-sky-marshall-cicd \
+    CLASSIFICATION_SOURCE="${SOURCE:-none}" CHANGE_KIND="${KIND:-}" GATE_APPLICABILITY="${APPLICABILITY:-run}" CHANGE_REASON="" \
+    ROLLBACK_APPLICABILITY=advisory bash "$script" >/dev/null 2>&1 \
     || { echo "FAIL: step exited non-zero"; fail=1; }
   printf '%s|%s' "$(cat "${out_dir}/eligible")" "$(cat "${out_dir}/note")"
 }
@@ -52,5 +56,23 @@ got="$(run "$(img 7)" example-prod/staging/release.yaml "$seven" 1)"
 [[ "$got" == false\|*"could not read"* ]] || { echo "FAIL: unreadable records mean not eligible: $got"; fail=1; }
 got="$(run "$(img 7)" example-prod/staging/values.yaml "$seven")"
 [[ "$got" == true\|* ]] || { echo "FAIL: values.yaml (pre-split) environments are covered too: $got"; fail=1; }
+
+# CG-3: with the classify step not asked (no gate) the rule is the whole answer, and the gate's kind is left as classified.
+expect_kind() { [[ "$(cat "${out_dir}/kind")|$(cat "${out_dir}/applicability")" == "$2" ]] || { echo "FAIL: $1: $(cat "${out_dir}/kind")|$(cat "${out_dir}/applicability")"; fail=1; }; }
+run "$(img 3)" example-prod/staging/release.yaml "$seven" > /dev/null
+expect_kind "no gate named: run, as before" "|run"
+# glidepath-api did not answer (fallback): an eligible rollback found here gives the gate its rollback value.
+got="$(SOURCE=fallback KIND=image-release run "$(img 3)" example-prod/staging/release.yaml "$seven")"
+[[ "$got" == true\|* ]] || { echo "FAIL: fallback still runs the rule: $got"; fail=1; }
+expect_kind "fallback + eligible: rollback, the gate's rollback value" "rollback|advisory"
+SOURCE=fallback KIND=image-release run "$(img 2)" example-prod/staging/release.yaml "$seven" > /dev/null
+expect_kind "fallback + not eligible: as classified" "image-release|run"
+# glidepath-api answered: its kind is the answer, no record is read.
+: > "${ARGSLOG}"
+got="$(SOURCE=api KIND=config APPLICABILITY=n/a run "$(img 3)" "" "$seven")"
+[[ "$got" == false\|* && ! -s "${ARGSLOG}" ]] || { echo "FAIL: n/a reads nothing and is not eligible: $got"; fail=1; }
+expect_kind "n/a passes through" "config|n/a"
+got="$(SOURCE=api KIND=rollback APPLICABILITY=advisory run "$(img 2)" example-prod/staging/release.yaml "$seven")"
+[[ "$got" == true\|* && ! -s "${ARGSLOG}" ]] || { echo "FAIL: glidepath-api's rollback is eligible, records unread: $got"; fail=1; }
 
 [ $fail -eq 0 ] && echo ok || exit 1

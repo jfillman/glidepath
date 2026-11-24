@@ -64,10 +64,22 @@ const (
 	DryRun   = "dry-run"  // computed (or read) and not stored, as asked
 )
 
-// Version is the classification format; Classifier names the implementation that produced it.
+// Version is the classification format; Classifier names the implementation that produced it. changekind 2 (CG-3) adds each
+// environment's fileClasses, the fact the gates narrow on; an answer stored by changekind 1 has none, and a gate then never
+// narrows (it runs).
 const (
 	Version    = 1
-	Classifier = "glidepath-api/changekind 1"
+	Classifier = "glidepath-api/changekind 2"
+)
+
+// File classes (CG-3): which kinds of deployable file changed in an environment. A gate whose matrix row may narrow from run to
+// n/a reads them (glidepath-catalog's releaseGuardrails `narrow`, docs/admin/release-guardrails.md "Change kinds"): the values
+// gate runs on a config change only when a values, release or base file changed, the predicate its own trigger has always used.
+const (
+	ClassValues        = "values"        // a path ending in values.yaml or release.yaml, or in /base.yaml: the values gate's trigger
+	ClassKustomization = "kustomization" // a kustomization file
+	ClassChart         = "chart"         // the template side of an own chart (not parsed)
+	ClassManifest      = "manifest"      // any other deployable YAML or JSON
 )
 
 // Store keys and labels.
@@ -159,6 +171,9 @@ type Env struct {
 	RenderCheck string    `json:"renderCheck"`
 	Images      ImageSets `json:"images"`
 	Files       []string  `json:"files"`
+	// FileClasses are the classes of the files in Files (values, kustomization, chart, manifest), sorted, each once; both paths of a
+	// renamed file count. Always present from changekind 2 on.
+	FileClasses []string `json:"fileClasses"`
 	// Changed lists the configuration paths that changed (<file>: <path>), at most maxChanged.
 	Changed  []string       `json:"changed,omitempty"`
 	Rollback *RollbackCheck `json:"rollback,omitempty"`

@@ -257,6 +257,17 @@ jobs:
       - run: pip install pyyaml
       - run: charts/glidepath-catalog/tests/gate_required_test.sh
 
+  # Change-aware release gates, CG-3 (docs/admin/release-guardrails.md "Change kinds"): every gate Pipeline's classify step,
+  # `when`s and not-applicable task; the classify StepAction against a fake glidepath-api for every kind (narrowing, fail
+  # closed, Q8); extract-promoted-image's rollback fallback; the narrow refusals; the shared Change classification comment.
+  change-kinds:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: pip install pyyaml
+      - run: charts/glidepath-catalog/tests/change_kinds_test.sh
+
   # The provenance gate's commit check (docs/admin/commit-signing.md): both acceptance paths against recorded
   # real commits (fixtures/commits), real gpgv and GitHub's real web-flow keyring; GitHub API, kubectl, git fetch
   # and gitsign stubbed.

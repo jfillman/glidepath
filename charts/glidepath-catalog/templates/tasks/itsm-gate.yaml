@@ -32,7 +32,9 @@ spec:
       type: string
       default: ""
       description: The PR's head commit - PaC's revision.
+    {{- include "glidepath-catalog.classifyParams" . | nindent 4 }}
   results:
+    {{- include "glidepath-catalog.classifyResults" . | nindent 4 }}
     - name: findings-summary
       description: One line for the PR comment - the change, its state and its link.
     - name: change-request-number
@@ -47,6 +49,7 @@ spec:
               expirationSeconds: 600
     {{- include "glidepath-catalog.itsmVolume" . | nindent 4 }}
   steps:
+    {{- include "glidepath-catalog.classifyStep" . | nindent 4 }}
     - name: verify
       image: {{ .Values.toolboxImage }}
       imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
@@ -56,6 +59,7 @@ spec:
           readOnly: true
         {{- include "glidepath-catalog.itsmVolumeMount" . | nindent 8 }}
       env:
+        {{- include "glidepath-catalog.applicabilityEnv" . | nindent 8 }}
         - name: GITHUB_TOKEN_BROKER_URL
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
         - name: REPO_URL
@@ -70,6 +74,13 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        if [[ "${GATE_APPLICABILITY:-run}" == "n/a" ]]; then
+          # CG-3: no change request is asked for a change this gate does not apply to (the classify step says why).
+          printf '%s' "not applicable to this change" > "$(results.findings-summary.path)"
+          printf '' > "$(results.change-request-number.path)"
+          echo "not applicable to this change (the classify step says why): no change request to verify"
+          exit 0
+        fi
         source "${PLATFORM_LIB}/github-app.sh"
         {{- include "glidepath-catalog.itsmLib" . | nindent 8 }}
 

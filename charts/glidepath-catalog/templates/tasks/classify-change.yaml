@@ -1,0 +1,36 @@
+# catalog/tasks/classify-change.yaml
+#
+# Change-aware release gates, CG-3 (hangar specs/plans/change-aware-release-gates.md section 5.3): the classify step as a Task of
+# its own, for the one gate whose first tasks run in parallel and so have no single first Task to host it - provenance
+# (verify-commit-signature beside verify-image-provenance). One small extra pod; every other gate runs the step inside its
+# existing first Task (stepactions/classify-change.yaml says what it answers).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: classify-change
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Asks glidepath-api for the gitops PR head's change kind and answers whether this gate runs, advises or does not apply.
+  params:
+    - name: repo-url
+      type: string
+    - name: revision
+      type: string
+    - name: pr-number
+      type: string
+      default: ""
+    {{- include "glidepath-catalog.classifyParams" . | nindent 4 }}
+  results:
+    {{- include "glidepath-catalog.classifyResults" . | nindent 4 }}
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+  steps:
+    {{- include "glidepath-catalog.classifyStep" . | nindent 4 }}

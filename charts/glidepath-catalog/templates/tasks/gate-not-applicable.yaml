@@ -1,0 +1,37 @@
+# catalog/tasks/gate-not-applicable.yaml
+#
+# Change-aware release gates, CG-3 (hangar specs/plans/change-aware-release-gates.md section 6.2, Q2 option (a)): the task a gate
+# Pipeline runs, as `not-applicable`, when its classify step answers n/a for the PR head. Every other task of the gate is
+# skipped by its `when`, so the run is green and PaC's task table in the check names this task: the check run keeps PaC's own
+# title (a retitler is a separate prototype), and the PR's shared "Change classification" comment and every reader say n/a.
+# It only prints why. Small on purpose: no token, no Secret, nothing read.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gate-not-applicable
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+spec:
+  description: Reports that a release gate does not apply to this PR head's kind of change, and why.
+  params:
+    - name: gate
+      type: string
+    - name: change-kind
+      type: string
+    - name: reason
+      type: string
+  steps:
+    - name: not-applicable
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      env:
+        - { name: GATE, value: $(params.gate) }
+        - { name: CHANGE_KIND, value: $(params.change-kind) }
+        - { name: REASON, value: $(params.reason) }
+      script: |
+        #!/usr/bin/env bash
+        set -u
+        echo "Not applicable: ${GATE} does not apply to this ${CHANGE_KIND} change."
+        echo "Why: ${REASON}"
+        echo "The check is green because there is nothing for ${GATE} to judge here (docs/admin/release-guardrails.md, \"Change kinds\")."

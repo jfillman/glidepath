@@ -47,6 +47,10 @@ spec:
     - name: token-volume
       type: string
       description: Name of the calling Task's projected-ServiceAccount-token volume (audience github-installation-token, path github-token-broker-token).
+    - name: applicability
+      type: string
+      default: run
+      description: 'CG-3: the classify step''s answer for this gate. "n/a" resolves nothing (empty results): a change with no image to promote is not this gate''s to judge.'
   results:
     - name: image-ref
       description: "<repository>:<tag> read from the promoted manifest; the repository is release.image.source when set (ADR-0029)."
@@ -65,9 +69,18 @@ spec:
       value: $(params.revision)
     - name: PR_NUMBER
       value: $(params.pr-number)
+    - name: GATE_APPLICABILITY
+      value: $(params.applicability)
   script: |
     #!/usr/bin/env bash
     set -euo pipefail
+    if [[ "${GATE_APPLICABILITY}" == "n/a" ]]; then
+      # CG-3: the gate does not apply to this change (the classify step says why); there is no promoted image to read.
+      printf '' > "$(step.results.image-ref.path)"
+      printf '' > "$(step.results.manifest-path.path)"
+      echo "not applicable to this change: no promoted image to resolve"
+      exit 0
+    fi
     source "${PLATFORM_LIB}/github-app.sh"
 
     owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"

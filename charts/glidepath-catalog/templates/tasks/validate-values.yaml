@@ -58,6 +58,9 @@ spec:
       type: string
       default: ""
       description: Names this run in the volume's marker.
+    {{- include "glidepath-catalog.classifyParams" . | nindent 4 }}
+  results:
+    {{- include "glidepath-catalog.classifyResults" . | nindent 4 }}
   volumes:
     - name: github-token-broker-token
       projected:
@@ -87,6 +90,7 @@ spec:
       - name: PIPELINE_RUN
         value: $(params.pipeline-run-name)
   steps:
+    {{- include "glidepath-catalog.classifyStep" . | nindent 4 }}
     - name: clone-and-list
       image: {{ .Values.toolboxImage }}
       imagePullPolicy: IfNotPresent  # public image on ghcr.io, not kind-loaded
@@ -94,6 +98,7 @@ spec:
         - { name: github-token-broker-token, mountPath: /var/run/secrets/platform, readOnly: true }
         - { name: work, mountPath: /work }
       env:
+        {{- include "glidepath-catalog.applicabilityEnv" . | nindent 8 }}
         - name: GITHUB_TOKEN_BROKER_URL
           value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
         - name: REPO_URL
@@ -114,6 +119,7 @@ spec:
           value: {{ .Values.defaultChart.targetRevision | quote }}
       script: |
         #!/usr/bin/env bash
+        {{- include "glidepath-catalog.notApplicableExit" . | nindent 8 }}
         set -euo pipefail
         {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
         [[ "${PHASE}" == fetch ]] || exit 0
@@ -274,6 +280,8 @@ spec:
       imagePullPolicy: IfNotPresent
       volumeMounts:
         - { name: work, mountPath: /work }
+      env:
+        {{- include "glidepath-catalog.applicabilityEnv" . | nindent 8 }}
       script: |
         {{- include "glidepath-catalog.gatePublish" . | nindent 8 }}
     - name: validate
@@ -284,10 +292,12 @@ spec:
       volumeMounts:
         - { name: work, mountPath: /work }
       env:
+        {{- include "glidepath-catalog.applicabilityEnv" . | nindent 8 }}
         - name: APP_NAME
           value: $(params.app-name)
       script: |
         #!/usr/bin/env bash
+        {{- include "glidepath-catalog.notApplicableExit" . | nindent 8 }}
         set -uo pipefail
         [[ "${PHASE}" == fetch ]] || exit 0
         cd /work/repo

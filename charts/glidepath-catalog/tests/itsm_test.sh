@@ -88,7 +88,7 @@ export ITSM_SERVICENOW_URL="${base}" ITSM_CREDENTIALS_DIR="${tmp}/no-creds"
 render() { helm template t charts/glidepath-catalog -f "${values}" --namespace platform-catalog "$@"; }
 script_of() { python3 -c 'import sys,yaml
 for d in yaml.safe_load_all(sys.stdin.read()):
-    if d and d.get("kind")=="Task" and d["metadata"]["name"]==sys.argv[1]: print(d["spec"]["steps"][0]["script"])' "$1"; }
+    if d and d.get("kind")=="Task" and d["metadata"]["name"]==sys.argv[1]: print([s for s in d["spec"]["steps"] if "script" in s][0]["script"])' "$1"; }
 render --set itsm.provider=servicenow --set itsm.servicenow.instanceUrl="${base}" > "${tmp}/sn.yaml"
 script_of itsm-gate < "${tmp}/sn.yaml" > "${tmp}/itsm-gate.sh"
 script_of itsm-change < "${tmp}/sn.yaml" > "${tmp}/itsm-change.sh"
@@ -182,12 +182,12 @@ expect "none: no itsm-implement" "$(tasks bypass-merge-check < "${tmp}/none.yaml
 expect "none: no itsm-close" "$(tasks release-rollback-notify < "${tmp}/none.yaml")" "notify-backstage"
 grep -q 'name: itsm-gate' "${tmp}/none.yaml" && { echo "FAIL: itsm-gate rendered without a provider"; fail=1; }
 grep -q '| `itsm` | [^|]* | not yet real' <(script_of open-release-pr < "${tmp}/none.yaml") || { echo "FAIL: none: PR body must call itsm a stub"; fail=1; }
-expect "servicenow: itsm-check verifies" "$(tasks itsm-check < "${tmp}/sn.yaml")" "verify-change"
+expect "servicenow: itsm-check verifies" "$(tasks itsm-check < "${tmp}/sn.yaml")" "verify-change not-applicable"
 expect "servicenow: implement after merge" "$(tasks bypass-merge-check < "${tmp}/sn.yaml")" "resolve-merged-pr detect-bypass-merge mark-release-merged itsm-implement+continue"
 expect "servicenow: close on rollback" "$(tasks release-rollback-notify < "${tmp}/sn.yaml")" "notify-backstage itsm-close-rolled-back+continue"
 grep -q '| `itsm` | [^|]* | real |' <(script_of open-release-pr < "${tmp}/sn.yaml") || { echo "FAIL: servicenow: PR body must call itsm real"; fail=1; }
 render --set itsm.provider=webhook --set itsm.webhook.url="${base}/webhook" --set releaseGuardrailOverrides.itsm.required=false > "${tmp}/wh.yaml"
-expect "webhook, not required: advisory" "$(tasks itsm-check < "${tmp}/wh.yaml")" "verify-change-advisory+continue"
+expect "webhook, not required: advisory" "$(tasks itsm-check < "${tmp}/wh.yaml")" "verify-change-advisory+continue not-applicable"
 grep -q 'ITSM_WEBHOOK_URL' "${tmp}/wh.yaml" || { echo "FAIL: webhook url not rendered"; fail=1; }
 grep -q 'resolve-release-tracking' "${tmp}/sn.yaml" && grep -q 'name: change-request-number' "${tmp}/sn.yaml" || { echo "FAIL: change-request results missing"; fail=1; }
 

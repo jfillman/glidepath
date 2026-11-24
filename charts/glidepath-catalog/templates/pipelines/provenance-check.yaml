@@ -43,9 +43,29 @@ spec:
         provenance half. A cloud target's pin PR (ADR-0020) passes "false": commit signing is
         not required for cloud targets, and a pin commit carries no X-App-Commit trailer.
   tasks:
+    # CG-3 (docs/admin/release-guardrails.md "Change kinds"): the classify step as a small first task of its own, since the
+    # two checks below run in parallel (the one extra pod of change kinds). provenance is locked to run for an image
+    # release, a rollback and a config change (its config variant is CG-5; until then a config change meets the image
+    # release checks), and is n/a only for a change with nothing deployable in it.
+    {{- $plan := include "glidepath-catalog.singlePathPlan" (dict "root" . "gate" "provenance") | fromJson }}
+    - name: classify
+      taskRef:
+        resolver: cluster
+        params:
+          - { name: kind, value: task }
+          - { name: name, value: classify-change }
+          - { name: namespace, value: {{ .Release.Namespace }} }
+      params:
+        - { name: repo-url, value: $(params.repo-url) }
+        - { name: revision, value: $(params.revision) }
+        - { name: pr-number, value: $(params.pr-number) }
+        - { name: classify-gate, value: provenance }
+
     - name: verify
+      runAfter: [classify]
       when:
         - { input: $(params.commit-signature), operator: notin, values: ["false"] }
+        {{- include "glidepath-catalog.applicabilityWhen" (dict "from" "classify" "values" (list "run")) | nindent 8 }}
       taskRef:
         resolver: cluster
         params:
@@ -60,6 +80,9 @@ spec:
         - { name: app-name, value: $(params.app-name) }
 
     - name: verify-provenance
+      runAfter: [classify]
+      when:
+        {{- include "glidepath-catalog.applicabilityWhen" (dict "from" "classify" "values" (list "run")) | nindent 8 }}
       taskRef:
         resolver: cluster
         params:
@@ -72,6 +95,9 @@ spec:
         - { name: pr-number, value: $(params.pr-number) }
         - { name: app-namespace, value: $(params.app-namespace) }
         - { name: app-name, value: $(params.app-name) }
+    {{- if $plan.na }}
+    {{- include "glidepath-catalog.notApplicableTask" (dict "root" . "gate" "provenance" "from" "classify") | nindent 4 }}
+    {{- end }}
 
   finally:
     - name: comment-pr

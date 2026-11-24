@@ -121,7 +121,7 @@ expect "observability is in the injected values, as the ApplicationSet gives it"
 # read them from its cluster-defaults.yaml, plus the app's runtime; one that sets none injects nothing; one the broker
 # could not read is not rendered at all (it would differ from Argo CD's).
 w="$d/clusters"; mkdir -p "$w/observability" "$w/policies"
-yq '.spec.steps[0].script' "$d/task.yaml" | sed "s#/work#$w#g" \
+yq '.spec.steps[] | select(.name == "fetch") | .script' "$d/task.yaml" | sed "s#/work#$w#g" \
   | awk '/# What each protected environment.s destination cluster injects/ {p=1} p {print} p && /^done$/ {exit}' > "$w/pick.sh"
 printf 'hangar-dev|prod|default|true\nhangar-prod|prod|default|true\nhangar-qa|prod|default|true\nhangar-lab|prod|default|true\n' > "$w/plan.txt"
 printf 'observability:\n  namespace: "dev-obs"\n  instrumentation: "dev-obs/auto"\n  runtime: "python"\n' > "$w/observability/dev-values.yaml"
@@ -222,9 +222,9 @@ expect "unprotected: outcome is skipped" "$(cat "$w/r.outcome")" skipped
 # The Pipeline: fetch and render first (never ignored), then register; the advisory copy gets a hard render-check after it.
 pl() { helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml "$@" --show-only templates/pipelines/clearance-gate-check.yaml; }
 adv="$(pl | yq '[.spec.tasks[] | .name + ((.onError // "") | select(. != "") | ":" + .)] | join(" ")')"
-expect "advisory pipeline: fetch, render (neither ignored), register-advisory (ignored) and a render-check (not ignored)" "${adv}" "fetch render register-advisory:continue render-check"
+expect "advisory pipeline: fetch, render (neither ignored), register-advisory (ignored), a render-check (not ignored) and not-applicable (CG-3)" "${adv}" "fetch render register-advisory:continue render-check not-applicable"
 printf 'releaseGuardrailOverrides:\n  clearance-gate: { required: true }\n' > "$d/req.yaml"
 req="$(pl -f "$d/req.yaml" | yq '[.spec.tasks[] | .name] | join(" ")')"
-expect "required pipeline: fetch, render, one hard register task" "${req}" "fetch render register"
+expect "required pipeline: fetch, render, one hard register task and not-applicable (CG-3)" "${req}" "fetch render register not-applicable"
 
 [[ "${fail}" == 0 ]] && echo "PASS clearance_gate_parity_test" || { echo "FAILED (KEEP=1 keeps ${d})"; exit 1; }

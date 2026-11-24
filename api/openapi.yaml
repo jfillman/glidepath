@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Glidepath API
-  version: 0.15.0
+  version: 0.16.0
   description: |
     Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
     contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec are reads (tier T0); phase 3
@@ -32,6 +32,8 @@ info:
     0.15.0 adds POST and GET /v1/apps/{app}/pulls/{n}/classification: the change kind of a gitops pull request's head
     (image-release, rollback, config or no-op), worked out from the pull request's own diff, computed once per head and stored
     write-once, so every release gate and every later reader judges by one answer (change-aware release gates, CG-1).
+    0.16.0: a classification names each environment's `fileClasses` (values, kustomization, chart, manifest), the fact a gate's
+    matrix row narrows on (CG-3); its classifier is `glidepath-api/changekind 2`. An answer stored by changekind 1 has none.
 
     Every /v1 call needs a bearer token the cluster's TokenReview accepts, in `Authorization`, or in
     `X-Glidepath-Authorization` when the call comes through the API server's service proxy (which
@@ -1265,6 +1267,10 @@ components:
                   base: { type: array, items: { type: string } }
                   head: { type: array, items: { type: string } }
               files: { type: array, items: { type: string } }
+              fileClasses:
+                type: array
+                items: { type: string, enum: [values, kustomization, chart, manifest] }
+                description: "The classes of the environment's changed files, sorted (changekind 2, CG-3). values: a path ending in values.yaml or release.yaml, or in /base.yaml (the values gate's trigger); chart: an own chart's template side; kustomization; manifest: any other deployable file. Absent from an answer stored by changekind 1: a gate then never narrows."
               changed: { type: array, items: { type: string }, description: "Configuration paths that changed, <file>: <path> (at most 10, then \"and N more\")" }
               rollback:
                 type: object

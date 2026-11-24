@@ -44,7 +44,10 @@ spec:
     - name: gate
       description: One volume per run (the onboarding template's volumeClaimTemplate), used in three places by subPath - inputs/, trusted/, rendered/.
   tasks:
-    {{- $required := eq (include "glidepath-catalog.gateRequired" (dict "root" . "gate" "clearance-gate")) "true" }}
+    {{- /* CG-3: fetch runs the classify step first (applicability); render and the decide task run only where the gate applies,
+    and with n/a only `not-applicable` follows. */}}
+    {{- $plan := include "glidepath-catalog.singlePathPlan" (dict "root" . "gate" "clearance-gate") | fromJson }}
+    {{- $required := $plan.required }}
     - name: fetch
       taskRef:
         resolver: cluster
@@ -59,10 +62,13 @@ spec:
         - { name: app-name, value: $(params.app-name) }
         - { name: pipeline-run-name, value: $(context.pipelineRun.name) }
         - { name: phase, value: fetch }
+        - { name: classify-gate, value: clearance-gate }
       workspaces:
         - { name: publish, workspace: gate }
     - name: render
       runAfter: [fetch]
+      when:
+        {{- include "glidepath-catalog.applicabilityWhen" (dict "from" "fetch" "values" (list "run" "advisory")) | nindent 8 }}
       taskRef:
         resolver: cluster
         params:
@@ -81,6 +87,8 @@ spec:
       onError: continue
       {{- end }}
       runAfter: [render]
+      when:
+        {{- include "glidepath-catalog.applicabilityWhen" (dict "from" "fetch" "values" (list "run" "advisory")) | nindent 8 }}
       taskRef:
         resolver: cluster
         params:
@@ -104,6 +112,8 @@ spec:
     # after the register task, not beside it: both read the one volume.
     - name: render-check
       runAfter: [register-advisory]
+      when:
+        {{- include "glidepath-catalog.applicabilityWhen" (dict "from" "fetch" "values" (list "run" "advisory")) | nindent 8 }}
       taskRef:
         resolver: cluster
         params:
@@ -121,6 +131,9 @@ spec:
       workspaces:
         - { name: trusted, workspace: gate, subPath: trusted }
         - { name: rendered, workspace: gate, subPath: rendered }
+    {{- end }}
+    {{- if $plan.na }}
+    {{- include "glidepath-catalog.notApplicableTask" (dict "root" . "gate" "clearance-gate" "from" "fetch") | nindent 4 }}
     {{- end }}
   finally:
     - name: join-release

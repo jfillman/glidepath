@@ -147,10 +147,13 @@ class Identities(unittest.TestCase):
     # The plan's Target table, as (apiGroup, resource, verbs, resourceNames) per namespace the account is bound in. Anything
     # a chart change binds beyond this fails the test; widening a right is a deliberate edit of this table.
     CLUSTER_REGISTRY = ("", "configmaps", ("get",), ("cluster-registry",))
+    # CG-3: the gate tasks these accounts run (itsm-gate, clearance-gate's fetch) ask glidepath-api for the PR head's change
+    # kind: the virtual classifications resource, get and create, and nothing else of the API.
+    CLASSIFY = ("glidepath.hangar.io", "classifications", ("create", "get"), ())
     TARGET = {   # OWN = the application's own -cicd namespace
         "release-record-writer": {OWN: {("", "configmaps", ("create", "get", "list", "patch"), ()),
-                                        ("tekton.dev", "pipelineruns", ("get",), ())}},   # get: open-release-pr reads its own run's lineage annotations
-        "clearance-gate": {OWN: {("tekton.dev", "pipelineruns", ("get",), ()), ("", "configmaps", ("create", "get", "list", "patch"), ())}},
+                                        ("tekton.dev", "pipelineruns", ("get",), ()), CLASSIFY}},   # get: open-release-pr reads its own run's lineage annotations
+        "clearance-gate": {OWN: {("tekton.dev", "pipelineruns", ("get",), ()), ("", "configmaps", ("create", "get", "list", "patch"), ()), CLASSIFY}},
         "test-runner": {OWN: {("tekton.dev", "pipelineruns", ("get", "list", "watch"), ()),
                              ("tekton.dev", "taskruns", ("get", "list", "watch"), ()),
                              ("", "pods", ("get", "list", "watch"), ()), ("", "pods/log", ("get", "list", "watch"), ()),

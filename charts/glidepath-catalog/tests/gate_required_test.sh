@@ -32,13 +32,13 @@ for d in yaml.safe_load_all(open(path)):
                 if p["name"] == "advisory-reason": print("advisory-reason=" + p["value"])
 PY
 }
-script_of() { # TASK RENDERED -> the first step's script
+script_of() { # TASK RENDERED -> the first step's script (the first after a CG-3 classify step, which has none)
   python3 - "$1" "$2" <<'PY'
 import sys, yaml
 want, path = sys.argv[1], sys.argv[2]
 for d in yaml.safe_load_all(open(path)):
     if d and d.get("kind") == "Task" and d["metadata"]["name"] == want:
-        print(d["spec"]["steps"][0]["script"])
+        print([st for st in d["spec"]["steps"] if "script" in st][0]["script"])
 PY
 }
 expect() { # label got want
@@ -48,19 +48,19 @@ expect() { # label got want
 # ---- chart default: qa advisory, every other real gate required
 render default
 expect "qa-check default" "$(tasks qa-check "${tmp}/default.yaml" | tr '\n' ' ')" \
-  "extract-promoted-image verify-check-ride-advisory+continue advisory-reason=not-required "
+  "extract-promoted-image verify-check-ride-advisory+continue+when not-applicable+when advisory-reason=not-required "
 expect "image-scan-check default" "$(tasks image-scan-check "${tmp}/default.yaml" | tr '\n' ' ')" \
-  "extract-promoted-image image-scan+when image-scan-advisory+continue+when advisory-reason=rollback "
+  "extract-promoted-image image-scan+when image-scan-advisory+continue+when not-applicable+when advisory-reason=rollback "
 expect "sast-check default" "$(tasks sast-check "${tmp}/default.yaml" | tr '\n' ' ')" \
-  "extract-promoted-image verify-sast-attestation+when verify-sast-attestation-advisory+continue+when advisory-reason=rollback "
+  "extract-promoted-image verify-sast-attestation+when verify-sast-attestation-advisory+continue+when not-applicable+when advisory-reason=rollback "
 expect "sbom-check default" "$(tasks sbom-check "${tmp}/default.yaml" | tr '\n' ' ')" \
-  "extract-promoted-image generate-sbom+when generate-sbom-advisory+continue+when advisory-reason=rollback "
+  "extract-promoted-image generate-sbom+when generate-sbom-advisory+continue+when not-applicable+when advisory-reason=rollback "
 expect "api-compat-check default (advisory)" "$(tasks api-compat-check "${tmp}/default.yaml" | tr '\n' ' ')" \
-  "extract-promoted-image compare-api-advisory+continue advisory-reason=not-required "
+  "extract-promoted-image compare-api-advisory+continue+when not-applicable+when advisory-reason=not-required "
 expect "values-check default" "$(tasks values-check "${tmp}/default.yaml" | tr '\n' ' ')" \
-  "fetch render validate advisory-reason=rollback "
+  "fetch render+when validate+when not-applicable+when advisory-reason=rollback "
 expect "policy-validation-check default (required, no rollback copy)" "$(tasks policy-validation-check "${tmp}/default.yaml" | tr '\n' ' ')" \
-  "fetch render evaluate advisory-reason=rollback "
+  "fetch render+when evaluate+when not-applicable+when advisory-reason=rollback "
 for task in detect-bypass-merge release-log-emit wait-for-release-guardrails open-release-pr comment-pr-check-result; do
   script_of "${task}" "${tmp}/default.yaml" > "${tmp}/${task}.sh"
   [[ -s "${tmp}/${task}.sh" ]] || { echo "FAIL: no script for ${task}"; fail=1; }
@@ -94,15 +94,15 @@ releaseGuardrailOverrides:
 YAML
 render override -f "${tmp}/override-values.yaml"
 expect "qa-check required" "$(tasks qa-check "${tmp}/override.yaml" | tr "\n" " ")" \
-  "extract-promoted-image verify-check-ride+when verify-check-ride-advisory+continue+when advisory-reason=rollback "
+  "extract-promoted-image verify-check-ride+when verify-check-ride-advisory+continue+when not-applicable+when advisory-reason=rollback "
 expect "api-compat-check required" "$(tasks api-compat-check "${tmp}/override.yaml" | tr "\n" " ")" \
-  "extract-promoted-image compare-api+when compare-api-advisory+continue+when advisory-reason=rollback "
+  "extract-promoted-image compare-api+when compare-api-advisory+continue+when not-applicable+when advisory-reason=rollback "
 expect "sbom-check advisory" "$(tasks sbom-check "${tmp}/override.yaml" | tr '\n' ' ')" \
-  "extract-promoted-image generate-sbom-advisory+continue advisory-reason=not-required "
+  "extract-promoted-image generate-sbom-advisory+continue+when not-applicable+when advisory-reason=not-required "
 expect "values-check advisory" "$(tasks values-check "${tmp}/override.yaml" | tr '\n' ' ')" \
-  "fetch+continue render+continue validate-advisory+continue advisory-reason=not-required "
+  "fetch+continue render+continue+when validate-advisory+continue+when not-applicable+when advisory-reason=not-required "
 expect "policy-validation-check advisory" "$(tasks policy-validation-check "${tmp}/override.yaml" | tr '\n' ' ')" \
-  "fetch+continue render+continue evaluate-advisory+continue advisory-reason=not-required "
+  "fetch+continue render+continue+when evaluate-advisory+continue+when not-applicable+when advisory-reason=not-required "
 script_of detect-bypass-merge "${tmp}/override.yaml" > "${tmp}/detect-override.sh"
 expect "detect-bypass-merge with overrides (stub itsm stays; sbom/values out; qa in)" \
   "$(grep -o 'for gate in .*; do' "${tmp}/detect-override.sh")" \
@@ -125,9 +125,9 @@ expect "ruleset with promotion on (image-promotion required, as the chart's effe
 printf 'releaseGuardrailOverrides:\n  clearance-gate: { required: true }\n' > "${tmp}/cg-required.yaml"
 render cgreq -f "${tmp}/cg-required.yaml"
 expect "clearance-gate-check required: fetch, render, one hard register task, no render-check" "$(tasks clearance-gate-check "${tmp}/cgreq.yaml" | tr '\n' ' ')" \
-  "fetch render register advisory-reason=rollback "
+  "fetch render+when register+when not-applicable+when advisory-reason=rollback "
 expect "clearance-gate-check default: fetch, render, advisory register plus a hard render-check" "$(tasks clearance-gate-check "${tmp}/default.yaml" | tr '\n' ' ')" \
-  "fetch render register-advisory+continue render-check advisory-reason=not-required "
+  "fetch render+when register-advisory+continue+when render-check+when not-applicable+when advisory-reason=not-required "
 for task in detect-bypass-merge release-log-emit wait-for-release-guardrails; do
   script_of "${task}" "${tmp}/cgreq.yaml" > "${tmp}/cgreq-${task}.sh"
   bash -n "${tmp}/cgreq-${task}.sh" || { echo "FAIL: bash -n ${task} (clearance-gate required)"; fail=1; }
@@ -166,7 +166,7 @@ releaseGuardrailOverridesByApp:
 YAML
 render perapp -f "${tmp}/perapp-values.yaml"
 expect "image-scan-check per-app render (still the hard check)" "$(tasks image-scan-check "${tmp}/perapp.yaml" | tr '\n' ' ')" \
-  "extract-promoted-image image-scan+when image-scan-advisory+continue+when advisory-reason=rollback "
+  "extract-promoted-image image-scan+when image-scan-advisory+continue+when not-applicable+when advisory-reason=rollback "
 for task in detect-bypass-merge release-log-emit wait-for-release-guardrails open-release-pr; do
   script_of "${task}" "${tmp}/perapp.yaml" > "${tmp}/perapp-${task}.sh"
   bash -n "${tmp}/perapp-${task}.sh" || { echo "FAIL: bash -n ${task} (per-app)"; fail=1; }
@@ -396,7 +396,7 @@ render kindsok -f "${tmp}/kinds-ok.yaml"
 expect "an entry's kinds override its class default" "$(matrix "${tmp}/kindsok.yaml" | grep '^image-scan ')" "image-scan run/advisory/run/n/a"
 # behaviour unchanged until CG-3: no gate Pipeline reads the matrix yet
 expect "image-scan-check unchanged by its kinds" "$(tasks image-scan-check "${tmp}/kindsok.yaml" | tr '\n' ' ')" \
-  "extract-promoted-image image-scan+when image-scan-advisory+continue+when advisory-reason=rollback "
+  "extract-promoted-image image-scan+when image-scan-advisory+continue+when not-applicable+when advisory-reason=rollback "
 
 rm -rf "${tmp}"
 [[ ${fail} -eq 0 ]] && echo "OK: the registry's required field drives every gate, the bypass tooling and the ruleset"
