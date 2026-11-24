@@ -417,7 +417,12 @@ spec:
           local cmarker="<!-- glidepath:change-classification -->" cid cbody prev na head_now resp
           cid="$(jq -r --arg m "${cmarker}" '[.[] | select(.body | startswith($m))] | sort_by(.id) | .[0].id // empty' <<<"${comments_json}")"
           if [[ "${classification_source}" == fallback && -n "${cid}" ]]; then
-            # glidepath-api did not answer for this head: an earlier head's answer must not stand as this one's.
+            # glidepath-api did not answer for this head: an earlier head's answer must not stand as this one's. One for this
+            # very head (another gate of it got the answer) is kept: it is right, and only this gate fell back.
+            if jq -e --arg id "${cid}" --arg h "at \`${REVISION:0:7}\`" '[.[] | select((.id | tostring) == $id)][0].body | split("\n")[1] // "" | contains($h)' <<<"${comments_json}" >/dev/null 2>&1; then
+              echo "change classification comment: this head's answer is already there (only this gate fell back), left as it is"
+              return 0
+            fi
             cbody="$(printf '%s\n### Change classification: unavailable at `%s`\n\nglidepath-api did not answer for this head, so every gate judged it as an image release (fail closed). The classification of an earlier head no longer applies.' \
               "${cmarker}" "${REVISION:0:7}")"
           else
