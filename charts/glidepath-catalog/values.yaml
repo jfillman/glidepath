@@ -374,6 +374,14 @@ promotionLineage:
 # integrity, and advising on them is exactly the "advises rather than enforces" weakness the SDLC review named.
 # Platform knob, not an app setting: the default is this file (a glidepath PR); one cluster overrides it through
 # releaseGuardrailOverrides below (the cluster repo's 50-glidepath/glidepath-catalog) - never cicd.yaml or Tower.
+# Change kinds (CG-2, docs/admin/release-guardrails.md "Change kinds"): what each gate does for each kind of change
+# glidepath-api classifies a PR as (image-release, rollback, config, no-op) - run, advisory or n/a. The class sets the
+# defaults (_helpers.tpl glidepath-catalog.kindDefaults): content runs on an image release, advises on a rollback and
+# is n/a otherwise; integrity, process and approval run on everything but no-op. An entry's optional
+# `kinds: { <kind>: run|advisory|n/a }` overrides them; `required: false` still composes on top (a gate that runs,
+# runs its advisory copy). Locks fail the render: no gate n/a for image-release; sast, provenance and image-promotion
+# run (not advise) on it; provenance never n/a for rollback or config. Registry entries only, never per cluster.
+# Published as ConfigMap release-guardrails; no gate reads it to decide what to run until CG-3.
 releaseGuardrails:
   - name: sast
     description: Static analysis (Semgrep) of the promoted commit's source
@@ -453,6 +461,8 @@ releaseGuardrails:
     class: integrity
     required: true
     clearanceChecks: false
+    # It judges who opened the PR, not what changed, so it runs on every PR, a no-op one too.
+    kinds: { no-op: run }
   - name: agent-identity
     description: "Agent identity - Clearance's record of the PR its agent opened: the same head commit and trailers (a person's PR passes as not-agent); posted by the Clearance GitHub App"
     status: real
@@ -461,6 +471,7 @@ releaseGuardrails:
     clearanceChecks: true
     check: "Clearance / agent-identity"
     integration: clearance
+    kinds: { no-op: run }   # the App posts it on every PR
   - name: agent-scope
     description: "Agent scope - only paths the agent's commit carried and its definition still admits (a person's PR passes as not-agent); posted by the Clearance GitHub App"
     status: real
@@ -469,6 +480,7 @@ releaseGuardrails:
     clearanceChecks: true
     check: "Clearance / agent-scope"
     integration: clearance
+    kinds: { no-op: run }   # the App posts it on every PR
   # The deployment gate (Clearance docs/gate.md, decided 2026-10-31; docs/admin/clearance-gate.md): every release PR
   # is registered with Clearance, which decides which environments are protected (never cicd.yaml: clearance-gate.md,
   # "Which environments are protected"); a change to a protected one is classified into a tier 0-3 from what
