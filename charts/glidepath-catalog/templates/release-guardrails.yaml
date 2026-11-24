@@ -7,7 +7,7 @@
 # n/a check, CG-4) and Tower (n/a display) read the table the Pipelines were rendered from instead
 # of restating it. Nothing reads it to decide what a gate runs until CG-3.
 #
-# Readable by every ServiceAccount (rbac.readOnlyGroup), like release-signing-policy: it names gates
+# Readable by rbac.readOnlyGroup (default system:serviceaccounts: every ServiceAccount), like release-signing-policy: it names gates
 # and admin-owned per-app exceptions, nothing secret. Nothing binds write here: the only writer is
 # Argo CD syncing this chart.
 apiVersion: v1

@@ -308,7 +308,7 @@ upper bound.
 
 **The `release-guardrails` ConfigMap.** The chart publishes the resolved registry as ConfigMap `release-guardrails`
 in the catalog namespace (`platform-catalog`), key `matrix.json`, so glidepath-api and Tower read the table the gate
-Pipelines were rendered from instead of restating it. Every ServiceAccount (`rbac.readOnlyGroup`) may `get` it, like
+Pipelines were rendered from instead of restating it. The `rbac.readOnlyGroup` group (default `system:serviceaccounts`, every ServiceAccount) may `get` it, like
 `release-signing-policy`; only Argo CD writes it.
 
 ```json

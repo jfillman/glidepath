@@ -111,6 +111,18 @@ gate does yet (CG-3); the release-guardrails ConfigMap publishes it.
 {{- $out := list -}}
 {{- $overrides := .Values.releaseGuardrailOverrides | default dict -}}
 {{- $cc := eq (include "glidepath-catalog.clearanceChecks" .) "true" -}}
+{{- /* Every override key and every registry entry is checked, including those this cluster leaves out (the other
+clearanceChecks form) and the image-promotion entry added below, so a bad row fails here, not on the day it applies. */ -}}
+{{- range $name, $o := $overrides -}}
+{{- if and (kindIs "map" $o) (hasKey $o "kinds") -}}
+{{- fail (printf "releaseGuardrailOverrides.%s.kinds: a gate's change kinds are set in the registry entry, not per cluster - only `required` can be overridden here (docs/admin/release-guardrails.md, \"Change kinds\")" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- range .Values.releaseGuardrails -}}
+{{- $r := deepCopy . -}}
+{{- $_ := set $r "kinds" (include "glidepath-catalog.gateKinds" $r | fromJson) -}}
+{{- include "glidepath-catalog.kindLocks" $r -}}
+{{- end -}}
 {{- range .Values.releaseGuardrails -}}
 {{- /* An entry with `clearanceChecks: true` exists only where Clearance's App reports the agent checks; one with
 `clearanceChecks: false` (the Glidepath agent-gates- fallback) only where it does not (C-7). */ -}}
@@ -120,9 +132,6 @@ gate does yet (CG-3); the release-guardrails ConfigMap publishes it.
 {{- if hasKey $g "required" }}{{ $required = $g.required }}{{ end -}}
 {{- $o := index $overrides $g.name -}}
 {{- if and $o (kindIs "map" $o) (hasKey $o "required") }}{{ $required = index $o "required" }}{{ end -}}
-{{- if and $o (kindIs "map" $o) (hasKey $o "kinds") -}}
-{{- fail (printf "releaseGuardrailOverrides.%s.kinds: a gate's change kinds are set in the registry entry, not per cluster - only `required` can be overridden here (docs/admin/release-guardrails.md, \"Change kinds\")" $g.name) -}}
-{{- end -}}
 {{- $_ := set $g "kinds" (include "glidepath-catalog.gateKinds" $g | fromJson) -}}
 {{- if and (eq $g.name "itsm") (hasKey $.Values "itsm") }}{{ $_ := set $g "status" (ternary "stub" "real" (eq ($.Values.itsm.provider | default "none") "none")) }}{{ end -}}
 {{- if eq ($g.status | default "real") "stub" }}{{ $required = true }}{{ end -}}

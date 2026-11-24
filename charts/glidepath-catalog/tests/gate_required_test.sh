@@ -381,6 +381,14 @@ kinds_refuse not-a-map "sbom.kinds must be a map" '(.[] | select(.name == "sbom"
 kinds_refuse unknown-class 'sbom has class "contents"' '(.[] | select(.name == "sbom") | .class) = "contents"'
 refuse cluster-kinds "releaseGuardrailOverrides.sbom.kinds: a gate's change kinds are set in the registry entry" \
   $'releaseGuardrailOverrides:\n  sbom: { kinds: { config: run } }'
+# entries and override keys this cluster leaves out are checked too: agent-identity is not in the effective registry
+# without Clearance's App, and image-promotion is not a registry entry at all (promotion off here)
+kinds_refuse excluded-entry 'agent-identity.kinds: "hotfix" is not a change kind' '(.[] | select(.name == "agent-identity") | .kinds) = {"hotfix": "run"}'
+kinds_refuse excluded-entry-lock "agent-scope cannot be n/a for image-release" '(.[] | select(.name == "agent-scope") | .kinds) = {"image-release": "n/a"}'
+refuse cluster-kinds-image-promotion "releaseGuardrailOverrides.image-promotion.kinds: a gate's change kinds are set in the registry entry" \
+  $'releaseGuardrailOverrides:\n  image-promotion: { kinds: { config: run } }'
+refuse cluster-kinds-excluded "releaseGuardrailOverrides.agent-identity.kinds: a gate's change kinds are set in the registry entry" \
+  $'releaseGuardrailOverrides:\n  agent-identity: { kinds: { no-op: n/a } }'
 # an allowed row change renders and shows: image-scan run on a config change
 yq -o yaml '{"releaseGuardrails": (.releaseGuardrails | (.[] | select(.name == "image-scan") | .kinds) = {"config": "run"})}' \
   charts/glidepath-catalog/values.yaml > "${tmp}/kinds-ok.yaml"
