@@ -799,8 +799,9 @@ record, so no task account needs a ConfigMap write for the ledger. It is not for
   for each deployable file at both ends, plus a cluster directory's listing for a `<cluster>/<file>` such as `base.yaml`. Never
   the branch name, the pull request's text or commit trailers.
 - **Deployable files** are the gate templates' predicate (YAML under `<cluster>/<env>/`, `values*`, `release*`, `base*`,
-  `kustomization*` files) minus `.tekton/` and `releases/`, plus an own chart's files under `<cluster>/<env>/` (`.tpl`,
-  `templates/`, `charts/`, `Chart.yaml`, `Chart.lock`), which are not parsed and need a render check. `<cluster>/<env>/...`
+  `kustomization*` files) minus `.tekton/` and `releases/`, plus the template side of an own chart under `<cluster>/<env>/`
+  (`.tpl`, anything under `templates/`, `Chart.yaml`, `Chart.lock`, a packaged subchart under `charts/`), which is not parsed
+  and needs a render check. An own chart's values files (any other YAML or JSON) are parsed like every values file. `<cluster>/<env>/...`
   feeds that environment, `<cluster>/<file>` every environment directory of the cluster, a root file the whole repository.
 - **Image references** are any value under a key named `image` or `images`: `release.image` and `rollout.image`, component
   images, a raw manifest's container images, a kustomization's `images` and `helmCharts[].valuesInline`. A reference is new

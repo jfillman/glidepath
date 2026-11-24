@@ -542,6 +542,12 @@ func TestChartPinAndOwnChartNeedARenderCheck(t *testing.T) {
 	if a.Kind != Config || a.RenderCheck != RenderRequired || a.FailClosed {
 		t.Fatalf("%+v", a)
 	}
+	// An own chart's values file is parsed like any values file: an image change in it is an image release.
+	cv := "image:\n  repository: ghcr.io/acme/shop\n  tag: '%s'\n"
+	w = newWorld(map[string]string{"prod-1/prod/chart/values.yaml": fmt.Sprintf(cv, "1")}, map[string]string{"prod-1/prod/chart/values.yaml": fmt.Sprintf(cv, "2")})
+	if a = classify(t, w, nil); a.Kind != ImageRelease {
+		t.Fatalf("%+v", a)
+	}
 	// A remote kustomize base moving.
 	k := "resources:\n  - https://github.com/acme/bases//shop?ref=%s\n"
 	w = newWorld(map[string]string{"prod-1/prod/kustomization.yaml": fmt.Sprintf(k, "v1")}, map[string]string{"prod-1/prod/kustomization.yaml": fmt.Sprintf(k, "v2")})
@@ -770,6 +776,22 @@ func TestDryRunAndGetWriteNothing(t *testing.T) {
 	}
 }
 
+func TestOwnChartFilesAreOpaqueOnlyOnTheTemplateSide(t *testing.T) {
+	for f, want := range map[string]bool{
+		"prod-1/prod/chart/templates/deploy.yaml":  true,
+		"prod-1/prod/chart/_helpers.tpl":           true,
+		"prod-1/prod/chart/Chart.yaml":             true,
+		"prod-1/prod/chart/charts/sub-1.0.0.tgz":   true,
+		"prod-1/prod/chart/values.yaml":            false,
+		"prod-1/prod/chart/charts/sub/values.yaml": false,
+		"prod-1/prod/values.yaml":                  false,
+	} {
+		if ownChartFile(f) != want {
+			t.Errorf("%s: want %v", f, want)
+		}
+	}
+}
+
 func TestDeployablePredicate(t *testing.T) {
 	for f, want := range map[string]bool{
 		"prod-1/prod/values.yaml":                  true,
@@ -780,6 +802,8 @@ func TestDeployablePredicate(t *testing.T) {
 		"kustomization.yaml":                       true,
 		"prod-1/prod/chart/templates/_helpers.tpl": true,
 		"prod-1/prod/chart/Chart.lock":             true,
+		"prod-1/prod/chart/charts/sub-1.0.0.tgz":   true,
+		"prod-1/prod/chart/templates/NOTES.txt":    true,
 		".tekton/pull-request-values.yaml":         false,
 		"releases/shop@1.0.0-abc.yaml":             false,
 		"README.md":                                false,

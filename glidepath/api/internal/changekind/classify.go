@@ -47,8 +47,10 @@ func Deployable(f string) bool {
 	return deployableName.MatchString(f) || strings.HasSuffix(f, "Kustomization") || deployableEnv.MatchString(f) || ownChartFile(f)
 }
 
-// ownChartFile: a file of a Helm chart kept under <cluster>/<env>/. It is not parsed (templates are not YAML); its environment is
-// config with a render check.
+// ownChartFile: a template-side file of a Helm chart kept under <cluster>/<env>/ (a .tpl helper, anything under templates/,
+// Chart.yaml, Chart.lock, a packaged subchart under charts/). It is not parsed (a template is not YAML); its environment is config
+// with a render check. A chart's values files (any other YAML or JSON) are parsed like every values file, so an image change in
+// them is an image release.
 func ownChartFile(f string) bool {
 	segs := strings.Split(f, "/")
 	if len(segs) < 3 || strings.HasPrefix(f, ".tekton/") || strings.HasPrefix(f, "releases/") {
@@ -58,8 +60,9 @@ func ownChartFile(f string) bool {
 	if strings.HasSuffix(base, ".tpl") || base == "Chart.yaml" || base == "Chart.lock" {
 		return true
 	}
+	data := strings.HasSuffix(base, ".yaml") || strings.HasSuffix(base, ".yml") || strings.HasSuffix(base, ".json")
 	for _, s := range segs[2 : len(segs)-1] {
-		if s == "templates" || s == "charts" {
+		if s == "templates" || (s == "charts" && !data) {
 			return true
 		}
 	}
