@@ -185,6 +185,9 @@ type Answer struct {
 	Record string `json:"record,omitempty"`
 	// RecordCopy says what happened to that copy: copied, already-copied, no-record, or failed: <why> (never fails the call).
 	RecordCopy string `json:"recordCopy,omitempty"`
+	// UnstoredReason says why an unstored answer was not stored: read-failed (a later ask computes it again) or store-full
+	// (the pull request's store has no room left; every later ask for this head computes it again and fails closed the same way).
+	UnstoredReason string `json:"unstoredReason,omitempty"`
 }
 
 // Service answers the routes.
@@ -329,7 +332,11 @@ func (s *Service) computeAndStore(ctx context.Context, app *apps.App, n int, hea
 		return nil, err
 	}
 	if transient {
-		return &Answer{Classification: *c, Outcome: Unstored}, nil
+		// Another replica may have stored this head meanwhile: once one answer is stored, every ask gets that one.
+		if stored, err := s.stored(ctx, app.Namespace, n, head); err == nil && stored != nil {
+			return &Answer{Classification: *stored, Outcome: Stored}, nil
+		}
+		return &Answer{Classification: *c, Outcome: Unstored, UnstoredReason: "read-failed"}, nil
 	}
 	return s.put(ctx, app, n, c)
 }
@@ -364,6 +371,18 @@ func (s *Service) put(ctx context.Context, app *apps.App, n int, c *Classificati
 		return nil, err
 	}
 	key, name := c.Head[:12], StoreName(n)
+	full := func() (*Answer, error) {
+		// Not stored: an image-release answer that says why, never a write Kubernetes would refuse (1 MiB per ConfigMap).
+		f := *c
+		if f.Kind != ImageRelease {
+			f.Kind, f.FailClosed, f.Envs, f.RenderCheck = ImageRelease, true, []Env{}, RenderNone
+			f.Reason = "fail closed: the classification does not fit in the pull request's store (change-kind-pr-" + strconv.Itoa(n) + ")"
+		}
+		return &Answer{Classification: f, Outcome: Unstored, UnstoredReason: "store-full"}, nil
+	}
+	if len(raw) > maxStoreBytes {
+		return full()
+	}
 	for attempt := 1; ; attempt++ {
 		cm, err := s.Store.Get(ctx, app.Namespace, name)
 		if err != nil {
@@ -386,7 +405,7 @@ func (s *Service) put(ctx context.Context, app *apps.App, n int, c *Classificati
 				size += len(k) + len(v)
 			}
 			if size > maxStoreBytes {
-				return &Answer{Classification: *c, Outcome: Unstored}, nil
+				return full()
 			}
 			err = s.Store.Patch(ctx, app.Namespace, name, cm.ResourceVersion, map[string]string{key: string(raw)})
 		}

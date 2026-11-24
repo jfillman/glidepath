@@ -795,8 +795,9 @@ record, so no task account needs a ConfigMap write for the ledger. It is not for
 
 - **What it reads.** Only the pull request's own diff, through GitHub with the broker's per-request read-only token
   ([below](#the-github-read-token)): `pulls/{n}`, `pulls/{n}/commits` (only when `head` is not the current head: it must be one of
-  the pull request's commits, else 422), `compare/{base}...{head}` (removed and renamed files included) and `contents/{path}?ref=`
-  for each deployable file at both ends, plus a cluster directory's listing for a `<cluster>/<file>` such as `base.yaml`. Never
+  the pull request's commits, else 422; past GitHub's 250-commit list it fails closed, unstored), `compare/{base}...{head}`
+  (removed and renamed files included) and `contents/{path}?ref=` for each deployable file at the comparison's merge base and
+  at `head`, plus a cluster directory's listing for a `<cluster>/<file>` such as `base.yaml`. Never
   the branch name, the pull request's text or commit trailers.
 - **Deployable files** are the gate templates' predicate (YAML under `<cluster>/<env>/`, `values*`, `release*`, `base*`,
   `kustomization*` files) minus `.tekton/` and `releases/`, plus the template side of an own chart under `<cluster>/<env>/`
@@ -804,15 +805,21 @@ record, so no task account needs a ConfigMap write for the ledger. It is not for
   and needs a render check. An own chart's values files (any other YAML or JSON) are parsed like every values file. `<cluster>/<env>/...`
   feeds that environment, `<cluster>/<file>` every environment directory of the cluster, a root file the whole repository.
 - **Image references** are any value under a key named `image` or `images`: `release.image` and `rollout.image`, component
-  images, a raw manifest's container images, a kustomization's `images` and `helmCharts[].valuesInline`. A reference is new
-  when the head holds it and the base of the same environment's changed files does not, so removing or renaming a workload is
-  `config`. A setting under an image key (`pullPolicy`) is configuration.
-- **`renderCheck: required`**: a chart pin (`targetRevision`, `repoURL`, `chart`, `helmCharts`), an own chart file or a
-  remote kustomize base changed, so only a render can show whether images changed (the render backstop, CG-3).
+  images (a string in an `images` map is one), a raw manifest's container images, a kustomization's `images` and
+  `helmCharts[].valuesInline`. A reference is new when the head holds it and the base of the same environment's changed files
+  does not, so removing or renaming a workload in place, or removing an image, is `config`. Each side of a file counts for the
+  environment its own path feeds: a manifest moved from staging to prod is a removal in staging and new images in prod. A
+  setting under an image key (`pullPolicy`) is configuration.
+- **Rollback eligibility** is the catalog's rule unchanged, with one addition: when the returning release image pins a digest,
+  the healthy release must have recorded that digest (`imageDigest`). Release records that cannot be read fail closed, unstored.
+- **`renderCheck: required`**: a chart pin (any value under `targetRevision`, `repoURL`, `chart` or `helmCharts`, in a new
+  or removed subtree or file too), an own chart's template side or a remote kustomize base changed, so only a render can show whether images changed (the render backstop, CG-3).
 - **Fail closed.** A file that does not parse (a duplicate key included), a comparison of 300 files or more (GitHub lists at
-  most 300), more than 100 deployable files, or a file too large for the contents API make it `image-release` with
-  `failClosed: true`, stored. A read that failed does too, but that answer is not stored (`outcome: unstored`): the next ask
-  computes it again.
+  most 300), more than 100 deployable files, a document that expands past 200,000 nodes (aliases included), or a file too large
+  for the contents API make it `image-release` with `failClosed: true`, stored. A read that failed does too, but that answer is
+  not stored (`outcome: unstored`, `unstoredReason: read-failed`): the next ask computes it again, unless another ask stored an
+  answer meanwhile, which is then returned. A classification that does not fit in the store (1 MiB per ConfigMap) is
+  `image-release`, fail closed, `unstored` with `store-full`.
 - **Computed once per head.** Asks for the same head on one replica wait for one computation. The answer is stored
   write-once in the ConfigMap `change-kind-pr-<n>` of the app's namespace (key `head[:12]`, labels
   `hangar.io/subcomponent=change-kind`, `hangar.io/app`, `hangar.io/pull-request`), so two replicas that compute at once agree

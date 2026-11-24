@@ -29,7 +29,7 @@ func (h *ckHost) GetJSON(_ context.Context, owner, repo, p string) (int, []byte,
 	case "pulls/7":
 		return 200, []byte(`{"number":7,"html_url":"https://github.com/acme/gitops-shop/pull/7","base":{"sha":"` + ckBase + `"},"head":{"sha":"` + ckHead + `"}}`), nil
 	case "compare/" + ckBase + "..." + ckHead:
-		return 200, []byte(`{"files":[{"filename":"README.md","status":"modified"}]}`), nil
+		return 200, []byte(`{"merge_base_commit":{"sha":"` + ckBase + `"},"files":[{"filename":"README.md","status":"modified"}]}`), nil
 	}
 	return 404, nil, nil
 }

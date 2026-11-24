@@ -41,7 +41,8 @@ func parse(name string, raw []byte) (*parsed, error) {
 		if err != nil {
 			return nil, err
 		}
-		v, err := fromNode(&n, 0)
+		budget := maxNodes
+		v, err := fromNode(&n, 0, &budget)
 		if err != nil {
 			return nil, err
 		}
@@ -66,27 +67,34 @@ type scalarText struct{ Tag, Text string }
 
 func (s scalarText) String() string { return s.Text }
 
-// maxDepth bounds nesting (and alias expansion) of a document.
-const maxDepth = 100
+// maxDepth bounds nesting of a document; maxNodes bounds the nodes one document expands to, aliases included, so a document
+// built of aliases of aliases cannot grow without bound.
+const (
+	maxDepth = 100
+	maxNodes = 200000
+)
 
 // fromNode turns a YAML node into maps, lists, strings and scalarText. Aliases are expanded and merge keys (<<) applied; a
 // duplicate key is an error, as it is to the API server.
-func fromNode(n *yaml.Node, depth int) (any, error) {
+func fromNode(n *yaml.Node, depth int, budget *int) (any, error) {
 	if depth > maxDepth {
 		return nil, fmt.Errorf("line %d: nested more than %d levels deep", n.Line, maxDepth)
+	}
+	if *budget--; *budget < 0 {
+		return nil, fmt.Errorf("the document expands to more than %d nodes (aliases included)", maxNodes)
 	}
 	switch n.Kind {
 	case yaml.DocumentNode:
 		if len(n.Content) == 0 {
 			return nil, nil
 		}
-		return fromNode(n.Content[0], depth+1)
+		return fromNode(n.Content[0], depth+1, budget)
 	case yaml.AliasNode:
-		return fromNode(n.Alias, depth+1)
+		return fromNode(n.Alias, depth+1, budget)
 	case yaml.SequenceNode:
 		out := make([]any, 0, len(n.Content))
 		for _, c := range n.Content {
-			v, err := fromNode(c, depth+1)
+			v, err := fromNode(c, depth+1, budget)
 			if err != nil {
 				return nil, err
 			}
@@ -98,7 +106,7 @@ func fromNode(n *yaml.Node, depth int) (any, error) {
 		var merges []map[string]any
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, vn := n.Content[i], n.Content[i+1]
-			v, err := fromNode(vn, depth+1)
+			v, err := fromNode(vn, depth+1, budget)
 			if err != nil {
 				return nil, err
 			}
@@ -158,7 +166,7 @@ func walk(v any, p string, refs *[]imageRef) any {
 		out := make(map[string]any, len(t))
 		for k, x := range t {
 			if k == "image" || k == "images" {
-				if rest := imageNode(x, join(p, k), refs); rest != nil {
+				if rest := imageNode(x, join(p, k), k == "images", refs); rest != nil {
 					out[k] = rest
 				}
 				continue
@@ -181,6 +189,11 @@ func walk(v any, p string, refs *[]imageRef) any {
 var refKeys = map[string]bool{"registry": true, "repository": true, "source": true, "tag": true, "digest": true,
 	"name": true, "newName": true, "newTag": true}
 
+func isString(v any) bool {
+	_, ok := v.(string)
+	return ok
+}
+
 func scalar(v any) bool {
 	switch v.(type) {
 	case nil, map[string]any, []any:
@@ -191,7 +204,10 @@ func scalar(v any) bool {
 
 // imageNode takes the references out of a value under an image key and returns what is left (settings such as pullPolicy stay
 // configuration), or nil when nothing is.
-func imageNode(v any, p string, refs *[]imageRef) any {
+//
+// many: the value is under an images key (a map of component images): a string in it is a reference, where under an image key a
+// string beside the reference fields is a setting.
+func imageNode(v any, p string, many bool, refs *[]imageRef) any {
 	switch t := v.(type) {
 	case string:
 		*refs = append(*refs, imageRef{Path: p, Ref: t})
@@ -210,9 +226,11 @@ func imageNode(v any, p string, refs *[]imageRef) any {
 		for k, x := range t {
 			switch {
 			case isRef && refKeys[k] && scalar(x):
+			case !isRef && many && isString(x):
+				*refs = append(*refs, imageRef{Path: join(p, k), Ref: x.(string)}) // images: {worker: busybox:1}
 			case !scalar(x) && x != nil:
 				// a map or list below an image key is image data too (component images, kustomize's images list)
-				if rest := imageNode(x, join(p, k), refs); rest != nil {
+				if rest := imageNode(x, join(p, k), many, refs); rest != nil {
 					out[k] = rest
 				}
 			default:
@@ -226,7 +244,7 @@ func imageNode(v any, p string, refs *[]imageRef) any {
 	case []any:
 		out := make([]any, len(t))
 		for i, x := range t {
-			out[i] = imageNode(x, index(p, i), refs)
+			out[i] = imageNode(x, index(p, i), many, refs)
 		}
 		return out
 	}

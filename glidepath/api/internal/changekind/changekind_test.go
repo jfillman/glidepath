@@ -26,6 +26,7 @@ const (
 	baseSHA = "1111111111111111111111111111111111111111"
 	headSHA = "2222222222222222222222222222222222222222"
 	oldHead = "3333333333333333333333333333333333333333"
+	tipSHA  = "9999999999999999999999999999999999999999" // the base branch's tip; the merge base is baseSHA
 	prURL   = "https://github.com/acme/gitops-shop/pull/7"
 )
 
@@ -38,6 +39,7 @@ type world struct {
 	files   map[string]map[string]string // sha -> path -> content
 	compare []ghFile                     // overrides the derived comparison
 	commits []string                     // the pull request's commits (pulls/7/commits)
+	pages   int                          // >0: every page up to this one lists commits (a long pull request)
 	fail    map[string]int               // a path prefix -> the status GitHub answers
 	calls   []string
 	hold    chan struct{} // when set, the comparison waits for it
@@ -79,10 +81,10 @@ func (w *world) GetJSON(ctx context.Context, owner, repo, p string) (int, []byte
 	}
 	switch {
 	case p == "pulls/7":
-		return ok(map[string]any{"number": 7, "html_url": prURL, "base": map[string]string{"sha": baseSHA}, "head": map[string]string{"sha": headSHA}})
+		return ok(map[string]any{"number": 7, "html_url": prURL, "base": map[string]string{"sha": tipSHA}, "head": map[string]string{"sha": headSHA}})
 	case strings.HasPrefix(p, "pulls/7/commits"):
 		var out []map[string]string
-		if strings.HasSuffix(p, "page=1") {
+		if strings.HasSuffix(p, "page=1") || (w.pages > 0 && !strings.HasSuffix(p, fmt.Sprintf("page=%d", w.pages+1))) {
 			for _, c := range w.commits {
 				out = append(out, map[string]string{"sha": c})
 			}
@@ -94,13 +96,13 @@ func (w *world) GetJSON(ctx context.Context, owner, repo, p string) (int, []byte
 		if hold != nil {
 			<-hold
 		}
-		if want := "compare/" + baseSHA + "..." + headSHA; p != want && p != "compare/"+baseSHA+"..."+oldHead {
+		if want := "compare/" + tipSHA + "..." + headSHA; p != want && p != "compare/"+tipSHA+"..."+oldHead {
 			return http.StatusNotFound, nil, nil
 		}
 		if w.compare != nil {
-			return ok(map[string]any{"files": w.compare})
+			return ok(map[string]any{"files": w.compare, "merge_base_commit": map[string]string{"sha": baseSHA}})
 		}
-		return ok(map[string]any{"files": w.derived()})
+		return ok(map[string]any{"files": w.derived(), "merge_base_commit": map[string]string{"sha": baseSHA}})
 	case strings.HasPrefix(p, "contents/"):
 		rest := strings.TrimPrefix(p, "contents/")
 		ep, q, _ := strings.Cut(rest, "?ref=")
@@ -342,10 +344,107 @@ func TestEligibleReturnIsARollbackAndIneligibleIsAnImageRelease(t *testing.T) {
 	if a.Kind != ImageRelease {
 		t.Fatalf("%+v", a)
 	}
-	// Records that cannot be read are "not eligible".
+	// Records that cannot be read: image-release, fail closed, and not stored, so a later ask can still find the rollback.
 	a = classify(t, w, &records{err: errors.New("forbidden")})
-	if a.Kind != ImageRelease || !strings.Contains(a.Reason, "could not read the release records") {
+	if a.Kind != ImageRelease || !a.FailClosed || a.Outcome != Unstored || a.UnstoredReason != "read-failed" || !strings.Contains(a.Reason, "could not read the release records") {
 		t.Fatalf("%+v", a)
+	}
+}
+
+// A digest pinned on the returning release image must be the digest the healthy release ran.
+func TestRollbackToAPinnedDigestNeedsThatDigest(t *testing.T) {
+	file := func(tag, digest string) string {
+		return "release:\n  image:\n    repository: ghcr.io/acme/shop\n    tag: " + tag + "\n    digest: " + digest + "\n"
+	}
+	d1, d2 := "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("b", 64)
+	w := newWorld(map[string]string{"prod-1/prod/release.yaml": file("2.0", d2)}, map[string]string{"prod-1/prod/release.yaml": file("1.9", d1)})
+	rec := func(digest string) *records {
+		r := healthy("c8", "ghcr.io/acme/shop:1.9", "2026-11-19T10:00:00Z")
+		r.Data["imageDigest"] = digest
+		return &records{recs: map[string][]releases.Record{"prod-1/prod": {r}}}
+	}
+	if a := classify(t, w, rec(d1)); a.Kind != Rollback {
+		t.Fatalf("%+v", a)
+	}
+	for _, d := range []string{d2, ""} {
+		if a := classify(t, w, rec(d)); a.Kind != ImageRelease {
+			t.Fatalf("record digest %q: %+v", d, a)
+		}
+	}
+}
+
+// A manifest moved from staging to prod brings its image to prod: an image release there, and configuration in staging.
+func TestMoveBetweenEnvironmentsIsJudgedPerSide(t *testing.T) {
+	m := fmt.Sprintf(deployment, "ghcr.io/acme/worker:1")
+	w := newWorld(map[string]string{"prod-1/staging/manifests/worker.yaml": m}, map[string]string{"prod-1/prod/manifests/worker.yaml": m})
+	w.compare = []ghFile{{Filename: "prod-1/prod/manifests/worker.yaml", Status: "renamed", PreviousFilename: "prod-1/staging/manifests/worker.yaml"}}
+	a := classify(t, w, nil)
+	if a.Kind != ImageRelease || envOf(t, a, "prod-1", "prod").Kind != ImageRelease || envOf(t, a, "prod-1", "staging").Kind != Config {
+		t.Fatalf("%+v", a)
+	}
+}
+
+// Removing an image declaration with nothing else changing is configuration, not a no-op.
+func TestImageRemovalIsConfig(t *testing.T) {
+	w := newWorld(map[string]string{"prod-1/prod/values.yaml": valuesBase + "sidecar:\n  image: busybox:1\n  port: 9\n"},
+		map[string]string{"prod-1/prod/values.yaml": valuesBase + "sidecar:\n  port: 9\n"})
+	a := classify(t, w, nil)
+	if a.Kind != Config || !strings.Contains(a.Reason, "image reference removed or moved: busybox:1") {
+		t.Fatalf("%+v", a)
+	}
+}
+
+// images: {worker: busybox:1} is a component image, not a setting.
+func TestComponentImageStringsAreReferences(t *testing.T) {
+	w := newWorld(map[string]string{"prod-1/prod/values.yaml": "images:\n  worker: busybox:1\n"}, map[string]string{"prod-1/prod/values.yaml": "images:\n  worker: busybox:2\n"})
+	if a := classify(t, w, nil); a.Kind != ImageRelease {
+		t.Fatalf("%+v", a)
+	}
+	// under an image key, a string beside the reference fields stays a setting
+	v := "image:\n  repository: ghcr.io/acme/shop\n  tag: '1'\n  pullPolicy: %s\n"
+	w = newWorld(map[string]string{"prod-1/prod/values.yaml": fmt.Sprintf(v, "Always")}, map[string]string{"prod-1/prod/values.yaml": fmt.Sprintf(v, "Never")})
+	if a := classify(t, w, nil); a.Kind != Config {
+		t.Fatalf("%+v", a)
+	}
+}
+
+func TestRenderInputsInNewSubtreesAndRemovedFiles(t *testing.T) {
+	w := newWorld(map[string]string{"prod-1/prod/values.yaml": valuesBase}, map[string]string{"prod-1/prod/values.yaml": valuesBase + "application:\n  targetRevision: v2\n"})
+	if a := classify(t, w, nil); a.Kind != Config || a.RenderCheck != RenderRequired {
+		t.Fatalf("a pin inside a new subtree: %+v", a)
+	}
+	w = newWorld(map[string]string{"prod-1/prod/kustomization.yaml": "resources:\n  - https://github.com/acme/bases//shop?ref=v1\n"}, map[string]string{})
+	if a := classify(t, w, nil); a.Kind != Config || a.RenderCheck != RenderRequired {
+		t.Fatalf("a removed kustomization with a remote base: %+v", a)
+	}
+	w = newWorld(map[string]string{"prod-1/prod/manifests/cm.yaml": "kind: ConfigMap\ndata: {a: b}\n"}, map[string]string{})
+	if a := classify(t, w, nil); a.Kind != Config || a.RenderCheck != RenderNone {
+		t.Fatalf("an ordinary removal needs no render: %+v", a)
+	}
+}
+
+// A document of aliases of aliases is refused before it grows (fail closed, stored).
+func TestAliasExpansionIsBounded(t *testing.T) {
+	bomb := "a: &a [x, x, x, x, x, x, x, x, x, x]\nb: &b [*a, *a, *a, *a, *a, *a, *a, *a, *a, *a]\nc: &c [*b, *b, *b, *b, *b, *b, *b, *b, *b, *b]\n" +
+		"d: &d [*c, *c, *c, *c, *c, *c, *c, *c, *c, *c]\ne: &e [*d, *d, *d, *d, *d, *d, *d, *d, *d, *d]\nf: [*e, *e, *e, *e, *e, *e, *e, *e, *e, *e]\n"
+	w := newWorld(map[string]string{"prod-1/prod/values.yaml": valuesBase}, map[string]string{"prod-1/prod/values.yaml": bomb})
+	a := classify(t, w, nil)
+	if a.Kind != ImageRelease || !a.FailClosed || !strings.Contains(a.Reason, "expands to more than") {
+		t.Fatalf("%+v", a)
+	}
+}
+
+// GitHub lists at most 250 commits of a pull request: not finding an earlier head among them proves nothing.
+func TestAnUnlistedHeadInALongPullRequestFailsClosed(t *testing.T) {
+	w := newWorld(map[string]string{}, map[string]string{"README.md": "x"})
+	w.commits = nil
+	for i := 0; i < 100; i++ {
+		w.commits = append(w.commits, fmt.Sprintf("%040d", i))
+	}
+	w.pages = 3
+	a, err := service(w, newStore(), nil).Classify(context.Background(), shop, 7, oldHead, false)
+	if err != nil || !a.FailClosed || a.Outcome != Unstored {
+		t.Fatalf("%v %+v", err, a)
 	}
 }
 
@@ -789,6 +888,17 @@ func TestOwnChartFilesAreOpaqueOnlyOnTheTemplateSide(t *testing.T) {
 		if ownChartFile(f) != want {
 			t.Errorf("%s: want %v", f, want)
 		}
+	}
+}
+
+// The base branch moved to the same image after the pull request branched: the comparison still lists the file, and its base
+// side is read at the merge base, so the change is still an image change.
+func TestBaseSideIsReadAtTheMergeBase(t *testing.T) {
+	w := newWorld(map[string]string{"prod-1/prod/release.yaml": release("ghcr.io/acme/shop", "1.0")}, map[string]string{"prod-1/prod/release.yaml": release("ghcr.io/acme/shop", "2.0")})
+	w.files[tipSHA] = map[string]string{"prod-1/prod/release.yaml": release("ghcr.io/acme/shop", "2.0")}
+	a := classify(t, w, nil)
+	if a.Kind != ImageRelease || a.Base != baseSHA || w.count("contents/prod-1/prod/release.yaml?ref="+tipSHA) != 0 {
+		t.Fatalf("%+v %v", a, w.calls)
 	}
 }
 

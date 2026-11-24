@@ -665,7 +665,8 @@ paths:
         Needs `create` on `classifications.glidepath.hangar.io` in the app's namespace (glidepath-app grants it to pipeline-runner:
         a release gate's first task asks). `{n}` is a pull request of the app's gitops repository and `head` one of its commits (the
         head the gate run was started for; another commit is 422). The kind is worked out from the pull request's own diff (GitHub's
-        compare from its base to `head`, removed and renamed files included, and each deployable file read at both ends), never from
+        compare from its base to `head`, removed and renamed files included, and each deployable file read at the merge base and at
+        `head`), never from
         its branch name, text or commit trailers. `image-release`: a new image reference appears in a deployable file (any value under
         a key named image or images, a raw manifest's container images, a kustomization's images). `rollback`: every new image
         reference of an environment is its release image, returning to an image of one of the last five healthy releases of that
@@ -675,7 +676,8 @@ paths:
         limit), more than 100 deployable files, a file too large to read, or a read that failed. The first ask computes it (asks for
         the same head on a replica share one computation) and stores it in the ConfigMap `change-kind-pr-<n>`, key `head[:12]`,
         write-once: a later ask returns the stored answer, whatever has changed since (a release turning healthy). A fail-closed
-        answer caused by a read that failed is returned with outcome `unstored` and computed again by the next ask. When the pull
+        answer caused by a read that failed is returned with outcome `unstored` (`unstoredReason: read-failed`) and computed again by
+        the next ask; one that does not fit in the store is `unstored` with `store-full`. When the pull
         request has a release record, the answer is copied onto it as `changeKind.<sha12>` (best effort, reported in
         `recordCopy`). `dryRun=true` computes (or reads) and stores nothing. Tier T0: it changes nothing in git or in what runs.
       x-glidepath-tier: T0
@@ -701,7 +703,8 @@ paths:
       description: >-
         Needs `get` on `classifications.glidepath.hangar.io` in the app's namespace (pipeline-runner, and the chart's
         glidepath-api-reader). The answer POST stored for `head`, or 404 when nothing is stored: GET never computes and never reads
-        GitHub. What promote, detect-bypass-merge, release-log-emit and Tower read after the gates have run.
+        GitHub. Meant for the readers after the gates (promote, detect-bypass-merge, release-log-emit, Tower); none of them calls it yet
+        (CG-3 and CG-4 wire them).
       x-glidepath-tier: T0
       parameters:
         - { $ref: "#/components/parameters/App" }
@@ -1270,7 +1273,8 @@ components:
                   eligible: { type: boolean }
                   image: { type: string }
                   note: { type: string }
-        outcome: { type: string, enum: [computed, stored, unstored, dry-run], description: "computed: by this ask (or one it waited on) and stored; stored: already stored; unstored: a read failed, ask again; dry-run: nothing stored" }
+        outcome: { type: string, enum: [computed, stored, unstored, dry-run], description: "computed: by this ask (or one it waited on) and stored; stored: already stored; unstored: not stored, see unstoredReason; dry-run: nothing stored" }
+        unstoredReason: { type: string, enum: [read-failed, store-full], description: "read-failed: a GitHub or release-record read failed, the answer is image-release fail closed and a later ask computes it again; store-full: the pull request's store has no room, the answer is image-release fail closed and asking again does not help (GET answers 404 for that head)" }
         record: { type: string, description: The release record the classification was copied onto }
         recordCopy: { type: string, description: "copied, already-copied, no-record, or failed: <why>" }
     GateVerdict:
