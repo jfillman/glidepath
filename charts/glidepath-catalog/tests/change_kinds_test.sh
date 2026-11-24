@@ -354,7 +354,7 @@ comment fb sast "${TR_FB_SAST}" '[]'
 expect "fallback: no shared comment" "$(grep -c 'change-classification' "$work/c-fb/bodies")" "0"
 comment fbold sast "${TR_FB_SAST}" '[{"id": 9, "body": "<!-- glidepath:change-classification -->\nold"}]'
 comment fbsame sast "${TR_FB_SAST}" "$(jq -nc --arg b "${shared}" '[{id: 9, body: $b}]')"
-expect "fallback with this head's answer already there: kept" "$(grep -c '^PATCH .*/issues/comments/9$' "$work/c-fbsame/calls") $(bodies fbsame '[.[] | select(.body | startswith("<!-- glidepath:change-classification"))] | length')" "0 0"
+expect "fallback with this head's answer already there: kept" "$(cat "$work/c-fbsame/rc") $(grep -c '^PATCH .*/issues/comments/9$' "$work/c-fbsame/calls") $(bodies fbsame '[.[] | select(.body | startswith("<!-- glidepath:change-classification"))] | length') $(grep -c "this head's answer is already there" "$work/c-fbsame/out")" "0 0 0 1"
 expect "fallback after an earlier head's comment: marked unavailable" "$(grep -c '^PATCH .*/issues/comments/9$' "$work/c-fbold/calls") $(bodies fbold '.[0].body' | grep -c 'unavailable at')" "1 1"
 
 [[ ${fail} -eq 0 ]] && echo "PASS change_kinds_test" || { echo "FAIL change_kinds_test"; exit 1; }
