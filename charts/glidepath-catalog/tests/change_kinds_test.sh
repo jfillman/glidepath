@@ -178,6 +178,9 @@ expect "config that needs a render check: judged as an image release" "$(answers
   "sast=run image-scan=run sbom=run api-compat=advisory qa=advisory provenance=run values=run policy-validation=run clearance-gate=advisory itsm=run"
 expect "no-op" "$(answers "$NOOP")" \
   "sast=n/a image-scan=n/a sbom=n/a api-compat=n/a qa=n/a provenance=n/a values=n/a policy-validation=n/a clearance-gate=n/a itsm=n/a"
+RBR="$(cls rollback "[$(env1 '["values","chart"]' '["ghcr.io/acme/shop:1.1"]' '["ghcr.io/acme/shop:1.0"]')]" required)"
+expect "a rollback that needs a render check: judged as an image release" "$(answers "$RBR")" \
+  "sast=run image-scan=run sbom=run api-compat=advisory qa=advisory provenance=run values=run policy-validation=run clearance-gate=advisory itsm=run"
 expect "an unknown kind is judged as an image release" "$(classify sast 200 "$(cls future-kind "[]")" | cut -d' ' -f2)" "run"
 
 classify values 200 "$CFGM" >/dev/null
@@ -253,6 +256,8 @@ refused "an unknown reason" "is not a narrowing reason" "$(entry values '.narrow
 refused "an empty list" "non-empty list" "$(entry values '.narrow = {"config": []}')"
 refused "narrow per cluster" "releaseGuardrailOverrides.values.narrow" "releaseGuardrailOverrides: { values: { narrow: { config: [no-values-file] } } }"
 refused "a single-path gate that runs and advises" "one path for its check" "$(entry values '.kinds = {"rollback": "advisory"}')"
+refused "a required single-path gate whose row only advises" "is required but its kinds row advises" \
+  "$(entry clearance-gate '.required = true | .kinds = {"image-release": "advisory", "rollback": "advisory", "config": "advisory"}')"
 expect "the matrix publishes narrow" "$(yq 'select(.metadata.name == "release-guardrails") | .data["matrix.json"]' "$work/default.yaml" | jq -c '[.gates[] | select(.narrow != {}) | {(.name): .narrow}], .narrowReasons')" \
   '[{"values":{"config":["no-values-file"]}}]
 {"no-values-file":"no values, release or base file changed"}'

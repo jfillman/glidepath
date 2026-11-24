@@ -324,7 +324,8 @@ glidepath-catalog.applicabilityJq (CG-3, docs/admin/release-guardrails.md "Chang
 classify-change StepAction and comment-pr-check-result, for what each gate does for one classification. Inputs: a gate of the
 release-guardrails matrix (glidepath-catalog.guardrailMatrix) and glidepath-api's classification of the PR head.
   judged_kind($c)    the kind the gates judge: the classification's kind, except that an unknown kind, and a config change whose
-                     images only a render can show (renderCheck: required), are judged as an image release (fail closed: the
+                     images only a render can show (renderCheck: required, a config change or a rollback), are judged as an
+                     image release (fail closed: the
                      render backstop of spec section 5.4 is not built, so nothing gets lighter treatment on that doubt)
   facts_hold($r; $c) whether narrowing reason $r (glidepath-catalog.narrowReasons) holds for $c; false when $c lacks the fact
   gate_plan($g; $c)  {a: run|advisory|n/a, why}: the gate's effective value for the judged kind, then, only from run and only for
@@ -334,7 +335,7 @@ release-guardrails matrix (glidepath-catalog.guardrailMatrix) and glidepath-api'
 {{- define "glidepath-catalog.applicabilityJq" -}}
 def judged_kind($c):
   if (($c.kind // "") | IN("image-release", "rollback", "config", "no-op") | not) then "image-release"
-  elif $c.kind == "config" and $c.renderCheck == "required" then "image-release"
+  elif $c.renderCheck == "required" then "image-release"
   else $c.kind end;
 def facts_hold($r; $c):
   ($c.envs // []) as $envs
@@ -1149,6 +1150,11 @@ row that runs for some kinds and advises for others cannot be rendered and fails
 {{- $p := include "glidepath-catalog.gatePlan" . | fromJson -}}
 {{- if and $p.run $p.advisory -}}
 {{- fail (printf "releaseGuardrails: %s's row runs for some change kinds and advises for others; its Pipeline has one path for its check - make the gate required: false (advisory everywhere) or keep its kinds run|n/a (docs/admin/release-guardrails.md, \"Change kinds\")" .gate) -}}
+{{- end -}}
+{{- /* The Pipeline (and the onboarding templates' task names) pick the hard or advisory path from `required`, so a required
+gate's row must never advise, and a gate that is not required never runs (required: false makes every run advisory). */ -}}
+{{- if and $p.required $p.advisory -}}
+{{- fail (printf "releaseGuardrails: %s is required but its kinds row advises; its Pipeline picks the hard or advisory path from required - set required: false instead of advisory kinds (docs/admin/release-guardrails.md, \"Change kinds\")" .gate) -}}
 {{- end -}}
 {{- $p | toJson -}}
 {{- end -}}

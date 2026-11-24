@@ -277,8 +277,8 @@ The step **fails closed**. If glidepath-api cannot be asked or does not answer (
 task account without the `classifications` grant, an answer for another head), the head is judged an image release
 (`classification-source: fallback`, and the step's log says why): every gate runs as it did before change kinds. For the
 content gates, extract-promoted-image's own rollback rule is the local fallback for an eligible rollback (advisory, as
-before). A `config` change whose images only a render can show (`renderCheck: required`: a chart pin, an own chart's
-template, a remote kustomize base) is judged as an image release too, until the render backstop of spec section 5.4
+before). A change whose images only a render can show (`renderCheck: required`: a chart pin, an own chart's template, a
+remote kustomize base; a config change or a rollback) is judged as an image release too, until the render backstop of spec section 5.4
 exists. A PR on a repository that is not the app's gitops repository (a cloud app's release pin PR, ADR-0020) is never
 classified and keeps every gate (spec Q9).
 
@@ -352,7 +352,8 @@ running its advisory copy.
 - `narrow` (CG-3): on `sast` or `provenance`; for `image-release`; for a kind whose row is not `run`; an unknown reason or an
   empty list; per cluster (`releaseGuardrailOverrides.<gate>.narrow`);
 - a gate whose Pipeline has one path for its check (values, policy-validation, clearance-gate, itsm, provenance) with a row
-  that runs for some kinds and advises for others: run or advisory is fixed when that Pipeline is rendered.
+  that runs for some kinds and advises for others, or that is `required` with a row that advises: run or advisory is fixed
+  from `required` when that Pipeline (and its onboarding task names) is rendered.
 
 **Who sets it.** Only the registry entry in this chart (a glidepath PR, reviewed, `gate_required_test.sh` in CI).
 `releaseGuardrailOverrides.<gate>.kinds` fails the render: a cluster changes `required`, never what a gate judges.

@@ -293,6 +293,12 @@ earlier one; everything below is what makes it recognisable and what that change
    rollback but targets anything else gets the full gate set, and a hand-made PR that pins an
    eligible image gets the advisory treatment too. The sweeper keeps those five records past
    the 14-day retention.
+   *Amended by CG-3 (change-aware release gates, 2026-11-24):* the rule is unchanged, but it is now
+   worked out once per PR head by glidepath-api's classifier (`kind: rollback`) and frozen at the
+   first ask, so every gate of that head (and every retest of it) judges by the same answer; a
+   record turning healthy, or leaving the newest five, after the first ask does not change it.
+   A new push is a new head and is worked out again. A content gate falls back to computing it
+   itself from the records only when glidepath-api does not answer.
 5. **Gates on an eligible target.** Content gates (`sast`, `image-scan`, `sbom`) run, report
    what they found in the check output and the PR comment, and pass. Integrity gates
    (`provenance`, `values`, commit signing) block as always; "the image still exists" is part
