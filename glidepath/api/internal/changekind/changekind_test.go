@@ -394,6 +394,22 @@ func TestImageRemovalIsConfig(t *testing.T) {
 	}
 }
 
+// Two files swap their images: no image is new to the environment, but what runs where changed.
+func TestImageSwapBetweenFilesIsConfig(t *testing.T) {
+	a1, b1 := fmt.Sprintf(deployment, "ghcr.io/acme/a:1"), fmt.Sprintf(deployment, "ghcr.io/acme/b:1")
+	w := newWorld(map[string]string{"prod-1/prod/manifests/x.yaml": a1, "prod-1/prod/manifests/y.yaml": b1},
+		map[string]string{"prod-1/prod/manifests/x.yaml": b1, "prod-1/prod/manifests/y.yaml": a1})
+	if a := classify(t, w, nil); a.Kind != Config || !strings.Contains(a.Reason, "image reference removed or moved") {
+		t.Fatalf("%+v", a)
+	}
+	// An own-chart template renamed with identical bytes still changes what renders.
+	w = newWorld(map[string]string{"prod-1/prod/chart/templates/a.yaml": "x"}, map[string]string{"prod-1/prod/chart/templates/b.yaml": "x"})
+	w.compare = []ghFile{{Filename: "prod-1/prod/chart/templates/b.yaml", Status: "renamed", PreviousFilename: "prod-1/prod/chart/templates/a.yaml"}}
+	if a := classify(t, w, nil); a.RenderCheck != RenderRequired {
+		t.Fatalf("%+v", a)
+	}
+}
+
 // images: {worker: busybox:1} is a component image, not a setting.
 func TestComponentImageStringsAreReferences(t *testing.T) {
 	w := newWorld(map[string]string{"prod-1/prod/values.yaml": "images:\n  worker: busybox:1\n"}, map[string]string{"prod-1/prod/values.yaml": "images:\n  worker: busybox:2\n"})

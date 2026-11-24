@@ -546,7 +546,7 @@ func (sd side) headDocs() []any {
 // judge decides one environment's kind.
 func (j *job) judge(ctx context.Context, e *envAcc) (Env, error) {
 	env := Env{Cluster: e.key.cluster, Env: e.key.env, RenderCheck: RenderNone, Images: ImageSets{Base: []string{}, Head: []string{}}}
-	baseAt, headAt := map[string]bool{}, map[string]bool{} // "<doc>:<yaml path>=<ref>": where each reference is
+	baseAt, headAt := map[string]bool{}, map[string]bool{} // "<file>#<doc>:<yaml path>=<ref>": where each reference is
 	var removed []string
 	for _, sd := range e.sides {
 		fc := sd.fc
@@ -554,14 +554,14 @@ func (j *job) judge(ctx context.Context, e *envAcc) (Env, error) {
 		if sd.inBase && fc.base != nil {
 			for _, r := range fc.base.refs {
 				e.baseRefSet[r.Ref] = true
-				baseAt[fmt.Sprintf("%d:%s=%s", r.Doc, r.Path, r.Ref)] = true
+				baseAt[fmt.Sprintf("%s#%d:%s=%s", fc.basePath, r.Doc, r.Path, r.Ref)] = true
 			}
 		}
 		if sd.inHead && fc.head != nil {
 			for _, r := range fc.head.refs {
 				e.headRefs = append(e.headRefs, located{fc.headPath, r})
 				e.headRefSet[r.Ref] = true
-				headAt[fmt.Sprintf("%d:%s=%s", r.Doc, r.Path, r.Ref)] = true
+				headAt[fmt.Sprintf("%s#%d:%s=%s", fc.headPath, r.Doc, r.Path, r.Ref)] = true
 			}
 		}
 		e.configChange = append(e.configChange, configChange(sd)...)
@@ -707,7 +707,7 @@ func docsValue(docs []any) any {
 // the document (a new subtree, a whole new or removed file included).
 func renderChanged(sd side) bool {
 	if sd.fc.ownChart {
-		return !(sd.inBase && sd.inHead && sd.fc.rawEqual)
+		return !(sd.inBase && sd.inHead && sd.fc.rawEqual && sd.fc.basePath == sd.fc.headPath)
 	}
 	name := sd.fc.headPath
 	if name == "" {
