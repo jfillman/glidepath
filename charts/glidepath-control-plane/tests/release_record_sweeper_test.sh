@@ -18,7 +18,8 @@ cat > "${stub}/kubectl" <<'STUB'
 #!/usr/bin/env bash
 case "$1 $2" in
   "get namespace") echo "namespace/app-x-cicd"; echo "namespace/kube-system" ;;
-  "get configmap") [[ "${NOLIST:-}" == 1 ]] && exit 1; printf '%s' "${RECORDS}" ;;
+  "get configmap") [[ "${NOLIST:-}" == 1 ]] && exit 1
+                   if [[ "$*" == *subcomponent=change-kind* ]]; then printf '%s' "${STORES:-}"; else printf '%s' "${RECORDS}"; fi ;;
   "delete configmap") echo "DELETE $3" >> "${LOG}" ;;
   "label configmap") echo "LABEL $3 $6" >> "${LOG}" ;;
   "create -f") echo "EVENT $(grep -E '^reason:|^  name:' | tr '\n' ' ')" >> "${LOG}" ;;
@@ -54,7 +55,7 @@ rec() { # name state stateAt mergedAt lastFactAt created alerted
   jq -n --arg n "$1" --arg s "$2" --arg sa "$3" --arg m "$4" --arg l "$5" --arg c "$6" --arg a "$7" \
     '{metadata:{name:$n,creationTimestamp:$c,labels:(if $a=="" then {} else {"hangar.io/stall-alerted":$a} end)},data:({state:$s,stateAt:$sa,mergedAt:$m,lastFactAt:$l}|with_entries(select(.value!="")))}'
 }
-run() { LOG="$(mktemp)"; export LOG; PATH="${stub}:${PATH}" RECORDS="{\"items\":[$1]}" NOLIST="${2:-0}" RELEASE_STALL_MINUTES=45 RECORD_TTL_DAYS=14 bash "$script" >/dev/null 2>&1 || { echo "FAIL: script exited non-zero"; fail=1; }; cat "$LOG"; }
+run() { LOG="$(mktemp)"; export LOG; PATH="${stub}:${PATH}" STORES="${STORES:-}" RECORDS="{\"items\":[$1]}" NOLIST="${2:-0}" RELEASE_STALL_MINUTES=45 RECORD_TTL_DAYS=14 bash "$script" >/dev/null 2>&1 || { echo "FAIL: script exited non-zero"; fail=1; }; cat "$LOG"; }
 expect() { # description needle haystack
   grep -q -- "$2" <<<"$3" || { echo "FAIL: $1 (wanted '$2', got: ${3:-nothing})"; fail=1; }; }
 refute() { grep -q -- "$2" <<<"$3" && { echo "FAIL: $1 (did not want '$2', got: $3)"; fail=1; }; true; }
@@ -97,5 +98,19 @@ out="$(run "${window}")"
 for i in 1 2 3 4 5; do refute "healthy record h${i} is in the five-record window and is kept" "DELETE h${i}\$" "$out"; done
 expect "the sixth-newest healthy record is past retention and deleted" "DELETE h6" "$out"
 refute "another app's only healthy record is its own window, kept" "DELETE other-app" "$out"
+
+# CG-1: change classification stores (change-kind-pr-<n>) go once their newest classification is past retention.
+store() { # name computedAt... (creationTimestamp 30 days ago)
+  local n="$1"; shift; local data="{}" i=0
+  for at in "$@"; do data="$(jq -c --arg k "$(printf '%012d' $i)" --arg v "$(jq -cn --arg a "${at}" '{kind:"config",computedAt:$a}')" '. + {($k): $v}' <<<"${data}")"; i=$((i+1)); done
+  jq -cn --arg n "$n" --arg old "$(ago 30 days)" --argjson d "${data}" '{metadata:{name:$n,creationTimestamp:$old},data:$d}'
+}
+out="$(STORES="{\"items\":[$(store change-kind-pr-7 "$(ago 20 days)" "$(ago 16 days)"),$(store change-kind-pr-8 "$(ago 20 days)" "$(ago 2 days)"),$(store change-kind-pr-9),$(store not-a-store "$(ago 20 days)")]}" run "")"
+expect "a store whose newest classification is past retention is deleted" "DELETE change-kind-pr-7" "$out"
+refute "a store with a recent classification is kept" "DELETE change-kind-pr-8" "$out"
+expect "an empty store goes by its creation time" "DELETE change-kind-pr-9" "$out"
+refute "only change-kind-pr-<n> is swept this way" "DELETE not-a-store" "$out"
+out="$(run "")"
+refute "no store, nothing deleted" "DELETE" "$out"
 
 [ $fail -eq 0 ] && echo ok || exit 1

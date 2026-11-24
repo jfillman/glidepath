@@ -1,0 +1,33 @@
+{{- $appNamespace := include "glidepath-app.namespace" . }}
+# Change-aware release gates, CG-1 (hangar specs/plans/change-aware-release-gates.md): glidepath-api (platform-system) stores the
+# change kind of each gitops pull request head itself (POST /v1/apps/{app}/pulls/{n}/classification, docs/admin/api.md "Change
+# classification"), write-once, in the ConfigMap change-kind-pr-<n> of this namespace. create only: the key it adds to an existing
+# one is a patch, which glidepath-api-gate-ledger already grants. No update, delete or read beyond glidepath-api's own ClusterRole
+# (configmaps get, list). RBAC cannot narrow a create to a name; the control plane's change-kind-writes admission policy does
+# (Deny): only glidepath-api writes a change-kind-pr-* ConfigMap, only by adding a key, and only the release-record sweeper deletes one.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: glidepath-api-change-kind
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: glidepath-api-change-kind
+  labels:
+    {{- include "glidepath-app.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "identity"
+  namespace: {{ $appNamespace }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: glidepath-api-change-kind }
+subjects:
+  - kind: ServiceAccount
+    name: glidepath-api
+    namespace: platform-system

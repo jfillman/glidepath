@@ -71,6 +71,7 @@ import (
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
+	"github.com/glidepath/api/internal/changekind"
 	"github.com/glidepath/api/internal/cicd"
 	"github.com/glidepath/api/internal/environments"
 	"github.com/glidepath/api/internal/events"
@@ -327,6 +328,15 @@ func main() {
 				BotLogins:         splitList(env("PIPELINE_LOGINS", "")),
 			},
 			GitHub: func(app string) refprotection.Reader { return broker.Session(app) },
+		},
+		// POST and GET /v1/apps/{app}/pulls/{n}/classification: a gitops pull request head's change kind, read from its diff with the
+		// broker's read-only token, stored write-once in the app's namespace (change-kind-pr-<n>) as this account.
+		ChangeKind: &changekind.Service{
+			Owner:   githubOwner,
+			GitHub:  func(app string) changekind.Reader { return broker.Session(app) },
+			Records: releases.Reader{CS: cs},
+			Store:   changekind.KubeStore{CS: cs},
+			Now:     time.Now,
 		},
 		// POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict: the gate ledger, written as this account (pipeline trust T4, W-8).
 		GateVerdict: &gateverdict.Service{

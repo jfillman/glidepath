@@ -62,6 +62,12 @@ rules:
   - apiGroups: ["glidepath.hangar.io"]
     resources: ["refprotection"]
     verbs: ["get"]
+  # Change-aware release gates (CG-1): a gate's first task asks glidepath-api for its pull request head's change kind
+  # (POST /v1/apps/{app}/pulls/{n}/classification, docs/admin/api.md "Change classification"); the first ask computes and stores
+  # it (create), later readers get it. Only the string again: glidepath-api checks it with a SubjectAccessReview.
+  - apiGroups: ["glidepath.hangar.io"]
+    resources: ["classifications"]
+    verbs: ["get", "create"]
   # Deliberately no apps/deployments rule (that's deploy-rbac.yaml, a peer namespace),
   # no impersonate, no wildcards, no cluster-scoped rules, no run creation - this plus the configmaps
   # grant above is the entire blast radius of a compromised pipeline-runner identity

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Glidepath API
-  version: 0.14.0
+  version: 0.15.0
   description: |
     Runs, logs, release records, supply-chain evidence and test runs for one app, and Glidepath's
     contract (docs/admin/api.md). Phases 1 and 2 of the Glidepath API spec are reads (tier T0); phase 3
@@ -29,6 +29,9 @@ info:
     0.14.0 adds POST /v1/apps/{app}/pipelineruns/{name}/gate-verdict: a gate run's verdict recorded in the release record's
     gate ledger by glidepath-api itself (pipeline trust T4, W-8). Only the gate run's own comment-pr task may call it, with a
     projected token for audience `glidepath-gate-verdict`; the verdict is derived from the run, never taken from the request.
+    0.15.0 adds POST and GET /v1/apps/{app}/pulls/{n}/classification: the change kind of a gitops pull request's head
+    (image-release, rollback, config or no-op), worked out from the pull request's own diff, computed once per head and stored
+    write-once, so every release gate and every later reader judges by one answer (change-aware release gates, CG-1).
 
     Every /v1 call needs a bearer token the cluster's TokenReview accepts, in `Authorization`, or in
     `X-Glidepath-Authorization` when the call comes through the API server's service proxy (which
@@ -654,6 +657,65 @@ paths:
         "422": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/apps/{app}/pulls/{n}/classification:
+    post:
+      operationId: classifyPullRequest
+      summary: The change kind of a gitops pull request's head, computed once and stored write-once
+      description: >-
+        Needs `create` on `classifications.glidepath.hangar.io` in the app's namespace (glidepath-app grants it to pipeline-runner:
+        a release gate's first task asks). `{n}` is a pull request of the app's gitops repository and `head` one of its commits (the
+        head the gate run was started for; another commit is 422). The kind is worked out from the pull request's own diff (GitHub's
+        compare from its base to `head`, removed and renamed files included, and each deployable file read at both ends), never from
+        its branch name, text or commit trailers. `image-release`: a new image reference appears in a deployable file (any value under
+        a key named image or images, a raw manifest's container images, a kustomization's images). `rollback`: every new image
+        reference of an environment is its release image, returning to an image of one of the last five healthy releases of that
+        app, environment and cluster (ADR-0021 decision 8). `config`: something else changed semantically. `no-op`: comments,
+        whitespace or key order only, or no deployable file changed. The pull request's kind is the highest of its environments'.
+        Any doubt is `image-release` with `failClosed`: a file that does not parse, a comparison of 300 files or more (GitHub's
+        limit), more than 100 deployable files, a file too large to read, or a read that failed. The first ask computes it (asks for
+        the same head on a replica share one computation) and stores it in the ConfigMap `change-kind-pr-<n>`, key `head[:12]`,
+        write-once: a later ask returns the stored answer, whatever has changed since (a release turning healthy). A fail-closed
+        answer caused by a read that failed is returned with outcome `unstored` and computed again by the next ask. When the pull
+        request has a release record, the answer is copied onto it as `changeKind.<sha12>` (best effort, reported in
+        `recordCopy`). `dryRun=true` computes (or reads) and stores nothing. Tier T0: it changes nothing in git or in what runs.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { name: n, in: path, required: true, schema: { type: integer, minimum: 1 }, description: The gitops pull request's number }
+        - { name: head, in: query, required: true, schema: { type: string, pattern: "^[0-9a-f]{40}$" }, description: The pull request commit to classify }
+        - { $ref: "#/components/parameters/DryRun" }
+        - { $ref: "#/components/parameters/DryRunHeader" }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The classification and how this call got it, content: { application/json: { schema: { $ref: "#/components/schemas/ChangeClassification" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    get:
+      operationId: getPullRequestClassification
+      summary: The stored change kind of a gitops pull request's head (reads only the store)
+      description: >-
+        Needs `get` on `classifications.glidepath.hangar.io` in the app's namespace (pipeline-runner, and the chart's
+        glidepath-api-reader). The answer POST stored for `head`, or 404 when nothing is stored: GET never computes and never reads
+        GitHub. What promote, detect-bypass-merge, release-log-emit and Tower read after the gates have run.
+      x-glidepath-tier: T0
+      parameters:
+        - { $ref: "#/components/parameters/App" }
+        - { name: n, in: path, required: true, schema: { type: integer, minimum: 1 }, description: The gitops pull request's number }
+        - { name: head, in: query, required: true, schema: { type: string, pattern: "^[0-9a-f]{40}$" }, description: The pull request commit }
+        - { $ref: "#/components/parameters/OnBehalfOf" }
+      responses:
+        "200": { description: The stored classification, content: { application/json: { schema: { $ref: "#/components/schemas/ChangeClassification" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/apps/{app}/previews:
     get:
       operationId: listPreviews
@@ -1167,6 +1229,50 @@ components:
         status: { type: string, enum: [cancelled, already-cancelled, already-finished] }
         dryRun: { type: boolean }
         patch: { type: object, description: "Dry run only, when a patch would be sent: the JSON merge patch" }
+    ChangeClassification:
+      type: object
+      required: [v, classifier, repo, pr, head, kind, reason, renderCheck, computedAt, envs, outcome]
+      properties:
+        v: { type: integer, description: The format version (1) }
+        classifier: { type: string, description: What computed it }
+        repo: { type: string, description: "<owner>/<gitops repository>" }
+        pr: { type: integer }
+        prUrl: { type: string }
+        base: { type: string, description: The pull request's base commit the comparison started from }
+        head: { type: string }
+        kind: { type: string, enum: [image-release, rollback, config, no-op] }
+        reason: { type: string, description: Why, for the PR comment }
+        renderCheck: { type: string, enum: [none, required], description: "required: only a render can show whether images changed (a chart pin, an own chart, a remote kustomize base)" }
+        failClosed: { type: boolean, description: "image-release because of a doubt (reason says which), not because an image changed" }
+        computedAt: { type: string, format: date-time }
+        envs:
+          type: array
+          items:
+            type: object
+            required: [cluster, env, kind, reason, renderCheck, images, files]
+            properties:
+              cluster: { type: string, description: "\"*\" for a file at the repository's root" }
+              env: { type: string, description: "\"*\" for a cluster-wide file of a cluster with no environment directory" }
+              kind: { type: string, enum: [image-release, rollback, config, no-op] }
+              reason: { type: string }
+              renderCheck: { type: string, enum: [none, required] }
+              images:
+                type: object
+                properties:
+                  base: { type: array, items: { type: string } }
+                  head: { type: array, items: { type: string } }
+              files: { type: array, items: { type: string } }
+              changed: { type: array, items: { type: string }, description: "Configuration paths that changed, <file>: <path> (at most 10, then \"and N more\")" }
+              rollback:
+                type: object
+                description: Present when every new image reference of the environment is its release image
+                properties:
+                  eligible: { type: boolean }
+                  image: { type: string }
+                  note: { type: string }
+        outcome: { type: string, enum: [computed, stored, unstored, dry-run], description: "computed: by this ask (or one it waited on) and stored; stored: already stored; unstored: a read failed, ask again; dry-run: nothing stored" }
+        record: { type: string, description: The release record the classification was copied onto }
+        recordCopy: { type: string, description: "copied, already-copied, no-record, or failed: <why>" }
     GateVerdict:
       type: object
       required: [outcome, gate, sha, pullRequest, prUrl, key, ledger]

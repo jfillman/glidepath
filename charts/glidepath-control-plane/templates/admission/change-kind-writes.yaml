@@ -1,0 +1,113 @@
+{{- if .Values.apiImage }}
+{{- $c := .Values.cicdRunAdmission }}
+# Change-aware release gates, CG-1 (hangar specs/plans/change-aware-release-gates.md, section 5.3): glidepath-api stores each gitops
+# pull request head's change kind write-once in the ConfigMap change-kind-pr-<n> of the app's -cicd namespace, one key per
+# head[:12] (POST /v1/apps/{app}/pulls/{n}/classification, docs/admin/api.md "Change classification"), as
+# platform-system/glidepath-api with configmaps create (glidepath-app identity/glidepath-api-change-kind.yaml) and patch
+# (glidepath-api-gate-ledger.yaml). RBAC cannot narrow either to a name or to keys, and pipeline-runner holds configmaps writes in
+# the namespace, so this policy does: a CREATE or UPDATE of a ConfigMap named change-kind-pr-* in a -cicd namespace must be
+# glidepath-api's, named change-kind-pr-<number>, labelled hangar.io/subcomponent=change-kind, hold only <sha12> keys, and on an
+# UPDATE keep every key it had with the value it had (write-once: a head's kind never changes), its labels and the rest of the
+# object as they were.
+#
+# DELETE is not matched: the release-record sweeper deletes a store past its retention, and a namespace being deleted deletes
+# them too (refusing that would leave the namespace terminating). A store deleted early is computed again on the next ask.
+#
+# Deny from the start (cicdRunAdmission.changeKindActions): nothing wrote these ConfigMaps before the route. Every expression is
+# has()-guarded and the matchCondition cannot raise, so a CEL error cannot refuse a request beyond these ConfigMaps
+# (failurePolicy Fail). object is null on DELETE and oldObject on CREATE: each is read only for an operation that has it.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: change-kind-writes
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["configmaps"]
+  matchConditions:
+    - name: a-change-kind-store-in-a-cicd-namespace
+      expression: >-
+        has(request.namespace) && request.namespace.matches(r'^(app|infra)-[a-z0-9-]+-cicd$') &&
+        ((request.operation != 'DELETE' && has(object.metadata) && has(object.metadata.name) &&
+          type(object.metadata.name) == string && object.metadata.name.startsWith('change-kind-pr-')) ||
+         (request.operation == 'UPDATE' && has(oldObject.metadata) && has(oldObject.metadata.name) &&
+          type(oldObject.metadata.name) == string && oldObject.metadata.name.startsWith('change-kind-pr-')))
+  variables:
+    - name: user
+      expression: "has(request.userInfo) && has(request.userInfo.username) ? request.userInfo.username : ''"
+    - name: headKey
+      expression: "r'^[0-9a-f]{12}$'"
+    - name: name
+      expression: >-
+        has(object.metadata) && has(object.metadata.name) && type(object.metadata.name) == string ? object.metadata.name : ''
+    - name: newData
+      expression: "has(object.data) ? object.data : {}"
+    - name: oldData
+      expression: "request.operation == 'UPDATE' && has(oldObject.data) ? oldObject.data : {}"
+    - name: newLabels
+      expression: "has(object.metadata) && has(object.metadata.labels) ? object.metadata.labels : {}"
+    - name: oldLabels
+      expression: "request.operation == 'UPDATE' && has(oldObject.metadata) && has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}"
+    - name: newImmutable
+      expression: "has(object.immutable) && object.immutable == true"
+    - name: newBinary
+      expression: "has(object.binaryData) ? object.binaryData : {}"
+    - name: newAnnotations
+      expression: "has(object.metadata) && has(object.metadata.annotations) ? object.metadata.annotations : {}"
+    - name: newOwners
+      expression: "has(object.metadata) && has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+    - name: newFinalizers
+      expression: "has(object.metadata) && has(object.metadata.finalizers) ? object.metadata.finalizers : []"
+    - name: oldImmutable
+      expression: "request.operation == 'UPDATE' && has(oldObject.immutable) && oldObject.immutable == true"
+    - name: oldBinary
+      expression: "request.operation == 'UPDATE' && has(oldObject.binaryData) ? oldObject.binaryData : {}"
+    - name: oldAnnotations
+      expression: "request.operation == 'UPDATE' && has(oldObject.metadata) && has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}"
+    - name: oldOwners
+      expression: "request.operation == 'UPDATE' && has(oldObject.metadata) && has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : []"
+    - name: oldFinalizers
+      expression: "request.operation == 'UPDATE' && has(oldObject.metadata) && has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers : []"
+  validations:
+    - expression: "variables.user == 'system:serviceaccount:platform-system:glidepath-api'"
+      message: "only glidepath-api writes a change classification store (change-kind-pr-*): POST /v1/apps/{app}/pulls/{n}/classification computes and stores it."
+    - expression: >-
+        variables.name.matches(r'^change-kind-pr-[1-9][0-9]{0,9}$') &&
+        'hangar.io/subcomponent' in variables.newLabels && variables.newLabels['hangar.io/subcomponent'] == 'change-kind'
+      message: "a change classification store is named change-kind-pr-<pull request number> and labelled hangar.io/subcomponent=change-kind."
+    - expression: "variables.newData.all(k, k.matches(variables.headKey))"
+      message: "a change classification store holds only <head sha12> keys."
+    - expression: "variables.oldData.all(k, k in variables.newData && variables.newData[k] == variables.oldData[k])"
+      message: "a stored change classification is write-once: no key is changed or removed."
+    - expression: "request.operation != 'UPDATE' || variables.oldLabels == variables.newLabels"
+      message: "a change classification store's labels do not change."
+    - expression: >-
+        request.operation == 'UPDATE' ?
+          (variables.oldImmutable == variables.newImmutable && variables.oldBinary == variables.newBinary &&
+           variables.oldAnnotations == variables.newAnnotations && variables.oldOwners == variables.newOwners &&
+           variables.oldFinalizers == variables.newFinalizers) :
+          (!variables.newImmutable && size(variables.newBinary) == 0 && size(variables.newOwners) == 0 && size(variables.newFinalizers) == 0)
+      message: "a change classification store has no binaryData, owners or finalizers, is not immutable, and keeps the rest of the object as it was."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: change-kind-writes
+  labels:
+    {{- include "glidepath-control-plane.labels" . | nindent 4 }}
+    hangar.io/subcomponent: "admission"
+  {{- if not (has "Deny" $c.changeKindActions) }}
+  annotations:
+    glidepath.io/enforcement: "NOT ENFORCING: changeKindActions has no Deny (docs/admin/security.md, 'Pipeline identities')."
+  {{- end }}
+spec:
+  policyName: change-kind-writes
+  validationActions: {{ $c.changeKindActions | toJson }}
+{{- end }}
