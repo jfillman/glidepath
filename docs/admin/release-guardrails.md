@@ -289,7 +289,9 @@ advise), naming the images (spec Q8): the image gates judge one image per pull r
 The n/a gates share one **Change classification** comment per PR (marker `<!-- glidepath:change-classification -->`): the
 kind, the classification's reason, the n/a gates, and one line per Glidepath gate. Every gate of the head writes it from the
 same frozen classification and the same matrix, so concurrent writers write the same text; it is written only for the PR's
-current head and only while some gate is n/a or the comment already exists (an image release gets none). A gate that runs
+current head and only while some gate is n/a or the comment already exists (an image release gets none). A head that
+glidepath-api did not answer for marks an existing comment "unavailable at <head>", so an earlier head's answer never
+stands for it. A gate that runs
 keeps its own comment. In the gate ledger an n/a run still records `success` until CG-4 adds `n/a`.
 
 Triggers are unchanged by CG-3: the gates still fire on `release-*` branches (CG-8 widens them to every PR), and a release

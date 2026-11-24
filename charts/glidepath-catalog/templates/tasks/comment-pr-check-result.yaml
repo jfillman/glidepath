@@ -414,10 +414,15 @@ spec:
 
         # CG-3: the shared "Change classification" comment (header). Best effort: it never fails the gate's comment.
         upsert_classification_comment() {
-          [[ "${classification_source}" == api && -n "${gate_table}" && -n "${change_kind}" ]] || return 0
           local cmarker="<!-- glidepath:change-classification -->" cid cbody prev na head_now resp
-          na="$(jq -r '[.[] | select(startswith("n/a"))] | length' <<<"${gate_table}")" || return 0
           cid="$(jq -r --arg m "${cmarker}" '[.[] | select(.body | startswith($m))] | sort_by(.id) | .[0].id // empty' <<<"${comments_json}")"
+          if [[ "${classification_source}" == fallback && -n "${cid}" ]]; then
+            # glidepath-api did not answer for this head: an earlier head's answer must not stand as this one's.
+            cbody="$(printf '%s\n### Change classification: unavailable at `%s`\n\nglidepath-api did not answer for this head, so every gate judged it as an image release (fail closed). The classification of an earlier head no longer applies.' \
+              "${cmarker}" "${REVISION:0:7}")"
+          else
+          [[ "${classification_source}" == api && -n "${gate_table}" && -n "${change_kind}" ]] || return 0
+          na="$(jq -r '[.[] | select(startswith("n/a"))] | length' <<<"${gate_table}")" || return 0
           [[ "${na}" -gt 0 || -n "${cid}" ]] || return 0
           cbody="$(jq -r -n --argjson t "${gate_table}" --arg kind "${change_kind}" --arg head "${REVISION:0:7}" \
             --arg why "${classification_reason}" --argjson reasons "${NARROW_REASONS}" --arg m "${cmarker}" '
@@ -442,6 +447,7 @@ spec:
                "",
                "<sub>Worked out by glidepath-api from this pull request'"'"'s own diff, never its branch name or text; every gate of this head reads the same answer (Glidepath docs/admin/release-guardrails.md, \"Change kinds\").</sub>"]
             | join("\n")')" || return 0
+          fi
           prev="$(jq -r --arg id "${cid}" '[.[] | select((.id | tostring) == $id)][0].body // empty' <<<"${comments_json}")"
           [[ "${prev}" != "${cbody}" ]] || { echo "change classification comment: up to date"; return 0; }
           # Only for the PR's current head: a gate of an older head finishing late must not overwrite the newer answer.

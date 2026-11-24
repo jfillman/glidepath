@@ -352,5 +352,7 @@ expect "a decide TaskRun first: still n/a, no own comment" "$(grep -c 'no commen
 # The fallback never writes the shared comment (it is not glidepath-api's answer).
 comment fb sast "${TR_FB_SAST}" '[]'
 expect "fallback: no shared comment" "$(grep -c 'change-classification' "$work/c-fb/bodies")" "0"
+comment fbold sast "${TR_FB_SAST}" '[{"id": 9, "body": "<!-- glidepath:change-classification -->\nold"}]'
+expect "fallback after an earlier head's comment: marked unavailable" "$(grep -c '^PATCH .*/issues/comments/9$' "$work/c-fbold/calls") $(bodies fbold '.[0].body' | grep -c 'unavailable at')" "1 1"
 
 [[ ${fail} -eq 0 ]] && echo "PASS change_kinds_test" || { echo "FAIL change_kinds_test"; exit 1; }
