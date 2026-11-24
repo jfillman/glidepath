@@ -312,6 +312,13 @@ What each part does.
   the control plane's `gate-ledger-writes` policy (Deny from the start) admits only the `gate.<sha12>.<gate>` and `gateRun.<sha12>.<gate>`
   keys of an existing release record. The default is still `direct` (the step patches as `pipeline-runner`) until glidepath-api serves the
   route everywhere; after the switch, step 6 can remove `pipeline-runner`'s ConfigMap writes once the two gate reports below have moved too.
+  CG-1 (change-aware release gates) gives glidepath-api one more ConfigMap right, `create` (glidepath-app
+  `identity/glidepath-api-change-kind.yaml`), for its change classification store `change-kind-pr-<n>` (api.md,
+  [Change classification](api.md#change-classification)). The control plane's `change-kind-writes` policy (Deny from the start)
+  admits a create or update of such a ConfigMap only from glidepath-api, only with `<sha12>` keys, and never a change or removal
+  of a stored key, so a task account cannot rewrite a head's kind; `gate-ledger-writes` lets glidepath-api add `changeKind.<sha12>`
+  to a release record once. A delete is not policed (the sweeper and namespace deletion need it): a store deleted early is
+  computed again on the next ask, with the rollback-eligibility answer of that moment.
 
   The last two ConfigMap writes of `pipeline-runner` are the gate reports of `api-compat-gate` and `policy-validation-gate`
   (`gate-report-<run>`, the full report, too big for a Task result, that `comment-pr-check-result` posts on the PR). With the catalog's

@@ -56,6 +56,10 @@ cicdRunAdmission:
   # patch the gate ledger keys (gate.<sha12>.<gate>, gateRun.<sha12>.<gate>) of an existing release record. Deny from the start:
   # glidepath-api wrote no ConfigMap before the gate-verdict route, so this refuses nothing that worked.
   gateLedgerActions: [Deny]
+  # change-kind-writes (templates/admission/change-kind-writes.yaml): a change-kind-pr-<n> ConfigMap in a -cicd namespace (CG-1, the
+  # change classification store of POST /v1/apps/{app}/pulls/{n}/classification) is written only by glidepath-api, only by adding
+  # <sha12> keys: never changed. Deny from the start: nothing wrote these ConfigMaps before the route.
+  changeKindActions: [Deny]
   # The storage classes a .tekton file's workspace volumeClaimTemplate may name (it may also leave it unset, which is what the onboarding
   # templates do). Everything else about the template is fixed: ReadWriteOnce, 1 to 20Gi, no dataSource, volumeName or selector.
   workspaceStorageClassNames: []

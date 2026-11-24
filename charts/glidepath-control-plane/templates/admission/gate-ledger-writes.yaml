@@ -6,7 +6,10 @@
 # a patch to a name or to keys, so this policy does: a ConfigMap write by that account in a -cicd namespace must be an UPDATE of an
 # existing release record (named release-tracking-* and labelled hangar.io/subcomponent=release-tracking, before and after) that
 # leaves its labels as they were and changes, adds or removes no key but gate.<sha12>.<gate> (success or failure) and
-# gateRun.<sha12>.<gate>. No create, no delete (RBAC grants neither; this refuses them too).
+# gateRun.<sha12>.<gate>, and adds changeKind.<sha12> once (CG-1: the pull request head's change classification, copied onto its
+# release record by POST /v1/apps/{app}/pulls/{n}/classification; never changed or removed after). No create, no delete (this
+# refuses them). glidepath-api's own change classification store, change-kind-pr-<n>, is not a release record: this policy does
+# not match it, and change-kind-writes.yaml governs it.
 #
 # Deny from the start (cicdRunAdmission.gateLedgerActions): glidepath-api wrote no ConfigMap before this route. Every other
 # account is not matched. Every expression is has()-guarded and the matchCondition cannot raise, so a CEL error cannot refuse a
@@ -32,9 +35,17 @@ spec:
         has(request.userInfo) && has(request.userInfo.username) && has(request.namespace) &&
         request.namespace.matches(r'^(app|infra)-[a-z0-9-]+-cicd$') &&
         request.userInfo.username == 'system:serviceaccount:platform-system:glidepath-api'
+    - name: not-a-change-kind-store
+      expression: >-
+        !((request.operation != 'DELETE' && has(object.metadata) && has(object.metadata.name) &&
+           type(object.metadata.name) == string && object.metadata.name.startsWith('change-kind-pr-')) ||
+          (request.operation != 'CREATE' && has(oldObject.metadata) && has(oldObject.metadata.name) &&
+           type(oldObject.metadata.name) == string && oldObject.metadata.name.startsWith('change-kind-pr-')))
   variables:
     - name: ledgerKey
       expression: "r'^(gate|gateRun)\\.[0-9a-f]{12}\\.[a-z0-9][a-z0-9-]{0,62}$'"
+    - name: changeKindKey
+      expression: "r'^changeKind\\.[0-9a-f]{12}$'"
     - name: oldData
       expression: "request.operation == 'UPDATE' && has(oldObject.data) ? oldObject.data : {}"
     - name: newData
@@ -86,8 +97,8 @@ spec:
       message: "glidepath-api may not change a release record's immutable, binaryData, annotations, ownerReferences or finalizers."
     - expression: >-
         variables.oldData.all(k, k.matches(variables.ledgerKey) || (k in variables.newData && variables.newData[k] == variables.oldData[k])) &&
-        variables.newData.all(k, k.matches(variables.ledgerKey) || k in variables.oldData)
-      message: "glidepath-api may change only the gate ledger keys (gate.<sha12>.<gate>, gateRun.<sha12>.<gate>) of a release record."
+        variables.newData.all(k, k.matches(variables.ledgerKey) || k.matches(variables.changeKindKey) || k in variables.oldData)
+      message: "glidepath-api may change only the gate ledger keys (gate.<sha12>.<gate>, gateRun.<sha12>.<gate>) of a release record, and add a changeKind.<sha12> once."
     - expression: >-
         variables.newData.all(k, !k.startsWith('gate.') ||
           (k in variables.oldData && variables.oldData[k] == variables.newData[k]) || variables.newData[k] in ['success', 'failure'])

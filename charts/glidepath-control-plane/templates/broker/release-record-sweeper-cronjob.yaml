@@ -11,6 +11,10 @@
 #     RECORD_TTL_DAYS, and proposals and state-less legacy records past it too. Except (ADR-0021
 #     phase 4) the newest KEEP_HEALTHY records that reached healthy for each app, environment and
 #     cluster, whatever their age: they are what rollback eligibility is checked against.
+#  3. Change classifications (CG-1, hangar specs/plans/change-aware-release-gates.md): glidepath-api stores each gitops pull
+#     request head's change kind in change-kind-pr-<n>. Once its newest classification is older than RECORD_TTL_DAYS the
+#     store is deleted: the gates and the readers after a merge (promote, detect-bypass-merge, release-log-emit) ask within
+#     minutes, and a later ask computes it again.
 #
 # Heartbeat facts arrive every 15 minutes while the Rollouts notification config is working,
 # so 45 minutes of silence from a "progressing" release means something is wrong, while a
@@ -157,6 +161,16 @@ spec:
                           | kubectl create -f - >/dev/null || echo "[release-record-sweeper] could not create the event for ${ns}/${name}"
                         kubectl label configmap "${name}" -n "${ns}" "hangar.io/stall-alerted=${state}" --overwrite >/dev/null || true
                       fi
+                    done
+
+                    # 3. change classification stores: the newest computedAt (else the ConfigMap's creation) past retention
+                    stores="$(kubectl get configmap -n "${ns}" -l hangar.io/subcomponent=change-kind -o json 2>/dev/null)" || stores='{"items":[]}'
+                    for name in $(jq -r --argjson now "${now}" --argjson ttl "${ttl_s}" '.items[] | . as $c
+                        | select(($c.metadata.name // "") | test("^change-kind-pr-[0-9]+$"))
+                        | ([($c.data // {})[] | (try fromjson catch {}) | .computedAt? // empty | strings] + [$c.metadata.creationTimestamp // empty]) | max
+                        | select(. != null and (try fromdateiso8601 catch 0) < ($now - $ttl)) | $c.metadata.name' <<<"${stores}" 2>/dev/null); do
+                      echo "[release-record-sweeper] ${ns}/${name}: newest change classification past ${RECORD_TTL_DAYS}d - deleting"
+                      kubectl delete configmap "${name}" -n "${ns}" --ignore-not-found --wait=false
                     done
                   done
           volumes:

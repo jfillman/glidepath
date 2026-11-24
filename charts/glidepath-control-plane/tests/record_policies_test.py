@@ -341,6 +341,96 @@ class GateLedgerWrites(unittest.TestCase):
                 self.assertIsInstance(self.ev(copy.deepcopy(new), old=copy.deepcopy(old), operation="UPDATE"), list)
             self.assertIsInstance(self.ev(None, old=copy.deepcopy(new), operation="DELETE"), list)
 
+    def test_a_change_kind_is_added_once_to_a_record(self):
+        old = record()
+        ck = "changeKind.%s" % SHA12
+        self.assertEqual(self.ev(record(**{ck: '{"kind":"config"}'}), old), [])
+        self.assertEqual(self.ev(record(**{ck: '{"kind":"config"}', "gate.%s.sast" % SHA12: "success"}), record(**{ck: '{"kind":"config"}'})), [])
+        for new in (record(**{ck: '{"kind":"no-op"}'}), record()):                                        # changed, removed
+            self.assertTrue(self.ev(new, record(**{ck: '{"kind":"config"}'})), new)
+        for bad in ("changeKind.short", "changeKind.%s.x" % SHA12, "changekind.%s" % SHA12):
+            self.assertTrue(self.ev(record(**{bad: "x"}), old), bad)
+
+    def test_the_change_kind_store_is_not_this_policys(self):
+        store = cm("change-kind-pr-7", {LABEL: "change-kind"}, {SHA12: "{}"})
+        self.assertIsNone(self.ev(store, operation="CREATE"))
+        self.assertIsNone(self.ev(store, old=cm("change-kind-pr-7", {LABEL: "change-kind"}, {}), operation="UPDATE"))
+        self.assertIsNone(self.ev(None, old=store, operation="DELETE"))
+
+
+class ChangeKindWrites(unittest.TestCase):
+    """change-kind-writes: only glidepath-api writes change-kind-pr-<n>, only by adding <sha12> keys (CG-1)."""
+
+    @classmethod
+    def setUpClass(cls):
+        docs = render()
+        cls.pol = {d["metadata"]["name"]: d["spec"] for d in docs if d["kind"] == "ValidatingAdmissionPolicy"}["change-kind-writes"]
+        cls.bind = {d["metadata"]["name"]: d for d in docs if d["kind"] == "ValidatingAdmissionPolicyBinding"}["change-kind-writes"]
+
+    def ev(self, new, old=None, **kw):
+        kw.setdefault("username", API)
+        return evaluate(self.pol, new, old=old, **kw)
+
+    @staticmethod
+    def store(data=None, name="change-kind-pr-7", labels=None):
+        return cm(name, {LABEL: "change-kind", "hangar.io/app": "sample", "hangar.io/pull-request": "7"} if labels is None else labels,
+                  {SHA12: '{"kind":"config"}'} if data is None else data)
+
+    def test_deny_from_the_start_and_fail_closed_never_on_delete(self):
+        self.assertEqual(self.bind["spec"]["validationActions"], ["Deny"])
+        self.assertNotIn("annotations", self.bind["metadata"])
+        self.assertEqual(self.pol["failurePolicy"], "Fail")
+        self.assertEqual(self.pol["matchConstraints"]["resourceRules"][0]["operations"], ["CREATE", "UPDATE"])
+        b = {d["metadata"]["name"]: d for d in render("--set", "cicdRunAdmission.changeKindActions={Audit}")
+             if d["kind"] == "ValidatingAdmissionPolicyBinding"}["change-kind-writes"]
+        self.assertIn("NOT ENFORCING", b["metadata"]["annotations"]["glidepath.io/enforcement"])
+
+    def test_glidepath_api_creates_and_adds_keys(self):
+        self.assertEqual(self.ev(self.store()), [])
+        other = "b" * 12
+        self.assertEqual(self.ev(self.store({SHA12: '{"kind":"config"}', other: '{"kind":"no-op"}'}), self.store()), [])
+        self.assertEqual(self.ev(self.store(), namespace="infra-queue-cicd"), [])
+
+    def test_anything_else_is_refused(self):
+        old = self.store()
+        cases = [
+            (self.store(), None, {"username": RUNNER}),                                              # another writer
+            (self.store(), old, {"username": WRITER}),
+            (self.store(), None, {"username": "kubernetes-admin"}),
+            (self.store({SHA12: '{"kind":"no-op"}'}), old, {}),                                      # a stored kind changed
+            (self.store({}), old, {}),                                                               # removed
+            (self.store({"x": "y"}), None, {}),                                                      # not a head key
+            (self.store(name="change-kind-pr-x"), None, {}),                                         # not a number
+            (self.store(name="change-kind-pr-07"), None, {}),
+            (self.store(labels={}), None, {}),                                                       # not labelled
+            (self.store(labels={LABEL: "change-kind", "hangar.io/app": "other"}), old, {}),          # a label changed
+        ]
+        frozen = self.store(); frozen["immutable"] = True
+        cases.append((frozen, None, {}))
+        owned = self.store(); owned["metadata"]["ownerReferences"] = [{"kind": "X", "name": "y"}]
+        cases.append((owned, None, {}))
+        annotated = self.store({SHA12: '{"kind":"config"}', "b" * 12: "{}"}); annotated["metadata"]["annotations"] = {"a": "b"}
+        cases.append((annotated, old, {}))
+        for new, o, kw in cases:
+            got = self.ev(new, o, **kw)
+            self.assertIsInstance(got, list, (new, kw))
+            self.assertTrue(got, (new, kw))
+
+    def test_only_change_kind_stores_in_a_cicd_namespace(self):
+        self.assertIsNone(self.ev(record(), username=RUNNER))
+        self.assertIsNone(self.ev(cm("app-config", {}, {"a": "b"}), username=RUNNER))
+        for ns in ("app-sample-prod", "platform-system", ""):
+            self.assertIsNone(self.ev(self.store(), username=RUNNER, namespace=ns), ns)
+
+    def test_sparse_objects_do_not_raise(self):
+        shapes = [{}, {"metadata": {}}, {"metadata": {"name": 3}}, {"metadata": {"name": "change-kind-pr-7"}},
+                  {"metadata": {"name": "change-kind-pr-7", "labels": {}}}, {"metadata": {"name": "change-kind-pr-7"}, "data": {}},
+                  {"metadata": {"name": "change-kind-pr-7", "annotations": {}, "ownerReferences": [], "finalizers": []}, "immutable": False, "binaryData": {}}]
+        for new in shapes:
+            self.assertIsInstance(self.ev(copy.deepcopy(new), operation="CREATE"), (list, type(None)))
+            for old in shapes:
+                self.assertIsInstance(self.ev(copy.deepcopy(new), old=copy.deepcopy(old), operation="UPDATE"), (list, type(None)))
+
 
 if __name__ == "__main__":
     unittest.main()

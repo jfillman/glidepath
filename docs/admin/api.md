@@ -59,6 +59,8 @@ fails if the server's routes and the spec ever differ.
 | `POST /v1/apps/{app}/environments/{env}/rollback` | T2 | `rollback environments` | [Roll back](#roll-back) a Flight environment to a plan target, once per `Idempotency-Key` |
 | `GET /v1/events?app=&type=&since=` | T0 | `list events` | The [CDEvents stream](#events), as server-sent events, resumable with `Last-Event-ID` |
 | `GET /v1/events/recent?app=&type=&since=&limit=` | T0 | `list events` | The same events from the buffer, as JSON |
+| `POST /v1/apps/{app}/pulls/{n}/classification?head=&dryRun=` | T0 | `create classifications` | The [change kind](#change-classification) of gitops pull request `n` at `head`, computed on the first ask and stored write-once |
+| `GET /v1/apps/{app}/pulls/{n}/classification?head=` | T0 | `get classifications` | The stored [change kind](#change-classification) of that head; 404 until a POST stored it |
 
 Runs come from Tekton Results, so they cover 30 days and never go back past the creation of the
 app's current `-cicd` namespace (an app deleted and recreated under the same name doesn't inherit
@@ -159,7 +161,8 @@ the prod cluster arrive as `hangar:<cluster>:<serviceaccount>`).
 
 **What you may read** is a SubjectAccessReview in the app's `-cicd` namespace, on a group nothing
 serves: `glidepath.hangar.io`, resources `runs`, `runs/logs`, `releases`, `evidence`, `tests`, `environments`,
-`events`, `cicd` (verb `validate`) and `refprotection` (see [Ref protection](#ref-protection)). RBAC
+`events`, `cicd` (verb `validate`), `refprotection` (see [Ref protection](#ref-protection)) and `classifications` (verbs `get`
+and `create`, see [Change classification](#change-classification)). RBAC
 only needs the strings, so access is ordinary RBAC:
 
 - `api.readers` binds the chart's `glidepath-api-reader` ClusterRole cluster-wide (users, groups,
@@ -766,6 +769,69 @@ record, so no task account needs a ConfigMap write for the ledger. It is not for
 - **Answer.** `{outcome, gate, sha, pullRequest, prUrl, verdict, record, key, reason, ledger}`, `ledger` being this commit's
   `gate.<sha12>.*` entries after the call.
 
+## Change classification
+
+`POST /v1/apps/{app}/pulls/{n}/classification?head=<sha>` (tier T0, API 0.15.0) says what kind of change gitops pull request
+`{n}` is at commit `head`, so each release gate can decide whether it runs, runs as advisory or does not apply (hangar
+`specs/plans/change-aware-release-gates.md`, CG-1). `GET` on the same path reads the stored answer. It needs `create` (POST) or
+`get` (GET) on `classifications.glidepath.hangar.io` in the app's namespace: `glidepath-app` grants both to the app's
+`pipeline-runner`, and `glidepath-api-reader` grants `get`.
+
+| Kind | When |
+|---|---|
+| `image-release` | a new image reference appears in a deployable file and it is not an eligible rollback, or any doubt (`failClosed`) |
+| `rollback` | every new image reference of an environment is its release image, returning to an image that ran healthy as one of the last five healthy releases of that app, environment and cluster (ADR-0021 decision 8, the rule of `extract-promoted-image`'s `rollback-eligibility` step, unchanged) |
+| `config` | deployable files changed semantically, and no image reference is new |
+| `no-op` | comments, whitespace or key order only, or no deployable file changed (`.tekton/`, `releases/`, docs) |
+
+```json
+{"v": 1, "classifier": "glidepath-api/changekind 1", "repo": "acme/gitops-shop", "pr": 96, "prUrl": "https://github.com/acme/gitops-shop/pull/96",
+ "base": "<sha>", "head": "<sha>", "kind": "config", "renderCheck": "none", "computedAt": "2026-11-24T10:00:00Z",
+ "reason": "prod-1/staging: configuration changed (prod-1/staging/values.yaml: rollout.replicas); no new image reference",
+ "envs": [{"cluster": "prod-1", "env": "staging", "kind": "config", "renderCheck": "none", "images": {"base": [], "head": []},
+           "files": ["prod-1/staging/values.yaml"], "changed": ["prod-1/staging/values.yaml: rollout.replicas"], "reason": "..."}],
+ "outcome": "computed", "record": "release-tracking-<chain>", "recordCopy": "copied"}
+```
+
+- **What it reads.** Only the pull request's own diff, through GitHub with the broker's per-request read-only token
+  ([below](#the-github-read-token)): `pulls/{n}`, `pulls/{n}/commits` (only when `head` is not the current head: it must be one of
+  the pull request's commits, else 422; past GitHub's 250-commit list it fails closed, unstored), `compare/{base}...{head}`
+  (removed and renamed files included) and `contents/{path}?ref=` for each deployable file at the comparison's merge base and
+  at `head`, plus a cluster directory's listing for a `<cluster>/<file>` such as `base.yaml`. Never
+  the branch name, the pull request's text or commit trailers.
+- **Deployable files** are the gate templates' predicate (YAML under `<cluster>/<env>/`, `values*`, `release*`, `base*`,
+  `kustomization*` files) minus `.tekton/` and `releases/`, plus the template side of an own chart under `<cluster>/<env>/`
+  (`.tpl`, anything under `templates/`, `Chart.yaml`, `Chart.lock`, a packaged subchart under `charts/`), which is not parsed
+  and needs a render check. An own chart's values files (any other YAML or JSON) are parsed like every values file. `<cluster>/<env>/...`
+  feeds that environment, `<cluster>/<file>` every environment directory of the cluster, a root file the whole repository.
+- **Image references** are any value under a key named `image` or `images`: `release.image` and `rollout.image`, component
+  images (a string in an `images` map is one), a raw manifest's container images, a kustomization's `images` and
+  `helmCharts[].valuesInline`. A reference is new when the head holds it and the base of the same environment's changed files
+  does not, so removing or renaming a workload in place, or removing an image, is `config`. Each side of a file counts for the
+  environment its own path feeds: a manifest moved from staging to prod is a removal in staging and new images in prod. A
+  setting under an image key (`pullPolicy`) is configuration.
+- **Rollback eligibility** is the catalog's rule unchanged, with one addition: when the returning release image pins a digest,
+  the healthy release must have recorded that digest (`imageDigest`). Release records that cannot be read fail closed, unstored.
+- **`renderCheck: required`**: a chart pin (any value under `targetRevision`, `repoURL`, `chart` or `helmCharts`, in a new
+  or removed subtree or file too), an own chart's template side or a remote kustomize base changed, so only a render can show whether images changed (the render backstop, CG-3).
+- **Fail closed.** A file that does not parse (a duplicate key included), a comparison of 300 files or more (GitHub lists at
+  most 300), more than 100 deployable files, a document that expands past 200,000 nodes (aliases included), or a file too large
+  for the contents API make it `image-release` with `failClosed: true`, stored. A read that failed does too, but that answer is
+  not stored (`outcome: unstored`, `unstoredReason: read-failed`): the next ask computes it again, unless another ask stored an
+  answer meanwhile, which is then returned. A classification that does not fit in the store (1 MiB per ConfigMap) is
+  `image-release`, fail closed, `unstored` with `store-full`.
+- **Computed once per head.** Asks for the same head on one replica wait for one computation. The answer is stored
+  write-once in the ConfigMap `change-kind-pr-<n>` of the app's namespace (key `head[:12]`, labels
+  `hangar.io/subcomponent=change-kind`, `hangar.io/app`, `hangar.io/pull-request`), so two replicas that compute at once agree
+  on the first write, and a later ask returns that answer whatever changed since (a release turning healthy, a new release
+  record). `outcome` is `computed`, `stored`, `unstored` or `dry-run` (`?dryRun=true` stores nothing). glidepath-api writes it
+  as its own account (glidepath-app's Roles `glidepath-api-change-kind`, create, and `glidepath-api-gate-ledger`, patch); the
+  control plane's `change-kind-writes` policy (Deny) admits only glidepath-api, only `<sha12>` keys, and never a change to a
+  stored one. The release-record sweeper deletes a store once its newest classification is past `RECORD_TTL_DAYS` (14).
+- **On the release record.** When a release record's `prUrl` is the pull request, the stored answer is also copied onto it as
+  `changeKind.<sha12>`, once (`gate-ledger-writes` admits adding that key, never changing it). `recordCopy` says `copied`,
+  `already-copied`, `no-record` or `failed: <why>`; a failed copy never fails the call, and the next ask tries again.
+
 ## Live and archived reads
 
 A PipelineRun lives in the cluster while it runs and for about an hour after it finishes, until Tekton deletes it;
@@ -1074,10 +1140,10 @@ Every refusal or failure is JSON with a stable `rule` and, where there is one, a
 | `GP-AUTH-004` | 400 | A delegate's write must name the person (`X-Glidepath-On-Behalf-Of`) |
 | `GP-AUTH-005` | 403 | A person signed in, but their GitHub login isn't in `api.oidc.allowedUsers` |
 | `GP-AUTHZ-001` | 403 | Not allowed to read or write this in this app's namespace |
-| `GP-API-400` | 400 | A malformed app name, run id, chain id, test run id, PipelineRun name, environment or cluster name, `Idempotency-Key`, `dryRun` or write body, an image outside `ghcr.io`, an event `since` or `limit`, a live TaskRun, container or `pipelineRuns` name, or a container the pod doesn't have or that hasn't started |
-| `GP-API-404` | 404 | No such app, run, PipelineRun, release record, or test report |
+| `GP-API-400` | 400 | A malformed app name, pull request number or `head`, run id, chain id, test run id, PipelineRun name, environment or cluster name, `Idempotency-Key`, `dryRun` or write body, an image outside `ghcr.io`, an event `since` or `limit`, a live TaskRun, container or `pipelineRuns` name, or a container the pod doesn't have or that hasn't started |
+| `GP-API-404` | 404 | No such app, run, PipelineRun, release record, test report or gitops pull request, or no stored change classification for that head |
 | `GP-API-409` | 409 | The name a write's key derives is held by something that isn't that write's run; send a new key |
-| `GP-API-422` | 422 | The write can't be done as asked: out of order, a Ground target, an ineligible rollback target, nothing recorded to promote, no TriggerTemplate, or the cluster refused it (an admission policy or glidepath-api's RBAC). The `hint` says what would work; don't retry as is |
+| `GP-API-422` | 422 | The write can't be done as asked: out of order, a Ground target, an ineligible rollback target, nothing recorded to promote, no TriggerTemplate, or the cluster refused it (an admission policy or glidepath-api's RBAC); or a change classification asked for a commit that is not one of the pull request's. The `hint` says what would work; don't retry as is |
 | `GP-GV-403` | 403 | Gate verdicts: the caller is not the comment-pr pod of that run, as an allowed task account of the app's namespace |
 | `GP-GV-422` | 422 | Gate verdicts: the run is not a gate run of a pull request (no pull request or commit recorded, not a gitops repository, no gate name) |
 | `GP-LIVE-404` | 404 | The live TaskRun or its pod is gone (Tekton deleted the finished run), or the TaskRun has no pod yet; read the archived log |

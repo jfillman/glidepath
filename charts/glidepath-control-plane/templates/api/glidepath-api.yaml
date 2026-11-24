@@ -210,6 +210,11 @@ rules:
   - apiGroups: ["glidepath.hangar.io"]
     resources: ["cicd"]
     verbs: ["validate"]
+  # GET /v1/apps/{app}/pulls/{n}/classification: a pull request head's stored change kind. A reader may read it; only a gate's
+  # task account (glidepath-app's pipeline-runner) may create it, by asking first (POST).
+  - apiGroups: ["glidepath.hangar.io"]
+    resources: ["classifications"]
+    verbs: ["get"]
 {{- $readers := .Values.api.readers | default dict }}
 {{- /* api.oidc.bindReaders: every allowed person (people:<login>) reads, as the readers do. Writes stay explicit. */ -}}
 {{- $oidcR := .Values.api.oidc | default dict }}

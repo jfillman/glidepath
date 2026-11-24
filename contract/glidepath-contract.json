@@ -1402,7 +1402,7 @@
   ],
   "api": {
     "spec": "api/openapi.yaml",
-    "version": "0.14.0",
+    "version": "0.15.0",
     "actions": [
       {
         "operationId": "whoami",
@@ -1578,6 +1578,20 @@
         "path": "/v1/apps/{app}/pipelineruns/{name}/gate-verdict",
         "tier": "T1",
         "summary": "Record a gate run's verdict in the release record's gate ledger (the gate's own comment-pr task only)"
+      },
+      {
+        "operationId": "getPullRequestClassification",
+        "method": "GET",
+        "path": "/v1/apps/{app}/pulls/{n}/classification",
+        "tier": "T0",
+        "summary": "The stored change kind of a gitops pull request's head (reads only the store)"
+      },
+      {
+        "operationId": "classifyPullRequest",
+        "method": "POST",
+        "path": "/v1/apps/{app}/pulls/{n}/classification",
+        "tier": "T0",
+        "summary": "The change kind of a gitops pull request's head, computed once and stored write-once"
       },
       {
         "operationId": "listPreviews",

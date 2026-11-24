@@ -21,6 +21,7 @@ import (
 
 	"github.com/glidepath/api/internal/apps"
 	"github.com/glidepath/api/internal/auth"
+	"github.com/glidepath/api/internal/changekind"
 	"github.com/glidepath/api/internal/cicd"
 	"github.com/glidepath/api/internal/environments"
 	"github.com/glidepath/api/internal/events"
@@ -59,9 +60,11 @@ type Server struct {
 	GateVerdict *gateverdict.Service
 	// GET /v1/apps/{app}/ref-protection: nil answers 503 (the route is registered but unconfigured).
 	RefProtection *refprotection.Client
-	Events        *events.Store // nil: no event routes
-	Tap           http.Handler  // the broker's ClusterInterceptor glidepath-api-events (events.Tap)
-	Peer          http.Handler  // the other replicas (events.PeerHandler)
+	// POST and GET /v1/apps/{app}/pulls/{n}/classification: nil answers 503.
+	ChangeKind *changekind.Service
+	Events     *events.Store // nil: no event routes
+	Tap        http.Handler  // the broker's ClusterInterceptor glidepath-api-events (events.Tap)
+	Peer       http.Handler  // the other replicas (events.PeerHandler)
 	// Heartbeat is how often an idle event stream gets a comment line; ResumeGrace how far before a
 	// Last-Event-ID a resume also replays (events.Resume).
 	Heartbeat   time.Duration
@@ -132,6 +135,10 @@ func (s *Server) Handler() http.Handler {
 		func(r *http.Request) (*auth.Caller, error) {
 			return s.Auth.AuthenticateAudience(r, gateverdict.Audience)
 		}, s.recordGateVerdict))
+	// The change kind of a gitops pull request's head, computed once and stored write-once (internal/changekind). POST stores on the
+	// first ask; a gate's task account (and nothing a reader holds) may ask for that with create.
+	mux.Handle("POST /v1/apps/{app}/pulls/{n}/classification", s.wrap(op{"classifyPullRequest", "T0", "classifications", "", "create", false}, s.classifyPullRequest))
+	mux.Handle("GET /v1/apps/{app}/pulls/{n}/classification", s.wrap(op{"getPullRequestClassification", "T0", "classifications", "", "get", false}, s.getPullRequestClassification))
 	mux.Handle("GET /v1/apps/{app}/ref-protection", s.wrap(op{"getRefProtection", "T0", "refprotection", "", "get", false}, s.getRefProtection))
 	// A POST that writes nothing: T0, so a delegate needs no on-behalf-of and the audit line has no dryRun.
 	mux.Handle("POST /v1/apps/{app}/cicd/validations", s.wrap(op{"validateCicd", "T0", "cicd", "", "validate", false}, s.validateCicd))
@@ -191,11 +198,20 @@ func classify(err error) (int, apiError) {
 		gvNF   gateverdict.NotFound
 		gvRef  gateverdict.Refused
 		gvNot  gateverdict.NotGate
+		ckInv  changekind.Invalid
+		ckNF   changekind.NotFound
+		ckRef  changekind.Refused
 	)
 	var pgInv pageInvalid
 	switch {
 	case errors.As(err, &pgInv):
 		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", "page with limit, then pass the answer's continue back with the same limit"}
+	case errors.As(err, &ckInv):
+		return http.StatusBadRequest, apiError{err.Error(), "GP-API-400", ""}
+	case errors.As(err, &ckNF):
+		return http.StatusNotFound, apiError{err.Error(), "GP-API-404", ""}
+	case errors.As(err, &ckRef):
+		return http.StatusUnprocessableEntity, apiError{err.Error(), "GP-API-422", ckRef.Hint}
 	case errors.As(err, &gvRef):
 		return http.StatusForbidden, apiError{err.Error(), "GP-GV-403", "only the comment-pr task of the gate's own run asks, with the token its Task mounts (docs/admin/api.md, Gate verdicts)"}
 	case errors.As(err, &gvNot):
