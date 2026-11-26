@@ -187,7 +187,7 @@ selfManageNamespace: false
 
 # Real registry-published image, same reasoning as toolboxImage above - see
 # templates/dora-exporter/deployment.yaml's own comment for the gap this closes.
-doraExporterImage: ghcr.io/jfillman/glidepath-dora-exporter:latest
+doraExporterImage: ghcr.io/jfillman/glidepath-dora-exporter:sha-d728208
 
 # The cdevents-broker-auth Deployment's own image (templates/broker/interceptor.yaml).
 # Unlike toolboxImage/doraExporterImage above, this is NOT hand-bumped - .github/
@@ -207,7 +207,7 @@ relayImage: ghcr.io/jfillman/glidepath-relay:p4-48fca37
 
 # templates/tekton/tekton-results-relay.yaml's own image - same reasoning as
 # doraExporterImage above (real registry-published tag, not a local-only build).
-tektonResultsRelayImage: ghcr.io/jfillman/glidepath-tekton-results-relay:latest
+tektonResultsRelayImage: ghcr.io/jfillman/glidepath-tekton-results-relay:sha-d728208
 
 # templates/api/glidepath-api.yaml (docs/admin/api.md). Empty renders nothing; api-ci.yaml sets it
 # to an immutable sha- tag on main after pushing a multi-arch image.
