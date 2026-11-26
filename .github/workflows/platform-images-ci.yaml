@@ -19,6 +19,12 @@ on:
       - ".github/workflows/platform-images-ci.yaml"
   workflow_dispatch:
 
+# One run at a time, queued not cancelled: each run pins onto the latest main, so a second run never rebases its pin
+# onto a line the first run just changed.
+concurrency:
+  group: platform-images-ci
+  cancel-in-progress: false
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -28,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       # Both Dockerfiles cross-compile (BUILDPLATFORM + TARGETARCH), so no QEMU is needed.
       - uses: docker/setup-buildx-action@v3
@@ -37,15 +43,21 @@ jobs:
         id: images
         env:
           EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           sha_tag="sha-$(git rev-parse --short HEAD)"
+          # The whole push, not only its last commit: a source change followed by a docs-only commit still builds.
+          # A manual run, or a push with no usable base, builds both.
           changed() {
             [ "${EVENT}" = workflow_dispatch ] && return 0
-            git diff --name-only HEAD~1 HEAD | grep -qE "^(glidepath/$1/|\.github/workflows/platform-images-ci\.yaml$)"
+            case "${BEFORE}" in ""|0000000000000000000000000000000000000000) return 0;; esac
+            git cat-file -e "${BEFORE}^{commit}" 2>/dev/null || return 0
+            git diff --name-only "${BEFORE}" HEAD | grep -qE "^(glidepath/$1/|\.github/workflows/platform-images-ci\.yaml$)"
           }
+          : > "${RUNNER_TEMP}/pins"
           # name  build-context  dockerfile  values-key
           while read -r name ctx dockerfile key; do
             changed "${ctx##*/}" || { echo "skip ${name}: unchanged"; continue; }
@@ -56,8 +68,7 @@ jobs:
               | jq -r '[.manifests[].platform.architecture | select(. != "unknown")] | sort | join(",")')
             echo "pushed ${image} for ${archs}"
             [ "${archs}" = "amd64,arm64" ] || { echo "expected amd64,arm64, got ${archs}"; exit 1; }
-            sed -i "s|^${key}: .*|${key}: ${image}|" charts/glidepath-control-plane/values.yaml
-            grep -q "^${key}: ${image}$" charts/glidepath-control-plane/values.yaml || { echo "${key} not found in values.yaml"; exit 1; }
+            echo "${key} ${image}" >> "${RUNNER_TEMP}/pins"
           done <<'EOF'
           dora-exporter glidepath/dora-exporter cmd/dora-exporter/Dockerfile doraExporterImage
           tekton-results-relay glidepath/tekton-results-relay cmd/tekton-results-relay/Dockerfile tektonResultsRelayImage
@@ -68,10 +79,18 @@ jobs:
       - name: Pin the new tags in glidepath-control-plane's values.yaml
         run: |
           set -euo pipefail
-          git diff --quiet charts/glidepath-control-plane/values.yaml && { echo "nothing to pin"; exit 0; }
+          [ -s "${RUNNER_TEMP}/pins" ] || { echo "nothing to pin"; exit 0; }
+          built="$(git rev-parse --short HEAD)"
+          # Pin onto the current main, not the commit this run checked out: an earlier run may have pinned since.
+          git fetch origin main
+          git checkout -B main FETCH_HEAD
+          while read -r key image; do
+            sed -i "s|^${key}: .*|${key}: ${image}|" charts/glidepath-control-plane/values.yaml
+            grep -q "^${key}: ${image}$" charts/glidepath-control-plane/values.yaml || { echo "${key} not found in values.yaml"; exit 1; }
+          done < "${RUNNER_TEMP}/pins"
+          git diff --quiet charts/glidepath-control-plane/values.yaml && { echo "already pinned"; exit 0; }
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add charts/glidepath-control-plane/values.yaml
-          git commit -m "Pin dora-exporter / tekton-results-relay images to sha-$(git rev-parse --short HEAD) (multi-arch)"
-          git pull --rebase origin main
-          git push
+          git commit -m "Pin dora-exporter / tekton-results-relay images to sha-${built} (multi-arch)"
+          git push origin main
