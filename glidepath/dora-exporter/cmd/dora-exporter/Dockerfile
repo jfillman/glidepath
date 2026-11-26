@@ -1,11 +1,13 @@
 # Build context is platform/dora-exporter/:
 #   docker build -f cmd/dora-exporter/Dockerfile -t ghcr.io/<owner>/glidepath-dora-exporter:latest .
-FROM golang:1.22-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/dora-exporter ./cmd/dora-exporter
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/dora-exporter ./cmd/dora-exporter
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/dora-exporter /dora-exporter
