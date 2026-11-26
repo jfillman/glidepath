@@ -44,7 +44,7 @@ class EmptyEnvValue(unittest.TestCase):
         self.assert_no_empty_values(tasks("--set", "agentGates.clearanceUrl=", "--set", "clearanceGate.pipelineLogins=null"))
 
     def pipeline_logins(self, ts):
-        return [e for _, e in envs(ts["clearance-gate"]) if e["name"] == "PIPELINE_LOGINS"]
+        return [e for _, e in envs(ts["clearance-gate-fetch"]) if e["name"] == "PIPELINE_LOGINS"]  # the fetch step's (its own Task)
 
     def test_pipeline_logins_empty_is_name_only(self):
         found = self.pipeline_logins(tasks())

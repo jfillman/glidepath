@@ -136,7 +136,7 @@ class TokenDoesNotOutliveItsFetch(unittest.TestCase):
         self.assert_cleared_after_every_fetch(script, r"with_retry 3 -- git fetch")
 
     def test_clearance_gate(self):
-        script = task_script("clearance-gate", lambda s: "fetch_repo()" in s)
+        script = task_script("clearance-gate-fetch", lambda s: "fetch_repo()" in s)
         self.assert_cleared_after_every_fetch(script, r"with_retry 3 -- git -C .* fetch")
         # the helper runs the fetch and clears in the same function: no caller has to remember to
         body = script[script.index("fetch_repo()"):]

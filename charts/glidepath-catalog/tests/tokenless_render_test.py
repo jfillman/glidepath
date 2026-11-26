@@ -41,6 +41,9 @@ TASKS = {d["metadata"]["name"]: d for d in DOCS if d["kind"] == "Task"}
 PIPELINES = {d["metadata"]["name"]: d for d in DOCS if d["kind"] == "Pipeline"}
 CP = yaml.safe_load(open(CP_VALUES))["cicdRunAdmission"]
 GATE_PIPELINES = {"policy-validation-check": "policy-validation-gate", "clearance-gate-check": "clearance-gate", "values-check": "validate-values"}
+# A gate whose fetch phase is a Task of its own (its scripts together passed the 131072-byte argument Tekton hands to place-scripts:
+# task_script_size_test.py). The others run one Task in both phases.
+FETCH_TASK = {"clearance-gate": "clearance-gate-fetch"}
 # a command in command position (line start, or after ; & | ( ! exec then do if while), not the words in a message or a table
 HAZARD = re.compile(r"(?:^|[;&|(!]|\bexec|\bthen|\bdo|\bif|\bwhile)[ \t]*!?[ \t]*"
                     r"(?:helm[ \t]+(?:template|lint|dependency|pull|install|upgrade|show)|kustomize[ \t]+build|kubectl[ \t]+(?:kustomize|apply[ \t]+-k|diff)|jsonnet)\b", re.M)
@@ -126,22 +129,35 @@ class Structure(unittest.TestCase):
 
     def test_the_gates_no_longer_render_and_read_the_output_read_only(self):
         for name in GATE_PIPELINES.values():
-            text = code("\n".join(s.get("script", "") for s in steps(name)))
-            self.assertIsNone(HAZARD.search(text), name)
-            self.assertNotIn("chart_safe", text, name)
-            ws = {w["name"]: w for w in TASKS[name]["spec"]["workspaces"]}
-            self.assertEqual(set(ws), {"publish", "trusted", "rendered"})
-            self.assertTrue(all(w.get("optional") for w in ws.values()))
-            self.assertTrue(ws["trusted"]["readOnly"] and ws["rendered"]["readOnly"])
-            self.assertFalse(ws["publish"].get("readOnly"))
-            # the only step that writes /publish is publish, and it does nothing in the decide phase
-            for s in steps(name):
-                if s["name"] != "publish":
-                    self.assertNotIn("/publish", s.get("script", ""), (name, s["name"]))
+            fetch = FETCH_TASK.get(name, name)
+            for task in {name, fetch}:
+                text = code("\n".join(s.get("script", "") for s in steps(task)))
+                self.assertIsNone(HAZARD.search(text), task)
+                self.assertNotIn("chart_safe", text, task)
+                # the only step that writes /publish is publish, and it does nothing in the decide phase
+                for s in steps(task):
+                    if s["name"] != "publish":
+                        self.assertNotIn("/publish", s.get("script", ""), (task, s["name"]))
+            if fetch == name:
+                ws = {w["name"]: w for w in TASKS[name]["spec"]["workspaces"]}
+                self.assertEqual(set(ws), {"publish", "trusted", "rendered"})
+                self.assertTrue(all(w.get("optional") for w in ws.values()))
+                self.assertTrue(ws["trusted"]["readOnly"] and ws["rendered"]["readOnly"])
+                self.assertFalse(ws["publish"].get("readOnly"))
+            else:
+                # two Tasks: the fetch Task binds only the volume it publishes onto, the decide Task only the two read-only subPaths
+                ws = {w["name"]: w for w in TASKS[fetch]["spec"]["workspaces"]}
+                self.assertEqual(set(ws), {"publish"}, fetch)
+                self.assertFalse(ws["publish"].get("readOnly") or ws["publish"].get("optional"), fetch)
+                ws = {w["name"]: w for w in TASKS[name]["spec"]["workspaces"]}
+                self.assertEqual(set(ws), {"trusted", "rendered"}, name)
+                self.assertTrue(all(w.get("readOnly") and not w.get("optional") for w in ws.values()), name)
+                self.assertNotIn("publish", [s["name"] for s in steps(name)], name)
+                self.assertNotIn("classify", [s["name"] for s in steps(name)], name)
             # the first step is the CG-3 classify step (a StepAction, no script); the fetch step follows it
-            self.assertEqual(steps(name)[0]["name"], "classify")
-            self.assertIn('[[ "${PHASE}" == fetch ]] || exit 0', steps(name)[1]["script"])
-            self.assertIn('[[ "${PHASE}" == fetch ]] || exit 0', script(name, "publish"))
+            self.assertEqual(steps(fetch)[0]["name"], "classify")
+            self.assertIn('[[ "${PHASE}" == fetch ]] || exit 0', steps(fetch)[1]["script"])
+            self.assertIn('[[ "${PHASE}" == fetch ]] || exit 0', script(fetch, "publish"))
 
     def test_decide_tasks_bind_only_read_only_workspaces_and_render_gets_the_account_free_split(self):
         for pname, gate in GATE_PIPELINES.items():
@@ -153,7 +169,12 @@ class Structure(unittest.TestCase):
             render = tasks["render"]
             self.assertEqual({w["name"]: (w["workspace"], w.get("subPath")) for w in render["workspaces"]},
                              {"inputs": ("gate", "inputs"), "output": ("gate", "rendered")})
-            for t in by_task[gate]:
+            fetch = FETCH_TASK.get(gate)
+            if fetch:
+                # the fetch phase runs the fetch Task, as the pipeline task `fetch`, and the decide Task never runs it
+                self.assertEqual([t["name"] for t in by_task[fetch]], ["fetch"], pname)
+                self.assertNotIn("fetch", [t["name"] for t in by_task[gate]], pname)
+            for t in by_task[gate] + by_task.get(fetch, []):
                 phase = [p["value"] for p in t["params"] if p["name"] == "phase"][0]
                 bound = {w["name"]: w.get("subPath") for w in t["workspaces"]}
                 if phase == "fetch":

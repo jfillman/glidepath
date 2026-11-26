@@ -82,7 +82,8 @@ w="$(protection_verdict hangar-prod/prod true unprotected | jq -r .warning)"
 
 # --- 2. the rendered Task -------------------------------------------------------------------------------------------------
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
-  --show-only templates/tasks/clearance-gate.yaml > "$d/task.yaml" || { echo "FAIL: render"; exit 1; }
+  --show-only templates/tasks/clearance-gate-fetch.yaml --show-only templates/tasks/clearance-gate.yaml > "$d/task.yaml" \
+  || { echo "FAIL: render"; exit 1; }  # the gate's two Tasks (fetch, then decide); every step below is picked by name
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
   --show-only templates/tasks/render-manifests.yaml > "$d/rtask.yaml" || { echo "FAIL: render (render-manifests)"; exit 1; }
 for st in fetch register; do

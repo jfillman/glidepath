@@ -1,0 +1,424 @@
+# catalog/tasks/clearance-gate-fetch.yaml
+#
+# The first task of the deployment gate's Pipeline (clearance-gate-check): everything clearance-gate needs that comes from GitHub,
+# Clearance and the broker, fetched as bytes with the credentials; nothing is rendered or decided here. tasks/clearance-gate.yaml (the
+# decide task, after render-manifests) has the gate's full description.
+#
+# Until 2026-11-26 this was the `fetch` phase of the one clearance-gate Task, which ran twice. Tekton's place-scripts init container
+# passes every step script of a Task to `sh -c` as ONE argument, and Linux caps one argument at 131072 bytes (MAX_ARG_STRLEN, 32
+# pages of 4 KiB). With CG-3's classify step inlined (a StepAction, resolved into the Task at run time) the one Task's scripts came
+# to 131559 bytes on eks-dev: `exec /bin/sh: argument list too long`, and the gate failed before any step ran. Split into this Task
+# and clearance-gate, each pod carries only its own steps' scripts (tests/task_script_size_test.py holds every Task to 75% of the cap).
+#
+# Three steps:
+#   classify  (StepAction)       CG-3: the PR head's change kind and this gate's applicability (run | advisory | n/a): the Pipeline's
+#                                `when`s read this Task's results
+#   fetch     (toolbox)          the PR (base, head, author, files with their line counts), the environments it changes
+#                                (policy-validation-gate's rule: <cluster>/<env>/values|release.yaml, or a cluster's
+#                                base.yaml = every environment on it), each environment's chart, whether it is registered
+#                                (every one, with a Clearance: Clearance decides protection, files/lib/protection.sh) and
+#                                what cicd.yaml declares (deploy.environments[].production), the repo's clearance.yaml at
+#                                head and the commit that last changed it (the record's policy ref), the agent gates'
+#                                verdict on the PR (POST /v1/provenance: who proposed it), the head commit's check
+#                                runs, a one-commit checkout of base and head, and each target cluster's admission
+#                                policy bundle (the broker's /policy-bundle; unreadable = an `error` verdict, not a
+#                                failed check)
+#   publish   (toolbox)          the checkouts, charts and plan onto the run's workspace for the render task (inputs/), the rest
+#                                for the decide task's reading (trusted/, with a marker naming this run). This workspace is the only
+#                                thing the two tasks share: the decide task refuses a volume whose marker names another run.
+#
+# Runs as clearance-gate (the onboarding template's taskRunSpecs; cicdRunAdmission.clearanceTasks lists `fetch`): it presents the
+# Clearance token (POST /v1/provenance).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: clearance-gate-fetch
+  labels:
+    {{- include "glidepath-catalog.labels" . | nindent 4 }}
+    hangar.io/catalog: "true"
+    # Clearance's ingress NetworkPolicy admits pods with this label (apron 55-clearance): fetch asks Clearance for the provenance verdict.
+    hangar.io/clearance-client: clearance-gate
+spec:
+  description: "The clearance-gate guardrail's fetch task: classifies the change, then fetches a gitops release PR, its environments' charts and facts, and publishes them for the render task and the decide task (clearance-gate)."
+  params:
+    - name: repo-url
+      type: string
+      description: The gitops repo's own URL - PaC's repo_url.
+    - name: revision
+      type: string
+      description: The PR head commit - PaC's revision.
+    - name: pr-number
+      type: string
+      default: ""
+      description: PaC's body.pull_request.number. Empty or unsubstituted (a /retest) is resolved from the commit.
+    - name: app-name
+      type: string
+      description: The application's name.
+    - name: pipeline-run-name
+      type: string
+      default: ""
+      description: The run's name; the marker the publish step writes (the decide and render tasks read only data this run published).
+    - name: clearance-url
+      type: string
+      default: {{ .Values.agentGates.clearanceUrl | quote }}
+      description: "Clearance's in-cluster URL (agentGates.clearanceUrl): the provenance verdict is asked here."
+    - name: phase
+      type: string
+      description: "fetch. The Pipeline still names the phase each gate task runs: this Task fetches and publishes only for `fetch` (any other value does nothing, and the decide task then finds no data published by this run and fails)."
+    {{- include "glidepath-catalog.classifyParams" . | nindent 4 }}
+  results:
+    {{- include "glidepath-catalog.classifyResults" . | nindent 4 }}
+  volumes:
+    - name: github-token-broker-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: github-token-broker-token
+              audience: github-installation-token
+              expirationSeconds: 600
+    - name: clearance-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: clearance-token
+              audience: {{ .Values.agentGates.audience | quote }}
+              expirationSeconds: 1200
+    - name: policy-bundle-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: policy-bundle-token
+              audience: policy-bundle
+              expirationSeconds: 600
+    - name: work
+      emptyDir: {}
+  # The run's whole workspace volume: publish writes inputs/ (for the render task) and trusted/ (for the decide task) and makes rendered/.
+  workspaces:
+    - name: publish
+      mountPath: /publish
+  stepTemplate:
+    env:
+      - name: PHASE
+        value: $(params.phase)
+      - name: PIPELINE_RUN
+        value: $(params.pipeline-run-name)
+  steps:
+    {{- include "glidepath-catalog.classifyStep" . | nindent 4 }}
+    - name: fetch
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: github-token-broker-token, mountPath: /var/run/secrets/platform, readOnly: true }
+        - { name: clearance-token, mountPath: /var/run/secrets/clearance, readOnly: true }
+        - { name: policy-bundle-token, mountPath: /var/run/secrets/policy-bundle, readOnly: true }
+        - { name: work, mountPath: /work }
+      env:
+        {{- include "glidepath-catalog.applicabilityEnv" . | nindent 8 }}
+        - name: GITHUB_TOKEN_BROKER_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/github-installation-token
+        - name: POLICY_BUNDLE_URL
+          value: http://cdevents-broker-auth.platform-system.svc.cluster.local:8080/policy-bundle
+        - name: REPO_URL
+          value: $(params.repo-url)
+        - name: REVISION
+          value: $(params.revision)
+        - name: PR_NUMBER
+          value: $(params.pr-number)
+        - name: APP_NAME
+          value: $(params.app-name)
+        - name: CLEARANCE_URL
+          value: $(params.clearance-url)
+        - name: AGENT_LOGINS
+          value: {{ join "," .Values.agentGates.agentLogins | quote }}
+{{- /* No value: when the list is empty: the API server drops an empty env value, so a rendered value: "" never matches the
+       live Task and Argo CD shows it OutOfSync forever. Unset and "" read the same to the script (${PIPELINE_LOGINS:-}).
+       tests/empty_env_value_test.py. */}}
+        - name: PIPELINE_LOGINS
+{{- with .Values.clearanceGate.pipelineLogins }}
+          value: {{ join "," . | quote }}
+{{- end }}
+        - name: DEFAULT_CHART_REPO_URL
+          value: {{ .Values.defaultChart.repoURL | quote }}
+        - name: DEFAULT_CHART_PATH
+          value: {{ .Values.defaultChart.path | quote }}
+        # The default chart's revision: the one the validator image bakes (glidepath-catalog.validatorImage). An environment is on the
+        # default chart, rendered with the baked chart, only at this revision; any other is an own chart.
+        - name: DEFAULT_CHART_REVISION
+          value: {{ .Values.defaultChart.targetRevision | quote }}
+        - name: NAMESPACE
+          value: $(context.taskRun.namespace)
+        # files/lib/release-source.sh rides in the step's environment, not its script: Tekton hands every step script of a Task to
+        # the place-scripts init container as ONE base64 argument, and Linux caps one argument at 131072 bytes. Inlined here it took
+        # the Task's encoded scripts to 136944 bytes and every pod failed with "argument list too long". The value comes from the
+        # chart (the platform), never from the repository under test.
+        - name: RELEASE_SOURCE_LIB
+          value: {{ include "glidepath-catalog.releaseSourceLib" . | toJson }}
+        - name: PROTECTION_LIB
+          value: {{ include "glidepath-catalog.protectionLib" . | toJson }}
+      script: |
+        #!/usr/bin/env bash
+        {{- include "glidepath-catalog.notApplicableExit" . | nindent 8 }}
+        set -euo pipefail
+        {{- include "glidepath-catalog.gitAuth" . | nindent 8 }}
+        [[ "${PHASE}" == fetch ]] || exit 0
+        source "${PLATFORM_LIB}/github-app.sh"
+        source "${PLATFORM_LIB}/retry.sh"
+        {{- include "glidepath-catalog.policyEvalLib" . | nindent 8 }}
+        eval "${RELEASE_SOURCE_LIB}"
+        eval "${PROTECTION_LIB}"
+        {{- include "glidepath-catalog.inputGuards" . | nindent 8 }}
+        : > /work/plan.txt
+        : > /work/declared.txt
+        owner="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/([^/]+)/.*#\1#')"
+        repo="$(echo "${REPO_URL}" | sed -E 's#https?://github\.com/[^/]+/([^/.]+).*#\1#')"
+        token="$(github_app_installation_token "${owner}" "${repo}")"
+        api() {
+          curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 20 \
+            -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"
+        }
+        fetch_repo() { # <repo-url> <revision> <dir>
+          local url="$1" rev="$2" dir="$3" o r t clone_url
+          clone_url="${url%.git}.git"
+          git_auth_clear  # no earlier token rides along; a token is set below only for the repository it was minted for
+          o="$(echo "${url}" | sed -nE 's#https?://github\.com/([^/]+)/.*#\1#p')"
+          r="$(echo "${url}" | sed -nE 's#https?://github\.com/[^/]+/([^/]+).*#\1#p')"; r="${r%.git}"  # the whole repository name (it may contain a dot), not the part before the first one
+          if [[ -n "${o}" ]] && t="$(github_app_installation_token "${o}" "${r}" 2>/dev/null)"; then
+            git_auth "${t}"
+            clone_url="https://${GIT_HOST}/${o}/${r}.git"
+          fi
+          mkdir -p "${dir}"
+          git -C "${dir}" init --quiet
+          with_retry 3 -- git -C "${dir}" fetch --quiet --depth 1 "${clone_url}" "${rev}"
+          git -C "${dir}" checkout --quiet FETCH_HEAD
+          rm -f "${dir}/.git/config"
+          git_auth_clear  # the fetch is done: the token's header does not stay in the environment of the rest of the step
+        }
+
+        # The PR. A /retest fires an issue_comment webhook with no pull_request, so PaC leaves the template string:
+        # resolve it from the commit, as the other gates do.
+        if [[ -n "${PR_NUMBER}" ]] && ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+          PR_NUMBER="$(api "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/pulls" | jq -r '.[0].number // empty')"
+        fi
+        if [[ -z "${PR_NUMBER}" ]]; then
+          echo "no pull request for ${REVISION}: nothing to register"
+          jq -nc '{skipped: "no pull request"}' > /work/meta.json
+          exit 0
+        fi
+        pr="$(api "https://api.github.com/repos/${owner}/${repo}/pulls/${PR_NUMBER}")"
+        base_sha="$(jq -r .base.sha <<<"${pr}")"
+        head_sha="$(jq -r .head.sha <<<"${pr}")"
+        author="$(jq -r .user.login <<<"${pr}")"
+        if [[ "${head_sha}" != "${REVISION}" ]]; then
+          echo "the PR's head is ${head_sha}, this run is ${REVISION}: a newer push; registering the head"
+          REVISION="${head_sha}"
+        fi
+        files="$(api "https://api.github.com/repos/${owner}/${repo}/compare/${base_sha}...${REVISION}" | jq -c '[.files[] | {filename, status, additions, deletions, previous_filename}]')"
+        echo "PR ${owner}/${repo}#${PR_NUMBER} base ${base_sha:0:12} head ${REVISION:0:12} author ${author} files $(jq length <<<"${files}")"
+
+        # This (the control-plane) cluster's observability facts and the app's runtime, from the ConfigMap glidepath-app
+        # writes. Another cluster's facts are that cluster's own: read below, per destination, from the broker. Absent
+        # ConfigMap = nothing known here. Any other failure to read fails the check: a tree rendered without them would
+        # never be found cleared at sync.
+        mkdir -p /work/observability
+        : > /work/observability/dev-values.yaml
+        dev_cluster=""; runtime=""
+        if ! cm="$(kubectl get configmap glidepath-observability -n "${NAMESPACE}" --ignore-not-found -o json)"; then
+          echo "could not read the glidepath-observability ConfigMap in ${NAMESPACE}: the render would differ from Argo CD's"; exit 1
+        fi
+        if [[ -n "${cm}" ]]; then
+          dev_cluster="$(jq -r '.data.cluster // ""' <<<"${cm}")"; runtime="$(jq -r '.data.runtime // ""' <<<"${cm}")"
+          jq -r '.data["values.yaml"] // ""' <<<"${cm}" > /work/observability/dev-values.yaml
+        fi
+
+        mkdir -p /work/repo && cd /work/repo
+        git init --quiet
+        git_auth "${token}"
+        with_retry 3 -- git fetch --quiet --depth 1 "https://${GIT_HOST}/${owner}/${repo}.git" "${REVISION}"
+        git checkout --quiet FETCH_HEAD
+        rm -f .git/config
+        fetch_repo "${REPO_URL}" "${base_sha}" /work/base
+
+        # The environments this PR changes (policy-validation-gate's rule).
+        : > /work/envs.txt
+        bad_env=0
+        while IFS= read -r f; do
+          if [[ "${f}" =~ ^([^/]+)/([^/]+)/(values|release)\.yaml$ ]]; then
+            rc=0; entry="$(env_entry "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")" || rc=$?
+            if (( rc == 0 )); then echo "${entry}" >> /work/envs.txt; elif (( rc != 3 )); then bad_env=1; fi
+          elif [[ "${f}" =~ ^([^/]+)/base\.yaml$ ]]; then
+            cl="${BASH_REMATCH[1]}"  # before valid_name: its own regex match replaces BASH_REMATCH
+            if valid_name "${cl}"; then
+              for d in "${cl}"/*/; do
+                if [[ -f "${d}values.yaml" || -f "${d}release.yaml" ]]; then
+                  rc=0; entry="$(env_entry "${cl}" "$(basename "${d}")")" || rc=$?
+                  if (( rc == 0 )); then echo "${entry}" >> /work/envs.txt; else bad_env=1; fi
+                fi
+              done
+            fi
+          fi
+        done < <(jq -r '.[] | .filename' <<<"${files}")
+        sort -u -o /work/envs.txt /work/envs.txt
+        # names from paths in the repository: plain names only, before any use (a directory name is any string without a slash)
+        (( bad_env == 0 )) || { echo "FAIL: a changed file is under an environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1; }
+        valid_env_plan /work/envs.txt || { echo "FAIL: a changed file is under a cluster or environment directory whose name is not a plain name (lower case letters, digits, hyphens)"; exit 1; }
+
+        # The app's cicd.yaml: the chart, the target, and what it declares about each environment (production: true). The declaration
+        # does not decide what is registered: Clearance does (files/lib/protection.sh).
+        cicd=""
+        if [[ -f cicd.yaml ]]; then
+          cicd="$(cat cicd.yaml)"
+        else
+          app_token="$(github_app_installation_token "${owner}" "${APP_NAME}")" \
+            || { echo "FAIL: cannot mint a read token for ${APP_NAME}; without it a private cicd.yaml reads as 404, so the chart lookup cannot run"; exit 1; }
+          # 200 = read; 404 = the app has no cicd.yaml (no chart named: the default chart); anything else (network, auth, 5xx) fails the task
+          http_code="$(curl -sSL -o /work/cicd.fetched -w '%{http_code}' -H "Authorization: Bearer ${app_token}" -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/${owner}/${APP_NAME}/contents/cicd.yaml")" || http_code=000
+          case "${http_code}" in
+            200) cicd="$(cat /work/cicd.fetched)" ;;
+            404) cicd="" ;;
+            *) echo "FAIL: reading cicd.yaml of ${APP_NAME} failed (HTTP ${http_code}); the chart lookup cannot tell the default chart from an unreadable one"; exit 1 ;;
+          esac
+        fi
+        target="$(echo "${cicd}" | yq '.deploy.target // ""' 2>/dev/null || true)"
+        [[ -z "${target}" || "${target}" == null ]] && target=k8s-rollout
+        if [[ "${target}" != "k8s-rollout" ]]; then
+          echo "deploy.target is ${target}: no Kubernetes manifest to classify."
+          : > /work/envs.txt
+        fi
+        envs_json="$(echo "${cicd}" | yq -o json '.deploy.environments // []' 2>/dev/null || echo '[]')"
+        # fail closed on a chart spec the resolver below cannot read: it would fall back to the default chart
+        if [[ -n "${cicd}" ]]; then echo "${cicd}" | yq -o json '.' 2>/dev/null | chart_specs_ok || { echo "FAIL: cicd.yaml's deploy.chart or an environment's chart is not a mapping; the gate will not guess which chart is rendered"; exit 1; }; fi
+
+        mkdir -p /work/charts
+        # the default chart comes from these inputs: an unset one fails the task, it is never read as "the default chart"
+        for v in DEFAULT_CHART_REPO_URL DEFAULT_CHART_PATH DEFAULT_CHART_REVISION; do
+          [[ -n "${!v:-}" ]] || { echo "FAIL: ${v} is not set (catalog values defaultChart.*): the default chart is unknown, so the gate will not guess which chart is rendered"; exit 1; }
+        done
+        n=0
+        while IFS='|' read -r cluster env; do
+          [[ -n "${cluster}" ]] || continue
+          # The plan's 4th column is "register": every environment when this cluster has a Clearance (its protection is unknown until
+          # Clearance answers, and unknown is protected), otherwise only a production: true one (which then fails: no Clearance).
+          declared="$(protection_declared "${envs_json}" "${env}")"
+          protected="$(protection_register "${declared}" "${CLEARANCE_URL}")"
+          chart_dir=default
+          # An environment deploy.environments does not list still gets the app's deploy.chart (it used to yield nothing, so the default chart):
+          # with a Clearance it is registered like any other.
+          # The default chart is the cluster default at DEFAULT_CHART_REVISION (the revision the validator image bakes); the same repository
+          # and path at another targetRevision is an own chart, fetched and rendered at that revision.
+          spec="$(echo "${cicd}" | ENV_NAME="${env}" yq -o json '{"app": (.deploy.chart // {}), "env": ([(.deploy.environments // [])[] | select(.name == strenv(ENV_NAME)) | .chart // {}] | .[0] // {})}')" \
+            || { echo "FAIL: cicd.yaml could not be read for the chart lookup of environment ${env} (deploy.chart / deploy.environments[].chart); a failed lookup is not the default chart"; exit 1; }
+          resolved="$(echo "${spec}" | jq -c --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" --arg v "${DEFAULT_CHART_REVISION}" '
+                def over($b; $o): if ($o.repoURL // "") != "" then $o
+                  else $b + ($o | with_entries(select(.value != null and .value != "")))
+                    | (if ($o.path // "") != "" then del(.chart) elif ($o.chart // "") != "" then del(.path) else . end) end;
+                over(over({repoURL: $r, path: $p, targetRevision: $v}; .app); .env)')" \
+            || { echo "FAIL: the chart lookup for environment ${env} failed (deploy.chart / deploy.environments[].chart, or the DEFAULT_CHART_* inputs); a failed lookup is not the default chart"; exit 1; }
+          [[ -n "${resolved}" ]] || { echo "FAIL: the chart lookup for ${env} returned nothing (cicd.yaml deploy.chart / deploy.environments[].chart, or the DEFAULT_CHART_* inputs); a failed lookup is not the default chart"; exit 1; }
+          if [[ "$(echo "${resolved}" | jq -r --arg r "${DEFAULT_CHART_REPO_URL}" --arg p "${DEFAULT_CHART_PATH}" --arg v "${DEFAULT_CHART_REVISION}" \
+               '.repoURL != $r or (.chart // "") != "" or .path != $p or (.targetRevision // "") != $v')" == "true" ]]; then
+            n=$((n + 1))
+            repo_url="$(echo "${resolved}" | jq -r .repoURL)"; rev="$(echo "${resolved}" | jq -r '.targetRevision // "main"')"
+            # the fetch below carries credentials: only from the hosts the platform names, with plain revision, path and chart names
+            valid_chart_source "${repo_url}" "${rev}" "$(echo "${resolved}" | jq -r '.path // "."')" "$(echo "${resolved}" | jq -r '.chart // ""')" \
+              || { echo "FAIL: the environment's chart source is not an allowed one (https git host or OCI registry from chartSources, plain revision and path)"; exit 1; }
+            if [[ "${repo_url}" == oci://* ]]; then
+              with_retry 3 -- oras pull "${repo_url#oci://}/$(echo "${resolved}" | jq -r .chart):${rev}" -o "/work/charts/${n}-oci" >/dev/null
+              mv "$(ls /work/charts/${n}-oci/*.tgz | head -1)" "/work/charts/${n}.tgz"
+              chart_dir="/work/charts/${n}.tgz"
+            else
+              fetch_repo "${repo_url}" "${rev}" "/work/charts/${n}"
+              chart_dir="/work/charts/${n}/$(echo "${resolved}" | jq -r '.path // "."')"
+            fi
+          fi
+          echo "${cluster}|${env}|${chart_dir}|${protected}" >> /work/plan.txt
+          echo "${cluster}|${env}|${declared}" >> /work/declared.txt
+          echo "${cluster}/${env}: register=${protected} (cicd.yaml production: ${declared}) chart=${chart_dir}"
+        done < /work/envs.txt
+
+        # Who proposed a release PR the pipeline opened: the author(s) of the source change it releases and the provenance of
+        # that source (files/lib/release-source.sh; docs/admin/clearance-gate.md, "Who proposed a release"). A release PR's
+        # own author is the pipeline's GitHub App and says nothing about the change. Nothing here is read from the PR's text:
+        # the pipeline's release record names the source, and the PR must be exactly what the record says it wrote.
+        # cicd.yaml's environments and release file: which paths are release files, so which commits are the platform's own
+        # release-file commits of an environment other than the released one (release-source.sh step 3b).
+        release_cfg="$(echo "${cicd}" | yq -o json -I0 '{"environments": (.deploy.environments // null), "releaseFile": (.deploy.releaseFile // "")}' 2>/dev/null || true)"
+        release_source_resolve "${owner}" "${repo}" "${PR_NUMBER}" "${files}" /work/repo /work/base "${author}" "$(jq -r '.user.type // ""' <<<"${pr}")" "${release_cfg}" > /work/source.json \
+          || { echo "FAIL: could not tell whether this is a pipeline release PR (the release records are unreadable)"; exit 1; }
+        if [[ "$(jq -r .applicable /work/source.json)" == true ]]; then
+          echo "release source: $(jq -r 'if .resolved then "\(.mode) \(.sourceRepo)@\(.releasedCommit[0:7]) (\(.commits) commit(s)), proposer \(.proposer), openers \([.authors[] | .login] | join(", ")), provenance \(.provenance)" else "UNRESOLVED: \(.reason)" end' /work/source.json)"
+        else
+          echo "release source: no release record names this PR; the PR's own author is the proposer"
+          jq -r '.warning // empty | "warning: " + .' /work/source.json
+        fi
+
+        # The repo's clearance.yaml at head (tighten-only; Clearance validates it), as JSON for the render step, and
+        # the commit that last changed it: the record's policy ref, clearance.yaml@<commit> (C-8).
+        policy_commit=""
+        if [[ -f clearance.yaml ]]; then
+          yq -o json '.' clearance.yaml > /work/clearance.json || { echo "clearance.yaml is not valid YAML" >&2; exit 1; }
+          policy_commit="$(api "https://api.github.com/repos/${owner}/${repo}/commits?path=clearance.yaml&sha=${REVISION}&per_page=1" \
+            | jq -r '.[0].sha // empty' 2>/dev/null || true)"
+          echo "clearance.yaml at ${REVISION:0:12}: last changed in ${policy_commit:-an unknown commit}"
+        fi
+
+        # Each protected environment's target cluster's admission policies, for the admission step: the
+        # policy-validation gate's source (the broker's /policy-bundle, ADR-0028). Unreadable is not a failed check
+        # here: that environment's admission verdict is `error` (the policy-validation- check fails on it itself).
+        mkdir -p /work/policies
+        : > /work/policies/unreadable
+        for cluster in $(awk -F'|' '$4 == "true" {print $1}' /work/plan.txt | sort -u); do
+          policy_bundle_fetch "${cluster}" "${owner}" || echo "${cluster}" >> /work/policies/unreadable
+        done
+
+        # What each protected environment's destination cluster injects as `observability` (its ApplicationSet reads that
+        # cluster's own cluster-defaults.yaml): this cluster's block from the ConfigMap, any other's from its repo via the
+        # broker. A cluster whose facts cannot be read cannot be rendered like Argo CD does (the render step fails it).
+        for cluster in $(awk -F'|' '$4 == "true" {print $1}' /work/plan.txt | sort -u); do
+          o="/work/observability/${cluster}.yaml"; : > "${o}"
+          if [[ "${cluster}" == "${dev_cluster}" ]]; then
+            cp /work/observability/dev-values.yaml "${o}"
+          elif grep -qx "${cluster}" /work/policies/unreadable; then
+            : > "${o}.unreadable"
+          else
+            # One `observability:` line, not a bare JSON object: render appends this to a block mapping, where {...} is invalid.
+            jq -r --arg r "${runtime}" 'select(. != null and (.namespace != "" or .instrumentation != "")) | "observability: " + ({namespace, instrumentation, runtime: $r} | tojson)' \
+              "/work/policies/${cluster}.observability.json" > "${o}"
+          fi
+        done
+
+        # Who proposed it: the agent gates' verdict (POST /v1/provenance, the same body agent-gates sends).
+        paths="$(jq -c '[.[] | .filename, (.previous_filename // empty)]' <<<"${files}")"
+        trailers="$(api "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}" | jq -c '[.commit.message | splits("\n")
+          | capture("^Hangar-(?<k>Task|Session|Run|Agent): *(?<v>[^ ]+) *$")? | {key: (.k | ascii_downcase), value: .v}]
+          | from_entries')"
+        looks_agent=false
+        if [[ "${trailers}" != "{}" ]] || [[ ",${AGENT_LOGINS}," == *",${author},"* ]]; then looks_agent=true; fi
+        verdict='null'
+        if [[ -n "${CLEARANCE_URL}" ]]; then
+          body="$(jq -nc --arg repo "${owner}/${repo}" --argjson pr "${PR_NUMBER}" --arg head "${REVISION}" \
+                  --arg author "${author}" --argjson paths "${paths}" --argjson trailers "${trailers}" \
+                  '{repo: $repo, pr: $pr, head: $head, author: $author, paths: $paths, trailers: $trailers}')"
+          out="$(curl --silent --show-error --max-time 20 --retry 2 --retry-connrefused -w '\n%{http_code}' \
+                   -H "Authorization: Bearer $(cat /var/run/secrets/clearance/clearance-token)" \
+                   -H "Content-Type: application/json" --data "${body}" "${CLEARANCE_URL%/}/v1/provenance" || true)"
+          code="$(tail -n1 <<<"${out}")"
+          if [[ "${code}" == 200 ]]; then verdict="$(sed '$d' <<<"${out}")"; else echo "provenance: Clearance answered ${code:-nothing}"; fi
+        fi
+        # The head commit's check runs: CI's state as this change is registered (clearance-gate's own excluded later).
+        checks="$(api "https://api.github.com/repos/${owner}/${repo}/commits/${REVISION}/check-runs?per_page=100" | jq -c '[.check_runs[] | {name, status, conclusion}]' || echo '[]')"
+        jq -nc --arg owner "${owner}" --arg repo "${repo}" --argjson pr "${PR_NUMBER}" --arg head "${REVISION}" --arg base "${base_sha}" \
+          --arg author "${author}" --argjson files "${files}" --argjson looks_agent "${looks_agent}" --argjson verdict "${verdict}" --argjson checks "${checks}" \
+          --arg policy_commit "${policy_commit}" \
+          '{owner: $owner, repo: $repo, pr: $pr, head: $head, base: $base, author: $author, files: $files, looksAgent: $looks_agent, provenance: $verdict, checkRuns: $checks, policyCommit: $policy_commit}' \
+          > /work/meta.json
+        chmod -R a+rwX /work 2>/dev/null || true
+    - name: publish
+      image: {{ .Values.toolboxImage }}
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - { name: work, mountPath: /work }
+      env:
+        {{- include "glidepath-catalog.applicabilityEnv" . | nindent 8 }}
+      script: |
+        {{- include "glidepath-catalog.gatePublish" . | nindent 8 }}

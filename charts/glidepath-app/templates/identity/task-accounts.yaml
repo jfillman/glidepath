@@ -70,8 +70,8 @@ subjects:
     name: release-record-writer
     namespace: {{ $appNamespace }}
 ---
-# clearance-gate: the account of the four Tasks that present a projected token with the `clearance` audience:
-# clearance-gate, agent-gates, agent-definitions, agent-release. It reads its own run (the gate report's owner reference
+# clearance-gate: the account of the Tasks that present a projected token with the `clearance` audience:
+# clearance-gate-fetch and clearance-gate (the deployment gate's two halves), agent-gates, agent-definitions, agent-release. It reads its own run (the gate report's owner reference
 # takes the run's uid) and writes the gate report `gate-report-<run>` (a display and debrief artifact, not a record); it
 # reads ConfigMaps (glidepath-observability, the policy config). It cannot write a release record by the admission policy
 # of step 5 (RBAC alone cannot say which ConfigMap), holds no Secret, and cannot create a run.

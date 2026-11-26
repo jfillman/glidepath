@@ -6,7 +6,7 @@ The environment name in `select(.name == "${env}")` was a directory name from th
 
   structure  no yq or jq program in any catalog task or lib script is a double-quoted string with a variable in it, except the ones named
              below with the reason each is safe (a test that fails when a new one appears or an old one is fixed and left on the list);
-  guards     the three fetch steps (clearance-gate, policy-validation-gate, validate-values) check every path-derived name against the
+  guards     the three fetch steps (clearance-gate-fetch, policy-validation-gate, validate-values) check every path-derived name against the
              platform's name rule before using it, pass the name to yq with strenv(), and check a chart source against the allowed hosts
              before any fetch; the exploit string from the review is refused, and if it did reach yq it is data, not program text;
   sources    a hostile chart repoURL (another host, userinfo, a lookalike host, a scheme, a newline, a port, a path escape) is refused.
@@ -28,7 +28,7 @@ r = subprocess.run(["helm", "template", "c", CATALOG, "-f", os.path.join(CATALOG
 assert r.returncode == 0, r.stderr
 DOCS = [d for d in yaml.safe_load_all(r.stdout) if d]
 TASKS = {d["metadata"]["name"]: d for d in DOCS if d["kind"] == "Task"}
-GATE_FETCH = {"clearance-gate": "fetch", "policy-validation-gate": "fetch", "validate-values": "clone-and-list"}
+GATE_FETCH = {"clearance-gate-fetch": "fetch", "policy-validation-gate": "fetch", "validate-values": "clone-and-list"}
 
 # yq/jq programs in double quotes with a variable in them that are safe, and why. Keyed by (task or file, the program text).
 SAFE_PROGRAMS = {
@@ -163,7 +163,7 @@ class Structure(unittest.TestCase):
 
 
 def guards_script():
-    text = [s for s in TASKS["clearance-gate"]["spec"]["steps"] if s["name"] == "fetch"][0]["script"]
+    text = [s for s in TASKS["clearance-gate-fetch"]["spec"]["steps"] if s["name"] == "fetch"][0]["script"]
     return text[text.index("# BEGIN input-guards"):text.index("# END input-guards")]
 
 
@@ -259,7 +259,7 @@ class Guards(unittest.TestCase):
 
     def test_the_allowed_hosts_come_from_the_values(self):
         r = subprocess.run(["helm", "template", "c", CATALOG, "-f", os.path.join(CATALOG, "tests", "values.example.yaml"), "--set", "chartSources.gitHosts={git.example.org}",
-                            "--set", "chartSources.ociHosts={registry.example.org}", "--show-only", "templates/tasks/clearance-gate.yaml"], capture_output=True, text=True)
+                            "--set", "chartSources.ociHosts={registry.example.org}", "--show-only", "templates/tasks/clearance-gate-fetch.yaml"], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('ALLOWED_GIT_HOSTS="git.example.org github.com"', r.stdout)
         self.assertIn('ALLOWED_OCI_HOSTS="registry.example.org"', r.stdout)
@@ -269,7 +269,7 @@ class PathShapes(unittest.TestCase):
     """Only a path of the environment shape is an environment. Other changed paths are ignored as they were before; a path that has the shape
     with an invalid environment name refuses the run. Run on the real fetch scripts' own blocks (clearance-gate, policy-validation-gate)."""
 
-    GATES = ("clearance-gate", "policy-validation-gate")
+    GATES = ("clearance-gate-fetch", "policy-validation-gate")
 
     def block(self, task):
         text = [s for s in TASKS[task]["spec"]["steps"] if s["name"] == "fetch"][0]["script"]
@@ -284,7 +284,7 @@ class PathShapes(unittest.TestCase):
                 os.makedirs(os.path.dirname(os.path.join(tmp, f)), exist_ok=True)
                 open(os.path.join(tmp, f), "w").write("x: 1\n")
             os.makedirs(os.path.join(tmp, "w"))
-            if task == "clearance-gate":
+            if task == "clearance-gate-fetch":
                 import json
                 head = "files=%s\n" % repr(json.dumps([{"filename": f} for f in changed]))
             else:

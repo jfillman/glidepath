@@ -31,8 +31,11 @@ for t in clearance-gate policy-validation-gate validate-values render-manifests;
   img="$(yq '.spec.params[] | select(.name == "validator-image") | .default' "$d/${t}.yaml")"
   expect "${t}: the validator image is tagged with defaultChart.targetRevision" "${img}" "$(yq '.valuesValidatorRepository' "${vals}"):${REV}"
   [[ "${t}" == render-manifests ]] && continue
-  expect "${t}: the fetch step compares against the same revision" \
-    "$(yq '[.spec.steps[].env[]? | select(.name == "DEFAULT_CHART_REVISION") | .value] | unique | .[]' "$d/${t}.yaml")" "${REV}"
+  # clearance-gate's fetch step is its own Task, clearance-gate-fetch (the decide Task, clearance-gate, has the validator image)
+  f="${t}"; [[ "${t}" == clearance-gate ]] && f=clearance-gate-fetch
+  [[ "${f}" == "${t}" ]] || render "$d/${f}.yaml" "${f}" || { echo "FAIL render ${f}: $(cat "$d/${f}.yaml.err")"; exit 1; }
+  expect "${f}: the fetch step compares against the same revision" \
+    "$(yq '[.spec.steps[].env[]? | select(.name == "DEFAULT_CHART_REVISION") | .value] | unique | .[]' "$d/${f}.yaml")" "${REV}"
 done
 render "$d/o1.yaml" clearance-gate --set valuesValidatorImage=registry.example/own-validator:fips
 expect "override image without a declared revision: the render fails" "$?" 1
@@ -47,7 +50,7 @@ expect "override image declaring the default revision: renders" "$?" 0
 expect "... with the override image" "$(yq '.spec.params[] | select(.name == "validator-image") | .default' "$d/o3.yaml")" registry.example/own-validator:fips
 
 # --- 2. the gates' plan loops -------------------------------------------------------------------------------------------------
-yq '.spec.steps[] | select(.name == "fetch") | .script' "$d/clearance-gate.yaml" | awk '/^mkdir -p \/work\/charts$/,/^done < \/work\/envs.txt$/' > "$d/cg-loop.sh"
+yq '.spec.steps[] | select(.name == "fetch") | .script' "$d/clearance-gate-fetch.yaml" | awk '/^mkdir -p \/work\/charts$/,/^done < \/work\/envs.txt$/' > "$d/cg-loop.sh"
 yq '.spec.steps[] | select(.name == "fetch") | .script' "$d/policy-validation-gate.yaml" | awk '/^mkdir -p \/work\/charts \/work\/policies$/,/^done < \/work\/envs.txt$/' > "$d/pv-loop.sh"
 [[ -s "$d/cg-loop.sh" && -s "$d/pv-loop.sh" ]] || { echo "FAIL: a plan loop was not found in a fetch step"; exit 1; }
 plan() { # <loop> <scenario> <cicd.yaml text>: runs the loop for hangar-prod/prod and hangar-prod/qa; prints "<env>=<chart>[@<fetched rev>]"
@@ -150,8 +153,8 @@ expect "values: a valid 'no chart' is still validated by the image" "$(vv vv-noc
 
 # --- 5. the cicd.yaml read: a token that cannot be minted fails the task (CodeRabbit); 404 only ever means "no cicd.yaml" -------------
 # The read as each Task carries it, from the rendered script, with the token helper and curl stubbed (no network).
-for t in clearance-gate policy-validation-gate validate-values; do
-  case "${t}" in clearance-gate) step=fetch ;; policy-validation-gate) step=fetch ;; validate-values) step=clone-and-list ;; esac
+for t in clearance-gate-fetch policy-validation-gate validate-values; do
+  case "${t}" in clearance-gate-fetch) step=fetch ;; policy-validation-gate) step=fetch ;; validate-values) step=clone-and-list ;; esac
   yq ".spec.steps[] | select(.name == \"${step}\") | .script" "$d/${t}.yaml" | awk '/app_token="\$\(github_app_installation_token/{p=1} p{print} p && /^ *esac$/{exit}' > "$d/${t}-read.sh"
   [[ -s "$d/${t}-read.sh" ]] || { echo "FAIL ${t}: the cicd.yaml read was not found"; fail=1; continue; }
   sed 's#/work/#'"$d/${t}"'-w/#g' "$d/${t}-read.sh" > "$d/${t}-read2.sh"; mkdir -p "$d/${t}-w"

@@ -9,8 +9,11 @@
 # (the same Task, render-only, no onError) so a release that cannot be rendered is never green.
 #
 # Three tasks on one workspace volume, in order (nothing runs beside them: the gate reads what the render task wrote, after it has
-# finished, and nothing else writes the volume in between; render-check runs after register, not beside it): `fetch` and `register`
-# are the same Task, clearance-gate, in its two phases (credentialed: the PR, the charts and the facts; then the register); `render` is
+# finished, and nothing else writes the volume in between; render-check runs after register, not beside it): `fetch` is the Task
+# clearance-gate-fetch (credentialed: classify, then the PR, the charts and the facts, published onto the volume) and `register` the
+# Task clearance-gate (the decide phase: ingest, admission, register, report). They were one Task run in two phases until 2026-11-26,
+# when its step scripts outgrew the 131072-byte argument Tekton's place-scripts hands to sh (tests/task_script_size_test.py); they
+# share nothing but this volume, as before (trusted/ with the marker naming this run, rendered/ read-only). `render` is
 # render-manifests, run as source-runner (the onboarding template's taskRunSpecs, and the control plane's cicdRunAdmission.sourceTasks,
 # make a run say so): the chart is rendered where there is no token, and the gate reads the output as data (docs/admin/security.md).
 # A failure to fetch or to render is never green, advisory or not: the advisory copy's onError applies to the decide phase only.
@@ -53,7 +56,7 @@ spec:
         resolver: cluster
         params:
           - { name: kind, value: task }
-          - { name: name, value: clearance-gate }
+          - { name: name, value: clearance-gate-fetch }
           - { name: namespace, value: {{ .Release.Namespace }} }
       params:
         - { name: repo-url, value: $(params.repo-url) }
