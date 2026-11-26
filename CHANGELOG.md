@@ -4,6 +4,13 @@ Notable changes to Glidepath. Newest first.
 
 ## Unreleased
 
+### clearance-gate starts again: the Task is split in two (place-scripts argument limit)
+
+- Since CG-3 the `clearance-gate` Task could not start: Tekton's `place-scripts` init container gets every script of a pod in one `sh -c` argument, Linux caps one argument at 131072 bytes, and with the `classify` StepAction inlined the Task's came to 131559 bytes on eks-dev (`exec /bin/sh: argument list too long`, before any step ran). The CI guard read only the Task's own `script:` fields and missed the StepAction.
+- The Task is now two: **`clearance-gate-fetch`** (`classify`, `fetch`, `publish`; estimated 53480 bytes, 41% of the cap) and **`clearance-gate`** (`ingest`, `admission`, `register`, `report`; 77264 bytes, 59%). `clearance-gate-check`'s pipeline task `fetch` runs the first, `register` / `register-advisory` / `render-check` the second. Pipeline task names, accounts (both `clearance-gate`), the `cicdRunAdmission` lists, params' behaviour (`phase`, `render-only`), results and the workspace (the same `trusted/` and `rendered/` subPaths, the run marker) are unchanged; the decide Task no longer mounts the GitHub-installation and policy-bundle tokens, and its workspaces are no longer optional. One more pod per gate run.
+- No onboarding resync: the gitops repos' `.tekton/pull-request-clearance-gate.yaml` names only the Pipeline and pipeline task names, which did not change.
+- Test: `charts/glidepath-catalog/tests/task_script_size_test.py` now inlines every StepAction a step refers to, adds Tekton's default preamble, and fails over 75% of 131072 (was 120000 of the Task's own scripts); the clearance-gate tests render both Tasks.
+
 ### Release gates run, advise or report n/a by the kind of change (CG-3)
 
 - Every release gate Pipeline now runs a `classify` step first: it asks glidepath-api for the PR head's change kind (`POST /v1/apps/{app}/pulls/{n}/classification`) and reads the gate's row of the `release-guardrails` matrix. The result `applicability` (`run`, `advisory`, `n/a`) replaces the content gates' `rollback-eligible` `when`s: hard tasks run on `run`, `-advisory` copies on `advisory`, and on `n/a` only a green `not-applicable` task runs. The step runs inside each gate's existing first task (no extra pod), except provenance, which gets a small `classify-change` task.

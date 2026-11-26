@@ -16,18 +16,19 @@ fail=0
 d="$(mktemp -d)"
 trap '[[ -n "${KEEP:-}" ]] || rm -rf "$d"' EXIT
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
-  --show-only templates/tasks/clearance-gate.yaml > "$d/task.yaml" || { echo "FAIL: render"; exit 1; }
+  --show-only templates/tasks/clearance-gate-fetch.yaml --show-only templates/tasks/clearance-gate.yaml > "$d/task.yaml" \
+  || { echo "FAIL: render"; exit 1; }  # the gate's two Tasks (fetch, then decide); steps are picked by name
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
   --show-only templates/tasks/render-manifests.yaml > "$d/rtask.yaml" || { echo "FAIL: render (render-manifests)"; exit 1; }
 mkdir -p "$d/bin"
 # The publish -> render-manifests -> ingest chain the Pipeline runs before this Task's admission step (tests/lib/gate_chain.sh).
 source "${here}/lib/gate_chain.sh"
-step() { # <index> <work dir>
-  yq "[.spec.steps[] | select(.name != \"classify\")][$1].script" "$d/task.yaml" \
+step() { # <step name> <work dir>
+  yq ".spec.steps[] | select(.name == \"$1\") | .script" "$d/task.yaml" \
     | sed -e "s#/work#$2#g" -e "s#\$(results.outcome.path)#$2/outcome#g" -e "s#\$(results.findings-summary.path)#$2/summary#g" \
           -e "s#\$(results.change-ids.path)#$2/change-ids#g" -e "s#/var/run/secrets/clearance/clearance-token#$2/token#g" \
     | sed -e "s#/opt/airframe/charts/airframe-application#${fx}/chart#g" -e "s#/opt/airframe/xrds#${fx}/airframe/xrds#g" \
-    > "$2/step$1.sh"
+    > "$2/$1.sh"
 }
 # The stand-in Clearance: keeps each body it is sent (posted-<n>.json) and answers as CLEARANCE_ANSWER says: "ok" a
 # cleared change, "pre-c8" a 400 for the admission field on the first call (a Clearance before C-8), then ok.
@@ -92,11 +93,11 @@ run() {
   gate_chain "$d/task.yaml" "$d/rtask.yaml" clearance-gate "$WORK" "$app"
   cp "$WORK/chain.log" "$WORK/render.log"; cp "$WORK/ingest.rc" "$WORK/render.rc"
   echo token > "$WORK/token"
-  step 3 "$WORK"; step 4 "$WORK"
-  ( cd "$WORK" && PATH="$d/bin:$PATH" bash "$WORK/step3.sh" ) > "$WORK/admission.log" 2>&1
+  step admission "$WORK"; step register "$WORK"
+  ( cd "$WORK" && PATH="$d/bin:$PATH" bash "$WORK/admission.sh" ) > "$WORK/admission.log" 2>&1
   echo $? > "$WORK/admission.rc"
   ( cd "$WORK" && PATH="$d/bin:$PATH" APP_NAME="$app" NAMESPACE="app-${app}-cicd" CLEARANCE_URL=http://clearance CLEARANCE_ANSWER="${CLEARANCE_ANSWER:-ok}" \
-      TOWER_URL="" PIPELINE_RUN="" bash "$WORK/step4.sh" ) > "$WORK/register.log" 2>&1
+      TOWER_URL="" PIPELINE_RUN="" bash "$WORK/register.sh" ) > "$WORK/register.log" 2>&1
   echo $? > "$WORK/register.rc"
   [[ "$(cat "$WORK/render.rc")" == 0 ]] || { echo "-- ${s}: render and ingest log:"; cat "$WORK/render.log"; }
 }

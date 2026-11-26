@@ -932,7 +932,7 @@ class CicdRunAdmission(unittest.TestCase):
     SPLIT = {"release-record-writer": "recordWriterTasks", "clearance-gate": "clearanceTasks", "test-runner": "testRunnerTasks"}
     # the Tasks (by catalog name) each account is for, in the plan's Target table
     SPLIT_CATALOG_TASKS = {"release-record-writer": {"open-release-pr", "mark-release-merged", "itsm-change", "itsm-gate", "join-release"},
-                           "clearance-gate": {"clearance-gate", "agent-gates", "agent-definitions", "agent-release"},
+                           "clearance-gate": {"clearance-gate-fetch", "clearance-gate", "agent-gates", "agent-definitions", "agent-release"},
                            "test-runner": {"run-testworkflow"}}
 
     # Pipelines the platform's Triggers start (a .tekton file cannot): their writer tasks are listed in recordWriterTasks only so a

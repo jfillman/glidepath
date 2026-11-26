@@ -99,8 +99,8 @@ cicdRunAdmission:
     # the catalog has an itsm provider; an entry for a task the Pipeline lacks is inert.
     release-outcome-notify: [itsm-close]
     release-rollback-notify: [itsm-close-rolled-back]
-  #   clearance-gate: the four Tasks that present the projected token for the `clearance` audience (clearance-gate, agent-gates,
-  #                   agent-definitions, agent-release).
+  #   clearance-gate: the Tasks that present the projected token for the `clearance` audience (clearance-gate-fetch and
+  #                   clearance-gate, the deployment gate's fetch and decide halves; agent-gates, agent-definitions, agent-release).
   clearanceTasks:
     agent-definitions-check: [review]
     agent-gates-check: [agent-gates]

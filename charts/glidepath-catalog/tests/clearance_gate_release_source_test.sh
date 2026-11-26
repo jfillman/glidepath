@@ -54,8 +54,8 @@ STUB
 chmod +x "$d/bin/"*
 
 # The library under test, rendered the way the Task splices it.
-helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only templates/tasks/clearance-gate.yaml > "$d/task.yaml" \
-  || { echo "FAIL: render"; exit 1; }
+helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml --show-only templates/tasks/clearance-gate-fetch.yaml \
+  --show-only templates/tasks/clearance-gate.yaml > "$d/task.yaml" || { echo "FAIL: render"; exit 1; }  # fetch, then decide; steps by name
 cp "${LIB:-charts/glidepath-catalog/files/lib/release-source.sh}" "$d/lib.sh"
 github_app_installation_token() { echo tok; }
 export -f github_app_installation_token 2>/dev/null || true

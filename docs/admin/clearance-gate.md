@@ -33,7 +33,14 @@ the 7-day TTL. Anything looser is `DG-POLICY` and the change is denied.
   diff exactly as for a release (a `replicas` change to the Rollout is tier 2, held for one owner who is not the author; a
   comment-only values edit renders nothing new and is tier 0). The finally task `join-release` finds no release record
   for it and writes nothing.
-- Pipeline **`clearance-gate-check`**, Task **`clearance-gate`** (`platform-catalog`), five steps:
+- Pipeline **`clearance-gate-check`**, three tasks on one workspace volume (`platform-catalog`): `fetch` runs the Task
+  **`clearance-gate-fetch`** (CG-3's `classify` step, then `fetch` and `publish`), `render` runs `render-manifests`, and `register`
+  (or `register-advisory` and `render-check`) runs the Task **`clearance-gate`** (`ingest`, `admission`, `register`, `report`). The two
+  gate Tasks were one Task, run twice in two phases, until 2026-11-26: Tekton passes every script of a Task's pod to its `place-scripts`
+  init container as one `sh -c` argument, Linux caps one argument at 131072 bytes, and with the `classify` StepAction inlined the one
+  Task came to 131559 bytes on eks-dev (`exec /bin/sh: argument list too long`, the gate failed before any step). Each Task now carries
+  only its own scripts (about 41% and 59% of the cap; `tests/task_script_size_test.py` fails CI over 75%). They hand each other only the
+  workspace's `trusted/` subPath, with the marker naming the run, as the two phases did; both run as `clearance-gate`. The steps:
   1. `fetch` (toolbox): the PR's base, head, author, changed files and line counts; the environments it changes
      (`<cluster>/<env>/values|release.yaml`, or a cluster's `base.yaml` = every environment on it); each environment's
      chart (the validator image's copy only for the default chart at `defaultChart.targetRevision`; any other chart or revision is
@@ -164,7 +171,7 @@ A release PR is written by the pipeline's GitHub App, so its author (`<app>[bot]
 about the change it releases. Registered naively, the proposer was the bot (kind `person`, provenance `not-agent`),
 which also let the real author clear their own tier-2 change, because the rule is "one owner, not the proposer". The
 gate now registers **the source change's** author and provenance instead
-(`charts/glidepath-catalog/files/lib/release-source.sh`, run in the `fetch` step, which gets it from the chart in its `RELEASE_SOURCE_LIB` environment variable and evals it, never from the repository; it stays out of the step script because Tekton passes all of a Task's scripts to the pod as one argument capped at 131072 bytes, and `tests/task_script_size_test.py` fails CI when any Task's encoded scripts pass 120000; tested by
+(`charts/glidepath-catalog/files/lib/release-source.sh`, run in the `fetch` step, which gets it from the chart in its `RELEASE_SOURCE_LIB` environment variable and evals it, never from the repository; it stays out of the step script because Tekton passes all of a Task's scripts to the pod as one argument capped at 131072 bytes, and `tests/task_script_size_test.py` fails CI when any Task's estimated argument, StepAction scripts included, passes 75% of that; tested by
 `tests/clearance_gate_release_source_test.sh`).
 
 > **Caveat: the release record is not yet authenticated.** The record is a ConfigMap in the app's `-cicd` namespace, and
@@ -372,7 +379,7 @@ the check can use before merge, and has no case yet.
 (`onError: continue`), so a change that is holding or denied stays green by design. A gate that could not render the
 release has seen nothing. The Pipeline is `fetch`, `render`, then `register` (three tasks on one volume; `fetch` and `render`
 have no `onError` in either copy, so a release that cannot be fetched or rendered is red). The advisory copy adds `render-check`
-(the gate Task with `render-only: "true"`: `ingest` only, no register) with no `onError`, after `register-advisory`: when the render's
+(the `clearance-gate` Task with `render-only: "true"`: `ingest` only, no register) with no `onError`, after `register-advisory`: when the render's
 output is refused (a changed file, a tag, an alias bomb, an environment that did not render) that task fails and so does the check.
 When every environment is read it stops there. The required copy has no second task; its `register` task already fails on a refusal.
 

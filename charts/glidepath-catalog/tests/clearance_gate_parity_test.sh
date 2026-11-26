@@ -21,6 +21,9 @@ d="$(mktemp -d)"
 trap '[[ -n "${KEEP:-}" ]] || rm -rf "$d"' EXIT
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
   --show-only templates/tasks/clearance-gate.yaml > "$d/task.yaml" || { echo "FAIL: render"; exit 1; }
+# The gate's fetch side (classify, fetch, publish) is its own Task, the decide side (ingest, admission, register, report) this one.
+helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
+  --show-only templates/tasks/clearance-gate-fetch.yaml > "$d/ftask.yaml" || { echo "FAIL: render (clearance-gate-fetch)"; exit 1; }
 helm template t charts/glidepath-catalog -f charts/glidepath-catalog/tests/values.example.yaml \
   --show-only templates/tasks/render-manifests.yaml > "$d/rtask.yaml" || { echo "FAIL: render (render-manifests)"; exit 1; }
 mkdir -p "$d/bin"
@@ -58,8 +61,10 @@ pipe() {
   export WORK="$W" FIXTURE="$fx"
   local V="$d/vol-$s"; export VOL="$V"   # outside $W: $W is the fetch step's /work, which publish copies
   rm -rf "$V" "$W/w" "$W/rtmp"; mkdir -p "$V"
-  sstep "$d/task.yaml" publish | loc "$W" x x x "$V" > "$d/publish-$s.sh"
-  ( cd "$W" && PHASE=fetch PIPELINE_RUN=run-1 bash "$d/publish-$s.sh" ) > "$d/publish-$s.log" 2>&1 || { echo "-- $s: publish failed:"; cat "$d/publish-$s.log"; }
+  sstep "$d/ftask.yaml" publish | loc "$W" x x x "$V" > "$d/publish-$s.sh"
+  ( cd "$W" && PHASE=fetch PIPELINE_RUN=run-1 bash "$d/publish-$s.sh" ) > "$d/publish-$s.log" 2>&1
+  echo $? > "$W/publish.rc"   # a failed publish is never a passing handoff, whatever the later steps do
+  [[ "$(cat "$W/publish.rc")" == 0 ]] || { echo "FAIL $s: publish failed:"; cat "$d/publish-$s.log"; fail=1; }
   mkdir -p "$W/w" "$W/rtmp"
   sstep "$d/rtask.yaml" render | loc "$V/inputs" "$V/rendered" x x x > "$W/render.sh"
   ( cd "$W" && PATH="$d/bin:$PATH" RENDER_TMP="$W/rtmp" PROFILE=clearance-gate PIPELINE_RUN=run-1 RENDER_CPU_SECONDS=60 RENDER_MAX_FILE_KB=32768 \
@@ -121,7 +126,7 @@ expect "observability is in the injected values, as the ApplicationSet gives it"
 # read them from its cluster-defaults.yaml, plus the app's runtime; one that sets none injects nothing; one the broker
 # could not read is not rendered at all (it would differ from Argo CD's).
 w="$d/clusters"; mkdir -p "$w/observability" "$w/policies"
-yq '.spec.steps[] | select(.name == "fetch") | .script' "$d/task.yaml" | sed "s#/work#$w#g" \
+yq '.spec.steps[] | select(.name == "fetch") | .script' "$d/ftask.yaml" | sed "s#/work#$w#g" \
   | awk '/# What each protected environment.s destination cluster injects/ {p=1} p {print} p && /^done$/ {exit}' > "$w/pick.sh"
 printf 'hangar-dev|prod|default|true\nhangar-prod|prod|default|true\nhangar-qa|prod|default|true\nhangar-lab|prod|default|true\n' > "$w/plan.txt"
 printf 'observability:\n  namespace: "dev-obs"\n  instrumentation: "dev-obs/auto"\n  runtime: "python"\n' > "$w/observability/dev-values.yaml"

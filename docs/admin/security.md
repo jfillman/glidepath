@@ -257,7 +257,7 @@ What each part does.
   | Account | Holds | Will run |
   |---|---|---|
   | `release-record-writer` | ConfigMaps `get`, `list`, `create`, `patch` in the `-cicd` namespace (no `delete`, no `update`); `get` on PipelineRuns (`open-release-pr` reads its own run's lineage annotations); `get` on the `cluster-registry` ConfigMap of `platform-system` (only for an app with a cluster-mapped environment). No Secret. No `clearance` token. | `open-release-pr`, `mark-release-merged`, `itsm-change`, `itsm-gate`, and `join-release`, a small Task carved out of `clearance-gate` (the `clearanceId` join). The second carve-out, `record-gate-verdict` (the gate-ledger write of `comment-pr-check-result`), is in the catalog but in no Pipeline: see "Task mapping, step 3" below. |
-  | `clearance-gate` | `get` on PipelineRuns; ConfigMaps `get`, `create`, `patch` (gate reports `gate-report-<run>`). No Secret. | The four Tasks that mount the projected token for the `clearance` audience: `clearance-gate`, `agent-gates`, `agent-definitions`, `agent-release`. Clearance trusts the pod's ServiceAccount principal, so this account needs `app-*-cicd/clearance-gate` in Clearance's verifier list before any task runs as it. |
+  | `clearance-gate` | `get` on PipelineRuns; ConfigMaps `get`, `create`, `patch` (gate reports `gate-report-<run>`). No Secret. | The Tasks that mount the projected token for the `clearance` audience: `clearance-gate-fetch` and `clearance-gate` (the deployment gate's fetch and decide halves), `agent-gates`, `agent-definitions`, `agent-release`. Clearance trusts the pod's ServiceAccount principal, so this account needs `app-*-cicd/clearance-gate` in Clearance's verifier list before any task runs as it. |
   | `test-runner` | `get` on `app-secrets` and `dex-check-ride-credentials`; the app's own Testkube placeholder Secret and the `testkube-testworkflow-runner` Role (only for an app with a `test` stage); `get`, `list`, `watch` on this namespace's runs, pods, logs and events. No ConfigMap, no `clearance` token. | `run-testworkflow` only. |
 
   **Task mapping (step 3).** The mapping is a `taskRunSpecs` entry per task (`serviceAccountName` only), in every run the platform
@@ -564,9 +564,9 @@ what it wrote as data.
 
 | Pipeline | Task (pipeline task name) | Account | What it holds | What the repository controls |
 |---|---|---|---|---|
-| `policy-validation-check`, `clearance-gate-check`, `values-check` | `fetch` (the gate Task, phase `fetch`; its `publish` step) | `pipeline-runner` | token, GitHub installation token, policy-bundle token (and the Clearance token in `clearance-gate`) | fetches repository files and charts as bytes; renders nothing |
+| `policy-validation-check`, `clearance-gate-check`, `values-check` | `fetch` (the gate Task, phase `fetch`; its `publish` step; in `clearance-gate-check` the Task `clearance-gate-fetch`) | `pipeline-runner` (`clearance-gate` in `clearance-gate-check`) | token, GitHub installation token, policy-bundle token (and the Clearance token in `clearance-gate-fetch`) | fetches repository files and charts as bytes; renders nothing |
 | same | `render` (`render-manifests`) | **`source-runner`** | nothing: two workspaces, `inputs` read-only | the chart, the value files, every template |
-| same | `evaluate` / `register` (the gate Task, phase `decide`) | `pipeline-runner` | as above | reads the render as data (below) |
+| same | `evaluate` / `register` (the gate Task, phase `decide`; in `clearance-gate-check` the Task `clearance-gate`) | `pipeline-runner` (`clearance-gate` in `clearance-gate-check`) | as above; `clearance-gate` mounts only the Clearance token (no GitHub or policy-bundle token) | reads the render as data (below) |
 
 The control plane's admission policy (`cicd-run-source-isolation`, `cicdRunAdmission.sourceTasks`) lists `render` for the three Pipelines, so a
 `.tekton` file that runs it as `pipeline-runner`, or any account but `source-runner`, is refused; the Pipelines are the catalog's, so the

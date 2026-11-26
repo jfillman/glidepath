@@ -471,7 +471,7 @@ class SourceTasks(unittest.TestCase):
 ACCOUNT_OF_TASK = {
     "open-release-pr": "release-record-writer", "mark-release-merged": "release-record-writer", "itsm-change": "release-record-writer",
     "itsm-gate": "release-record-writer", "join-release": "release-record-writer",
-    "clearance-gate": "clearance-gate", "agent-gates": "clearance-gate", "agent-definitions": "clearance-gate", "agent-release": "clearance-gate",
+    "clearance-gate-fetch": "clearance-gate", "clearance-gate": "clearance-gate", "agent-gates": "clearance-gate", "agent-definitions": "clearance-gate", "agent-release": "clearance-gate",
     "run-testworkflow": "test-runner",
 }
 SPLIT_ACCOUNTS = {"release-record-writer", "clearance-gate", "test-runner"}

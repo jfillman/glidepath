@@ -87,11 +87,14 @@ expect "no task decides on rollback-eligible" "$(grep -c 'results.rollback-eligi
 # The content gates ask the classify step to refuse two new images; the others do not.
 expect "content gates refuse several images" "$(yq 'select(.kind == "Pipeline") | .spec.tasks[0].params[]? | select(.name == "classify-refuse-multiple-images") | .value' "$work/default.yaml" | grep -v '^---$' | sort | uniq -c | tr -s ' ')" " 5 true"
 # The first tasks host the step first, and every later fetch-side step carries the n/a exit.
-for t in extract-promoted-image validate-values policy-validation-gate clearance-gate itsm-gate classify-change; do
+for t in extract-promoted-image validate-values policy-validation-gate clearance-gate-fetch itsm-gate classify-change; do
   expect "$t: classify is the first step" "$(yq "select(.kind == \"Task\" and .metadata.name == \"$t\") | .spec.steps[0].name" "$work/itsm.yaml")" "classify"
 done
+# clearance-gate's decide Task (after the render) runs no classify step: the Pipeline's whens read clearance-gate-fetch's results.
+expect "clearance-gate (decide): no classify step" \
+  "$(yq 'select(.kind == "Task" and .metadata.name == "clearance-gate") | [.spec.steps[].name] | join(",")' "$work/itsm.yaml" | grep .)" "ingest,admission,register,report"
 for ts in validate-values:clone-and-list validate-values:publish validate-values:validate policy-validation-gate:fetch policy-validation-gate:publish \
-          clearance-gate:fetch clearance-gate:publish itsm-gate:verify; do
+          clearance-gate-fetch:fetch clearance-gate-fetch:publish itsm-gate:verify; do
   t="${ts%%:*}" st="${ts##*:}"
   expect "$t/$st reads the applicability" \
     "$(yq "select(.kind == \"Task\" and .metadata.name == \"$t\") | .spec.steps[] | select(.name == \"$st\") | .env[] | select(.name == \"GATE_APPLICABILITY\") | .value" "$work/itsm.yaml")" \
