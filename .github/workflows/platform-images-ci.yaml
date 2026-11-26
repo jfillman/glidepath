@@ -1,0 +1,77 @@
+name: platform-images-ci
+
+# Builds dora-exporter and tekton-results-relay for both arches and pins them by tag, the way broker-image-ci.yaml
+# does for the token-review interceptor. Both were hand-built on an arm64 Mac and published as `:latest` only, so the
+# first amd64 cluster (eks-dev, the AWS install, 2026-11-26) could not pull either: "no match for platform in
+# manifest". The values.yaml lines this bumps were `:latest`, which also left a cached old digest running after a
+# re-push (interceptorImage's comment has that history).
+#
+# Runs on a push to main that touches either image's source or this file, and by hand. Each image is built only when
+# its own source changed (or on a manual run), then the new `sha-<short>` tags are committed back to
+# charts/glidepath-control-plane/values.yaml in one commit, so the two never race on the same file.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "glidepath/dora-exporter/**"
+      - "glidepath/tekton-results-relay/**"
+      - ".github/workflows/platform-images-ci.yaml"
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # Both Dockerfiles cross-compile (BUILDPLATFORM + TARGETARCH), so no QEMU is needed.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push the changed images
+        id: images
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          sha_tag="sha-$(git rev-parse --short HEAD)"
+          changed() {
+            [ "${EVENT}" = workflow_dispatch ] && return 0
+            git diff --name-only HEAD~1 HEAD | grep -qE "^(glidepath/$1/|\.github/workflows/platform-images-ci\.yaml$)"
+          }
+          # name  build-context  dockerfile  values-key
+          while read -r name ctx dockerfile key; do
+            changed "${ctx##*/}" || { echo "skip ${name}: unchanged"; continue; }
+            image="ghcr.io/${owner}/glidepath-${name}:${sha_tag}"
+            docker buildx build --platform linux/amd64,linux/arm64 --push -f "${ctx}/${dockerfile}" -t "${image}" "${ctx}"
+            # Refuse to pin an image that is missing an arch a cluster runs on.
+            archs=$(docker buildx imagetools inspect "${image}" --format '{{json .Manifest}}' \
+              | jq -r '[.manifests[].platform.architecture | select(. != "unknown")] | sort | join(",")')
+            echo "pushed ${image} for ${archs}"
+            [ "${archs}" = "amd64,arm64" ] || { echo "expected amd64,arm64, got ${archs}"; exit 1; }
+            sed -i "s|^${key}: .*|${key}: ${image}|" charts/glidepath-control-plane/values.yaml
+            grep -q "^${key}: ${image}$" charts/glidepath-control-plane/values.yaml || { echo "${key} not found in values.yaml"; exit 1; }
+          done <<'EOF'
+          dora-exporter glidepath/dora-exporter cmd/dora-exporter/Dockerfile doraExporterImage
+          tekton-results-relay glidepath/tekton-results-relay cmd/tekton-results-relay/Dockerfile tektonResultsRelayImage
+          EOF
+
+      # A plain commit to main, as broker-image-ci.yaml does: the platform's own control-plane component, with the
+      # per-run GITHUB_TOKEN only.
+      - name: Pin the new tags in glidepath-control-plane's values.yaml
+        run: |
+          set -euo pipefail
+          git diff --quiet charts/glidepath-control-plane/values.yaml && { echo "nothing to pin"; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add charts/glidepath-control-plane/values.yaml
+          git commit -m "Pin dora-exporter / tekton-results-relay images to sha-$(git rev-parse --short HEAD) (multi-arch)"
+          git pull --rebase origin main
+          git push
