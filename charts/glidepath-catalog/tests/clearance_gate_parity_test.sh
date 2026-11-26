@@ -62,7 +62,9 @@ pipe() {
   local V="$d/vol-$s"; export VOL="$V"   # outside $W: $W is the fetch step's /work, which publish copies
   rm -rf "$V" "$W/w" "$W/rtmp"; mkdir -p "$V"
   sstep "$d/ftask.yaml" publish | loc "$W" x x x "$V" > "$d/publish-$s.sh"
-  ( cd "$W" && PHASE=fetch PIPELINE_RUN=run-1 bash "$d/publish-$s.sh" ) > "$d/publish-$s.log" 2>&1 || { echo "-- $s: publish failed:"; cat "$d/publish-$s.log"; }
+  ( cd "$W" && PHASE=fetch PIPELINE_RUN=run-1 bash "$d/publish-$s.sh" ) > "$d/publish-$s.log" 2>&1
+  echo $? > "$W/publish.rc"   # a failed publish is never a passing handoff, whatever the later steps do
+  [[ "$(cat "$W/publish.rc")" == 0 ]] || { echo "FAIL $s: publish failed:"; cat "$d/publish-$s.log"; fail=1; }
   mkdir -p "$W/w" "$W/rtmp"
   sstep "$d/rtask.yaml" render | loc "$V/inputs" "$V/rendered" x x x > "$W/render.sh"
   ( cd "$W" && PATH="$d/bin:$PATH" RENDER_TMP="$W/rtmp" PROFILE=clearance-gate PIPELINE_RUN=run-1 RENDER_CPU_SECONDS=60 RENDER_MAX_FILE_KB=32768 \

@@ -64,7 +64,7 @@ spec:
       description: "Clearance's in-cluster URL (agentGates.clearanceUrl): the provenance verdict is asked here."
     - name: phase
       type: string
-      description: "fetch. The Pipeline still names the phase each gate task runs: this Task fetches and publishes only for `fetch` (any other value does nothing, and the decide task then finds no data published by this run and fails)."
+      description: "fetch. The Pipeline still names the phase each gate task runs. The classify step runs whatever the value; fetch and publish run only for `fetch` (any other value skips them, and the decide task then finds no data published by this run and fails)."
     {{- include "glidepath-catalog.classifyParams" . | nindent 4 }}
   results:
     {{- include "glidepath-catalog.classifyResults" . | nindent 4 }}
